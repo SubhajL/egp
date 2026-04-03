@@ -1,0 +1,235 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '22'
+  DATABASE_URL: 'postgresql://egp:egp_dev@localhost:5432/egp_test'
+
+jobs:
+  # Python Linting (fast gate)
+  lint-python:
+    name: Python Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff>=0.8
+
+      - name: Run ruff check
+        run: ruff check apps/ packages/
+
+      - name: Run ruff format check
+        run: ruff format --check apps/ packages/
+
+  # Frontend Linting & Type Check (fast gate)
+  lint-frontend:
+    name: Frontend Lint & Typecheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Run TypeScript type check
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Run ESLint
+        working-directory: apps/web
+        run: npm run lint
+
+  # Database Migration Validation
+  db-migrations:
+    name: Database Migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: egp
+          POSTGRES_PASSWORD: egp_dev
+          POSTGRES_DB: egp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U egp -d egp_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" 2>/dev/null || pip install -e .
+          pip install psycopg[binary]
+
+      - name: Run migration runner
+        run: |
+          python -m egp_db.migration_runner \
+            --database-url "$DATABASE_URL" \
+            --migrations-dir packages/db/src/migrations
+
+      - name: Verify all tables exist
+        run: |
+          python -c "
+          import psycopg
+          with psycopg.connect('${{ env.DATABASE_URL }}') as conn:
+              with conn.cursor() as cur:
+                  cur.execute(\"\"\"
+                      SELECT table_name FROM information_schema.tables
+                      WHERE table_schema = 'public'
+                      ORDER BY table_name
+                  \"\"\")
+                  tables = [row[0] for row in cur.fetchall()]
+                  expected = [
+                      'crawl_profile_keywords', 'crawl_profiles', 'crawl_runs',
+                      'crawl_tasks', 'document_diffs', 'documents', 'exports',
+                      'notifications', 'project_aliases', 'project_status_events',
+                      'projects', 'schema_migrations', 'tenants', 'users'
+                  ]
+                  for table in expected:
+                      assert table in tables, f'Missing table: {table}'
+                  print(f'All {len(expected)} expected tables verified')
+          "
+
+  # Python Tests (backend + packages)
+  test-python:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    needs: [lint-python]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: egp
+          POSTGRES_PASSWORD: egp_dev
+          POSTGRES_DB: egp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U egp -d egp_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]" 2>/dev/null || pip install -e .
+          pip install fastapi uvicorn pydantic python-jose[cryptography] \
+            httpx pytest pytest-asyncio ruff openpyxl psycopg[binary] \
+            sqlalchemy boto3 supabase
+
+      - name: Run migrations
+        run: |
+          python -m egp_db.migration_runner \
+            --database-url "$DATABASE_URL" \
+            --migrations-dir packages/db/src/migrations
+
+      - name: Run Python tests
+        run: python -m pytest tests/ apps/ packages/ -v --tb=short
+
+      - name: Run pip audit (security)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit --strict --desc
+
+  # Frontend Build Validation
+  test-frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    needs: [lint-frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/web
+        run: npm run build
+
+      - name: Run npm audit (security)
+        continue-on-error: true
+        working-directory: apps/web
+        run: npm audit --audit-level=high
+
+  # Build Docker Images
+  build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    needs: [test-python, test-frontend, db-migrations]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate API Docker image
+        run: docker build -f apps/api/Dockerfile .
+
+      - name: Validate Worker Docker image
+        run: docker build -f apps/worker/Dockerfile .
+
+      - name: Validate Frontend Docker image
+        run: docker build -f apps/web/Dockerfile apps/web

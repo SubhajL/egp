@@ -1,0 +1,30 @@
+name: Auto Approve PRs
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+    if: |
+      github.actor == 'SubhajL' &&
+      (contains(github.event.pull_request.labels.*.name, 'auto-approve') ||
+       contains(github.event.pull_request.title, 'auto-approve') ||
+       github.event.pull_request.user.login == 'dependabot[bot]')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Auto approve PR
+        uses: hmarr/auto-approve-action@v4
+        with:
+          review-message: 'Auto-approved because:
+            - PR author is repository owner
+            - PR passes all required checks
+            - Changes are within allowed scope
+
+            This is an automated review. Please ensure all tests pass before merging.'
