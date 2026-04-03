@@ -64,7 +64,7 @@ def apply_migrations(*, database_url: str, migrations_dir: Path) -> MigrationRun
 
     return MigrationRunResult(
         applied_versions=pending_versions,
-        pending_versions=pending_versions,
+        pending_versions=[],
     )
 
 

@@ -608,13 +608,13 @@ class SqlProjectRepository:
                 self._insert_status_event(
                     connection,
                     project_id=project_id,
-                        observed_status_text=normalized_status_text,
-                        normalized_status=(
-                            transition["project_state"].value if existing_row is not None else record.project_state.value
-                        ),
-                        observed_at=now,
-                        run_id=normalized_run_id,
-                        raw_snapshot=raw_snapshot,
+                    observed_status_text=normalized_status_text,
+                    normalized_status=(
+                        transition["project_state"].value if existing_row is not None else record.project_state.value
+                    ),
+                    observed_at=now,
+                    run_id=normalized_run_id,
+                    raw_snapshot=raw_snapshot,
                 )
 
             row = connection.execute(
