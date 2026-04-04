@@ -144,6 +144,51 @@ export type RunListResponse = {
   offset: number;
 };
 
+export type RuleProfile = {
+  id: string;
+  name: string;
+  profile_type: string;
+  is_active: boolean;
+  max_pages_per_keyword: number;
+  close_consulting_after_days: number;
+  close_stale_after_days: number;
+  keywords: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClosureRulesSummary = {
+  close_on_winner_status: boolean;
+  close_on_contract_status: boolean;
+  winner_status_terms: string[];
+  contract_status_terms: string[];
+  consulting_timeout_days: number;
+  stale_no_tor_days: number;
+  stale_eligible_states: string[];
+  source: string;
+};
+
+export type NotificationRulesSummary = {
+  supported_channels: string[];
+  supported_types: string[];
+  event_wiring_complete: boolean;
+  source: string;
+};
+
+export type ScheduleRulesSummary = {
+  supported_trigger_types: string[];
+  schedule_execution_supported: boolean;
+  editable_in_product: boolean;
+  source: string;
+};
+
+export type RulesResponse = {
+  profiles: RuleProfile[];
+  closure_rules: ClosureRulesSummary;
+  notification_rules: NotificationRulesSummary;
+  schedule_rules: ScheduleRulesSummary;
+};
+
 export type ProjectExportResponse = {
   blob: Blob;
   filename: string;
@@ -353,4 +398,9 @@ export async function fetchRuns(
     offset: params.offset ?? 0,
   });
   return apiFetch<RunListResponse>(url);
+}
+
+export async function fetchRules(): Promise<RulesResponse> {
+  const url = buildUrl("/v1/rules", {});
+  return apiFetch<RulesResponse>(url);
 }

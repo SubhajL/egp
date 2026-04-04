@@ -6,6 +6,7 @@ import {
   fetchProjectDetail,
   fetchProjectCrawlEvidence,
   fetchDocuments,
+  fetchRules,
   fetchRuns,
   type FetchProjectsParams,
   type FetchRunsParams,
@@ -46,5 +47,12 @@ export function useRuns(params: FetchRunsParams = {}) {
   return useQuery({
     queryKey: ["runs", params],
     queryFn: () => fetchRuns(params),
+  });
+}
+
+export function useRules() {
+  return useQuery({
+    queryKey: ["rules"],
+    queryFn: () => fetchRules(),
   });
 }

@@ -22,13 +22,16 @@ from egp_api.config import (
 from egp_api.routes.documents import router as documents_router
 from egp_api.routes.exports import router as exports_router
 from egp_api.routes.projects import router as projects_router
+from egp_api.routes.rules import router as rules_router
 from egp_api.routes.runs import router as runs_router
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.export_service import ExportService
 from egp_api.services.project_service import ProjectService
+from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.document_repo import create_document_repository
+from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
 
@@ -74,6 +77,10 @@ def create_app(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
+    profile_repository = create_profile_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
     run_repository = create_run_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
@@ -83,8 +90,10 @@ def create_app(
     app.state.document_ingest_service = DocumentIngestService(repository)
     app.state.project_repository = project_repository
     app.state.project_service = ProjectService(project_repository)
+    app.state.profile_repository = profile_repository
     app.state.run_repository = run_repository
     app.state.run_service = RunService(run_repository)
+    app.state.rules_service = RulesService(profile_repository)
     app.state.export_service = ExportService(project_repository)
     app.state.auth_required = resolved_auth_required
     app.state.jwt_secret = resolved_jwt_secret
@@ -126,6 +135,7 @@ def create_app(
     app.include_router(documents_router)
     app.include_router(exports_router)
     app.include_router(projects_router)
+    app.include_router(rules_router)
     app.include_router(runs_router)
     return app
 
