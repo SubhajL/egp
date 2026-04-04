@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from egp_shared_types.enums import NotificationType
 
 if TYPE_CHECKING:
     from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
+    from egp_notifications.dispatcher import NotificationDispatcher
 
 
 HEADER_FILL = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
@@ -95,8 +97,14 @@ def _project_to_row(project: ProjectRecord) -> list[str | float | None]:
 
 
 class ExportService:
-    def __init__(self, project_repository: SqlProjectRepository) -> None:
+    def __init__(
+        self,
+        project_repository: SqlProjectRepository,
+        *,
+        notification_dispatcher: NotificationDispatcher | None = None,
+    ) -> None:
         self._repository = project_repository
+        self._notification_dispatcher = notification_dispatcher
 
     def export_to_excel(
         self,
@@ -160,4 +168,10 @@ class ExportService:
 
         buffer = BytesIO()
         wb.save(buffer)
-        return buffer.getvalue()
+        excel_bytes = buffer.getvalue()
+        if self._notification_dispatcher is not None:
+            self._notification_dispatcher.dispatch(
+                tenant_id=tenant_id,
+                notification_type=NotificationType.EXPORT_READY,
+            )
+        return excel_bytes

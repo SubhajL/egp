@@ -93,9 +93,15 @@ def _seed_profile(
             )
 
 
-def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings(tmp_path) -> None:
+def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     _seed_profile(
         client,
@@ -150,7 +156,10 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
         "open_invitation",
         "open_public_hearing",
     ]
-    assert body["closure_rules"]["source"] == "packages/crawler-core/src/egp_crawler_core/closure_rules.py"
+    assert (
+        body["closure_rules"]["source"]
+        == "packages/crawler-core/src/egp_crawler_core/closure_rules.py"
+    )
 
     assert body["notification_rules"]["supported_channels"] == ["in_app", "email"]
     assert body["notification_rules"]["supported_types"] == [
@@ -161,8 +170,11 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
         "run_failed",
         "export_ready",
     ]
-    assert body["notification_rules"]["event_wiring_complete"] is False
-    assert body["notification_rules"]["source"] == "packages/notification-core/src/egp_notifications/service.py"
+    assert body["notification_rules"]["event_wiring_complete"] is True
+    assert (
+        body["notification_rules"]["source"]
+        == "packages/notification-core/src/egp_notifications/service.py"
+    )
 
     assert body["schedule_rules"]["supported_trigger_types"] == [
         "schedule",
@@ -172,12 +184,19 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
     ]
     assert body["schedule_rules"]["schedule_execution_supported"] is True
     assert body["schedule_rules"]["editable_in_product"] is False
-    assert body["schedule_rules"]["source"] == "packages/db/src/migrations/001_initial_schema.sql"
+    assert (
+        body["schedule_rules"]["source"]
+        == "packages/db/src/migrations/001_initial_schema.sql"
+    )
 
 
 def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-empty.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
 
@@ -186,7 +205,7 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
     assert body["profiles"] == []
     assert body["closure_rules"]["consulting_timeout_days"] == 30
     assert body["closure_rules"]["stale_no_tor_days"] == 45
-    assert body["notification_rules"]["event_wiring_complete"] is False
+    assert body["notification_rules"]["event_wiring_complete"] is True
     assert body["schedule_rules"]["supported_trigger_types"] == [
         "schedule",
         "manual",

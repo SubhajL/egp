@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from egp_db.repositories.project_repo import (
     ProjectRecord,
@@ -11,6 +12,10 @@ from egp_db.repositories.project_repo import (
     create_project_repository,
 )
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
+from egp_shared_types.enums import NotificationType
+
+if TYPE_CHECKING:
+    from egp_notifications.dispatcher import NotificationDispatcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +33,7 @@ def run_discover_workflow(
     database_url: str | None = None,
     project_repository: SqlProjectRepository | None = None,
     run_repository: SqlRunRepository | None = None,
+    notification_dispatcher: NotificationDispatcher | None = None,
 ) -> DiscoverWorkflowResult:
     if project_repository is None or run_repository is None:
         if database_url is None:
@@ -63,12 +69,24 @@ def run_discover_workflow(
                 procurement_type=discovered.get("procurement_type"),
                 project_state=discovered.get("project_state", "discovered"),
             )
+            existing = project_repository.find_existing_project(record)
             project = project_repository.upsert_project(
                 record,
                 source_status_text=str(discovered.get("source_status_text") or ""),
                 run_id=run.id,
                 raw_snapshot=discovered,
             )
+            if notification_dispatcher is not None and existing is None:
+                notification_dispatcher.dispatch(
+                    tenant_id=tenant_id,
+                    notification_type=NotificationType.NEW_PROJECT,
+                    project_id=project.id,
+                    template_vars={
+                        "project_name": project.project_name,
+                        "organization": project.organization_name,
+                        "budget": project.budget_amount or "",
+                    },
+                )
             run_repository.mark_task_finished(
                 task.id,
                 status="succeeded",

@@ -4,15 +4,31 @@ from __future__ import annotations
 
 import logging
 import smtplib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Protocol
 from uuid import uuid4
 
 from egp_shared_types.enums import NotificationType
 
 logger = logging.getLogger(__name__)
+
+
+class EmailSender(Protocol):
+    def __call__(self, *, to: str, subject: str, body: str) -> None: ...
+
+
+class NotificationStore(Protocol):
+    def add(self, notification: Notification) -> None: ...
+
+    def list_for_tenant(
+        self, tenant_id: str, *, limit: int = 50
+    ) -> list[Notification]: ...
+
+    def mark_read(self, notification_id: str) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,10 +127,12 @@ class NotificationService:
         self,
         *,
         smtp_config: SmtpConfig | None = None,
-        in_app_store: InAppNotificationStore | None = None,
+        in_app_store: NotificationStore | None = None,
+        email_sender: EmailSender | None = None,
     ) -> None:
         self._smtp_config = smtp_config
         self._in_app_store = in_app_store or InAppNotificationStore()
+        self._email_sender = email_sender
 
     def send(
         self,
@@ -123,10 +141,12 @@ class NotificationService:
         notification_type: NotificationType,
         project_id: str | None = None,
         recipient_email: str | None = None,
+        recipient_emails: Sequence[str] | None = None,
         template_vars: dict[str, str] | None = None,
     ) -> Notification:
         template = NOTIFICATION_TEMPLATES.get(notification_type)
         variables = template_vars or {}
+        recipients = _normalize_recipient_emails(recipient_email, recipient_emails)
 
         if template:
             subject = template[0].format_map(
@@ -183,19 +203,25 @@ class NotificationService:
         self._in_app_store.add(in_app)
         channels_used.append("in_app")
 
-        # Email notification (if configured and recipient provided)
-        if self._smtp_config and recipient_email:
-            try:
-                self._send_email(
-                    to=recipient_email,
-                    subject=subject,
-                    body=body,
-                )
+        # Email notification (if configured or a test sender is provided)
+        email_sent = False
+        if recipients and (
+            self._smtp_config is not None or self._email_sender is not None
+        ):
+            for recipient in recipients:
+                try:
+                    self._send_email(
+                        to=recipient,
+                        subject=subject,
+                        body=body,
+                    )
+                    email_sent = True
+                except Exception:
+                    logger.exception(
+                        "Failed to send email notification to %s", recipient
+                    )
+            if email_sent:
                 channels_used.append("email")
-            except Exception:
-                logger.exception(
-                    "Failed to send email notification to %s", recipient_email
-                )
 
         return Notification(
             id=in_app.id,
@@ -216,6 +242,9 @@ class NotificationService:
         return self._in_app_store.list_for_tenant(tenant_id, limit=limit)
 
     def _send_email(self, *, to: str, subject: str, body: str) -> None:
+        if self._email_sender is not None:
+            self._email_sender(to=to, subject=subject, body=body)
+            return
         if not self._smtp_config:
             return
         cfg = self._smtp_config
@@ -231,3 +260,21 @@ class NotificationService:
             if cfg.username:
                 server.login(cfg.username, cfg.password)
             server.sendmail(cfg.from_address, to, msg.as_string())
+
+
+def _normalize_recipient_emails(
+    recipient_email: str | None,
+    recipient_emails: Sequence[str] | None,
+) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    values = ([] if recipient_email is None else [recipient_email]) + list(
+        recipient_emails or []
+    )
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        ordered.append(normalized)
+        seen.add(normalized)
+    return ordered

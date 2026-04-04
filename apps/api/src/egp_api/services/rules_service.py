@@ -75,8 +75,14 @@ def _map_profile(detail: CrawlProfileDetail) -> RuleProfile:
 
 
 class RulesService:
-    def __init__(self, repository: SqlProfileRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlProfileRepository,
+        *,
+        notification_event_wiring_complete: bool = True,
+    ) -> None:
         self._repository = repository
+        self._notification_event_wiring_complete = notification_event_wiring_complete
 
     def get_rules(self, *, tenant_id: str) -> RulesSnapshot:
         profiles = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
@@ -96,7 +102,7 @@ class RulesService:
             notification_rules=NotificationRulesView(
                 supported_channels=["in_app", "email"],
                 supported_types=[notification_type.value for notification_type in NotificationType],
-                event_wiring_complete=False,
+                event_wiring_complete=self._notification_event_wiring_complete,
                 source="packages/notification-core/src/egp_notifications/service.py",
             ),
             schedule_rules=ScheduleRulesView(

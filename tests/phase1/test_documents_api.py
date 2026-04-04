@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
 
 from egp_api.main import create_app
+from egp_shared_types.enums import NotificationType
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ProcurementType, ProjectState
 
@@ -42,7 +43,9 @@ class FakeSupabaseBucket:
                 "options": options or {},
             }
         )
-        return {"signedURL": f"https://project.supabase.co/storage/v1/object/sign/{self.bucket_name}/{path}"}
+        return {
+            "signedURL": f"https://project.supabase.co/storage/v1/object/sign/{self.bucket_name}/{path}"
+        }
 
     def remove(self, paths: list[str]):
         return {"paths": paths}
@@ -123,6 +126,16 @@ def seed_project(client: TestClient) -> str:
     return project.id
 
 
+def seed_notification_user(
+    client: TestClient, *, email: str = "alerts@example.com"
+) -> None:
+    client.app.state.notification_repository.create_user(
+        tenant_id=TENANT_ID,
+        email=email,
+        role="owner",
+    )
+
+
 def test_ingest_document_endpoint_persists_and_classifies_document(tmp_path) -> None:
     client = create_test_client(tmp_path)
     project_id = seed_project(client)
@@ -183,7 +196,9 @@ def test_list_documents_endpoint_returns_persisted_documents(tmp_path) -> None:
     )
     assert ingest_response.status_code == 201
 
-    response = client.get(f"/v1/documents/projects/{project_id}", params={"tenant_id": TENANT_ID})
+    response = client.get(
+        f"/v1/documents/projects/{project_id}", params={"tenant_id": TENANT_ID}
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -191,7 +206,9 @@ def test_list_documents_endpoint_returns_persisted_documents(tmp_path) -> None:
     assert body["documents"][0]["document_type"] == "mid_price"
 
 
-def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(tmp_path) -> None:
+def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(
+    tmp_path,
+) -> None:
     client = create_test_client(tmp_path)
     project_id = seed_project(client)
     payload = {
@@ -218,11 +235,81 @@ def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(tmp_path)
             "source_status_text": "ประกาศเชิญชวน",
         },
     )
-    listed = client.get(f"/v1/documents/projects/{project_id}", params={"tenant_id": TENANT_ID})
+    listed = client.get(
+        f"/v1/documents/projects/{project_id}", params={"tenant_id": TENANT_ID}
+    )
 
     assert first.status_code == 201
     assert second.status_code == 201
     assert len(listed.json()["documents"]) == 2
+
+
+def test_ingest_document_endpoint_emits_tor_changed_notification_for_superseding_tor(
+    tmp_path,
+) -> None:
+    sent: list[str] = []
+    client = create_test_client(
+        tmp_path, notification_email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    project_id = seed_project(client)
+    seed_notification_user(client)
+
+    first = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-v1.pdf",
+            "content_base64": base64.b64encode(b"tor-v1").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    second = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-v2.pdf",
+            "content_base64": base64.b64encode(b"tor-v2").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert sent == ["alerts@example.com"]
+    assert notifications[0].notification_type is NotificationType.TOR_CHANGED
+
+
+def test_ingest_document_endpoint_duplicate_hash_does_not_emit_tor_changed_notification(
+    tmp_path,
+) -> None:
+    sent: list[str] = []
+    client = create_test_client(
+        tmp_path, notification_email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    project_id = seed_project(client)
+    seed_notification_user(client)
+
+    payload = {
+        "tenant_id": TENANT_ID,
+        "project_id": project_id,
+        "file_name": "tor-v1.pdf",
+        "content_base64": base64.b64encode(b"same-bytes").decode("ascii"),
+        "source_label": "เอกสารประกวดราคา",
+        "source_status_text": "ประกาศเชิญชวน",
+    }
+    first = client.post("/v1/documents/ingest", json=payload)
+    second = client.post("/v1/documents/ingest", json=payload)
+
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert sent == []
+    assert client.app.state.notification_repository.list_for_tenant(TENANT_ID) == []
 
 
 def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None:
