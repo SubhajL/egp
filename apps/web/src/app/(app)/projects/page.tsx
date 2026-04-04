@@ -2,14 +2,15 @@
 
 import { useDeferredValue, useEffect, useState } from "react";
 import Link from "next/link";
-import { Search } from "lucide-react";
+import { Download, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
 import { useProjects } from "@/lib/hooks";
 import { formatBudget, formatRelativeTime } from "@/lib/utils";
-import type { FetchProjectsParams, ProjectSummary } from "@/lib/api";
+import { fetchProjectExport } from "@/lib/api";
+import type { ExportProjectsParams, FetchProjectsParams, ProjectSummary } from "@/lib/api";
 
 type StatusFilter = {
   key: string;
@@ -133,6 +134,8 @@ export default function ProjectsPage() {
   const [torChangedOnly, setTorChangedOnly] = useState(false);
   const [winnerOnly, setWinnerOnly] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const rowsPerPage = 50;
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
@@ -157,7 +160,7 @@ export default function ProjectsPage() {
     selectedTypeSignature,
   ]);
 
-  const projectQuery: FetchProjectsParams = {
+  const exportQuery: ExportProjectsParams = {
     project_state: effectiveStates,
     procurement_type: selectedTypeKeys.length > 0 ? selectedTypeKeys : undefined,
     keyword: deferredSearchQuery.trim() || undefined,
@@ -165,6 +168,10 @@ export default function ProjectsPage() {
     budget_max: normalizedBudgetMax,
     has_changed_tor: torChangedOnly ? true : undefined,
     has_winner: winnerOnly ? true : undefined,
+  };
+
+  const projectQuery: FetchProjectsParams = {
+    ...exportQuery,
     limit: rowsPerPage,
     offset: (currentPage - 1) * rowsPerPage,
   };
@@ -209,20 +216,59 @@ export default function ProjectsPage() {
     setActiveTab("all");
   }
 
+  async function handleExport() {
+    setIsExporting(true);
+    setExportError(null);
+    try {
+      const { blob, filename } = await fetchProjectExport(exportQuery);
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      setExportError(
+        error instanceof Error ? error.message : "ไม่สามารถส่งออกไฟล์ Excel ได้",
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   return (
     <>
       <PageHeader
         title="สำรวจโครงการ"
         subtitle="ค้นหาและกรองโครงการจัดซื้อจัดจ้างทั้งหมด"
         actions={
-          <button
-            type="button"
-            className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover"
-          >
-            Crawl ใหม่
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleExport()}
+              disabled={isExporting || isLoading}
+              className="inline-flex items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-2.5 text-sm font-medium text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Download className="h-4 w-4" />
+              {isExporting ? "กำลังส่งออก..." : "ส่งออก Excel"}
+            </button>
+            <button
+              type="button"
+              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover"
+            >
+              Crawl ใหม่
+            </button>
+          </div>
         }
       />
+
+      {exportError ? (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {exportError}
+        </div>
+      ) : null}
 
       <div className="flex gap-0">
         <aside className="sticky top-0 h-[calc(100vh-140px)] w-[280px] shrink-0 overflow-y-auto border-r border-[var(--border-default)] bg-[var(--bg-surface)] p-5">

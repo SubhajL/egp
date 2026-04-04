@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
@@ -101,11 +102,29 @@ class ExportService:
         self,
         *,
         tenant_id: str,
-        project_state: str | None = None,
+        project_states: list[str] | None = None,
+        procurement_types: list[str] | None = None,
+        closed_reasons: list[str] | None = None,
+        organization: str | None = None,
+        keyword: str | None = None,
+        budget_min: Decimal | float | int | str | None = None,
+        budget_max: Decimal | float | int | str | None = None,
+        updated_after: str | None = None,
+        has_changed_tor: bool | None = None,
+        has_winner: bool | None = None,
     ) -> bytes:
         page = self._repository.list_projects(
             tenant_id=tenant_id,
-            project_states=[project_state] if project_state else None,
+            project_states=project_states,
+            procurement_types=procurement_types,
+            closed_reasons=closed_reasons,
+            organization=organization,
+            keyword=keyword,
+            budget_min=budget_min,
+            budget_max=budget_max,
+            updated_after=updated_after,
+            has_changed_tor=has_changed_tor,
+            has_winner=has_winner,
             limit=10000,
             offset=0,
         )
