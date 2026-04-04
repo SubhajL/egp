@@ -250,6 +250,75 @@ export type DashboardSummaryResponse = {
   project_state_breakdown: DashboardStateBreakdownPoint[];
 };
 
+export type BillingRecord = {
+  id: string;
+  tenant_id: string;
+  record_number: string;
+  plan_code: string;
+  status: string;
+  billing_period_start: string;
+  billing_period_end: string;
+  due_at: string | null;
+  issued_at: string | null;
+  paid_at: string | null;
+  currency: string;
+  amount_due: string;
+  reconciled_total: string;
+  outstanding_balance: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BillingPayment = {
+  id: string;
+  billing_record_id: string;
+  payment_method: string;
+  payment_status: string;
+  amount: string;
+  currency: string;
+  reference_code: string | null;
+  received_at: string;
+  recorded_at: string;
+  reconciled_at: string | null;
+  note: string | null;
+  recorded_by: string | null;
+  reconciled_by: string | null;
+};
+
+export type BillingEvent = {
+  id: string;
+  billing_record_id: string;
+  payment_id: string | null;
+  event_type: string;
+  actor_subject: string | null;
+  note: string | null;
+  from_status: string | null;
+  to_status: string | null;
+  created_at: string;
+};
+
+export type BillingRecordDetail = {
+  record: BillingRecord;
+  payments: BillingPayment[];
+  events: BillingEvent[];
+};
+
+export type BillingSummary = {
+  open_records: number;
+  awaiting_reconciliation: number;
+  outstanding_amount: string;
+  collected_amount: string;
+};
+
+export type BillingListResponse = {
+  records: BillingRecordDetail[];
+  total: number;
+  limit: number;
+  offset: number;
+  summary: BillingSummary;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -318,6 +387,22 @@ function buildUrl(path: string, params: Record<string, QueryParamValue>): string
 async function apiFetch<T>(url: string): Promise<T> {
   const response = await fetch(url, {
     headers: getApiHeaders(),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function apiJsonRequest<T>(url: string, init: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...getApiHeaders(),
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
     cache: "no-store",
   });
   if (!response.ok) {
@@ -446,6 +531,41 @@ export type FetchRunsParams = {
   offset?: number;
 };
 
+export type FetchBillingParams = {
+  limit?: number;
+  offset?: number;
+};
+
+export type CreateBillingRecordInput = {
+  tenant_id?: string;
+  record_number: string;
+  plan_code: string;
+  status?: string;
+  billing_period_start: string;
+  billing_period_end: string;
+  due_at?: string;
+  issued_at?: string;
+  amount_due: string;
+  currency?: string;
+  notes?: string;
+};
+
+export type RecordBillingPaymentInput = {
+  tenant_id?: string;
+  payment_method?: string;
+  amount: string;
+  currency?: string;
+  reference_code?: string;
+  received_at: string;
+  note?: string;
+};
+
+export type ReconcileBillingPaymentInput = {
+  tenant_id?: string;
+  status: string;
+  note?: string;
+};
+
 export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
@@ -464,4 +584,59 @@ export async function fetchDashboardSummary(): Promise<DashboardSummaryResponse>
 export async function fetchRules(): Promise<RulesResponse> {
   const url = buildUrl("/v1/rules", {});
   return apiFetch<RulesResponse>(url);
+}
+
+export async function fetchBillingRecords(
+  params: FetchBillingParams = {},
+): Promise<BillingListResponse> {
+  const url = buildUrl("/v1/billing/records", {
+    limit: params.limit ?? 50,
+    offset: params.offset ?? 0,
+  });
+  return apiFetch<BillingListResponse>(url);
+}
+
+export async function createBillingRecord(
+  payload: CreateBillingRecordInput,
+): Promise<BillingRecordDetail> {
+  const url = buildUrl("/v1/billing/records", {});
+  return apiJsonRequest<BillingRecordDetail>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      ...payload,
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      status: payload.status ?? "awaiting_payment",
+      currency: payload.currency ?? "THB",
+    }),
+  });
+}
+
+export async function recordBillingPayment(
+  recordId: string,
+  payload: RecordBillingPaymentInput,
+): Promise<BillingPayment> {
+  const url = buildUrl(`/v1/billing/records/${encodeURIComponent(recordId)}/payments`, {});
+  return apiJsonRequest<BillingPayment>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      ...payload,
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      payment_method: payload.payment_method ?? "bank_transfer",
+      currency: payload.currency ?? "THB",
+    }),
+  });
+}
+
+export async function reconcileBillingPayment(
+  paymentId: string,
+  payload: ReconcileBillingPaymentInput,
+): Promise<BillingRecordDetail> {
+  const url = buildUrl(`/v1/billing/payments/${encodeURIComponent(paymentId)}/reconcile`, {});
+  return apiJsonRequest<BillingRecordDetail>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      ...payload,
+    }),
+  });
 }

@@ -1,6 +1,10 @@
 """Shared type exports for the e-GP platform."""
 
 from .enums import (
+    BillingEventType,
+    BillingPaymentMethod,
+    BillingPaymentStatus,
+    BillingRecordStatus,
     ClosedReason,
     CrawlRunStatus,
     CrawlTaskType,
@@ -13,6 +17,10 @@ from .enums import (
 )
 
 __all__ = [
+    "BillingEventType",
+    "BillingPaymentMethod",
+    "BillingPaymentStatus",
+    "BillingRecordStatus",
     "ClosedReason",
     "CrawlRunStatus",
     "CrawlTaskType",

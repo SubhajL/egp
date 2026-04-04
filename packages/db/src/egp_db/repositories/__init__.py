@@ -1,5 +1,14 @@
 """Repository exports."""
 
+from .billing_repo import (
+    BillingEventRecord,
+    BillingPage,
+    BillingPaymentRecord,
+    BillingRecordDetail,
+    BillingRecordRecord,
+    BillingSummary,
+    create_billing_repository,
+)
 from .document_repo import (
     DocumentDiffRecord,
     DocumentRecord,
@@ -12,6 +21,12 @@ from .document_repo import (
 from .project_repo import ProjectUpsertRecord, build_project_upsert_record
 
 __all__ = [
+    "BillingEventRecord",
+    "BillingPage",
+    "BillingPaymentRecord",
+    "BillingRecordDetail",
+    "BillingRecordRecord",
+    "BillingSummary",
     "DocumentDiffRecord",
     "DocumentRecord",
     "FilesystemDocumentRepository",
@@ -20,5 +35,6 @@ __all__ = [
     "StoreDocumentResult",
     "build_document_record",
     "build_project_upsert_record",
+    "create_billing_repository",
     "create_document_repository",
 ]

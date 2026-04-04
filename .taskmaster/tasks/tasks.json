@@ -1,0 +1,323 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": "1",
+        "title": "Phase 1: Foundation and State Correctness",
+        "description": "Replace fragile script-state assumptions with the canonical platform foundation described in PRD phase 1.",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "details": "Implement the phase-1 platform base across the existing repo boundaries: establish the PostgreSQL schema in packages/db, keep shared lifecycle and document enums in packages/shared-types, stand up the FastAPI control plane in apps/api, refactor crawler responsibilities out of egp_crawler.py into apps/worker and packages/crawler-core, add SHA-256 document hashing and durable artifact persistence, and deliver the initial project list UI in apps/web. Preserve the core architectural rules from CLAUDE.md: API owns state, workers emit events, PostgreSQL replaces Excel, and all tenant-scoped queries must include tenant_id. Use docs/PHASE1_PLAN.md as the execution reference when phase-1 implementation details are missing from docs/PRD.md.",
+        "testStrategy": "Verify PRD phase-1 exit criteria and acceptance tests 1, 2, 6, 7, 8, and 10: one canonical project per real tender, correct close rules, no duplicate document versions from duplicate artifacts, durable artifact persistence, and tenant isolation. Run the relevant Python checks plus targeted integration coverage around state transitions and deduplication.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Establish PostgreSQL schema and tenant-scoped data model",
+            "description": "Implement the canonical schema and persistence foundation for tenants, projects, artifacts, runs, and audit events.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Use packages/db/src/migrations/001_initial_schema.sql as the source of truth and extend it only through numbered migrations. Ensure tenant_id is present on every tenant-scoped table, keep CHECK constraints aligned with shared enums, and preserve projects, aliases, status events, documents, diffs, runs, notifications, and exports as first-class records.",
+            "testStrategy": "Apply migrations against local Postgres, inspect constraints and indexes, and verify representative inserts/queries remain tenant-scoped.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-03T08:30:00.000Z"
+          },
+          {
+            "id": 2,
+            "title": "Create the API service skeleton and state ownership boundaries",
+            "description": "Stand up the control-plane surface that owns lifecycle state, project views, and future product APIs.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Keep apps/api/src/main.py thin and begin routing and service extraction under apps/api/src. Align all lifecycle names with packages/shared-types/src/enums.py and keep worker-triggered changes event-driven rather than letting workers mutate product state directly.",
+            "testStrategy": "Add API-level smoke coverage for app startup and targeted tests for tenant-scoped repositories and lifecycle transitions.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-03T08:30:00.000Z"
+          },
+          {
+            "id": 3,
+            "title": "Refactor crawler logic out of the legacy monolith",
+            "description": "Extract canonical crawl, parsing, and closure logic from egp_crawler.py into worker and shared package modules.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Move reusable browser, parsing, canonical-id, and closure-rule logic into apps/worker and packages/crawler-core rather than extending egp_crawler.py. Preserve the control-plane and worker-plane split and eliminate OneDrive-coupled runtime behavior from the new execution path.",
+            "testStrategy": "Reuse and extend logic coverage from test_egp_crawler.py, then add focused tests for canonical project identification, duplicate suppression, and close-rule evaluation.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-03T08:30:00.000Z"
+          },
+          {
+            "id": 4,
+            "title": "Implement canonical project identity and explicit lifecycle state",
+            "description": "Replace script booleans with canonical project identity, aliases, state transitions, and closure reasons.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Use project_number when available and a fingerprint fallback when it is not. Record aliases and status transitions explicitly, keep closure reasons normalized, and remove fake closure behaviors such as tor_downloaded = Yes from the new system.",
+            "testStrategy": "Cover PRD acceptance tests 1, 2, 5, and 6 with deterministic fixtures for alias merging, late project_number arrival, consulting timeout, and winner-close automation.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-02T10:47:43.863Z"
+          },
+          {
+            "id": 5,
+            "title": "Add document hashing and artifact persistence",
+            "description": "Track documents by SHA-256 and store artifacts durably without creating false duplicates.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Persist artifact metadata and hashes in the database, preserve all versions, and wire artifact storage to durable blob storage rather than filesystem-only state. Keep document type and phase values aligned with packages/shared-types and packages/db.",
+            "testStrategy": "Cover acceptance tests 7 and 8 plus duplicate-hash scenarios to ensure the same bytes do not create duplicate versions or project rows.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-02T11:23:08.207Z"
+          },
+          {
+            "id": 6,
+            "title": "Deliver the basic project list UI",
+            "description": "Expose the initial project list experience in apps/web on top of the canonical backend state.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Implement the first project listing flow inside apps/web/src using strict TypeScript and the existing @/* alias. Keep UI state driven by API data rather than legacy Excel output, and use docs/PRD.md page requirements as the baseline.",
+            "testStrategy": "Validate typecheck/build in apps/web and verify the list UI reflects canonical project state from the API for representative fixtures.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-03T08:30:00.000Z"
+          }
+        ],
+        "updatedAt": "2026-04-03T08:30:00.000Z"
+      },
+      {
+        "id": "2",
+        "title": "Phase 2: Product MVP",
+        "description": "Deliver the internal beta product surface described in PRD phase 2.",
+        "status": "done",
+        "dependencies": [
+          "1"
+        ],
+        "priority": "high",
+        "details": "Build the internal beta product around the phase-1 foundation. This phase spans dashboard, Project Explorer, Project Detail, Runs, Rules, export APIs, email notifications, and manual billing plus bank-transfer reconciliation. Use apps/web for the operator-facing UI, apps/api for the product APIs and export surfaces, and packages/notification-core for reusable notification behavior when that package becomes concrete.",
+        "testStrategy": "Exercise the end-to-end internal beta flows: project browsing, run inspection, rule visibility, export generation, email delivery, and billing record reconciliation. Cover PRD acceptance test 9 for export correctness against filtered project lists.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Build the dashboard experience",
+            "description": "Expose key portfolio and run-state summaries on the dashboard page.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Implement the dashboard page in apps/web with API-backed summary cards and operational visibility suitable for internal users. Reuse the canonical state and run data established in phase 1.",
+            "testStrategy": "Validate the dashboard renders correct summary metrics for representative seeded data and survives empty/error states.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T09:42:37.559Z"
+          },
+          {
+            "id": 2,
+            "title": "Implement Project Explorer and Project Detail",
+            "description": "Provide search, filtering, and project drill-down views for internal beta users.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Add explorer and detail flows in apps/web and the supporting APIs in apps/api. Ensure filters, aliases, lifecycle state, document history, and artifact links all reflect canonical project records rather than legacy exports.",
+            "testStrategy": "Cover list/detail API responses, filter behavior, and navigation from explorer to detail with realistic seeded projects.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T04:29:03.323Z"
+          },
+          {
+            "id": 3,
+            "title": "Expose runs and rules pages",
+            "description": "Make crawl/run visibility and rule configuration readable in the product.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Add the runs page for worker execution history and the rules page for lifecycle and alert settings. Keep runs tied to durable crawl-run records and make rule definitions traceable to explicit platform logic rather than hidden script behavior.",
+            "testStrategy": "Verify run lists, run detail data, and rule display/update flows against seeded run history and configuration data.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T08:11:50.709Z"
+          },
+          {
+            "id": 4,
+            "title": "Ship export APIs and operator exports",
+            "description": "Provide export endpoints and UI triggers for filtered project data.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Implement export APIs in apps/api and the corresponding operator controls in apps/web. Exports should be derived from canonical filtered project views so that export output matches what the user sees in the product. This subtask also serves as the fulfillment layer for the `One-Time Search Pack`: one batch export of all relevant TOR files for projects matching a purchased keyword.",
+            "testStrategy": "Cover PRD acceptance test 9 by comparing exported output to the matching filtered project list in the UI and API.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T06:52:00.000Z"
+          },
+          {
+            "id": 5,
+            "title": "Add email notification delivery",
+            "description": "Send internal beta alerts for project and document events.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Wire email notification generation to platform events and keep the implementation reusable so packages/notification-core can absorb it cleanly later. Ensure tenant boundaries and notification preferences are respected.\n<info added on 2026-04-04T10:41:31.956Z>\nImplemented tenant-scoped notification delivery (email + in-app) with reusable primitives in packages/notification-core/src/egp_notifications/service.py (NotificationService templates + SMTP/email_sender support) and packages/notification-core/src/egp_notifications/dispatcher.py (NotificationDispatcher + NotificationRecipientResolver). Added persistent notification repository + recipient lookup in packages/db/src/egp_db/repositories/notification_repo.py (SqlNotificationRepository: tenant-filtered recipients, default operational roles, per-user email opt-out via notification_preferences) and additive migration packages/db/src/migrations/002_notification_preferences.sql. Wired dispatcher into apps/api/src/egp_api/main.py and event hooks: apps/api/src/egp_api/services/document_ingest_service.py (TOR_CHANGED on TOR diffs), apps/api/src/egp_api/services/run_service.py (RUN_FAILED), apps/api/src/egp_api/services/export_service.py (EXPORT_READY), plus worker workflows apps/worker/src/egp_worker/workflows/discover.py (NEW_PROJECT) and apps/worker/src/egp_worker/workflows/close_check.py (WINNER_ANNOUNCED/CONTRACT_SIGNED). Updated rules metadata in apps/api/src/egp_api/services/rules_service.py to report notification wiring complete. Validation: tests/phase2/test_notification_service.py and tests/phase2/test_notification_dispatch.py included; focused pytest suite (35 passed), targeted ruff check, and compileall apps packages passed. Coding log updated at coding-logs/2026-04-04-17-22-21 Coding Log (task-2-5-email-notifications).md.\n</info added on 2026-04-04T10:41:31.956Z>",
+            "testStrategy": "Use mocked delivery in tests and verify recipient selection, payload content, and suppression behavior for non-matching tenants.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T10:37:05.829Z"
+          },
+          {
+            "id": 6,
+            "title": "Implement manual billing records and bank transfer reconciliation",
+            "description": "Support internal beta billing operations without automated subscription rails yet.",
+            "status": "done",
+            "dependencies": [],
+            "details": "Add billing record management, manual payment recording, and reconciliation support in the API and admin-facing UI. Keep invoice and activation concepts compatible with the payment workflows planned for phase 3. Pricing and package definitions for launch should cover `One-Time Search Pack` (`300 THB`, `1 keyword`, batch export fulfillment, expires after `3 days` even if no projects match) and `Monthly Membership` (`1,500 THB`, prepaid monthly, up to `5 keywords`, cancel anytime with access through the paid period).\n<info added on 2026-04-04T11:35:22.038Z>\nImplemented Phase 2 manual billing records + bank-transfer reconciliation end to end.\n\nShared types: added BillingRecordStatus / BillingPaymentMethod / BillingPaymentStatus / BillingEventType enums in packages/shared-types/src/egp_shared_types/enums.py (exported from packages/shared-types/src/egp_shared_types/__init__.py). Database: added additive migration packages/db/src/migrations/003_billing_records.sql creating billing_records, billing_payments, billing_events (tenant_id scoped, CHECK constraints for statuses/methods/event types, indexes, updated_at triggers).\n\nBackend: new packages/db/src/egp_db/repositories/billing_repo.py (SqlBillingRepository) supports listing with summary (open_records, awaiting_reconciliation, outstanding_amount, collected_amount), creating records, recording bank transfers (pending_reconciliation), and reconciling payments (reconciled/rejected) with automatic billing_records status transitions to payment_detected vs paid and a billing_events audit trail. API: apps/api/src/egp_api/services/billing_service.py + apps/api/src/egp_api/routes/billing.py exposing GET /v1/billing/records, POST /v1/billing/records, POST /v1/billing/records/{record_id}/payments, POST /v1/billing/payments/{payment_id}/reconcile; wired into apps/api/src/egp_api/main.py.\n\nFrontend: admin billing UI at apps/web/src/app/(app)/billing/page.tsx (create bill, record transfer, reconcile/reject actions, history timeline + KPI cards), typed client functions in apps/web/src/lib/api.ts and react-query hook in apps/web/src/lib/hooks.ts; status badges + nav entry via apps/web/src/components/ui/status-badge.tsx and apps/web/src/lib/constants.ts.\n\nValidation: tests/phase2/test_billing_reconciliation.py covers full flow, partial payment -> payment_detected, tenant scoping, and non-bank-transfer rejection (4 tests passed). Ran ruff check (apps/api, packages, tests), compileall (apps, packages), and apps/web typecheck/build. Follow-up: apply packages/db/src/migrations/003_billing_records.sql to Postgres/Supabase before deploying.\n</info added on 2026-04-04T11:35:22.038Z>",
+            "testStrategy": "Validate creation and reconciliation flows for billing records and confirm status transitions are auditable and tenant-scoped.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T15:15:44.864Z"
+          }
+        ],
+        "updatedAt": "2026-04-04T15:15:44.864Z"
+      },
+      {
+        "id": "3",
+        "title": "Phase 3: TOR Intelligence and Payments",
+        "description": "Deliver the commercial beta intelligence and payment workflows described in PRD phase 3.",
+        "status": "pending",
+        "dependencies": [
+          "2"
+        ],
+        "priority": "high",
+        "details": "Implement the commercial-beta layer: classify public-hearing versus final TOR documents, generate document diffs, support review workflows, and add payment flows including payment link generation, PromptPay QR support, invoice lifecycle, and subscription activation. This phase depends directly on the document hashing/versioning base from phase 1 and the operator product surfaces from phase 2.",
+        "testStrategy": "Cover PRD acceptance tests 3 and 4 for TOR classification and change alerts, then validate the billing path from invoice creation through payment confirmation and subscription activation.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Classify public-hearing versus final TOR documents",
+            "description": "Detect TOR phase correctly so identical and changed documents are handled with the right semantics.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Implement public_hearing versus final TOR classification in apps/doc-processor and shared packages, keeping names aligned with packages/shared-types/src/enums.py and document constraints in packages/db/src/migrations/001_initial_schema.sql.",
+            "testStrategy": "Cover PRD acceptance tests 3 and 4 with fixtures for same-byte and different-byte TOR pairs across phases.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Build the diff engine and surfaced change alerts",
+            "description": "Generate meaningful document diffs and attach them to reviewable project events.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Store structured diff metadata for document pairs, preserve both versions, and surface change alerts without false positives when bytes are identical. The document processor should write durable diff records rather than transient filesystem artifacts.",
+            "testStrategy": "Validate diff persistence, diff retrieval, and alert generation for identical, modified, and missing-text extraction cases.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 3,
+            "title": "Add review workflow for document intelligence",
+            "description": "Let operators review and disposition detected document changes before downstream actions.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Implement review states, operator actions, and traceability for document-change review. Keep auditability explicit so future support and compliance work in phase 4 has a clean foundation.",
+            "testStrategy": "Exercise review assignment, approval/rejection, and persisted review history in the API and UI.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 4,
+            "title": "Generate payment links and PromptPay QR codes",
+            "description": "Support commercial beta payment collection flows for subscriptions or invoice settlement.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Implement payment link creation and PromptPay QR generation in a way that integrates cleanly with invoice records and tenant-scoped billing state. Keep external provider calls isolated behind service boundaries.",
+            "testStrategy": "Use provider mocks to verify payment link payloads, QR generation, callback handling, and failure states.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 5,
+            "title": "Implement invoice lifecycle and subscription activation",
+            "description": "Move from manual billing records to invoice-driven activation and entitlement changes.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Define invoice states, payment reconciliation hooks, and subscription activation behavior in the API and data model. Preserve auditability and ensure successful payment activates the right tenant entitlements without cross-tenant leakage.",
+            "testStrategy": "Cover invoice creation, payment confirmation, activation, duplicate-callback handling, and rollback/error paths.",
+            "parentId": "undefined"
+          }
+        ]
+      },
+      {
+        "id": "4",
+        "title": "Phase 4: Commercial Hardening",
+        "description": "Harden the platform for production readiness as described in PRD phase 4.",
+        "status": "pending",
+        "dependencies": [
+          "3"
+        ],
+        "priority": "medium",
+        "details": "Prepare the platform for production operation by adding multi-tenant quotas, webhook notifications, a full audit log, self-service admin, SOC and operational runbooks, disaster recovery and backup validation, cost observability, and support tooling. This phase should tighten operational controls without violating the core architecture and tenant-isolation rules established earlier.",
+        "testStrategy": "Validate production-readiness outcomes with quota enforcement tests, webhook contract tests, audit-log coverage, tenant-isolation checks, backup/restore drills, and support-runbook verification. PRD acceptance test 10 remains a hard requirement throughout this phase.",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement multi-tenant quotas and entitlement enforcement",
+            "description": "Enforce per-tenant limits and plan-based product boundaries.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Add tenant-level quota tracking and enforcement in the API and supporting data model. Tie quota behavior to subscription state from phase 3 and ensure limits are applied consistently across runs, exports, documents, and notifications. This includes enforcing launch-package entitlements: `One-Time Search Pack` allows exactly `1 keyword` for `3 days`, while `Monthly Membership` allows up to `5 active keywords` during the prepaid billing period.",
+            "testStrategy": "Cover quota allow/deny scenarios, plan upgrades, and tenant isolation for over-limit behavior.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 2,
+            "title": "Add webhook notification delivery",
+            "description": "Deliver machine-consumable notifications alongside email and in-product surfaces.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Implement tenant-configurable webhook subscriptions and outbound delivery with retry-safe semantics. Keep payloads auditable and compatible with the event model established earlier in the platform.",
+            "testStrategy": "Use webhook receiver mocks to validate payload shape, retry behavior, signature or authentication handling, and tenant scoping.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 3,
+            "title": "Build a full audit log",
+            "description": "Capture material state changes and operator actions for investigation and compliance.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Persist project, document, billing, review, and admin events with actor and timestamp context. Reuse project_status_events patterns where possible and avoid leaving critical transitions outside the audit trail.",
+            "testStrategy": "Verify representative state changes write durable audit entries that can be queried by tenant and entity.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 4,
+            "title": "Implement self-service admin capabilities",
+            "description": "Provide tenant-facing administrative controls needed for production operation.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Add admin APIs and UI surfaces for tenant management, notification settings, billing state visibility, and support-safe configuration changes. Keep permission boundaries explicit.",
+            "testStrategy": "Exercise authorized and unauthorized admin actions and confirm tenant admins can modify only their own configuration.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 5,
+            "title": "Produce SOC and operational runbooks",
+            "description": "Document and operationalize incident response, maintenance, and platform operations.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Write the production runbooks covering incidents, scheduled operations, recovery procedures, and support escalation. Keep them aligned with the actual architecture in CLAUDE.md and the implemented platform flows.",
+            "testStrategy": "Run a tabletop review or dry run against the documented procedures and record any gaps.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 6,
+            "title": "Validate disaster recovery and backup workflows",
+            "description": "Prove backups and restores work for the platform\u2019s critical state and artifacts.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Define backup coverage for the database and artifact storage, then run restore validation against realistic data. Ensure restores preserve tenant isolation and document integrity.",
+            "testStrategy": "Perform backup/restore drills in a non-production environment and verify restored projects, documents, and billing state are intact.",
+            "parentId": "undefined"
+          },
+          {
+            "id": 7,
+            "title": "Add cost observability and support tooling",
+            "description": "Expose operating cost signals and internal tooling needed to support customers at production scale.",
+            "status": "pending",
+            "dependencies": [],
+            "details": "Implement dashboards or reports for crawl, storage, notification, and payment-related costs, then add internal support tooling for tenant lookup, issue triage, and safe intervention paths.",
+            "testStrategy": "Validate representative cost signals are captured and that support operators can diagnose seeded issues without bypassing tenant boundaries.",
+            "parentId": "undefined"
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "lastModified": "2026-04-04T15:15:44.865Z",
+      "taskCount": 4,
+      "completedCount": 2,
+      "tags": [
+        "master"
+      ]
+    }
+  }
+}

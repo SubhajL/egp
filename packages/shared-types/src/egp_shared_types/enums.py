@@ -78,3 +78,32 @@ class NotificationType(StrEnum):
     TOR_CHANGED = "tor_changed"
     RUN_FAILED = "run_failed"
     EXPORT_READY = "export_ready"
+
+
+class BillingRecordStatus(StrEnum):
+    DRAFT = "draft"
+    ISSUED = "issued"
+    AWAITING_PAYMENT = "awaiting_payment"
+    PAYMENT_DETECTED = "payment_detected"
+    PAID = "paid"
+    FAILED = "failed"
+    OVERDUE = "overdue"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+
+
+class BillingPaymentMethod(StrEnum):
+    BANK_TRANSFER = "bank_transfer"
+
+
+class BillingPaymentStatus(StrEnum):
+    PENDING_RECONCILIATION = "pending_reconciliation"
+    RECONCILED = "reconciled"
+    REJECTED = "rejected"
+
+
+class BillingEventType(StrEnum):
+    BILLING_RECORD_CREATED = "billing_record_created"
+    PAYMENT_RECORDED = "payment_recorded"
+    PAYMENT_RECONCILED = "payment_reconciled"
+    PAYMENT_REJECTED = "payment_rejected"
