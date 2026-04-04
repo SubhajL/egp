@@ -37,6 +37,24 @@ export const TASK_STATUS_CONFIG: Record<string, BadgeConfig> = {
   skipped: { label: "ข้าม", color: "gray" },
 };
 
+export const BILLING_STATUS_CONFIG: Record<string, BadgeConfig> = {
+  draft: { label: "ร่าง", color: "gray" },
+  issued: { label: "ออกบิลแล้ว", color: "indigo" },
+  awaiting_payment: { label: "รอชำระ", color: "amber" },
+  payment_detected: { label: "พบยอดชำระ", color: "teal" },
+  paid: { label: "ชำระครบ", color: "green" },
+  failed: { label: "ล้มเหลว", color: "red" },
+  overdue: { label: "เกินกำหนด", color: "red" },
+  cancelled: { label: "ยกเลิก", color: "gray" },
+  refunded: { label: "คืนเงิน", color: "purple" },
+};
+
+export const BILLING_PAYMENT_STATUS_CONFIG: Record<string, BadgeConfig> = {
+  pending_reconciliation: { label: "รอตรวจสอบ", color: "amber" },
+  reconciled: { label: "กระทบยอดแล้ว", color: "green" },
+  rejected: { label: "ไม่ผ่าน", color: "red" },
+};
+
 export const PROCUREMENT_TYPE_LABELS: Record<string, string> = {
   goods: "สินค้า",
   services: "บริการ",
@@ -54,6 +72,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "สำรวจโครงการ", href: "/projects" },
   { label: "การทำงาน", href: "/runs" },
   { label: "กฎและโปรไฟล์", href: "/rules" },
+  { label: "บิลและชำระเงิน", href: "/billing" },
 ];
 
 export const BADGE_STYLE_MAP: Record<BadgeColor, string> = {

@@ -2,13 +2,15 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchBillingRecords,
   fetchDashboardSummary,
-  fetchProjects,
-  fetchProjectDetail,
   fetchProjectCrawlEvidence,
+  fetchProjectDetail,
+  fetchProjects,
   fetchDocuments,
   fetchRules,
   fetchRuns,
+  type FetchBillingParams,
   type FetchProjectsParams,
   type FetchRunsParams,
 } from "./api";
@@ -62,5 +64,12 @@ export function useRules() {
   return useQuery({
     queryKey: ["rules"],
     queryFn: () => fetchRules(),
+  });
+}
+
+export function useBillingRecords(params: FetchBillingParams = {}) {
+  return useQuery({
+    queryKey: ["billing-records", params],
+    queryFn: () => fetchBillingRecords(params),
   });
 }
