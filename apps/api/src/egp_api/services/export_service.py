@@ -105,7 +105,7 @@ class ExportService:
     ) -> bytes:
         page = self._repository.list_projects(
             tenant_id=tenant_id,
-            project_state=project_state,
+            project_states=[project_state] if project_state else None,
             limit=10000,
             offset=0,
         )
