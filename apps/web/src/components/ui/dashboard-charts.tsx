@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+  DashboardDailyDiscoveryPoint,
+  DashboardStateBreakdownPoint,
+} from "@/lib/api";
 import {
   BarChart,
   Bar,
@@ -13,32 +17,6 @@ import {
   Cell,
 } from "recharts";
 
-const dailyProjectData = [
-  { date: "20 มี.ค.", count: 12 },
-  { date: "21 มี.ค.", count: 15 },
-  { date: "22 มี.ค.", count: 9 },
-  { date: "23 มี.ค.", count: 18 },
-  { date: "24 มี.ค.", count: 22 },
-  { date: "25 มี.ค.", count: 14 },
-  { date: "26 มี.ค.", count: 11 },
-  { date: "27 มี.ค.", count: 16 },
-  { date: "28 มี.ค.", count: 20 },
-  { date: "29 มี.ค.", count: 13 },
-  { date: "30 มี.ค.", count: 8 },
-  { date: "31 มี.ค.", count: 17 },
-  { date: "1 เม.ย.", count: 19 },
-  { date: "2 เม.ย.", count: 10 },
-];
-
-const projectStateData = [
-  { name: "ค้นพบใหม่", value: 64, color: "#4338CA" },
-  { name: "เปิดรับข้อเสนอ", value: 48, color: "#0F766E" },
-  { name: "เปิดรับที่ปรึกษา", value: 35, color: "#0EA5E9" },
-  { name: "ดาวน์โหลด TOR", value: 42, color: "#15803D" },
-  { name: "ประกาศผู้ชนะ", value: 31, color: "#7C3AED" },
-  { name: "ปิดแล้ว", value: 27, color: "#64748B" },
-];
-
 const tooltipStyle = {
   backgroundColor: "var(--bg-surface)",
   border: "1px solid var(--border-default)",
@@ -47,15 +25,43 @@ const tooltipStyle = {
   boxShadow: "var(--shadow-md)",
 };
 
-export function DailyDiscoveryChart() {
+const STATE_BUCKET_STYLE: Record<string, { name: string; color: string }> = {
+  discovered: { name: "ค้นพบใหม่", color: "#1D4ED8" },
+  open_invitation: { name: "เปิดรับข้อเสนอ", color: "#0F766E" },
+  open_consulting: { name: "เปิดรับที่ปรึกษา", color: "#0284C7" },
+  tor_downloaded: { name: "ดาวน์โหลด TOR", color: "#15803D" },
+  winner: { name: "ประกาศผู้ชนะ", color: "#7C3AED" },
+  closed: { name: "ปิดแล้ว", color: "#64748B" },
+};
+
+function formatChartDate(value: string): string {
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(value));
+}
+
+type DailyDiscoveryChartProps = {
+  points: DashboardDailyDiscoveryPoint[];
+};
+
+type ProjectStateChartProps = {
+  breakdown: DashboardStateBreakdownPoint[];
+};
+
+export function DailyDiscoveryChart({ points }: DailyDiscoveryChartProps) {
+  const chartData = points.map((point) => ({
+    ...point,
+    label: formatChartDate(point.date),
+  }));
   return (
     <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-8">
       <h3 className="text-sm font-semibold text-[var(--text-primary)]">โครงการค้นพบรายวัน</h3>
       <div className="mt-4 h-72">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={dailyProjectData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
+          <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: "var(--text-muted)" }} axisLine={false} tickLine={false} />
+            <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--text-muted)" }} axisLine={false} tickLine={false} />
             <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} axisLine={false} tickLine={false} />
             <Tooltip
               contentStyle={tooltipStyle}
@@ -70,7 +76,12 @@ export function DailyDiscoveryChart() {
   );
 }
 
-export function ProjectStateChart() {
+export function ProjectStateChart({ breakdown }: ProjectStateChartProps) {
+  const chartData = breakdown.map((point) => ({
+    name: STATE_BUCKET_STYLE[point.bucket]?.name ?? point.bucket,
+    value: point.count,
+    color: STATE_BUCKET_STYLE[point.bucket]?.color ?? "#64748B",
+  }));
   return (
     <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-4">
       <h3 className="text-sm font-semibold text-[var(--text-primary)]">สถานะโครงการ</h3>
@@ -78,7 +89,7 @@ export function ProjectStateChart() {
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
-              data={projectStateData}
+              data={chartData}
               cx="50%"
               cy="50%"
               innerRadius={60}
@@ -86,7 +97,7 @@ export function ProjectStateChart() {
               paddingAngle={3}
               dataKey="value"
             >
-              {projectStateData.map((entry) => (
+              {chartData.map((entry) => (
                 <Cell key={entry.name} fill={entry.color} />
               ))}
             </Pie>
@@ -98,7 +109,7 @@ export function ProjectStateChart() {
         </ResponsiveContainer>
       </div>
       <div className="-mt-4 grid grid-cols-2 gap-x-4 gap-y-1.5 px-2">
-        {projectStateData.map((entry) => (
+        {chartData.map((entry) => (
           <div key={entry.name} className="flex items-center gap-2">
             <span className="size-2.5 shrink-0 rounded-full" style={{ backgroundColor: entry.color }} />
             <span className="truncate text-xs text-[var(--text-muted)]">{entry.name}</span>

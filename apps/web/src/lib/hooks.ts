@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchDashboardSummary,
   fetchProjects,
   fetchProjectDetail,
   fetchProjectCrawlEvidence,
@@ -15,6 +16,13 @@ export function useProjects(params: FetchProjectsParams = {}) {
   return useQuery({
     queryKey: ["projects", params],
     queryFn: () => fetchProjects(params),
+  });
+}
+
+export function useDashboardSummary() {
+  return useQuery({
+    queryKey: ["dashboard-summary"],
+    queryFn: () => fetchDashboardSummary(),
   });
 }
 
