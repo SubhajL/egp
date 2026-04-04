@@ -12,7 +12,11 @@ from egp_db.repositories.project_repo import (
     DashboardWinnerProjectRecord,
     SqlProjectRepository,
 )
-from egp_db.repositories.run_repo import DashboardRecentRunRecord, DashboardRunSummary, SqlRunRepository
+from egp_db.repositories.run_repo import (
+    DashboardRecentRunRecord,
+    DashboardRunSummary,
+    SqlRunRepository,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,8 +51,8 @@ class DashboardService:
         self._run_repository = run_repository
 
     def get_summary(self, *, tenant_id: str) -> DashboardSummary:
-        project_summary: DashboardProjectSummary = self._project_repository.get_dashboard_project_summary(
-            tenant_id=tenant_id
+        project_summary: DashboardProjectSummary = (
+            self._project_repository.get_dashboard_project_summary(tenant_id=tenant_id)
         )
         run_summary: DashboardRunSummary = self._run_repository.get_dashboard_run_summary(
             tenant_id=tenant_id

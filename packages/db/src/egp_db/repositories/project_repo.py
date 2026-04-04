@@ -1148,7 +1148,10 @@ class SqlProjectRepository:
                         and_(
                             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
                             PROJECTS_TABLE.c.project_state.not_in(
-                                [*sorted(_DASHBOARD_CLOSED_STATES), ProjectState.ERROR.value]
+                                [
+                                    *sorted(_DASHBOARD_CLOSED_STATES),
+                                    ProjectState.ERROR.value,
+                                ]
                             ),
                         )
                     )
@@ -1161,7 +1164,8 @@ class SqlProjectRepository:
                     .where(
                         and_(
                             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
-                            func.date(PROJECTS_TABLE.c.first_seen_at) == today.isoformat(),
+                            func.date(PROJECTS_TABLE.c.first_seen_at)
+                            == today.isoformat(),
                         )
                     )
                 ).scalar_one()
@@ -1177,8 +1181,10 @@ class SqlProjectRepository:
                                 sorted(_DASHBOARD_WINNER_STATES)
                             ),
                             or_(
-                                PROJECTS_TABLE.c.winner_announced_at >= winner_window_start,
-                                PROJECTS_TABLE.c.contract_signed_at >= winner_window_start,
+                                PROJECTS_TABLE.c.winner_announced_at
+                                >= winner_window_start,
+                                PROJECTS_TABLE.c.contract_signed_at
+                                >= winner_window_start,
                             ),
                         )
                     )
@@ -1194,7 +1200,8 @@ class SqlProjectRepository:
                             PROJECTS_TABLE.c.project_state.in_(
                                 sorted(_DASHBOARD_CLOSED_STATES)
                             ),
-                            func.date(PROJECTS_TABLE.c.last_changed_at) == today.isoformat(),
+                            func.date(PROJECTS_TABLE.c.last_changed_at)
+                            == today.isoformat(),
                         )
                     )
                 ).scalar_one()
@@ -1240,8 +1247,10 @@ class SqlProjectRepository:
                                 sorted(_DASHBOARD_WINNER_STATES)
                             ),
                             or_(
-                                PROJECTS_TABLE.c.winner_announced_at >= winner_window_start,
-                                PROJECTS_TABLE.c.contract_signed_at >= winner_window_start,
+                                PROJECTS_TABLE.c.winner_announced_at
+                                >= winner_window_start,
+                                PROJECTS_TABLE.c.contract_signed_at
+                                >= winner_window_start,
                             ),
                         )
                     )
@@ -1338,7 +1347,9 @@ class SqlProjectRepository:
             ],
             daily_discovery=daily_discovery,
             project_state_breakdown=[
-                DashboardStateBreakdownPoint(bucket=bucket, count=breakdown_counts[bucket])
+                DashboardStateBreakdownPoint(
+                    bucket=bucket, count=breakdown_counts[bucket]
+                )
                 for bucket in _DASHBOARD_BREAKDOWN_BUCKETS
             ],
         )

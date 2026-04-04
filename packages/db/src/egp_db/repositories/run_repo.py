@@ -721,7 +721,9 @@ class SqlRunRepository:
                     id=str(row["id"]),
                     trigger_type=str(row["trigger_type"]),
                     status=str(row["status"]),
-                    profile_id=str(row["profile_id"]) if row["profile_id"] is not None else None,
+                    profile_id=str(row["profile_id"])
+                    if row["profile_id"] is not None
+                    else None,
                     started_at=_dt_to_iso(row["started_at"]),
                     finished_at=_dt_to_iso(row["finished_at"]),
                     created_at=_dt_to_iso(row["created_at"]) or "",
