@@ -944,6 +944,18 @@ class SqlProjectRepository:
             )
         return _project_from_mapping(row) if row is not None else None
 
+    def find_existing_project(
+        self, record: ProjectUpsertRecord
+    ) -> ProjectRecord | None:
+        normalized_tenant_id = normalize_uuid_string(record.tenant_id)
+        with self._engine.connect() as connection:
+            row = self._find_existing_row(
+                connection,
+                tenant_id=normalized_tenant_id,
+                record=record,
+            )
+        return _project_from_mapping(row) if row is not None else None
+
     def get_project_detail(
         self, *, tenant_id: str, project_id: str
     ) -> ProjectDetail | None:

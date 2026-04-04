@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from egp_notifications.service import SmtpConfig
+
 
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:
@@ -80,3 +82,23 @@ def get_jwt_secret(override: str | None = None) -> str | None:
         return value or None
     raw = os.getenv("EGP_JWT_SECRET", "").strip() or os.getenv("SUPABASE_JWT_SECRET", "").strip()
     return raw or None
+
+
+def get_smtp_config(override: SmtpConfig | None = None) -> SmtpConfig | None:
+    if override is not None:
+        return override
+
+    host = os.getenv("EGP_SMTP_HOST", "").strip()
+    if not host:
+        return None
+
+    raw_port = os.getenv("EGP_SMTP_PORT", "").strip() or "587"
+    return SmtpConfig(
+        host=host,
+        port=int(raw_port),
+        username=os.getenv("EGP_SMTP_USERNAME", "").strip(),
+        password=os.getenv("EGP_SMTP_PASSWORD", "").strip(),
+        from_address=os.getenv("EGP_SMTP_FROM", "").strip() or "noreply@egp-intelligence.th",
+        use_tls=os.getenv("EGP_SMTP_USE_TLS", "true").strip().lower()
+        not in {"0", "false", "no", "off"},
+    )

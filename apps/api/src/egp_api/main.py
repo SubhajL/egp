@@ -16,6 +16,7 @@ from egp_api.config import (
     get_artifact_storage_backend,
     get_database_url,
     get_jwt_secret,
+    get_smtp_config,
     get_supabase_service_role_key,
     get_supabase_url,
 )
@@ -33,9 +34,12 @@ from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.document_repo import create_document_repository
+from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
+from egp_notifications.dispatcher import NotificationDispatcher
+from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
 
 
 def create_app(
@@ -51,6 +55,8 @@ def create_app(
     supabase_client=None,
     auth_required: bool | None = None,
     jwt_secret: str | None = None,
+    smtp_config: SmtpConfig | None = None,
+    notification_email_sender: EmailSender | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="e-GP Intelligence Platform",
@@ -87,17 +93,45 @@ def create_app(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
+    notification_repository = create_notification_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
+    notification_service = NotificationService(
+        smtp_config=get_smtp_config(smtp_config),
+        in_app_store=notification_repository,
+        email_sender=notification_email_sender,
+    )
+    notification_dispatcher = NotificationDispatcher(
+        service=notification_service,
+        recipient_resolver=notification_repository,
+    )
     app.state.db_engine = shared_engine
     app.state.document_repository = repository
-    app.state.document_ingest_service = DocumentIngestService(repository)
+    app.state.notification_repository = notification_repository
+    app.state.notification_service = notification_service
+    app.state.notification_dispatcher = notification_dispatcher
+    app.state.document_ingest_service = DocumentIngestService(
+        repository,
+        project_repository=project_repository,
+        notification_dispatcher=notification_dispatcher,
+    )
     app.state.project_repository = project_repository
     app.state.project_service = ProjectService(project_repository)
     app.state.profile_repository = profile_repository
     app.state.run_repository = run_repository
-    app.state.run_service = RunService(run_repository)
+    app.state.run_service = RunService(
+        run_repository,
+        notification_dispatcher=notification_dispatcher,
+    )
     app.state.dashboard_service = DashboardService(project_repository, run_repository)
-    app.state.rules_service = RulesService(profile_repository)
-    app.state.export_service = ExportService(project_repository)
+    app.state.rules_service = RulesService(
+        profile_repository, notification_event_wiring_complete=True
+    )
+    app.state.export_service = ExportService(
+        project_repository,
+        notification_dispatcher=notification_dispatcher,
+    )
     app.state.auth_required = resolved_auth_required
     app.state.jwt_secret = resolved_jwt_secret
 

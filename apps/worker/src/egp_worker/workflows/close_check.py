@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import check_winner_closure
 from egp_db.repositories.project_repo import (
@@ -11,7 +12,10 @@ from egp_db.repositories.project_repo import (
     create_project_repository,
 )
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
-from egp_shared_types.enums import ClosedReason, ProjectState
+from egp_shared_types.enums import ClosedReason, NotificationType, ProjectState
+
+if TYPE_CHECKING:
+    from egp_notifications.dispatcher import NotificationDispatcher
 
 
 _NEXT_STATE_BY_REASON = {
@@ -34,6 +38,7 @@ def run_close_check_workflow(
     database_url: str | None = None,
     project_repository: SqlProjectRepository | None = None,
     run_repository: SqlRunRepository | None = None,
+    notification_dispatcher: NotificationDispatcher | None = None,
 ) -> CloseCheckWorkflowResult:
     if project_repository is None or run_repository is None:
         if database_url is None:
@@ -77,6 +82,21 @@ def run_close_check_workflow(
                 status="succeeded",
                 result_json={"project_id": project.id, "next_state": project.project_state.value},
             )
+            if notification_dispatcher is not None:
+                notification_type = (
+                    NotificationType.WINNER_ANNOUNCED
+                    if project.project_state is ProjectState.WINNER_ANNOUNCED
+                    else NotificationType.CONTRACT_SIGNED
+                )
+                notification_dispatcher.dispatch(
+                    tenant_id=tenant_id,
+                    notification_type=notification_type,
+                    project_id=project.id,
+                    template_vars={
+                        "project_name": project.project_name,
+                        "organization": project.organization_name,
+                    },
+                )
             updated_projects.append(project)
         except Exception as exc:
             error_count += 1

@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import base64
 import binascii
+from typing import TYPE_CHECKING
 
 from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult
+from egp_shared_types.enums import DocumentType, NotificationType
+
+if TYPE_CHECKING:
+    from egp_db.repositories.project_repo import SqlProjectRepository
+    from egp_notifications.dispatcher import NotificationDispatcher
 
 
 class DocumentIngestService:
-    def __init__(self, repository: SqlDocumentRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlDocumentRepository,
+        *,
+        project_repository: SqlProjectRepository | None = None,
+        notification_dispatcher: NotificationDispatcher | None = None,
+    ) -> None:
         self._repository = repository
+        self._project_repository = project_repository
+        self._notification_dispatcher = notification_dispatcher
 
     def ingest_document_bytes(
         self,
@@ -22,7 +36,7 @@ class DocumentIngestService:
         source_label: str,
         source_status_text: str,
     ) -> StoreDocumentResult:
-        return self._repository.store_document(
+        result = self._repository.store_document(
             tenant_id=tenant_id,
             project_id=project_id,
             file_name=file_name,
@@ -30,6 +44,27 @@ class DocumentIngestService:
             source_label=source_label,
             source_status_text=source_status_text,
         )
+        if (
+            self._notification_dispatcher is not None
+            and self._project_repository is not None
+            and result.created
+            and result.diff_records
+            and result.document.document_type is DocumentType.TOR
+        ):
+            project = self._project_repository.get_project(
+                tenant_id=tenant_id, project_id=project_id
+            )
+            if project is not None:
+                self._notification_dispatcher.dispatch(
+                    tenant_id=tenant_id,
+                    notification_type=NotificationType.TOR_CHANGED,
+                    project_id=project_id,
+                    template_vars={
+                        "project_name": project.project_name,
+                        "organization": project.organization_name or "",
+                    },
+                )
+        return result
 
     def ingest_document(
         self,

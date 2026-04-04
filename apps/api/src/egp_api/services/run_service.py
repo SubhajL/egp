@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
@@ -10,6 +11,10 @@ from egp_db.repositories.run_repo import (
     ProjectCrawlEvidencePage,
     SqlRunRepository,
 )
+from egp_shared_types.enums import CrawlRunStatus, NotificationType
+
+if TYPE_CHECKING:
+    from egp_notifications.dispatcher import NotificationDispatcher
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,8 +26,14 @@ class RunDetailPage:
 
 
 class RunService:
-    def __init__(self, repository: SqlRunRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlRunRepository,
+        *,
+        notification_dispatcher: NotificationDispatcher | None = None,
+    ) -> None:
         self._repository = repository
+        self._notification_dispatcher = notification_dispatcher
 
     def create_run(
         self,
@@ -92,6 +103,15 @@ class RunService:
         detail = self._repository.get_run_detail(tenant_id=run.tenant_id, run_id=run.id)
         if detail is None:
             raise KeyError(run.id)
+        if self._notification_dispatcher is not None and run.status is CrawlRunStatus.FAILED:
+            self._notification_dispatcher.dispatch(
+                tenant_id=run.tenant_id,
+                notification_type=NotificationType.RUN_FAILED,
+                template_vars={
+                    "run_id": run.id,
+                    "error_count": str(run.error_count),
+                },
+            )
         return detail
 
     def list_runs(self, *, tenant_id: str, limit: int = 50, offset: int = 0) -> RunDetailPage:

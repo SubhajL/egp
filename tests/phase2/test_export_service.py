@@ -10,8 +10,16 @@ from openpyxl import load_workbook
 
 from egp_api.main import create_app
 from egp_api.services.export_service import ExportService
-from egp_db.repositories.project_repo import SqlProjectRepository, build_project_upsert_record
-from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
+from egp_db.repositories.project_repo import (
+    SqlProjectRepository,
+    build_project_upsert_record,
+)
+from egp_shared_types.enums import (
+    ClosedReason,
+    NotificationType,
+    ProcurementType,
+    ProjectState,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -159,7 +167,11 @@ def _exported_project_numbers(excel_bytes: bytes) -> list[str]:
 
 def test_export_route_matches_explorer_filter_contract(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'export-route.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     matched = _seed_project(
         client,
@@ -228,14 +240,20 @@ def test_export_route_matches_explorer_filter_contract(tmp_path) -> None:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    expected_numbers = [project["project_number"] for project in list_response.json()["projects"]]
+    expected_numbers = [
+        project["project_number"] for project in list_response.json()["projects"]
+    ]
     assert expected_numbers == [matched.project_number]
     assert _exported_project_numbers(export_response.content) == expected_numbers
 
 
 def test_export_route_rejects_invalid_filters(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'export-route-invalid.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     response = client.get(
         "/v1/exports/excel",
@@ -243,3 +261,37 @@ def test_export_route_rejects_invalid_filters(tmp_path) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_export_route_emits_export_ready_notification(tmp_path) -> None:
+    sent: list[str] = []
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'export-route-notify.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            notification_email_sender=lambda *, to, subject, body: sent.append(to),
+        )
+    )
+    client.app.state.notification_repository.create_user(
+        tenant_id=TENANT_ID,
+        email="owner@example.com",
+        role="owner",
+    )
+    _seed_project(
+        client,
+        project_number="EGP-2026-4101",
+        project_name="โครงการส่งออก",
+        organization_name="กรมส่งออก",
+        procurement_type=ProcurementType.SERVICES,
+        project_state=ProjectState.OPEN_INVITATION,
+        budget_amount="1200000",
+    )
+
+    response = client.get("/v1/exports/excel", params={"tenant_id": TENANT_ID})
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert response.status_code == 200
+    assert sent == ["owner@example.com"]
+    assert notifications[0].notification_type is NotificationType.EXPORT_READY
