@@ -4,7 +4,7 @@
 
 - Repo type: lightweight polyglot monorepo without a workspace orchestrator.
 - Primary stack: Python 3.12 services/packages, FastAPI, PostgreSQL SQL migrations targeting Supabase-managed Postgres, Next.js 15 + React 19 + TypeScript.
-- Current state: one large legacy crawler (`egp_crawler.py`) plus thin app/package scaffolds for the target architecture.
+- Current state: the repo now has working API, worker, database, shared-package, and web slices for Phases 1 and 2, while the legacy crawler (`egp_crawler.py`) remains as an extraction reference and operational fallback.
 - Closest-file wins: check the nearest `AGENTS.md` before editing. Root guidance is universal; app/package files are more specific.
 
 ## Root Setup Commands
@@ -55,7 +55,7 @@ docker compose up -d postgres redis
 
 ```bash
 rg -n "^def |^async def " apps packages .
-rg -n "@app\\.(get|post|patch|delete)" apps/api/src
+rg -n "APIRouter\\(|@router\\.(get|post|patch|delete)|include_router" apps/api/src
 rg -n "CREATE TABLE|CREATE INDEX|ALTER TABLE" packages/db/src/migrations
 rg -n "^class .*\\(StrEnum\\):" packages/shared-types/src
 rg -n "tor_downloaded|update_excel|OneDrive" egp_crawler.py test_egp_crawler.py
