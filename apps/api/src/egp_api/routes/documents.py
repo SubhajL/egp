@@ -49,6 +49,7 @@ class DocumentDiffResponse(BaseModel):
     old_document_id: str
     new_document_id: str
     diff_type: str
+    summary_json: dict[str, object] | None
     created_at: str
 
 
@@ -60,6 +61,14 @@ class StoreDocumentResponse(BaseModel):
 
 class ListDocumentsResponse(BaseModel):
     documents: list[DocumentResponse]
+
+
+class ListDocumentDiffsResponse(BaseModel):
+    diffs: list[DocumentDiffResponse]
+
+
+class DocumentDiffDetailResponse(BaseModel):
+    diff: DocumentDiffResponse
 
 
 class DocumentDownloadResponse(BaseModel):
@@ -95,6 +104,7 @@ def _serialize_diff(diff_record: DocumentDiffRecord) -> DocumentDiffResponse:
         old_document_id=diff_record.old_document_id,
         new_document_id=diff_record.new_document_id,
         diff_type=diff_record.diff_type,
+        summary_json=diff_record.summary_json,
         created_at=diff_record.created_at,
     )
 
@@ -137,6 +147,43 @@ def list_documents(
     return ListDocumentsResponse(
         documents=[_serialize_document(document) for document in documents]
     )
+
+
+@router.get("/projects/{project_id}/diffs", response_model=ListDocumentDiffsResponse)
+def list_document_diffs(
+    project_id: str, request: Request, tenant_id: str | None = None
+) -> ListDocumentDiffsResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    diffs = service.list_document_diffs(
+        tenant_id=resolved_tenant_id,
+        project_id=project_id,
+    )
+    return ListDocumentDiffsResponse(
+        diffs=[_serialize_diff(diff_record) for diff_record in diffs]
+    )
+
+
+@router.get(
+    "/{document_id}/diff/{other_document_id}",
+    response_model=DocumentDiffDetailResponse,
+)
+def get_document_diff(
+    document_id: str,
+    other_document_id: str,
+    request: Request,
+    tenant_id: str | None = None,
+) -> DocumentDiffDetailResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    diff = service.get_document_diff(
+        tenant_id=resolved_tenant_id,
+        document_id=document_id,
+        other_document_id=other_document_id,
+    )
+    if diff is None:
+        raise HTTPException(status_code=404, detail="document diff not found")
+    return DocumentDiffDetailResponse(diff=_serialize_diff(diff))
 
 
 @router.get("/{document_id}/download", response_model=DocumentDownloadResponse)

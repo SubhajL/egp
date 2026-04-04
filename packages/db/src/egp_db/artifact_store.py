@@ -15,6 +15,8 @@ class ArtifactStore(Protocol):
         content_type: str | None = None,
     ) -> str: ...
 
+    def get_bytes(self, key: str) -> bytes: ...
+
     def delete(self, key: str) -> None: ...
 
     def download_url(self, key: str, *, expires_in: int = 300) -> str: ...
@@ -36,6 +38,9 @@ class LocalArtifactStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return key
+
+    def get_bytes(self, key: str) -> bytes:
+        return (self._base_dir / key).read_bytes()
 
     def delete(self, key: str) -> None:
         path = self._base_dir / key
@@ -92,6 +97,14 @@ class S3ArtifactStore:
             payload["ContentType"] = content_type
         self._s3_client.put_object(**payload)
         return qualified_key
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self._s3_client.get_object(
+            Bucket=self._bucket,
+            Key=self._qualified_key(key),
+        )
+        body = response["Body"]
+        return body.read() if hasattr(body, "read") else bytes(body)
 
     def delete(self, key: str) -> None:
         self._s3_client.delete_object(Bucket=self._bucket, Key=self._qualified_key(key))
@@ -177,6 +190,16 @@ class SupabaseArtifactStore:
             file_options["content-type"] = content_type
         self._bucket_client.upload(qualified_key, data, file_options)
         return qualified_key
+
+    def get_bytes(self, key: str) -> bytes:
+        result = self._bucket_client.download(key)
+        if isinstance(result, bytes):
+            return result
+        if hasattr(result, "read"):
+            return result.read()
+        if isinstance(result, str):
+            return result.encode("utf-8")
+        raise TypeError("Unsupported Supabase download payload")
 
     def delete(self, key: str) -> None:
         self._bucket_client.remove([self._qualified_key(key)])

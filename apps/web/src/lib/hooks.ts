@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchBillingPlans,
   fetchBillingRecords,
   fetchDashboardSummary,
   fetchProjectCrawlEvidence,
@@ -71,5 +72,12 @@ export function useBillingRecords(params: FetchBillingParams = {}) {
   return useQuery({
     queryKey: ["billing-records", params],
     queryFn: () => fetchBillingRecords(params),
+  });
+}
+
+export function useBillingPlans() {
+  return useQuery({
+    queryKey: ["billing-plans"],
+    queryFn: () => fetchBillingPlans(),
   });
 }

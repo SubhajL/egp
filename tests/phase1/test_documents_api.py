@@ -242,6 +242,37 @@ def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(
     assert first.status_code == 201
     assert second.status_code == 201
     assert len(listed.json()["documents"]) == 2
+    assert second.json()["diff_records"] == [
+        {
+            "id": second.json()["diff_records"][0]["id"],
+            "project_id": project_id,
+            "old_document_id": first.json()["document"]["id"],
+            "new_document_id": second.json()["document"]["id"],
+            "diff_type": "identical",
+            "summary_json": {
+                "summary_version": 1,
+                "comparison_scope": "phase_transition",
+                "text_extraction_status": "inline_text",
+                "text_diff_available": True,
+                "similarity_ratio": 1.0,
+                "old_document_phase": "public_hearing",
+                "new_document_phase": "final",
+                "old_sha256": first.json()["document"]["sha256"],
+                "new_sha256": second.json()["document"]["sha256"],
+                "old_size_bytes": len(b"same-tor-bytes"),
+                "new_size_bytes": len(b"same-tor-bytes"),
+                "size_delta_bytes": 0,
+                "old_file_name": "tor-hearing.pdf",
+                "new_file_name": "tor-final.pdf",
+                "added_line_count": 0,
+                "removed_line_count": 0,
+                "changed_line_count": 0,
+                "old_text_preview": "same-tor-bytes",
+                "new_text_preview": "same-tor-bytes",
+            },
+            "created_at": second.json()["diff_records"][0]["created_at"],
+        }
+    ]
 
 
 def test_ingest_document_endpoint_uses_project_state_for_hearing_phase(
@@ -368,6 +399,92 @@ def test_ingest_document_endpoint_duplicate_hash_does_not_emit_tor_changed_notif
     assert second.status_code == 200
     assert sent == []
     assert client.app.state.notification_repository.list_for_tenant(TENANT_ID) == []
+
+
+def test_ingest_document_endpoint_phase_transition_same_bytes_does_not_emit_tor_changed_notification(
+    tmp_path,
+) -> None:
+    sent: list[str] = []
+    client = create_test_client(
+        tmp_path, notification_email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    project_id = seed_project(client)
+    seed_notification_user(client)
+
+    first = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-hearing.pdf",
+            "content_base64": base64.b64encode(b"same-phase-transition").decode("ascii"),
+            "source_label": "ร่างขอบเขตของงาน",
+            "source_status_text": "เปิดรับฟังคำวิจารณ์",
+        },
+    )
+    second = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-final.pdf",
+            "content_base64": base64.b64encode(b"same-phase-transition").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["diff_records"][0]["diff_type"] == "identical"
+    assert sent == []
+    assert client.app.state.notification_repository.list_for_tenant(TENANT_ID) == []
+
+
+def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+
+    hearing = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-hearing.pdf",
+            "content_base64": base64.b64encode(b"draft line\nshared line\n").decode("ascii"),
+            "source_label": "ร่างขอบเขตของงาน",
+            "source_status_text": "เปิดรับฟังคำวิจารณ์",
+        },
+    )
+    final = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-final.pdf",
+            "content_base64": base64.b64encode(b"final line\nshared line\n").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+
+    diff_list = client.get(
+        f"/v1/documents/projects/{project_id}/diffs", params={"tenant_id": TENANT_ID}
+    )
+    diff_detail = client.get(
+        f"/v1/documents/{final.json()['document']['id']}/diff/{hearing.json()['document']['id']}",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert hearing.status_code == 201
+    assert final.status_code == 201
+    assert diff_list.status_code == 200
+    assert len(diff_list.json()["diffs"]) == 1
+    assert diff_list.json()["diffs"][0]["diff_type"] == "changed"
+    assert diff_list.json()["diffs"][0]["summary_json"]["comparison_scope"] == "phase_transition"
+    assert diff_detail.status_code == 200
+    assert diff_detail.json()["diff"]["old_document_id"] == hearing.json()["document"]["id"]
+    assert diff_detail.json()["diff"]["new_document_id"] == final.json()["document"]["id"]
 
 
 def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None:

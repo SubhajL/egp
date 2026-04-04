@@ -67,7 +67,7 @@ class DocumentIngestService:
             self._notification_dispatcher is not None
             and self._project_repository is not None
             and result.created
-            and result.diff_records
+            and any(diff.diff_type == "changed" for diff in result.diff_records)
             and result.document.document_type is DocumentType.TOR
         ):
             project = self._project_repository.get_project(
@@ -113,6 +113,25 @@ class DocumentIngestService:
 
     def list_documents(self, *, tenant_id: str, project_id: str):
         return self._repository.list_documents(tenant_id, project_id)
+
+    def list_document_diffs(self, *, tenant_id: str, project_id: str):
+        return self._repository.list_document_diffs(
+            tenant_id=tenant_id,
+            project_id=project_id,
+        )
+
+    def get_document_diff(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        other_document_id: str,
+    ):
+        return self._repository.get_document_diff(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            other_document_id=other_document_id,
+        )
 
     def get_download_url(
         self,

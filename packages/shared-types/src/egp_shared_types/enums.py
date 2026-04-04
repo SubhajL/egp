@@ -104,6 +104,15 @@ class BillingPaymentStatus(StrEnum):
 
 class BillingEventType(StrEnum):
     BILLING_RECORD_CREATED = "billing_record_created"
+    BILLING_RECORD_STATUS_CHANGED = "billing_record_status_changed"
     PAYMENT_RECORDED = "payment_recorded"
     PAYMENT_RECONCILED = "payment_reconciled"
     PAYMENT_REJECTED = "payment_rejected"
+    SUBSCRIPTION_ACTIVATED = "subscription_activated"
+
+
+class BillingSubscriptionStatus(StrEnum):
+    PENDING_ACTIVATION = "pending_activation"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"

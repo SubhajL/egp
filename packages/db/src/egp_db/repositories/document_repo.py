@@ -10,6 +10,7 @@ import re
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Index,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     and_,
     desc,
+    or_,
 )
 from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
@@ -38,6 +40,7 @@ from egp_db.db_utils import (
     normalize_uuid_string,
 )
 from egp_document_classifier.classifier import classify_document
+from egp_document_classifier.diff_engine import ComparisonScope, build_document_diff
 from egp_shared_types.enums import DocumentPhase, DocumentType
 
 
@@ -65,6 +68,7 @@ class DocumentDiffRecord:
     old_document_id: str
     new_document_id: str
     diff_type: str
+    summary_json: dict[str, object] | None
     created_at: str
 
 
@@ -113,6 +117,7 @@ DOCUMENT_DIFFS_TABLE = Table(
     Column("old_document_id", UUID_SQL_TYPE, nullable=False),
     Column("new_document_id", UUID_SQL_TYPE, nullable=False),
     Column("diff_type", String, nullable=False),
+    Column("summary_json", JSON, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
@@ -181,6 +186,7 @@ def _diff_from_mapping(row: RowMapping) -> DocumentDiffRecord:
         old_document_id=str(row["old_document_id"]),
         new_document_id=str(row["new_document_id"]),
         diff_type=str(row["diff_type"]),
+        summary_json=row["summary_json"],
         created_at=created_at.isoformat()
         if isinstance(created_at, datetime)
         else str(created_at),
@@ -320,6 +326,65 @@ class SqlDocumentRepository:
         )
         return _document_from_mapping(row) if row is not None else None
 
+    def _find_phase_transition_target(
+        self,
+        *,
+        connection,
+        tenant_id: str,
+        project_id: str,
+        document_type: DocumentType,
+        document_phase: DocumentPhase,
+    ) -> DocumentRecord | None:
+        if document_type is not DocumentType.TOR:
+            return None
+        if document_phase is DocumentPhase.PUBLIC_HEARING:
+            other_phase = DocumentPhase.FINAL
+        elif document_phase is DocumentPhase.FINAL:
+            other_phase = DocumentPhase.PUBLIC_HEARING
+        else:
+            return None
+        return self._find_current_same_class(
+            connection=connection,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            document_type=document_type,
+            document_phase=other_phase,
+        )
+
+    def _build_diff_record(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        comparison_target: DocumentRecord,
+        stored_document: DocumentRecord,
+        new_file_bytes: bytes,
+        comparison_scope: ComparisonScope,
+    ) -> DocumentDiffRecord:
+        old_file_bytes = self._artifact_store.get_bytes(comparison_target.storage_key)
+        diff_result = build_document_diff(
+            old_document_type=comparison_target.document_type,
+            old_document_phase=comparison_target.document_phase,
+            old_file_name=comparison_target.file_name,
+            old_sha256=comparison_target.sha256,
+            old_bytes=old_file_bytes,
+            new_document_type=stored_document.document_type,
+            new_document_phase=stored_document.document_phase,
+            new_file_name=stored_document.file_name,
+            new_sha256=stored_document.sha256,
+            new_bytes=new_file_bytes,
+            comparison_scope=comparison_scope,
+        )
+        return DocumentDiffRecord(
+            id=str(uuid4()),
+            project_id=project_id,
+            old_document_id=comparison_target.id,
+            new_document_id=stored_document.id,
+            diff_type=diff_result.diff_type,
+            summary_json=diff_result.summary_json,
+            created_at=_now_iso(),
+        )
+
     def store_document(
         self,
         *,
@@ -384,6 +449,20 @@ class SqlDocumentRepository:
                     document_type=draft_document.document_type,
                     document_phase=draft_document.document_phase,
                 )
+                comparison_target = current_same_class
+                comparison_scope: ComparisonScope | None = (
+                    "same_phase_version" if current_same_class is not None else None
+                )
+                if comparison_target is None:
+                    comparison_target = self._find_phase_transition_target(
+                        connection=connection,
+                        tenant_id=tenant_id,
+                        project_id=project_id,
+                        document_type=draft_document.document_type,
+                        document_phase=draft_document.document_phase,
+                    )
+                    if comparison_target is not None:
+                        comparison_scope = "phase_transition"
 
                 stored_key = self._artifact_store.put_bytes(
                     key=blob_key,
@@ -441,14 +520,14 @@ class SqlDocumentRepository:
                 )
 
                 new_diff_records: list[DocumentDiffRecord] = []
-                if current_same_class is not None:
-                    diff_record = DocumentDiffRecord(
-                        id=str(uuid4()),
+                if comparison_target is not None and comparison_scope is not None:
+                    diff_record = self._build_diff_record(
+                        tenant_id=tenant_id,
                         project_id=project_id,
-                        old_document_id=current_same_class.id,
-                        new_document_id=stored_document.id,
-                        diff_type="changed",
-                        created_at=_now_iso(),
+                        comparison_target=comparison_target,
+                        stored_document=stored_document,
+                        new_file_bytes=file_bytes,
+                        comparison_scope=comparison_scope,
                     )
                     connection.execute(
                         insert(DOCUMENT_DIFFS_TABLE).values(
@@ -458,6 +537,7 @@ class SqlDocumentRepository:
                             old_document_id=diff_record.old_document_id,
                             new_document_id=diff_record.new_document_id,
                             diff_type=diff_record.diff_type,
+                            summary_json=diff_record.summary_json,
                             created_at=_to_db_timestamp(diff_record.created_at),
                         )
                     )
@@ -514,6 +594,69 @@ class SqlDocumentRepository:
                 .first()
             )
         return _document_from_mapping(row) if row is not None else None
+
+    def list_document_diffs(
+        self, *, tenant_id: str, project_id: str
+    ) -> list[DocumentDiffRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_project_id = normalize_uuid_string(project_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(DOCUMENT_DIFFS_TABLE)
+                    .where(
+                        and_(
+                            DOCUMENT_DIFFS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DOCUMENT_DIFFS_TABLE.c.project_id == normalized_project_id,
+                        )
+                    )
+                    .order_by(desc(DOCUMENT_DIFFS_TABLE.c.created_at))
+                )
+                .mappings()
+                .all()
+            )
+        return [_diff_from_mapping(row) for row in rows]
+
+    def get_document_diff(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        other_document_id: str,
+    ) -> DocumentDiffRecord | None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_document_id = normalize_uuid_string(document_id)
+        normalized_other_document_id = normalize_uuid_string(other_document_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(DOCUMENT_DIFFS_TABLE)
+                    .where(
+                        and_(
+                            DOCUMENT_DIFFS_TABLE.c.tenant_id == normalized_tenant_id,
+                            or_(
+                                and_(
+                                    DOCUMENT_DIFFS_TABLE.c.old_document_id
+                                    == normalized_other_document_id,
+                                    DOCUMENT_DIFFS_TABLE.c.new_document_id
+                                    == normalized_document_id,
+                                ),
+                                and_(
+                                    DOCUMENT_DIFFS_TABLE.c.old_document_id
+                                    == normalized_document_id,
+                                    DOCUMENT_DIFFS_TABLE.c.new_document_id
+                                    == normalized_other_document_id,
+                                ),
+                            ),
+                        )
+                    )
+                    .order_by(desc(DOCUMENT_DIFFS_TABLE.c.created_at))
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+        return _diff_from_mapping(row) if row is not None else None
 
     def get_download_url(
         self, *, tenant_id: str, document_id: str, expires_in: int = 300

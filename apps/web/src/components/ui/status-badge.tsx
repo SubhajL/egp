@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import {
   BADGE_STYLE_MAP,
   BILLING_PAYMENT_STATUS_CONFIG,
+  BILLING_SUBSCRIPTION_STATUS_CONFIG,
   BILLING_STATUS_CONFIG,
   RUN_STATUS_CONFIG,
   STATE_BADGE_CONFIG,
@@ -11,7 +12,7 @@ import type { BadgeConfig } from "@/lib/constants";
 
 type StatusBadgeProps = {
   state: string;
-  variant?: "project" | "run" | "task" | "billing" | "payment";
+  variant?: "project" | "run" | "task" | "billing" | "payment" | "subscription";
   className?: string;
 };
 
@@ -21,6 +22,7 @@ const CONFIG_MAP: Record<string, Record<string, BadgeConfig>> = {
   task: TASK_STATUS_CONFIG,
   billing: BILLING_STATUS_CONFIG,
   payment: BILLING_PAYMENT_STATUS_CONFIG,
+  subscription: BILLING_SUBSCRIPTION_STATUS_CONFIG,
 };
 
 export function StatusBadge({ state, variant = "project", className }: StatusBadgeProps) {

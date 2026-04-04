@@ -127,6 +127,29 @@ def test_store_document_keeps_same_hash_for_different_phase(tmp_path) -> None:
     assert second.created is True
     assert second.document.id != first.document.id
     assert len(listed) == 2
+    assert len(second.diff_records) == 1
+    assert second.diff_records[0].diff_type == "identical"
+    assert second.diff_records[0].summary_json == {
+        "summary_version": 1,
+        "comparison_scope": "phase_transition",
+        "text_extraction_status": "inline_text",
+        "text_diff_available": True,
+        "similarity_ratio": 1.0,
+        "old_document_phase": "public_hearing",
+        "new_document_phase": "final",
+        "old_sha256": first.document.sha256,
+        "new_sha256": second.document.sha256,
+        "old_size_bytes": len(b"same-tor-bytes"),
+        "new_size_bytes": len(b"same-tor-bytes"),
+        "size_delta_bytes": 0,
+        "old_file_name": "tor-hearing.pdf",
+        "new_file_name": "tor-final.pdf",
+        "added_line_count": 0,
+        "removed_line_count": 0,
+        "changed_line_count": 0,
+        "old_text_preview": "same-tor-bytes",
+        "new_text_preview": "same-tor-bytes",
+    }
 
 
 def test_list_documents_returns_newest_first(tmp_path) -> None:
@@ -185,6 +208,67 @@ def test_store_document_persists_diff_rows_in_sql_metadata(tmp_path) -> None:
     assert first.created is True
     assert second.created is True
     assert row == (first.document.id, second.document.id, "changed")
+
+
+def test_store_document_persists_structured_diff_summary_for_phase_transition(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-hearing.pdf",
+        file_bytes=b"draft line\nshared line\n",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-final.pdf",
+        file_bytes=b"final line\nshared line\n",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    with sqlite3.connect(tmp_path / "document_metadata.sqlite3") as connection:
+        row = connection.execute(
+            """
+            SELECT diff_type, summary_json
+            FROM document_diffs
+            WHERE new_document_id = ?
+            """,
+            (second.document.id,),
+        ).fetchone()
+
+    assert second.created is True
+    assert row[0] == "changed"
+    assert row[1] is not None
+    assert '"comparison_scope": "phase_transition"' in row[1]
+    assert '"changed_line_count": 2' in row[1]
+
+
+def test_store_document_handles_missing_text_extraction_in_diff_summary(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"\xff\x00\xfe\x01",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"\xff\x00\xfe\x02",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    assert second.created is True
+    assert second.diff_records[0].summary_json is not None
+    assert second.diff_records[0].summary_json["text_extraction_status"] == "unavailable"
+    assert second.diff_records[0].summary_json["text_diff_available"] is False
 
 
 def test_store_document_hashes_and_classifies_once(tmp_path) -> None:

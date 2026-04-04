@@ -13,6 +13,7 @@ from egp_db.repositories.billing_repo import (
     BillingPaymentRecord,
     BillingRecordDetail,
     BillingRecordRecord,
+    BillingSubscriptionRecord,
     BillingSummary,
 )
 from egp_shared_types.enums import BillingPaymentMethod, BillingPaymentStatus, BillingRecordStatus
@@ -69,10 +70,26 @@ class BillingEventResponse(BaseModel):
     created_at: str
 
 
+class BillingSubscriptionResponse(BaseModel):
+    id: str
+    tenant_id: str
+    billing_record_id: str
+    plan_code: str
+    subscription_status: str
+    billing_period_start: str
+    billing_period_end: str
+    keyword_limit: int | None
+    activated_at: str
+    activated_by_payment_id: str | None
+    created_at: str
+    updated_at: str
+
+
 class BillingRecordDetailResponse(BaseModel):
     record: BillingRecordResponse
     payments: list[BillingPaymentResponse]
     events: list[BillingEventResponse]
+    subscription: BillingSubscriptionResponse | None
 
 
 class BillingSummaryResponse(BaseModel):
@@ -90,17 +107,33 @@ class BillingListResponse(BaseModel):
     summary: BillingSummaryResponse
 
 
+class BillingPlanResponse(BaseModel):
+    code: str
+    label: str
+    description: str
+    currency: str
+    amount_due: str
+    billing_interval: str
+    keyword_limit: int
+    duration_days: int | None
+    duration_months: int | None
+
+
+class BillingPlansResponse(BaseModel):
+    plans: list[BillingPlanResponse]
+
+
 class CreateBillingRecordRequest(BaseModel):
     tenant_id: str | None = None
     record_number: str = Field(min_length=1)
     plan_code: str = Field(min_length=1)
     status: BillingRecordStatus = BillingRecordStatus.AWAITING_PAYMENT
     billing_period_start: str = Field(min_length=1)
-    billing_period_end: str = Field(min_length=1)
+    billing_period_end: str | None = None
     due_at: str | None = None
     issued_at: str | None = None
-    amount_due: str = Field(min_length=1)
-    currency: str = Field(default="THB", min_length=1)
+    amount_due: str | None = None
+    currency: str | None = None
     notes: str | None = None
 
 
@@ -117,6 +150,12 @@ class CreateBillingPaymentRequest(BaseModel):
 class ReconcileBillingPaymentRequest(BaseModel):
     tenant_id: str | None = None
     status: BillingPaymentStatus
+    note: str | None = None
+
+
+class TransitionBillingRecordRequest(BaseModel):
+    tenant_id: str | None = None
+    status: BillingRecordStatus
     note: str | None = None
 
 
@@ -185,11 +224,35 @@ def _serialize_event(event: BillingEventRecord) -> BillingEventResponse:
     )
 
 
+def _serialize_subscription(
+    subscription: BillingSubscriptionRecord,
+) -> BillingSubscriptionResponse:
+    return BillingSubscriptionResponse(
+        id=subscription.id,
+        tenant_id=subscription.tenant_id,
+        billing_record_id=subscription.billing_record_id,
+        plan_code=subscription.plan_code,
+        subscription_status=subscription.subscription_status.value,
+        billing_period_start=subscription.billing_period_start,
+        billing_period_end=subscription.billing_period_end,
+        keyword_limit=subscription.keyword_limit,
+        activated_at=subscription.activated_at,
+        activated_by_payment_id=subscription.activated_by_payment_id,
+        created_at=subscription.created_at,
+        updated_at=subscription.updated_at,
+    )
+
+
 def _serialize_detail(detail: BillingRecordDetail) -> BillingRecordDetailResponse:
     return BillingRecordDetailResponse(
         record=_serialize_record(detail.record),
         payments=[_serialize_payment(payment) for payment in detail.payments],
         events=[_serialize_event(event) for event in detail.events],
+        subscription=(
+            _serialize_subscription(detail.subscription)
+            if detail.subscription is not None
+            else None
+        ),
     )
 
 
@@ -209,6 +272,27 @@ def _serialize_page(page: BillingPage) -> BillingListResponse:
         limit=page.limit,
         offset=page.offset,
         summary=_serialize_summary(page.summary),
+    )
+
+
+@router.get("/plans", response_model=BillingPlansResponse)
+def list_billing_plans(request: Request) -> BillingPlansResponse:
+    service = _service_from_request(request)
+    return BillingPlansResponse(
+        plans=[
+            BillingPlanResponse(
+                code=plan.code,
+                label=plan.label,
+                description=plan.description,
+                currency=plan.currency,
+                amount_due=plan.amount_due,
+                billing_interval=plan.billing_interval,
+                keyword_limit=plan.keyword_limit,
+                duration_days=plan.duration_days,
+                duration_months=plan.duration_months,
+            )
+            for plan in service.list_plans()
+        ]
     )
 
 
@@ -252,6 +336,31 @@ def create_billing_record(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED
+    return _serialize_detail(detail)
+
+
+@router.post("/records/{record_id}/transition", response_model=BillingRecordDetailResponse)
+def transition_billing_record(
+    record_id: str,
+    payload: TransitionBillingRecordRequest,
+    request: Request,
+) -> BillingRecordDetailResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        detail = service.transition_record(
+            tenant_id=resolved_tenant_id,
+            billing_record_id=record_id,
+            status=payload.status,
+            note=payload.note,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="billing record not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="billing record not found for tenant") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize_detail(detail)
 
 

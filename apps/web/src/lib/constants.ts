@@ -55,6 +55,13 @@ export const BILLING_PAYMENT_STATUS_CONFIG: Record<string, BadgeConfig> = {
   rejected: { label: "ไม่ผ่าน", color: "red" },
 };
 
+export const BILLING_SUBSCRIPTION_STATUS_CONFIG: Record<string, BadgeConfig> = {
+  pending_activation: { label: "รอเริ่มสิทธิ์", color: "amber" },
+  active: { label: "สิทธิ์ใช้งานเปิดอยู่", color: "green" },
+  expired: { label: "สิทธิ์หมดอายุ", color: "gray" },
+  cancelled: { label: "สิทธิ์ถูกยกเลิก", color: "red" },
+};
+
 export const PROCUREMENT_TYPE_LABELS: Record<string, string> = {
   goods: "สินค้า",
   services: "บริการ",

@@ -11,9 +11,11 @@ import {
   createBillingRecord,
   recordBillingPayment,
   reconcileBillingPayment,
+  transitionBillingRecord,
+  type BillingPlan,
   type BillingRecordDetail,
 } from "@/lib/api";
-import { useBillingRecords } from "@/lib/hooks";
+import { useBillingPlans, useBillingRecords } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const EMPTY_RECORDS: BillingRecordDetail[] = [];
@@ -55,23 +57,65 @@ function SummaryCard({
 function EventLabel({ eventType }: { eventType: string }) {
   const labels: Record<string, string> = {
     billing_record_created: "สร้างรายการเรียกเก็บ",
+    billing_record_status_changed: "เปลี่ยนสถานะใบแจ้งหนี้",
     payment_recorded: "บันทึกยอดโอน",
     payment_reconciled: "กระทบยอดสำเร็จ",
     payment_rejected: "ปฏิเสธรายการโอน",
+    subscription_activated: "เปิดใช้งานแพ็กเกจ",
   };
   return <span>{labels[eventType] ?? eventType}</span>;
+}
+
+function deriveBillingPeriodEnd(start: string, plan: BillingPlan | null): string {
+  if (!start || !plan) return "";
+
+  const [yearText, monthText, dayText] = start.split("-");
+  const startYear = Number(yearText);
+  const startMonth = Number(monthText);
+  const startDay = Number(dayText);
+  if (
+    !Number.isInteger(startYear) ||
+    !Number.isInteger(startMonth) ||
+    !Number.isInteger(startDay)
+  ) {
+    return "";
+  }
+
+  const startDate = new Date(Date.UTC(startYear, startMonth - 1, startDay));
+  if (Number.isNaN(startDate.getTime())) return "";
+
+  if (plan.duration_days) {
+    const endDate = new Date(startDate);
+    endDate.setUTCDate(endDate.getUTCDate() + plan.duration_days - 1);
+    return endDate.toISOString().slice(0, 10);
+  }
+
+  if (plan.duration_months) {
+    const monthIndex = startMonth - 1 + plan.duration_months;
+    const nextYear = startYear + Math.floor(monthIndex / 12);
+    const nextMonthIndex = monthIndex % 12;
+    const nextMonthLastDay = new Date(Date.UTC(nextYear, nextMonthIndex + 1, 0)).getUTCDate();
+    const candidateDay = Math.min(startDay, nextMonthLastDay);
+    const nextPeriodStart = new Date(Date.UTC(nextYear, nextMonthIndex, candidateDay));
+    const endDate = new Date(nextPeriodStart);
+    endDate.setUTCDate(endDate.getUTCDate() - 1);
+    return endDate.toISOString().slice(0, 10);
+  }
+
+  return "";
 }
 
 export default function BillingPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useBillingRecords();
+  const { data: plansData } = useBillingPlans();
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordNumber, setRecordNumber] = useState("");
-  const [planCode, setPlanCode] = useState("pro");
+  const [planCode, setPlanCode] = useState("monthly_membership");
   const [periodStart, setPeriodStart] = useState("2026-04-01");
   const [periodEnd, setPeriodEnd] = useState("2026-04-30");
   const [dueAt, setDueAt] = useState("2026-04-15T16:00");
-  const [amountDue, setAmountDue] = useState("15000.00");
+  const [amountDue, setAmountDue] = useState("1500.00");
   const [recordNotes, setRecordNotes] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentReference, setPaymentReference] = useState("");
@@ -82,12 +126,24 @@ export default function BillingPage() {
   const [actionBusy, setActionBusy] = useState(false);
 
   const records = data?.records ?? EMPTY_RECORDS;
+  const billingPlans = plansData?.plans ?? [];
+  const selectedPlan = billingPlans.find((plan) => plan.code === planCode) ?? null;
+  const planLabels = new Map(billingPlans.map((plan) => [plan.code, plan.label]));
   const summary = data?.summary ?? {
     open_records: 0,
     awaiting_reconciliation: 0,
     outstanding_amount: "0.00",
     collected_amount: "0.00",
   };
+
+  useEffect(() => {
+    if (!selectedPlan) return;
+    setAmountDue(selectedPlan.amount_due);
+    const derivedEnd = deriveBillingPeriodEnd(periodStart, selectedPlan);
+    if (derivedEnd) {
+      setPeriodEnd(derivedEnd);
+    }
+  }, [selectedPlan, periodStart]);
 
   useEffect(() => {
     if (records.length === 0) {
@@ -115,11 +171,11 @@ export default function BillingPage() {
       const created = await createBillingRecord({
         record_number: recordNumber.trim(),
         plan_code: planCode.trim(),
-        status: "awaiting_payment",
+        status: "draft",
         billing_period_start: periodStart,
-        billing_period_end: periodEnd,
+        billing_period_end: periodEnd || undefined,
         due_at: toIsoOrUndefined(dueAt),
-        amount_due: amountDue.trim(),
+        amount_due: amountDue.trim() || undefined,
         notes: recordNotes.trim() || undefined,
       });
       setRecordNumber("");
@@ -177,11 +233,34 @@ export default function BillingPage() {
     }
   }
 
+  async function handleTransition(status: string, note: string) {
+    if (!selectedRecord) return;
+    setPaymentError(null);
+    setActionBusy(true);
+    try {
+      const detail = await transitionBillingRecord(selectedRecord.record.id, { status, note });
+      await refreshBilling();
+      setSelectedRecordId(detail.record.id);
+    } catch (mutationError) {
+      setPaymentError(
+        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเปลี่ยนสถานะบิลได้",
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  const canRecordPayment = selectedRecord
+    ? ["issued", "awaiting_payment", "overdue", "payment_detected"].includes(
+        selectedRecord.record.status,
+      )
+    : false;
+
   return (
     <>
       <PageHeader
         title="บิลและชำระเงิน"
-        subtitle="จัดการบิลภายใน บันทึกยอดโอน และกระทบยอดด้วยข้อมูลจริงจาก API"
+        subtitle="สร้างใบแจ้งหนี้ตามแพ็กเกจจริง ออกบิล ติดตามยอดชำระ และดูสถานะการเปิดสิทธิ์ใช้งาน"
       />
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
@@ -220,10 +299,10 @@ export default function BillingPage() {
             <div>
               <h2 className="text-lg font-bold text-[var(--text-primary)]">สร้างรายการเรียกเก็บ</h2>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
-                บันทึกบิลภายในสำหรับการชำระด้วยการโอนธนาคาร
+                เริ่มจากร่างใบแจ้งหนี้ แล้วค่อยออกบิลและรอชำระตาม lifecycle จริง
               </p>
             </div>
-            <StatusBadge state="awaiting_payment" variant="billing" />
+            <StatusBadge state="draft" variant="billing" />
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-4">
@@ -240,12 +319,23 @@ export default function BillingPage() {
 
             <label className="text-sm text-[var(--text-secondary)]">
               แผนราคา
-              <input
+              <select
                 value={planCode}
                 onChange={(event) => setPlanCode(event.target.value)}
                 className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
                 required
-              />
+              >
+                {billingPlans.map((plan) => (
+                  <option key={plan.code} value={plan.code}>
+                    {plan.label}
+                  </option>
+                ))}
+              </select>
+              {selectedPlan ? (
+                <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                  {selectedPlan.description}
+                </span>
+              ) : null}
             </label>
 
             <div className="grid grid-cols-2 gap-4">
@@ -267,6 +357,7 @@ export default function BillingPage() {
                   onChange={(event) => setPeriodEnd(event.target.value)}
                   className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
                   required
+                  readOnly={!!selectedPlan}
                 />
               </label>
             </div>
@@ -288,6 +379,7 @@ export default function BillingPage() {
                   onChange={(event) => setAmountDue(event.target.value)}
                   className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
                   required
+                  readOnly={!!selectedPlan}
                 />
               </label>
             </div>
@@ -315,7 +407,7 @@ export default function BillingPage() {
             disabled={actionBusy}
             className="mt-5 w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {actionBusy ? "กำลังบันทึก..." : "สร้างรายการเรียกเก็บ"}
+            {actionBusy ? "กำลังบันทึก..." : "สร้างร่างใบแจ้งหนี้"}
           </button>
         </form>
 
@@ -366,8 +458,8 @@ export default function BillingPage() {
                             <StatusBadge state={detail.record.status} variant="billing" />
                           </div>
                           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                            แผน {detail.record.plan_code} • รอบ {detail.record.billing_period_start} ถึง{" "}
-                            {detail.record.billing_period_end}
+                            แผน {planLabels.get(detail.record.plan_code) ?? detail.record.plan_code} • รอบ{" "}
+                            {detail.record.billing_period_start} ถึง {detail.record.billing_period_end}
                           </p>
                         </div>
                         <div className="text-right">
@@ -399,8 +491,71 @@ export default function BillingPage() {
                       <p className="mt-1 text-sm text-[var(--text-secondary)]">
                         กำหนดชำระ {formatThaiDate(selectedRecord.record.due_at)}
                       </p>
+                      <p className="mt-1 text-sm text-[var(--text-muted)]">
+                        {planLabels.get(selectedRecord.record.plan_code) ??
+                          selectedRecord.record.plan_code}
+                      </p>
                     </div>
                     <StatusBadge state={selectedRecord.record.status} variant="billing" />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {selectedRecord.record.status === "draft" ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() => void handleTransition("issued", "Invoice issued to customer")}
+                        className="rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        ออกบิล
+                      </button>
+                    ) : null}
+                    {selectedRecord.record.status === "issued" ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() =>
+                          void handleTransition("awaiting_payment", "Customer payment requested")
+                        }
+                        className="rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        ตั้งเป็นรอชำระ
+                      </button>
+                    ) : null}
+                    {selectedRecord.record.status === "awaiting_payment" ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() => void handleTransition("overdue", "Invoice is past due")}
+                        className="rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        ทำเครื่องหมายเกินกำหนด
+                      </button>
+                    ) : null}
+                    {selectedRecord.record.status === "overdue" ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() =>
+                          void handleTransition("awaiting_payment", "Payment follow-up resumed")
+                        }
+                        className="rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)] transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        กลับไปรอชำระ
+                      </button>
+                    ) : null}
+                    {["draft", "issued", "awaiting_payment", "overdue", "failed", "payment_detected"].includes(
+                      selectedRecord.record.status,
+                    ) ? (
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() => void handleTransition("cancelled", "Invoice cancelled")}
+                        className="rounded-xl border border-[var(--badge-red-bg)] px-3 py-2 text-sm font-semibold text-[var(--badge-red-text)] transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        ยกเลิกบิล
+                      </button>
+                    ) : null}
                   </div>
 
                   <div className="mt-5 grid grid-cols-2 gap-4">
@@ -422,6 +577,30 @@ export default function BillingPage() {
                     </div>
                   </div>
 
+                  {selectedRecord.subscription ? (
+                    <div className="mt-5 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                            สถานะแพ็กเกจ
+                          </p>
+                          <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                            ใช้งานตั้งแต่ {selectedRecord.subscription.billing_period_start} ถึง{" "}
+                            {selectedRecord.subscription.billing_period_end}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          state={selectedRecord.subscription.subscription_status}
+                          variant="subscription"
+                        />
+                      </div>
+                      <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                        สิทธิ์คีย์เวิร์ดสูงสุด{" "}
+                        {selectedRecord.subscription.keyword_limit ?? "ไม่กำหนด"} รายการ
+                      </p>
+                    </div>
+                  ) : null}
+
                   <form
                     onSubmit={(event) => void handleRecordPayment(event)}
                     className="mt-5 rounded-2xl border border-dashed border-[var(--border-default)] p-4"
@@ -430,7 +609,7 @@ export default function BillingPage() {
                       <div>
                         <h3 className="font-semibold text-[var(--text-primary)]">บันทึกยอดโอนเข้า</h3>
                         <p className="mt-1 text-sm text-[var(--text-muted)]">
-                          เฉพาะ bank transfer สำหรับ Phase 2
+                          ใช้ reconciliation hook เดิมเพื่อขยับ invoice ไปสู่การเปิดสิทธิ์ใช้งาน
                         </p>
                       </div>
                       <StatusBadge state="pending_reconciliation" variant="payment" />
@@ -484,11 +663,16 @@ export default function BillingPage() {
 
                     <button
                       type="submit"
-                      disabled={actionBusy}
+                      disabled={actionBusy || !canRecordPayment}
                       className="mt-4 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {actionBusy ? "กำลังบันทึก..." : "บันทึกรายการโอน"}
                     </button>
+                    {!canRecordPayment ? (
+                      <p className="mt-3 text-sm text-[var(--text-muted)]">
+                        ต้องออกบิลหรือเปิดสถานะรอชำระก่อน จึงจะบันทึกยอดโอนได้
+                      </p>
+                    ) : null}
                   </form>
                 </div>
 

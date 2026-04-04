@@ -270,6 +270,21 @@ export type BillingRecord = {
   updated_at: string;
 };
 
+export type BillingSubscription = {
+  id: string;
+  tenant_id: string;
+  billing_record_id: string;
+  plan_code: string;
+  subscription_status: string;
+  billing_period_start: string;
+  billing_period_end: string;
+  keyword_limit: number | null;
+  activated_at: string;
+  activated_by_payment_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type BillingPayment = {
   id: string;
   billing_record_id: string;
@@ -302,6 +317,7 @@ export type BillingRecordDetail = {
   record: BillingRecord;
   payments: BillingPayment[];
   events: BillingEvent[];
+  subscription: BillingSubscription | null;
 };
 
 export type BillingSummary = {
@@ -317,6 +333,22 @@ export type BillingListResponse = {
   limit: number;
   offset: number;
   summary: BillingSummary;
+};
+
+export type BillingPlan = {
+  code: string;
+  label: string;
+  description: string;
+  currency: string;
+  amount_due: string;
+  billing_interval: string;
+  keyword_limit: number;
+  duration_days: number | null;
+  duration_months: number | null;
+};
+
+export type BillingPlansResponse = {
+  plans: BillingPlan[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -542,10 +574,10 @@ export type CreateBillingRecordInput = {
   plan_code: string;
   status?: string;
   billing_period_start: string;
-  billing_period_end: string;
+  billing_period_end?: string;
   due_at?: string;
   issued_at?: string;
-  amount_due: string;
+  amount_due?: string;
   currency?: string;
   notes?: string;
 };
@@ -561,6 +593,12 @@ export type RecordBillingPaymentInput = {
 };
 
 export type ReconcileBillingPaymentInput = {
+  tenant_id?: string;
+  status: string;
+  note?: string;
+};
+
+export type TransitionBillingRecordInput = {
   tenant_id?: string;
   status: string;
   note?: string;
@@ -594,6 +632,11 @@ export async function fetchBillingRecords(
     offset: params.offset ?? 0,
   });
   return apiFetch<BillingListResponse>(url);
+}
+
+export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
+  const url = buildUrl("/v1/billing/plans", {});
+  return apiFetch<BillingPlansResponse>(url);
 }
 
 export async function createBillingRecord(
@@ -632,6 +675,20 @@ export async function reconcileBillingPayment(
   payload: ReconcileBillingPaymentInput,
 ): Promise<BillingRecordDetail> {
   const url = buildUrl(`/v1/billing/payments/${encodeURIComponent(paymentId)}/reconcile`, {});
+  return apiJsonRequest<BillingRecordDetail>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      ...payload,
+    }),
+  });
+}
+
+export async function transitionBillingRecord(
+  recordId: string,
+  payload: TransitionBillingRecordInput,
+): Promise<BillingRecordDetail> {
+  const url = buildUrl(`/v1/billing/records/${encodeURIComponent(recordId)}/transition`, {});
   return apiJsonRequest<BillingRecordDetail>(url, {
     method: "POST",
     body: JSON.stringify({

@@ -25,12 +25,12 @@ def _create_billing_record(client: TestClient, *, tenant_id: str = TENANT_ID) ->
         json={
             "tenant_id": tenant_id,
             "record_number": "INV-2026-0001",
-            "plan_code": "pro",
+            "plan_code": "monthly_membership",
             "status": "awaiting_payment",
             "billing_period_start": "2026-04-01",
             "billing_period_end": "2026-04-30",
             "due_at": "2026-04-15T09:00:00+00:00",
-            "amount_due": "15000.00",
+            "amount_due": "1500.00",
             "currency": "THB",
             "notes": "Internal beta invoice",
         },
@@ -89,7 +89,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
     created = _create_billing_record(client)
     record_id = created["record"]["id"]
     assert created["record"]["status"] == "awaiting_payment"
-    assert created["record"]["amount_due"] == "15000.00"
+    assert created["record"]["amount_due"] == "1500.00"
     assert created["payments"] == []
     assert created["events"][0]["event_type"] == "billing_record_created"
 
@@ -100,14 +100,14 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
     assert listed_before_body["summary"] == {
         "open_records": 1,
         "awaiting_reconciliation": 0,
-        "outstanding_amount": "15000.00",
+        "outstanding_amount": "1500.00",
         "collected_amount": "0.00",
     }
 
     payment = _record_payment(
         client,
         record_id=record_id,
-        amount="15000.00",
+        amount="1500.00",
         reference_code="KBANK-0001",
     )
     payment_id = payment["id"]
@@ -115,13 +115,17 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
 
     reconciled = _reconcile_payment(client, payment_id=payment_id)
     assert reconciled["record"]["status"] == "paid"
-    assert reconciled["record"]["reconciled_total"] == "15000.00"
+    assert reconciled["record"]["reconciled_total"] == "1500.00"
     assert reconciled["record"]["outstanding_balance"] == "0.00"
+    assert reconciled["subscription"]["plan_code"] == "monthly_membership"
+    assert reconciled["subscription"]["subscription_status"] == "active"
+    assert reconciled["subscription"]["keyword_limit"] == 5
     assert [entry["payment_status"] for entry in reconciled["payments"]] == ["reconciled"]
     assert [entry["event_type"] for entry in reconciled["events"]] == [
         "billing_record_created",
         "payment_recorded",
         "payment_reconciled",
+        "subscription_activated",
     ]
 
     listed_after_payment = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
@@ -131,7 +135,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
         "open_records": 0,
         "awaiting_reconciliation": 0,
         "outstanding_amount": "0.00",
-        "collected_amount": "15000.00",
+        "collected_amount": "1500.00",
     }
     assert listed_after_body["records"][0]["record"]["status"] == "paid"
 
@@ -144,17 +148,47 @@ def test_billing_snapshot_keeps_partial_payment_in_payment_detected_status(tmp_p
     payment = _record_payment(
         client,
         record_id=record_id,
-        amount="5000.00",
+        amount="500.00",
         reference_code="KBANK-0002",
     )
 
     reconciled = _reconcile_payment(client, payment_id=payment["id"])
 
     assert reconciled["record"]["status"] == "payment_detected"
-    assert reconciled["record"]["reconciled_total"] == "5000.00"
-    assert reconciled["record"]["outstanding_balance"] == "10000.00"
-    assert reconciled["payments"][0]["amount"] == "5000.00"
+    assert reconciled["record"]["reconciled_total"] == "500.00"
+    assert reconciled["record"]["outstanding_balance"] == "1000.00"
+    assert reconciled["payments"][0]["amount"] == "500.00"
     assert reconciled["payments"][0]["payment_status"] == "reconciled"
+    assert reconciled["subscription"] is None
+
+
+def test_billing_reconcile_is_idempotent_for_already_reconciled_payment(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    created = _create_billing_record(client)
+    record_id = created["record"]["id"]
+    payment = _record_payment(
+        client,
+        record_id=record_id,
+        amount="1500.00",
+        reference_code="KBANK-0002B",
+    )
+
+    first = _reconcile_payment(client, payment_id=payment["id"])
+    second_response = client.post(
+        f"/v1/billing/payments/{payment['id']}/reconcile",
+        json={
+            "tenant_id": TENANT_ID,
+            "status": "reconciled",
+            "note": "Retry webhook delivery",
+        },
+    )
+
+    assert second_response.status_code == 200
+    second = second_response.json()
+    assert second["record"]["status"] == "paid"
+    assert second["subscription"]["id"] == first["subscription"]["id"]
+    assert [entry["event_type"] for entry in second["events"]].count("subscription_activated") == 1
 
 
 def test_billing_endpoints_are_tenant_scoped(tmp_path) -> None:

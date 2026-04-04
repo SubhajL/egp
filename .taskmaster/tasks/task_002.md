@@ -2,7 +2,7 @@
 
 **Title:** Phase 2: Product MVP
 
-**Status:** in-progress
+**Status:** done
 
 **Dependencies:** 1 ⧖
 
@@ -22,7 +22,7 @@ Exercise the end-to-end internal beta flows: project browsing, run inspection, r
 
 ### 2.1. Build the dashboard experience
 
-**Status:** in-progress  
+**Status:** done  
 **Dependencies:** None  
 
 Expose key portfolio and run-state summaries on the dashboard page.
@@ -44,7 +44,7 @@ Add explorer and detail flows in apps/web and the supporting APIs in apps/api. E
 
 ### 2.3. Expose runs and rules pages
 
-**Status:** in-progress  
+**Status:** done  
 **Dependencies:** None  
 
 Make crawl/run visibility and rule configuration readable in the product.
@@ -66,7 +66,7 @@ Implement export APIs in apps/api and the corresponding operator controls in app
 
 ### 2.5. Add email notification delivery
 
-**Status:** in-progress  
+**Status:** done  
 **Dependencies:** None  
 
 Send internal beta alerts for project and document events.
@@ -77,7 +77,7 @@ Wire email notification generation to platform events and keep the implementatio
 
 ### 2.6. Implement manual billing records and bank transfer reconciliation
 
-**Status:** pending  
+**Status:** done  
 **Dependencies:** None  
 
 Support internal beta billing operations without automated subscription rails yet.
