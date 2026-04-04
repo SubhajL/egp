@@ -144,6 +144,11 @@ export type RunListResponse = {
   offset: number;
 };
 
+export type ProjectExportResponse = {
+  blob: Blob;
+  filename: string;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -174,10 +179,10 @@ export function getApiBearerToken(): string {
   return readRuntimeEnv("NEXT_PUBLIC_EGP_API_BEARER_TOKEN")?.trim() ?? "";
 }
 
-function getApiHeaders(): HeadersInit {
+function getApiHeaders(accept = "application/json"): HeadersInit {
   const token = getApiBearerToken();
   return {
-    Accept: "application/json",
+    Accept: accept,
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
@@ -220,6 +225,22 @@ async function apiFetch<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function parseDownloadFilename(contentDisposition: string | null): string {
+  if (!contentDisposition) return "egp_projects.xlsx";
+
+  const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    return decodeURIComponent(encodedMatch[1]);
+  }
+
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  if (plainMatch?.[1]) {
+    return plainMatch[1];
+  }
+
+  return "egp_projects.xlsx";
+}
+
 /* ------------------------------------------------------------------ */
 /*  Fetch Functions                                                    */
 /* ------------------------------------------------------------------ */
@@ -239,6 +260,8 @@ export type FetchProjectsParams = {
   offset?: number;
 };
 
+export type ExportProjectsParams = Omit<FetchProjectsParams, "limit" | "offset">;
+
 export async function fetchProjects(
   params: FetchProjectsParams = {},
 ): Promise<ProjectListResponse> {
@@ -257,6 +280,36 @@ export async function fetchProjects(
     offset: params.offset ?? 0,
   });
   return apiFetch<ProjectListResponse>(url);
+}
+
+export async function fetchProjectExport(
+  params: ExportProjectsParams = {},
+): Promise<ProjectExportResponse> {
+  const url = buildUrl("/v1/exports/excel", {
+    project_state: params.project_state,
+    procurement_type: params.procurement_type,
+    closed_reason: params.closed_reason,
+    organization: params.organization,
+    keyword: params.keyword,
+    budget_min: params.budget_min,
+    budget_max: params.budget_max,
+    updated_after: params.updated_after,
+    has_changed_tor: params.has_changed_tor,
+    has_winner: params.has_winner,
+  });
+  const response = await fetch(url, {
+    headers: getApiHeaders(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
+  return {
+    blob: await response.blob(),
+    filename: parseDownloadFilename(response.headers.get("content-disposition")),
+  };
 }
 
 export async function fetchProjectDetail(
