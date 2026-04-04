@@ -2,7 +2,7 @@
   "master": {
     "tasks": [
       {
-        "id": "1",
+        "id": 1,
         "title": "Phase 1: Foundation and State Correctness",
         "description": "Replace fragile script-state assumptions with the canonical platform foundation described in PRD phase 1.",
         "status": "done",
@@ -81,7 +81,7 @@
         "updatedAt": "2026-04-03T08:30:00.000Z"
       },
       {
-        "id": "2",
+        "id": 2,
         "title": "Phase 2: Product MVP",
         "description": "Deliver the internal beta product surface described in PRD phase 2.",
         "status": "done",
@@ -162,10 +162,10 @@
         "updatedAt": "2026-04-04T15:15:44.864Z"
       },
       {
-        "id": "3",
+        "id": 3,
         "title": "Phase 3: TOR Intelligence and Payments",
         "description": "Deliver the commercial beta intelligence and payment workflows described in PRD phase 3.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "2"
         ],
@@ -177,11 +177,12 @@
             "id": 1,
             "title": "Classify public-hearing versus final TOR documents",
             "description": "Detect TOR phase correctly so identical and changed documents are handled with the right semantics.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
-            "details": "Implement public_hearing versus final TOR classification in apps/doc-processor and shared packages, keeping names aligned with packages/shared-types/src/enums.py and document constraints in packages/db/src/migrations/001_initial_schema.sql.",
+            "details": "Implement public_hearing versus final TOR classification in apps/doc-processor and shared packages, keeping names aligned with packages/shared-types/src/enums.py and document constraints in packages/db/src/migrations/001_initial_schema.sql.\n<info added on 2026-04-04T16:10:25.608Z>\nCompleted end-to-end public_hearing vs final TOR classification across shared classifier, persistence, API ingest, worker ingest, and doc-processor. packages/document-classifier/src/egp_document_classifier/classifier.py now classifies TOR using combined label + source_status_text + source_page_text + file_name + project_state (ProjectState.OPEN_PUBLIC_HEARING forces public_hearing; draft TOR markers also map to public_hearing) and exposes classify_document_details/DocumentClassification with matched_markers for debugging. packages/db/src/egp_db/repositories/document_repo.py store_document/build_document_record forward source_page_text and project_state into classify_document. apps/api/src/egp_api/routes/documents.py adds source_page_text to /v1/documents/ingest; apps/api/src/egp_api/services/document_ingest_service.py resolves missing status/project_state from project_repo and forwards richer context into the repository. apps/worker/src/egp_worker/workflows/document_ingest.py forwards source_page_text/project_state to repository.store_document. Added a doc-processor runtime facade in apps/doc-processor/src/egp_doc_processor/processor.py (DocumentProcessor/build_document_processor) plus wrapper apps/doc-processor/src/egp_doc_processor/classification.py.\n\nCoverage added/updated: tests/phase1/test_phase1_domain_logic.py (draft TOR labels + project_state context), tests/phase1/test_documents_api.py (API page-text + project-state context), tests/phase1/test_phase1_wiring.py (worker page-text wiring), tests/phase3/test_doc_processor_classification.py (doc-processor classification using page context). Validation reported: targeted phase1/phase3 suite passed (49 tests), phase2 regression suite passed (26 tests), plus ruff and python -m compileall.\n</info added on 2026-04-04T16:10:25.608Z>",
             "testStrategy": "Cover PRD acceptance tests 3 and 4 with fixtures for same-byte and different-byte TOR pairs across phases.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T16:05:50.353Z"
           },
           {
             "id": 2,
@@ -223,10 +224,11 @@
             "testStrategy": "Cover invoice creation, payment confirmation, activation, duplicate-callback handling, and rollback/error paths.",
             "parentId": "undefined"
           }
-        ]
+        ],
+        "updatedAt": "2026-04-04T16:05:50.353Z"
       },
       {
-        "id": "4",
+        "id": 4,
         "title": "Phase 4: Commercial Hardening",
         "description": "Harden the platform for production readiness as described in PRD phase 4.",
         "status": "pending",
@@ -290,7 +292,7 @@
           {
             "id": 6,
             "title": "Validate disaster recovery and backup workflows",
-            "description": "Prove backups and restores work for the platform\u2019s critical state and artifacts.",
+            "description": "Prove backups and restores work for the platform’s critical state and artifacts.",
             "status": "pending",
             "dependencies": [],
             "details": "Define backup coverage for the database and artifact storage, then run restore validation against realistic data. Ensure restores preserve tenant isolation and document integrity.",
@@ -312,12 +314,14 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T15:15:44.865Z",
+      "lastModified": "2026-04-04T16:05:50.353Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [
         "master"
-      ]
+      ],
+      "created": "2026-04-04T16:06:06.634Z",
+      "description": "Tasks for master context"
     }
   }
 }

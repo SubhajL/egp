@@ -4,9 +4,12 @@ Handles document hashing (SHA-256), text extraction,
 type/phase classification, and diff generation.
 """
 
+from egp_doc_processor.processor import build_document_processor
 
-def main():
-    print("e-GP Document Processor starting...")
+
+def main() -> None:
+    processor = build_document_processor()
+    print(f"e-GP Document Processor starting with {processor.__class__.__name__}...")
     # TODO: Initialize SQS consumer and processing pipeline
 
 

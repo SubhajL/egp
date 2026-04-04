@@ -24,6 +24,7 @@ class DocumentIngestRequest(BaseModel):
     content_base64: str = Field(min_length=1)
     source_label: str = ""
     source_status_text: str = ""
+    source_page_text: str = ""
 
 
 class DocumentResponse(BaseModel):
@@ -118,6 +119,7 @@ def ingest_document(payload: DocumentIngestRequest, request: Request, response: 
             content_base64=payload.content_base64,
             source_label=payload.source_label,
             source_status_text=payload.source_status_text,
+            source_page_text=payload.source_page_text,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
