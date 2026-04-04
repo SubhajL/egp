@@ -91,7 +91,13 @@ def create_app(
 
     @app.middleware("http")
     async def auth_middleware(request, call_next):
-        if request.url.path in {"/health", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}:
+        if request.url.path in {
+            "/health",
+            "/openapi.json",
+            "/docs",
+            "/docs/oauth2-redirect",
+            "/redoc",
+        }:
             request.state.auth_context = None
             return await call_next(request)
 

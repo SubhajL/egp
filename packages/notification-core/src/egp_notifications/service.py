@@ -49,9 +49,9 @@ class InAppNotificationStore:
         self._notifications.append(notification)
 
     def list_for_tenant(self, tenant_id: str, *, limit: int = 50) -> list[Notification]:
-        return [
-            n for n in reversed(self._notifications) if n.tenant_id == tenant_id
-        ][:limit]
+        return [n for n in reversed(self._notifications) if n.tenant_id == tenant_id][
+            :limit
+        ]
 
     def mark_read(self, notification_id: str) -> bool:
         for i, n in enumerate(self._notifications):
@@ -129,8 +129,38 @@ class NotificationService:
         variables = template_vars or {}
 
         if template:
-            subject = template[0].format_map({**variables, **{k: "" for k in ["project_name", "organization", "budget", "run_id", "error_count"] if k not in variables}})
-            body = template[1].format_map({**variables, **{k: "" for k in ["project_name", "organization", "budget", "run_id", "error_count"] if k not in variables}})
+            subject = template[0].format_map(
+                {
+                    **variables,
+                    **{
+                        k: ""
+                        for k in [
+                            "project_name",
+                            "organization",
+                            "budget",
+                            "run_id",
+                            "error_count",
+                        ]
+                        if k not in variables
+                    },
+                }
+            )
+            body = template[1].format_map(
+                {
+                    **variables,
+                    **{
+                        k: ""
+                        for k in [
+                            "project_name",
+                            "organization",
+                            "budget",
+                            "run_id",
+                            "error_count",
+                        ]
+                        if k not in variables
+                    },
+                }
+            )
         else:
             subject = f"แจ้งเตือน: {notification_type.value}"
             body = f"การแจ้งเตือนประเภท {notification_type.value}"
@@ -163,7 +193,9 @@ class NotificationService:
                 )
                 channels_used.append("email")
             except Exception:
-                logger.exception("Failed to send email notification to %s", recipient_email)
+                logger.exception(
+                    "Failed to send email notification to %s", recipient_email
+                )
 
         return Notification(
             id=in_app.id,
@@ -178,7 +210,9 @@ class NotificationService:
             sent_at=now,
         )
 
-    def list_notifications(self, tenant_id: str, *, limit: int = 50) -> list[Notification]:
+    def list_notifications(
+        self, tenant_id: str, *, limit: int = 50
+    ) -> list[Notification]:
         return self._in_app_store.list_for_tenant(tenant_id, limit=limit)
 
     def _send_email(self, *, to: str, subject: str, body: str) -> None:

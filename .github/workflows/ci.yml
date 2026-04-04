@@ -58,7 +58,7 @@ jobs:
 
       - name: Run TypeScript type check
         working-directory: apps/web
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Run ESLint
         working-directory: apps/web

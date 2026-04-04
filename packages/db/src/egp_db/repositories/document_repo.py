@@ -24,9 +24,19 @@ from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from egp_crawler_core.document_hasher import hash_file
-from egp_db.artifact_store import ArtifactStore, LocalArtifactStore, S3ArtifactStore, SupabaseArtifactStore
+from egp_db.artifact_store import (
+    ArtifactStore,
+    LocalArtifactStore,
+    S3ArtifactStore,
+    SupabaseArtifactStore,
+)
 from egp_db.connection import DB_METADATA, create_shared_engine
-from egp_db.db_utils import UUID_SQL_TYPE, is_sqlite_url, normalize_database_url, normalize_uuid_string
+from egp_db.db_utils import (
+    UUID_SQL_TYPE,
+    is_sqlite_url,
+    normalize_database_url,
+    normalize_uuid_string,
+)
 from egp_document_classifier.classifier import classify_document
 from egp_shared_types.enums import DocumentPhase, DocumentType
 
@@ -157,7 +167,9 @@ def _document_from_mapping(row: RowMapping) -> DocumentRecord:
             if row["supersedes_document_id"] is not None
             else None
         ),
-        created_at=created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
+        created_at=created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else str(created_at),
     )
 
 
@@ -169,7 +181,9 @@ def _diff_from_mapping(row: RowMapping) -> DocumentDiffRecord:
         old_document_id=str(row["old_document_id"]),
         new_document_id=str(row["new_document_id"]),
         diff_type=str(row["diff_type"]),
-        created_at=created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
+        created_at=created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else str(created_at),
     )
 
 
@@ -231,7 +245,9 @@ class SqlDocumentRepository:
     ) -> None:
         if engine is None and database_url is None:
             raise ValueError("database_url or engine is required")
-        normalized_url = normalize_database_url(database_url) if database_url is not None else None
+        normalized_url = (
+            normalize_database_url(database_url) if database_url is not None else None
+        )
         self._database_url = normalized_url
         self._artifact_store = artifact_store
         self._engine = engine or create_shared_engine(normalized_url or "")
@@ -251,19 +267,23 @@ class SqlDocumentRepository:
         document_type: DocumentType,
         document_phase: DocumentPhase,
     ) -> DocumentRecord | None:
-        row = connection.execute(
-            select(DOCUMENTS_TABLE)
-            .where(
-                and_(
-                    DOCUMENTS_TABLE.c.tenant_id == tenant_id,
-                    DOCUMENTS_TABLE.c.project_id == project_id,
-                    DOCUMENTS_TABLE.c.sha256 == sha256,
-                    DOCUMENTS_TABLE.c.document_type == document_type.value,
-                    DOCUMENTS_TABLE.c.document_phase == document_phase.value,
+        row = (
+            connection.execute(
+                select(DOCUMENTS_TABLE)
+                .where(
+                    and_(
+                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                        DOCUMENTS_TABLE.c.project_id == project_id,
+                        DOCUMENTS_TABLE.c.sha256 == sha256,
+                        DOCUMENTS_TABLE.c.document_type == document_type.value,
+                        DOCUMENTS_TABLE.c.document_phase == document_phase.value,
+                    )
                 )
+                .limit(1)
             )
-            .limit(1)
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         return _document_from_mapping(row) if row is not None else None
 
     def _find_current_same_class(
@@ -275,20 +295,24 @@ class SqlDocumentRepository:
         document_type: DocumentType,
         document_phase: DocumentPhase,
     ) -> DocumentRecord | None:
-        row = connection.execute(
-            select(DOCUMENTS_TABLE)
-            .where(
-                and_(
-                    DOCUMENTS_TABLE.c.tenant_id == tenant_id,
-                    DOCUMENTS_TABLE.c.project_id == project_id,
-                    DOCUMENTS_TABLE.c.document_type == document_type.value,
-                    DOCUMENTS_TABLE.c.document_phase == document_phase.value,
-                    DOCUMENTS_TABLE.c.is_current.is_(True),
+        row = (
+            connection.execute(
+                select(DOCUMENTS_TABLE)
+                .where(
+                    and_(
+                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                        DOCUMENTS_TABLE.c.project_id == project_id,
+                        DOCUMENTS_TABLE.c.document_type == document_type.value,
+                        DOCUMENTS_TABLE.c.document_phase == document_phase.value,
+                        DOCUMENTS_TABLE.c.is_current.is_(True),
+                    )
                 )
+                .order_by(desc(DOCUMENTS_TABLE.c.created_at))
+                .limit(1)
             )
-            .order_by(desc(DOCUMENTS_TABLE.c.created_at))
-            .limit(1)
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         return _document_from_mapping(row) if row is not None else None
 
     def store_document(
@@ -320,9 +344,7 @@ class SqlDocumentRepository:
             document_phase=document_phase,
         )
         safe_name = _sanitize_file_name(file_name)
-        blob_key = (
-            f"tenants/{tenant_id}/projects/{project_id}/artifacts/{draft_document.sha256}/{safe_name}"
-        )
+        blob_key = f"tenants/{tenant_id}/projects/{project_id}/artifacts/{draft_document.sha256}/{safe_name}"
         content_type = mimetypes.guess_type(file_name)[0]
 
         stored_key: str | None = None
@@ -364,7 +386,9 @@ class SqlDocumentRepository:
                     source_status_text=source_status_text,
                     storage_key=stored_key,
                     supersedes_document_id=(
-                        current_same_class.id if current_same_class is not None else None
+                        current_same_class.id
+                        if current_same_class is not None
+                        else None
                     ),
                     sha256=document_sha256,
                     document_type=document_type,
@@ -439,39 +463,53 @@ class SqlDocumentRepository:
         tenant_id = normalize_uuid_string(tenant_id)
         project_id = normalize_uuid_string(project_id)
         with self._engine.connect() as connection:
-            rows = connection.execute(
-                select(DOCUMENTS_TABLE)
-                .where(
-                    and_(
-                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
-                        DOCUMENTS_TABLE.c.project_id == project_id,
+            rows = (
+                connection.execute(
+                    select(DOCUMENTS_TABLE)
+                    .where(
+                        and_(
+                            DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                            DOCUMENTS_TABLE.c.project_id == project_id,
+                        )
                     )
+                    .order_by(desc(DOCUMENTS_TABLE.c.created_at))
                 )
-                .order_by(desc(DOCUMENTS_TABLE.c.created_at))
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
         return [_document_from_mapping(row) for row in rows]
 
-    def get_document(self, *, tenant_id: str, document_id: str) -> DocumentRecord | None:
+    def get_document(
+        self, *, tenant_id: str, document_id: str
+    ) -> DocumentRecord | None:
         tenant_id = normalize_uuid_string(tenant_id)
         document_id = normalize_uuid_string(document_id)
         with self._engine.connect() as connection:
-            row = connection.execute(
-                select(DOCUMENTS_TABLE)
-                .where(
-                    and_(
-                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
-                        DOCUMENTS_TABLE.c.id == document_id,
+            row = (
+                connection.execute(
+                    select(DOCUMENTS_TABLE)
+                    .where(
+                        and_(
+                            DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                            DOCUMENTS_TABLE.c.id == document_id,
+                        )
                     )
+                    .limit(1)
                 )
-                .limit(1)
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
         return _document_from_mapping(row) if row is not None else None
 
-    def get_download_url(self, *, tenant_id: str, document_id: str, expires_in: int = 300) -> str:
+    def get_download_url(
+        self, *, tenant_id: str, document_id: str, expires_in: int = 300
+    ) -> str:
         document = self.get_document(tenant_id=tenant_id, document_id=document_id)
         if document is None:
             raise KeyError(document_id)
-        return self._artifact_store.download_url(document.storage_key, expires_in=expires_in)
+        return self._artifact_store.download_url(
+            document.storage_key, expires_in=expires_in
+        )
 
 
 class FilesystemDocumentRepository(SqlDocumentRepository):
@@ -516,9 +554,13 @@ def create_document_repository(
         if not supabase_url:
             raise ValueError("supabase_url is required for supabase artifact storage")
         if not supabase_service_role_key:
-            raise ValueError("supabase_service_role_key is required for supabase artifact storage")
+            raise ValueError(
+                "supabase_service_role_key is required for supabase artifact storage"
+            )
         if not s3_bucket:
-            raise ValueError("artifact_bucket is required for supabase artifact storage")
+            raise ValueError(
+                "artifact_bucket is required for supabase artifact storage"
+            )
         artifact_store = SupabaseArtifactStore(
             project_url=supabase_url,
             service_role_key=supabase_service_role_key,

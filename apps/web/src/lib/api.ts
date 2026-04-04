@@ -150,21 +150,28 @@ export type RunListResponse = {
 
 const DEFAULT_API_BASE_URL = "http://localhost:8000";
 
+function readRuntimeEnv(name: string): string | undefined {
+  if (typeof globalThis === "undefined") return undefined;
+  const envSource = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env;
+  return envSource?.[name];
+}
+
 export function getApiBaseUrl(): string {
   if (typeof window === "undefined") return DEFAULT_API_BASE_URL;
   const configured =
-    process.env.NEXT_PUBLIC_EGP_API_BASE_URL?.trim() ?? DEFAULT_API_BASE_URL;
+    readRuntimeEnv("NEXT_PUBLIC_EGP_API_BASE_URL")?.trim() ?? DEFAULT_API_BASE_URL;
   return configured.replace(/\/+$/, "");
 }
 
 export function getTenantId(): string {
   if (typeof window === "undefined") return "";
-  return process.env.NEXT_PUBLIC_EGP_TENANT_ID?.trim() ?? "";
+  return readRuntimeEnv("NEXT_PUBLIC_EGP_TENANT_ID")?.trim() ?? "";
 }
 
 export function getApiBearerToken(): string {
   if (typeof window === "undefined") return "";
-  return process.env.NEXT_PUBLIC_EGP_API_BEARER_TOKEN?.trim() ?? "";
+  return readRuntimeEnv("NEXT_PUBLIC_EGP_API_BEARER_TOKEN")?.trim() ?? "";
 }
 
 function getApiHeaders(): HeadersInit {

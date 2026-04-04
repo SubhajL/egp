@@ -71,7 +71,9 @@ CLOSED_REASON_LABELS = {
 def _project_to_row(project: ProjectRecord) -> list[str | float | None]:
     budget = float(project.budget_amount) if project.budget_amount else None
     state_label = STATE_LABELS.get(project.project_state.value, project.project_state.value)
-    type_label = PROCUREMENT_TYPE_LABELS.get(project.procurement_type.value, project.procurement_type.value)
+    type_label = PROCUREMENT_TYPE_LABELS.get(
+        project.procurement_type.value, project.procurement_type.value
+    )
     closed_label = (
         CLOSED_REASON_LABELS.get(project.closed_reason.value, project.closed_reason.value)
         if project.closed_reason

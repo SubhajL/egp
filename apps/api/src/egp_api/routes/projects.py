@@ -10,7 +10,12 @@ from pydantic import BaseModel
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.project_service import ProjectService
 from egp_api.services.run_service import RunService
-from egp_db.repositories.project_repo import ProjectAliasRecord, ProjectDetail, ProjectRecord, ProjectStatusEventRecord
+from egp_db.repositories.project_repo import (
+    ProjectAliasRecord,
+    ProjectDetail,
+    ProjectRecord,
+    ProjectStatusEventRecord,
+)
 from egp_db.repositories.run_repo import ProjectCrawlEvidenceRecord
 
 
@@ -225,7 +230,9 @@ def list_projects(
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)
-def get_project_detail(project_id: str, request: Request, tenant_id: str | None = None) -> ProjectDetailResponse:
+def get_project_detail(
+    project_id: str, request: Request, tenant_id: str | None = None
+) -> ProjectDetailResponse:
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
     detail = service.get_project_detail(tenant_id=resolved_tenant_id, project_id=project_id)
