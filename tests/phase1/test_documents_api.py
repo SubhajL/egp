@@ -244,6 +244,64 @@ def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(
     assert len(listed.json()["documents"]) == 2
 
 
+def test_ingest_document_endpoint_uses_project_state_for_hearing_phase(
+    tmp_path,
+) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    client.app.state.project_repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-DOCS",
+            search_name="ระบบเอกสาร",
+            detail_name="จัดซื้อระบบเอกสาร",
+            project_name="จัดซื้อระบบเอกสาร",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_PUBLIC_HEARING,
+        ),
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"hearing-tor").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["document"]["document_phase"] == "public_hearing"
+
+
+def test_ingest_document_endpoint_uses_page_text_for_hearing_phase(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+
+    response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"page-hearing-tor").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "",
+            "source_page_text": "เอกสารนี้เผยแพร่เพื่อรับฟังความคิดเห็นและประชาพิจารณ์",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["document"]["document_phase"] == "public_hearing"
+
+
 def test_ingest_document_endpoint_emits_tor_changed_notification_for_superseding_tor(
     tmp_path,
 ) -> None:

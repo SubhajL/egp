@@ -26,6 +26,17 @@ class DocumentIngestService:
         self._project_repository = project_repository
         self._notification_dispatcher = notification_dispatcher
 
+    def _resolve_project_context(
+        self, *, tenant_id: str, project_id: str, source_status_text: str
+    ) -> tuple[str, str | None]:
+        if self._project_repository is None:
+            return (source_status_text, None)
+        project = self._project_repository.get_project(tenant_id=tenant_id, project_id=project_id)
+        if project is None:
+            return (source_status_text, None)
+        resolved_status_text = source_status_text or (project.source_status_text or "")
+        return (resolved_status_text, project.project_state.value)
+
     def ingest_document_bytes(
         self,
         *,
@@ -35,14 +46,22 @@ class DocumentIngestService:
         file_bytes: bytes,
         source_label: str,
         source_status_text: str,
+        source_page_text: str = "",
     ) -> StoreDocumentResult:
+        resolved_status_text, project_state = self._resolve_project_context(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            source_status_text=source_status_text,
+        )
         result = self._repository.store_document(
             tenant_id=tenant_id,
             project_id=project_id,
             file_name=file_name,
             file_bytes=file_bytes,
             source_label=source_label,
-            source_status_text=source_status_text,
+            source_status_text=resolved_status_text,
+            source_page_text=source_page_text,
+            project_state=project_state,
         )
         if (
             self._notification_dispatcher is not None
@@ -75,6 +94,7 @@ class DocumentIngestService:
         content_base64: str,
         source_label: str,
         source_status_text: str,
+        source_page_text: str = "",
     ) -> StoreDocumentResult:
         try:
             file_bytes = base64.b64decode(content_base64, validate=True)
@@ -88,6 +108,7 @@ class DocumentIngestService:
             file_bytes=file_bytes,
             source_label=source_label,
             source_status_text=source_status_text,
+            source_page_text=source_page_text,
         )
 
     def list_documents(self, *, tenant_id: str, project_id: str):

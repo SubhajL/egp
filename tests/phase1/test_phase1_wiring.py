@@ -4,7 +4,12 @@ from datetime import UTC, datetime, timedelta
 
 from egp_db.repositories.document_repo import build_document_record
 from egp_db.repositories.project_repo import build_project_upsert_record
-from egp_shared_types.enums import ClosedReason, DocumentPhase, DocumentType, ProcurementType
+from egp_shared_types.enums import (
+    ClosedReason,
+    DocumentPhase,
+    DocumentType,
+    ProcurementType,
+)
 from egp_worker.workflows.document_ingest import ingest_document_artifact
 from egp_worker.workflows.timeout_sweep import evaluate_timeout_transition
 
@@ -65,10 +70,14 @@ def test_worker_document_ingest_wires_repository_backed_persistence(tmp_path) ->
         project_id=PROJECT_ID,
         file_name="tor.pdf",
         file_bytes=b"worker-ingested-tor",
-        source_label="ร่างขอบเขตของงาน",
-        source_status_text="เปิดรับฟังคำวิจารณ์",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="",
+        source_page_text="เอกสารนี้เปิดรับฟังความคิดเห็นและประชาพิจารณ์",
     )
 
     assert result.created is True
     assert result.document.document_type is DocumentType.TOR
-    assert (tmp_path / result.document.storage_key).read_bytes() == b"worker-ingested-tor"
+    assert result.document.document_phase is DocumentPhase.PUBLIC_HEARING
+    assert (
+        tmp_path / result.document.storage_key
+    ).read_bytes() == b"worker-ingested-tor"

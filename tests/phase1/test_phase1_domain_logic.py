@@ -148,7 +148,9 @@ def test_transition_state_accepts_string_inputs_and_matching_reason() -> None:
 
 
 def test_check_winner_closure_detects_winner_and_contract_statuses() -> None:
-    assert check_winner_closure("ประกาศผู้ชนะการเสนอราคา") == ClosedReason.WINNER_ANNOUNCED
+    assert (
+        check_winner_closure("ประกาศผู้ชนะการเสนอราคา") == ClosedReason.WINNER_ANNOUNCED
+    )
     assert check_winner_closure("อยู่ระหว่างลงนามสัญญา") == ClosedReason.CONTRACT_SIGNED
 
 
@@ -176,6 +178,27 @@ def test_classify_document_detects_final_tor() -> None:
 
     assert document_type is DocumentType.TOR
     assert document_phase is DocumentPhase.FINAL
+
+
+def test_classify_document_treats_draft_tor_labels_as_public_hearing() -> None:
+    document_type, document_phase = classify_document(
+        label="ร่างเอกสารประกวดราคาโครงการระบบข้อมูลกลาง",
+        source_status_text="",
+    )
+
+    assert document_type is DocumentType.TOR
+    assert document_phase is DocumentPhase.PUBLIC_HEARING
+
+
+def test_classify_document_uses_project_state_as_phase_context() -> None:
+    document_type, document_phase = classify_document(
+        label="เอกสารประกวดราคาโครงการระบบข้อมูลกลาง",
+        source_status_text="",
+        project_state=ProjectState.OPEN_PUBLIC_HEARING,
+    )
+
+    assert document_type is DocumentType.TOR
+    assert document_phase is DocumentPhase.PUBLIC_HEARING
 
 
 def test_transition_state_requires_closed_reason_for_winner_announced() -> None:

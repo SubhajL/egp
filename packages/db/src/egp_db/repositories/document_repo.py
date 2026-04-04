@@ -199,6 +199,8 @@ def build_document_record(
     source_label: str,
     source_status_text: str,
     storage_key: str,
+    source_page_text: str = "",
+    project_state: str | None = None,
     document_id: str | None = None,
     is_current: bool = True,
     supersedes_document_id: str | None = None,
@@ -213,6 +215,9 @@ def build_document_record(
         else classify_document(
             label=source_label,
             source_status_text=source_status_text,
+            source_page_text=source_page_text,
+            project_state=project_state,
+            file_name=file_name,
         )
     )
     return DocumentRecord(
@@ -324,6 +329,8 @@ class SqlDocumentRepository:
         file_bytes: bytes,
         source_label: str,
         source_status_text: str,
+        source_page_text: str = "",
+        project_state: str | None = None,
     ) -> StoreDocumentResult:
         tenant_id = normalize_uuid_string(tenant_id)
         project_id = normalize_uuid_string(project_id)
@@ -331,6 +338,9 @@ class SqlDocumentRepository:
         document_type, document_phase = classify_document(
             label=source_label,
             source_status_text=source_status_text,
+            source_page_text=source_page_text,
+            project_state=project_state,
+            file_name=file_name,
         )
         draft_document = build_document_record(
             project_id=project_id,
@@ -339,6 +349,8 @@ class SqlDocumentRepository:
             source_label=source_label,
             source_status_text=source_status_text,
             storage_key="",
+            source_page_text=source_page_text,
+            project_state=project_state,
             sha256=document_sha256,
             document_type=document_type,
             document_phase=document_phase,
@@ -385,6 +397,8 @@ class SqlDocumentRepository:
                     source_label=source_label,
                     source_status_text=source_status_text,
                     storage_key=stored_key,
+                    source_page_text=source_page_text,
+                    project_state=project_state,
                     supersedes_document_id=(
                         current_same_class.id
                         if current_same_class is not None

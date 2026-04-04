@@ -29,6 +29,8 @@ def ingest_document_artifact(
     file_bytes: bytes,
     source_label: str,
     source_status_text: str,
+    source_page_text: str = "",
+    project_state: str | None = None,
 ) -> StoreDocumentResult:
     resolved_artifact_root = Path(artifact_root)
     if repository is None:
@@ -51,4 +53,6 @@ def ingest_document_artifact(
         file_bytes=file_bytes,
         source_label=source_label,
         source_status_text=source_status_text,
+        source_page_text=source_page_text,
+        project_state=project_state,
     )
