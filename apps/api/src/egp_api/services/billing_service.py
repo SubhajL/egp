@@ -65,9 +65,7 @@ class BillingService:
             if resolved_end is None:
                 resolved_end = expected_end
             elif str(resolved_end).strip() != expected_end:
-                raise ValueError(
-                    f"{plan_definition.code} must end on {expected_end}"
-                )
+                raise ValueError(f"{plan_definition.code} must end on {expected_end}")
             if resolved_amount is None:
                 resolved_amount = plan_definition.amount_due
             elif str(resolved_amount).strip() != plan_definition.amount_due:

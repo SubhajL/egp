@@ -159,9 +159,7 @@ def list_document_diffs(
         tenant_id=resolved_tenant_id,
         project_id=project_id,
     )
-    return ListDocumentDiffsResponse(
-        diffs=[_serialize_diff(diff_record) for diff_record in diffs]
-    )
+    return ListDocumentDiffsResponse(diffs=[_serialize_diff(diff_record) for diff_record in diffs])
 
 
 @router.get(

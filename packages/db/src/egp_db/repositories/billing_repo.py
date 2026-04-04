@@ -374,7 +374,9 @@ def _normalize_datetime(value: str | None) -> datetime | None:
         raise ValueError("invalid billing timestamp") from exc
 
 
-def _subscription_status_for_period(*, now: datetime, period_start: date, period_end: date) -> BillingSubscriptionStatus:
+def _subscription_status_for_period(
+    *, now: datetime, period_start: date, period_end: date
+) -> BillingSubscriptionStatus:
     today = now.date()
     if today < period_start:
         return BillingSubscriptionStatus.PENDING_ACTIVATION
@@ -501,7 +503,9 @@ def _subscription_from_mapping(row: RowMapping) -> BillingSubscriptionRecord:
         subscription_status=effective_status,
         billing_period_start=_dt_to_iso(period_start) or "",
         billing_period_end=_dt_to_iso(period_end) or "",
-        keyword_limit=int(row["keyword_limit"]) if row["keyword_limit"] is not None else None,
+        keyword_limit=int(row["keyword_limit"])
+        if row["keyword_limit"] is not None
+        else None,
         activated_at=_dt_to_iso(row["activated_at"]) or "",
         activated_by_payment_id=(
             str(row["activated_by_payment_id"])
@@ -535,8 +539,7 @@ def _group_subscriptions(
     subscriptions: list[BillingSubscriptionRecord],
 ) -> dict[str, BillingSubscriptionRecord]:
     return {
-        subscription.billing_record_id: subscription
-        for subscription in subscriptions
+        subscription.billing_record_id: subscription for subscription in subscriptions
     }
 
 
@@ -672,7 +675,11 @@ class SqlBillingRepository:
             rows = (
                 connection.execute(
                     select(BILLING_SUBSCRIPTIONS_TABLE)
-                    .where(BILLING_SUBSCRIPTIONS_TABLE.c.billing_record_id.in_(normalized_ids))
+                    .where(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.billing_record_id.in_(
+                            normalized_ids
+                        )
+                    )
                     .order_by(BILLING_SUBSCRIPTIONS_TABLE.c.created_at.desc())
                 )
                 .mappings()
@@ -864,10 +871,14 @@ class SqlBillingRepository:
         normalized_amount = _normalize_amount(amount_due)
         normalized_due_at = _normalize_datetime(due_at)
         normalized_issued_at = _normalize_datetime(issued_at)
-        if normalized_status in {
-            BillingRecordStatus.ISSUED,
-            BillingRecordStatus.AWAITING_PAYMENT,
-        } and normalized_issued_at is None:
+        if (
+            normalized_status
+            in {
+                BillingRecordStatus.ISSUED,
+                BillingRecordStatus.AWAITING_PAYMENT,
+            }
+            and normalized_issued_at is None
+        ):
             normalized_issued_at = _now()
         now = _now()
         record_id = str(uuid4())
@@ -969,16 +980,23 @@ class SqlBillingRepository:
 
         now = _now()
         issued_at = record_before.issued_at
-        if target_status in {
-            BillingRecordStatus.ISSUED,
-            BillingRecordStatus.AWAITING_PAYMENT,
-        } and issued_at is None:
+        if (
+            target_status
+            in {
+                BillingRecordStatus.ISSUED,
+                BillingRecordStatus.AWAITING_PAYMENT,
+            }
+            and issued_at is None
+        ):
             issued_at = now.isoformat()
 
         with self._engine.begin() as connection:
             connection.execute(
                 update(BILLING_RECORDS_TABLE)
-                .where(BILLING_RECORDS_TABLE.c.id == normalize_uuid_string(record_before.id))
+                .where(
+                    BILLING_RECORDS_TABLE.c.id
+                    == normalize_uuid_string(record_before.id)
+                )
                 .values(
                     status=target_status.value,
                     issued_at=_normalize_datetime(issued_at),
@@ -1185,8 +1203,12 @@ class SqlBillingRepository:
                     .one_or_none()
                 )
                 if existing_subscription_row is None:
-                    plan_definition = get_billing_plan_definition(record_before.plan_code)
-                    period_start = date.fromisoformat(record_before.billing_period_start)
+                    plan_definition = get_billing_plan_definition(
+                        record_before.plan_code
+                    )
+                    period_start = date.fromisoformat(
+                        record_before.billing_period_start
+                    )
                     period_end = date.fromisoformat(record_before.billing_period_end)
                     subscription_status = _subscription_status_for_period(
                         now=now,

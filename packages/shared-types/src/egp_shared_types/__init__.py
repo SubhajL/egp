@@ -1,6 +1,10 @@
 """Shared type exports for the e-GP platform."""
 
-from .billing_plans import BillingPlanDefinition, get_billing_plan_definition, list_billing_plan_definitions
+from .billing_plans import (
+    BillingPlanDefinition,
+    get_billing_plan_definition,
+    list_billing_plan_definitions,
+)
 from .enums import (
     BillingEventType,
     BillingPaymentMethod,

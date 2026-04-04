@@ -56,7 +56,9 @@ def get_billing_plan_definition(plan_code: str) -> BillingPlanDefinition | None:
     return None
 
 
-def derive_plan_period_end(plan: BillingPlanDefinition, *, billing_period_start: date) -> date:
+def derive_plan_period_end(
+    plan: BillingPlanDefinition, *, billing_period_start: date
+) -> date:
     if plan.duration_days is not None:
         return billing_period_start + timedelta(days=plan.duration_days - 1)
 
