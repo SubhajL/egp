@@ -65,6 +65,17 @@ class FakeSupabaseClient:
         self.storage = FakeSupabaseStorageClient()
 
 
+def create_test_client(tmp_path, **overrides) -> TestClient:
+    return TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}",
+            auth_required=False,
+            **overrides,
+        )
+    )
+
+
 def seed_tenant(client: TestClient) -> None:
     with client.app.state.db_engine.begin() as connection:
         try:
@@ -113,7 +124,7 @@ def seed_project(client: TestClient) -> str:
 
 
 def test_ingest_document_endpoint_persists_and_classifies_document(tmp_path) -> None:
-    client = TestClient(create_app(artifact_root=tmp_path, auth_required=False))
+    client = create_test_client(tmp_path)
     project_id = seed_project(client)
 
     response = client.post(
@@ -136,7 +147,7 @@ def test_ingest_document_endpoint_persists_and_classifies_document(tmp_path) -> 
 
 
 def test_ingest_document_endpoint_is_idempotent_for_duplicate_bytes(tmp_path) -> None:
-    client = TestClient(create_app(artifact_root=tmp_path, auth_required=False))
+    client = create_test_client(tmp_path)
     project_id = seed_project(client)
     payload = {
         "tenant_id": TENANT_ID,
@@ -157,7 +168,7 @@ def test_ingest_document_endpoint_is_idempotent_for_duplicate_bytes(tmp_path) ->
 
 
 def test_list_documents_endpoint_returns_persisted_documents(tmp_path) -> None:
-    client = TestClient(create_app(artifact_root=tmp_path, auth_required=False))
+    client = create_test_client(tmp_path)
     project_id = seed_project(client)
     ingest_response = client.post(
         "/v1/documents/ingest",
@@ -181,7 +192,7 @@ def test_list_documents_endpoint_returns_persisted_documents(tmp_path) -> None:
 
 
 def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(tmp_path) -> None:
-    client = TestClient(create_app(artifact_root=tmp_path, auth_required=False))
+    client = create_test_client(tmp_path)
     project_id = seed_project(client)
     payload = {
         "tenant_id": TENANT_ID,
@@ -215,7 +226,7 @@ def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(tmp_path)
 
 
 def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None:
-    client = TestClient(create_app(artifact_root=tmp_path, auth_required=False))
+    client = create_test_client(tmp_path)
     project_id = seed_project(client)
     ingest_response = client.post(
         "/v1/documents/ingest",
@@ -242,16 +253,13 @@ def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None
 
 def test_document_download_endpoint_returns_supabase_signed_url(tmp_path) -> None:
     supabase_client = FakeSupabaseClient()
-    client = TestClient(
-        create_app(
-            artifact_root=tmp_path,
-            auth_required=False,
-            artifact_storage_backend="supabase",
-            artifact_bucket="egp-documents",
-            supabase_url="https://project.supabase.co",
-            supabase_service_role_key="service-role-key",
-            supabase_client=supabase_client,
-        )
+    client = create_test_client(
+        tmp_path,
+        artifact_storage_backend="supabase",
+        artifact_bucket="egp-documents",
+        supabase_url="https://project.supabase.co",
+        supabase_service_role_key="service-role-key",
+        supabase_client=supabase_client,
     )
     project_id = seed_project(client)
     ingest_response = client.post(
