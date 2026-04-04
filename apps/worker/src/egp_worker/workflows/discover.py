@@ -32,7 +32,9 @@ def run_discover_workflow(
     if project_repository is None or run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
-        project_repository = project_repository or create_project_repository(database_url=database_url)
+        project_repository = project_repository or create_project_repository(
+            database_url=database_url
+        )
         run_repository = run_repository or create_run_repository(database_url=database_url)
 
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
@@ -83,7 +85,9 @@ def run_discover_workflow(
 
     run_repository.mark_run_finished(
         run.id,
-        status="partial" if error_count and persisted_projects else ("failed" if error_count else "succeeded"),
+        status="partial"
+        if error_count and persisted_projects
+        else ("failed" if error_count else "succeeded"),
         summary_json={"projects_seen": len(persisted_projects)},
         error_count=error_count,
     )

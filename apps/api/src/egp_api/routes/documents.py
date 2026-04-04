@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.document_ingest_service import DocumentIngestService
-from egp_db.repositories.document_repo import DocumentDiffRecord, DocumentRecord, StoreDocumentResult
+from egp_db.repositories.document_repo import (
+    DocumentDiffRecord,
+    DocumentRecord,
+    StoreDocumentResult,
+)
 
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
@@ -122,11 +126,15 @@ def ingest_document(payload: DocumentIngestRequest, request: Request, response: 
 
 
 @router.get("/projects/{project_id}", response_model=ListDocumentsResponse)
-def list_documents(project_id: str, request: Request, tenant_id: str | None = None) -> ListDocumentsResponse:
+def list_documents(
+    project_id: str, request: Request, tenant_id: str | None = None
+) -> ListDocumentsResponse:
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
     documents = service.list_documents(tenant_id=resolved_tenant_id, project_id=project_id)
-    return ListDocumentsResponse(documents=[_serialize_document(document) for document in documents])
+    return ListDocumentsResponse(
+        documents=[_serialize_document(document) for document in documents]
+    )
 
 
 @router.get("/{document_id}/download", response_model=DocumentDownloadResponse)

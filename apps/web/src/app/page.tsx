@@ -1,5 +1,5 @@
-import { ProjectList } from "@/components/project-list";
+import { redirect } from "next/navigation";
 
 export default function HomePage() {
-  return <ProjectList />;
+  redirect("/dashboard");
 }

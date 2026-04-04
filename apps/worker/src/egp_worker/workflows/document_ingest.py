@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult, create_document_repository
+from egp_db.repositories.document_repo import (
+    SqlDocumentRepository,
+    StoreDocumentResult,
+    create_document_repository,
+)
 
 
 def ingest_document_artifact(

@@ -117,7 +117,9 @@ def _serialize_detail(detail: CrawlRunDetail) -> RunDetailResponse:
 
 
 @router.post("", response_model=RunDetailResponse)
-def create_run(payload: CreateRunRequest, request: Request, response: Response) -> RunDetailResponse:
+def create_run(
+    payload: CreateRunRequest, request: Request, response: Response
+) -> RunDetailResponse:
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     detail = service.create_run(

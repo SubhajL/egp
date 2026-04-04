@@ -46,10 +46,9 @@ def get_artifact_bucket(override: str | None = None) -> str | None:
 def get_artifact_prefix(override: str | None = None) -> str:
     if override is not None:
         return override.strip().strip("/")
-    return (
-        os.getenv("EGP_ARTIFACT_PREFIX", "").strip().strip("/")
-        or os.getenv("SUPABASE_STORAGE_PREFIX", "").strip().strip("/")
-    )
+    return os.getenv("EGP_ARTIFACT_PREFIX", "").strip().strip("/") or os.getenv(
+        "SUPABASE_STORAGE_PREFIX", ""
+    ).strip().strip("/")
 
 
 def get_supabase_url(override: str | None = None) -> str | None:

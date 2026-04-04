@@ -1,0 +1,67 @@
+export type BadgeColor = "indigo" | "teal" | "green" | "purple" | "amber" | "red" | "gray";
+
+export type BadgeConfig = {
+  label: string;
+  color: BadgeColor;
+};
+
+export const STATE_BADGE_CONFIG: Record<string, BadgeConfig> = {
+  discovered: { label: "ค้นพบใหม่", color: "indigo" },
+  open_invitation: { label: "เปิดรับข้อเสนอ", color: "teal" },
+  open_consulting: { label: "เปิดรับที่ปรึกษา", color: "teal" },
+  open_public_hearing: { label: "ประชาพิจารณ์", color: "amber" },
+  tor_downloaded: { label: "ดาวน์โหลด TOR", color: "green" },
+  prelim_pricing_seen: { label: "เห็นราคากลาง", color: "green" },
+  winner_announced: { label: "ประกาศผู้ชนะ", color: "purple" },
+  contract_signed: { label: "ลงนามสัญญา", color: "purple" },
+  closed_timeout_consulting: { label: "ปิด-หมดเวลาที่ปรึกษา", color: "gray" },
+  closed_stale_no_tor: { label: "ปิด-ไม่มี TOR", color: "gray" },
+  closed_manual: { label: "ปิด-ด้วยตนเอง", color: "gray" },
+  error: { label: "ข้อผิดพลาด", color: "red" },
+};
+
+export const RUN_STATUS_CONFIG: Record<string, BadgeConfig> = {
+  queued: { label: "รอคิว", color: "gray" },
+  running: { label: "กำลังทำงาน", color: "indigo" },
+  succeeded: { label: "สำเร็จ", color: "green" },
+  partial: { label: "บางส่วน", color: "amber" },
+  failed: { label: "ล้มเหลว", color: "red" },
+  cancelled: { label: "ยกเลิก", color: "gray" },
+};
+
+export const TASK_STATUS_CONFIG: Record<string, BadgeConfig> = {
+  queued: { label: "รอคิว", color: "gray" },
+  running: { label: "กำลังทำงาน", color: "indigo" },
+  succeeded: { label: "สำเร็จ", color: "green" },
+  failed: { label: "ล้มเหลว", color: "red" },
+  skipped: { label: "ข้าม", color: "gray" },
+};
+
+export const PROCUREMENT_TYPE_LABELS: Record<string, string> = {
+  goods: "สินค้า",
+  services: "บริการ",
+  consulting: "ที่ปรึกษา",
+  unknown: "ไม่ระบุ",
+};
+
+export type NavItem = {
+  label: string;
+  href: string;
+};
+
+export const NAV_ITEMS: NavItem[] = [
+  { label: "แดชบอร์ด", href: "/dashboard" },
+  { label: "สำรวจโครงการ", href: "/projects" },
+  { label: "การทำงาน", href: "/runs" },
+  { label: "กฎและโปรไฟล์", href: "/rules" },
+];
+
+export const BADGE_STYLE_MAP: Record<BadgeColor, string> = {
+  indigo: "bg-[var(--badge-indigo-bg)] text-[var(--badge-indigo-text)]",
+  teal: "bg-[var(--badge-teal-bg)] text-[var(--badge-teal-text)]",
+  green: "bg-[var(--badge-green-bg)] text-[var(--badge-green-text)]",
+  purple: "bg-[var(--badge-purple-bg)] text-[var(--badge-purple-text)]",
+  amber: "bg-[var(--badge-amber-bg)] text-[var(--badge-amber-text)]",
+  red: "bg-[var(--badge-red-bg)] text-[var(--badge-red-text)]",
+  gray: "bg-[var(--badge-gray-bg)] text-[var(--badge-gray-text)]",
+};

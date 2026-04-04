@@ -23,6 +23,7 @@ from sqlalchemy import (
     desc,
     func,
     insert,
+    or_,
     select,
     update,
 )
@@ -31,6 +32,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_db.repositories.document_repo import DOCUMENT_DIFFS_TABLE, DOCUMENTS_TABLE
 from egp_crawler_core.canonical_id import build_project_aliases, generate_canonical_id
 from egp_crawler_core.project_lifecycle import transition_state
 from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
@@ -65,6 +67,7 @@ class ProjectRecord:
     project_state: ProjectState
     closed_reason: ClosedReason | None
     source_status_text: str | None
+    has_changed_tor: bool
     first_seen_at: str
     last_seen_at: str
     last_changed_at: str
@@ -136,7 +139,9 @@ PROJECTS_TABLE = Table(
     Column("is_active", Boolean, nullable=False, default=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("tenant_id", "canonical_project_id", name="projects_tenant_canonical_uq"),
+    UniqueConstraint(
+        "tenant_id", "canonical_project_id", name="projects_tenant_canonical_uq"
+    ),
     CheckConstraint(
         "project_state IN ("
         "'discovered',"
@@ -172,11 +177,18 @@ PROJECT_ALIASES_TABLE = Table(
     "project_aliases",
     METADATA,
     Column("id", UUID_SQL_TYPE, primary_key=True),
-    Column("project_id", UUID_SQL_TYPE, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "project_id",
+        UUID_SQL_TYPE,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("alias_type", String, nullable=False),
     Column("alias_value", String, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
-    UniqueConstraint("project_id", "alias_type", "alias_value", name="aliases_project_alias_uq"),
+    UniqueConstraint(
+        "project_id", "alias_type", "alias_value", name="aliases_project_alias_uq"
+    ),
     CheckConstraint(
         "alias_type IN ('search_name', 'detail_name', 'project_number', 'fingerprint')",
         name="aliases_type_check",
@@ -187,7 +199,12 @@ PROJECT_STATUS_EVENTS_TABLE = Table(
     "project_status_events",
     METADATA,
     Column("id", UUID_SQL_TYPE, primary_key=True),
-    Column("project_id", UUID_SQL_TYPE, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "project_id",
+        UUID_SQL_TYPE,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("observed_status_text", String, nullable=False),
     Column("normalized_status", String, nullable=True),
     Column("observed_at", DateTime(timezone=True), nullable=False),
@@ -196,7 +213,11 @@ PROJECT_STATUS_EVENTS_TABLE = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
-Index("idx_projects_tenant_state", PROJECTS_TABLE.c.tenant_id, PROJECTS_TABLE.c.project_state)
+Index(
+    "idx_projects_tenant_state",
+    PROJECTS_TABLE.c.tenant_id,
+    PROJECTS_TABLE.c.project_state,
+)
 Index(
     "idx_projects_last_changed_at",
     PROJECTS_TABLE.c.tenant_id,
@@ -248,6 +269,48 @@ def _normalize_run_id(value: str | None) -> str | None:
     return normalize_uuid_string(value)
 
 
+def _normalize_decimal_filter(
+    value: Decimal | float | int | str | None,
+) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError("budget filter must be numeric") from exc
+
+
+def _normalize_datetime_filter(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("updated_after must be ISO-8601 datetime") from exc
+
+
+def _normalize_multi_value_filter(
+    values: list[object] | tuple[object, ...] | None,
+) -> list[str]:
+    normalized_values: list[str] = []
+    for raw_value in values or []:
+        for part in str(raw_value).split(","):
+            normalized = part.strip()
+            if normalized:
+                normalized_values.append(normalized)
+    return normalized_values
+
+
 _STRONG_ALIAS_TYPES = {"project_number", "fingerprint"}
 
 
@@ -257,7 +320,9 @@ def _project_from_mapping(row: RowMapping) -> ProjectRecord:
 
     budget_amount = row["budget_amount"]
     if isinstance(budget_amount, Decimal):
-        normalized_budget_amount = format(budget_amount.normalize(), "f").rstrip("0").rstrip(".")
+        normalized_budget_amount = (
+            format(budget_amount.normalize(), "f").rstrip("0").rstrip(".")
+        )
     else:
         normalized_budget_amount = _normalize_optional_text(budget_amount)
 
@@ -277,9 +342,14 @@ def _project_from_mapping(row: RowMapping) -> ProjectRecord:
         budget_amount=normalized_budget_amount or None,
         project_state=ProjectState(str(row["project_state"])),
         closed_reason=(
-            ClosedReason(str(row["closed_reason"])) if row["closed_reason"] is not None else None
+            ClosedReason(str(row["closed_reason"]))
+            if row["closed_reason"] is not None
+            else None
         ),
         source_status_text=_normalize_optional_text(row["source_status_text"]),
+        has_changed_tor=bool(row["has_changed_tor"])
+        if "has_changed_tor" in row
+        else False,
         first_seen_at=as_iso(row["first_seen_at"]),
         last_seen_at=as_iso(row["last_seen_at"]),
         last_changed_at=as_iso(row["last_changed_at"]),
@@ -295,7 +365,9 @@ def _alias_from_mapping(row: RowMapping) -> ProjectAliasRecord:
         project_id=str(row["project_id"]),
         alias_type=str(row["alias_type"]),
         alias_value=str(row["alias_value"]),
-        created_at=created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
+        created_at=created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else str(created_at),
     )
 
 
@@ -307,10 +379,14 @@ def _status_event_from_mapping(row: RowMapping) -> ProjectStatusEventRecord:
         project_id=str(row["project_id"]),
         observed_status_text=str(row["observed_status_text"]),
         normalized_status=_normalize_optional_text(row["normalized_status"]),
-        observed_at=observed_at.isoformat() if isinstance(observed_at, datetime) else str(observed_at),
+        observed_at=observed_at.isoformat()
+        if isinstance(observed_at, datetime)
+        else str(observed_at),
         run_id=_normalize_optional_text(row["run_id"]),
         raw_snapshot=row["raw_snapshot"],
-        created_at=created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
+        created_at=created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else str(created_at),
     )
 
 
@@ -384,7 +460,9 @@ class SqlProjectRepository:
     ) -> None:
         if engine is None and database_url is None:
             raise ValueError("database_url or engine is required")
-        self._database_url = normalize_database_url(database_url) if database_url is not None else None
+        self._database_url = (
+            normalize_database_url(database_url) if database_url is not None else None
+        )
         self._engine = engine or create_shared_engine(self._database_url or "")
         if bootstrap_schema:
             self._ensure_schema()
@@ -392,17 +470,24 @@ class SqlProjectRepository:
     def _ensure_schema(self) -> None:
         METADATA.create_all(self._engine)
 
-    def _find_existing_row(self, connection, *, tenant_id: str, record: ProjectUpsertRecord):
-        row = connection.execute(
-            select(PROJECTS_TABLE)
-            .where(
-                and_(
-                    PROJECTS_TABLE.c.tenant_id == tenant_id,
-                    PROJECTS_TABLE.c.canonical_project_id == record.canonical_project_id,
+    def _find_existing_row(
+        self, connection, *, tenant_id: str, record: ProjectUpsertRecord
+    ):
+        row = (
+            connection.execute(
+                select(PROJECTS_TABLE)
+                .where(
+                    and_(
+                        PROJECTS_TABLE.c.tenant_id == tenant_id,
+                        PROJECTS_TABLE.c.canonical_project_id
+                        == record.canonical_project_id,
+                    )
                 )
+                .limit(1)
             )
-            .limit(1)
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is not None:
             return row
 
@@ -413,18 +498,25 @@ class SqlProjectRepository:
         ]
         if not alias_values:
             return None
-        return connection.execute(
-            select(PROJECTS_TABLE)
-            .join(PROJECT_ALIASES_TABLE, PROJECT_ALIASES_TABLE.c.project_id == PROJECTS_TABLE.c.id)
-            .where(
-                and_(
-                    PROJECTS_TABLE.c.tenant_id == tenant_id,
-                    PROJECT_ALIASES_TABLE.c.alias_value.in_(alias_values),
+        return (
+            connection.execute(
+                select(PROJECTS_TABLE)
+                .join(
+                    PROJECT_ALIASES_TABLE,
+                    PROJECT_ALIASES_TABLE.c.project_id == PROJECTS_TABLE.c.id,
                 )
+                .where(
+                    and_(
+                        PROJECTS_TABLE.c.tenant_id == tenant_id,
+                        PROJECT_ALIASES_TABLE.c.alias_value.in_(alias_values),
+                    )
+                )
+                .order_by(desc(PROJECTS_TABLE.c.updated_at))
+                .limit(1)
             )
-            .order_by(desc(PROJECTS_TABLE.c.updated_at))
-            .limit(1)
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
 
     def _upsert_aliases(
         self,
@@ -495,7 +587,9 @@ class SqlProjectRepository:
         normalized_status_text = _normalize_optional_text(source_status_text)
 
         with self._engine.begin() as connection:
-            existing_row = self._find_existing_row(connection, tenant_id=tenant_id, record=record)
+            existing_row = self._find_existing_row(
+                connection, tenant_id=tenant_id, record=record
+            )
 
             if existing_row is None:
                 project_id = str(uuid4())
@@ -511,16 +605,24 @@ class SqlProjectRepository:
                         budget_amount=_normalize_budget_amount(record.budget_amount),
                         currency="THB",
                         source_status_text=normalized_status_text,
-                        proposal_submission_date=_normalize_date(record.proposal_submission_date),
+                        proposal_submission_date=_normalize_date(
+                            record.proposal_submission_date
+                        ),
                         invitation_announcement_date=None,
                         winner_announced_at=(
-                            now.date() if record.project_state is ProjectState.WINNER_ANNOUNCED else None
+                            now.date()
+                            if record.project_state is ProjectState.WINNER_ANNOUNCED
+                            else None
                         ),
                         contract_signed_at=(
-                            now.date() if record.project_state is ProjectState.CONTRACT_SIGNED else None
+                            now.date()
+                            if record.project_state is ProjectState.CONTRACT_SIGNED
+                            else None
                         ),
                         project_state=record.project_state.value,
-                        closed_reason=record.closed_reason.value if record.closed_reason else None,
+                        closed_reason=record.closed_reason.value
+                        if record.closed_reason
+                        else None,
                         first_seen_at=now,
                         last_seen_at=now,
                         last_changed_at=now,
@@ -546,7 +648,8 @@ class SqlProjectRepository:
                         existing.project_name != record.project_name,
                         existing.organization_name != record.organization_name,
                         existing.procurement_type != record.procurement_type,
-                        existing.proposal_submission_date != record.proposal_submission_date,
+                        existing.proposal_submission_date
+                        != record.proposal_submission_date,
                         existing.budget_amount != record.budget_amount,
                         existing.project_state != transition["project_state"],
                         existing.closed_reason != transition["closed_reason"],
@@ -572,17 +675,22 @@ class SqlProjectRepository:
                         if record.budget_amount is not None
                         else _normalize_budget_amount(existing.budget_amount),
                         currency="THB",
-                        source_status_text=normalized_status_text or existing.source_status_text,
-                        proposal_submission_date=_normalize_date(record.proposal_submission_date)
+                        source_status_text=normalized_status_text
+                        or existing.source_status_text,
+                        proposal_submission_date=_normalize_date(
+                            record.proposal_submission_date
+                        )
                         or _normalize_date(existing.proposal_submission_date),
                         winner_announced_at=(
                             now.date()
-                            if transition["project_state"] is ProjectState.WINNER_ANNOUNCED
+                            if transition["project_state"]
+                            is ProjectState.WINNER_ANNOUNCED
                             else existing_row["winner_announced_at"]
                         ),
                         contract_signed_at=(
                             now.date()
-                            if transition["project_state"] is ProjectState.CONTRACT_SIGNED
+                            if transition["project_state"]
+                            is ProjectState.CONTRACT_SIGNED
                             else existing_row["contract_signed_at"]
                         ),
                         project_state=transition["project_state"].value,
@@ -592,7 +700,9 @@ class SqlProjectRepository:
                             else None
                         ),
                         last_seen_at=now,
-                        last_changed_at=now if changed else datetime.fromisoformat(existing.last_changed_at),
+                        last_changed_at=now
+                        if changed
+                        else datetime.fromisoformat(existing.last_changed_at),
                         last_run_id=normalized_run_id or existing_row["last_run_id"],
                         updated_at=now,
                     )
@@ -608,18 +718,26 @@ class SqlProjectRepository:
                 self._insert_status_event(
                     connection,
                     project_id=project_id,
-                        observed_status_text=normalized_status_text,
-                        normalized_status=(
-                            transition["project_state"].value if existing_row is not None else record.project_state.value
-                        ),
-                        observed_at=now,
-                        run_id=normalized_run_id,
-                        raw_snapshot=raw_snapshot,
+                    observed_status_text=normalized_status_text,
+                    normalized_status=(
+                        transition["project_state"].value
+                        if existing_row is not None
+                        else record.project_state.value
+                    ),
+                    observed_at=now,
+                    run_id=normalized_run_id,
+                    raw_snapshot=raw_snapshot,
                 )
 
-            row = connection.execute(
-                select(PROJECTS_TABLE).where(PROJECTS_TABLE.c.id == project_id).limit(1)
-            ).mappings().one()
+            row = (
+                connection.execute(
+                    select(PROJECTS_TABLE)
+                    .where(PROJECTS_TABLE.c.id == project_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
         return _project_from_mapping(row)
 
     def transition_project(
@@ -640,16 +758,20 @@ class SqlProjectRepository:
         normalized_run_id = _normalize_run_id(run_id)
 
         with self._engine.begin() as connection:
-            row = connection.execute(
-                select(PROJECTS_TABLE)
-                .where(
-                    and_(
-                        PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
-                        PROJECTS_TABLE.c.id == normalized_project_id,
+            row = (
+                connection.execute(
+                    select(PROJECTS_TABLE)
+                    .where(
+                        and_(
+                            PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
+                            PROJECTS_TABLE.c.id == normalized_project_id,
+                        )
                     )
+                    .limit(1)
                 )
-                .limit(1)
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             if row is None:
                 raise KeyError(project_id)
             existing = _project_from_mapping(row)
@@ -699,44 +821,62 @@ class SqlProjectRepository:
                 run_id=normalized_run_id,
                 raw_snapshot=raw_snapshot,
             )
-            updated_row = connection.execute(
-                select(PROJECTS_TABLE)
-                .where(PROJECTS_TABLE.c.id == normalized_project_id)
-                .limit(1)
-            ).mappings().one()
+            updated_row = (
+                connection.execute(
+                    select(PROJECTS_TABLE)
+                    .where(PROJECTS_TABLE.c.id == normalized_project_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
         return _project_from_mapping(updated_row)
 
     def get_project(self, *, tenant_id: str, project_id: str) -> ProjectRecord | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_project_id = normalize_uuid_string(project_id)
         with self._engine.connect() as connection:
-            row = connection.execute(
-                select(PROJECTS_TABLE)
-                .where(
-                    and_(
-                        PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
-                        PROJECTS_TABLE.c.id == normalized_project_id,
+            row = (
+                connection.execute(
+                    select(PROJECTS_TABLE)
+                    .where(
+                        and_(
+                            PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
+                            PROJECTS_TABLE.c.id == normalized_project_id,
+                        )
                     )
+                    .limit(1)
                 )
-                .limit(1)
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
         return _project_from_mapping(row) if row is not None else None
 
-    def get_project_detail(self, *, tenant_id: str, project_id: str) -> ProjectDetail | None:
+    def get_project_detail(
+        self, *, tenant_id: str, project_id: str
+    ) -> ProjectDetail | None:
         project = self.get_project(tenant_id=tenant_id, project_id=project_id)
         if project is None:
             return None
         with self._engine.connect() as connection:
-            aliases = connection.execute(
-                select(PROJECT_ALIASES_TABLE)
-                .where(PROJECT_ALIASES_TABLE.c.project_id == project.id)
-                .order_by(PROJECT_ALIASES_TABLE.c.created_at)
-            ).mappings().all()
-            status_events = connection.execute(
-                select(PROJECT_STATUS_EVENTS_TABLE)
-                .where(PROJECT_STATUS_EVENTS_TABLE.c.project_id == project.id)
-                .order_by(PROJECT_STATUS_EVENTS_TABLE.c.observed_at)
-            ).mappings().all()
+            aliases = (
+                connection.execute(
+                    select(PROJECT_ALIASES_TABLE)
+                    .where(PROJECT_ALIASES_TABLE.c.project_id == project.id)
+                    .order_by(PROJECT_ALIASES_TABLE.c.created_at)
+                )
+                .mappings()
+                .all()
+            )
+            status_events = (
+                connection.execute(
+                    select(PROJECT_STATUS_EVENTS_TABLE)
+                    .where(PROJECT_STATUS_EVENTS_TABLE.c.project_id == project.id)
+                    .order_by(PROJECT_STATUS_EVENTS_TABLE.c.observed_at)
+                )
+                .mappings()
+                .all()
+            )
         return ProjectDetail(
             project=project,
             aliases=[_alias_from_mapping(alias) for alias in aliases],
@@ -747,25 +887,119 @@ class SqlProjectRepository:
         self,
         *,
         tenant_id: str,
-        project_state: ProjectState | str | None = None,
+        project_states: list[ProjectState | str] | None = None,
+        procurement_types: list[ProcurementType | str] | None = None,
+        closed_reasons: list[ClosedReason | str] | None = None,
+        organization: str | None = None,
+        keyword: str | None = None,
+        budget_min: Decimal | float | int | str | None = None,
+        budget_max: Decimal | float | int | str | None = None,
+        updated_after: datetime | str | None = None,
+        has_changed_tor: bool | None = None,
+        has_winner: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> ProjectPage:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_limit = max(1, min(int(limit), 200))
         normalized_offset = max(0, int(offset))
-        statement = select(PROJECTS_TABLE).where(PROJECTS_TABLE.c.tenant_id == normalized_tenant_id)
-        count_statement = select(func.count()).select_from(PROJECTS_TABLE).where(
+        normalized_project_states = _normalize_multi_value_filter(project_states)
+        normalized_procurement_types = _normalize_multi_value_filter(procurement_types)
+        normalized_closed_reasons = _normalize_multi_value_filter(closed_reasons)
+        normalized_organization = _normalize_optional_text(organization)
+        normalized_keyword = _normalize_optional_text(keyword)
+        normalized_budget_min = _normalize_decimal_filter(budget_min)
+        normalized_budget_max = _normalize_decimal_filter(budget_max)
+        normalized_updated_after = _normalize_datetime_filter(updated_after)
+        statement = select(PROJECTS_TABLE).where(
             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id
         )
-        if project_state is not None:
-            normalized_state = (
-                project_state.value if isinstance(project_state, ProjectState) else str(project_state).strip()
+        count_statement = (
+            select(func.count())
+            .select_from(PROJECTS_TABLE)
+            .where(PROJECTS_TABLE.c.tenant_id == normalized_tenant_id)
+        )
+        conditions = []
+
+        if normalized_project_states:
+            conditions.append(
+                PROJECTS_TABLE.c.project_state.in_(normalized_project_states)
             )
-            statement = statement.where(PROJECTS_TABLE.c.project_state == normalized_state)
-            count_statement = count_statement.where(PROJECTS_TABLE.c.project_state == normalized_state)
-        statement = statement.order_by(desc(PROJECTS_TABLE.c.last_changed_at)).limit(normalized_limit).offset(
-            normalized_offset
+        if normalized_procurement_types:
+            conditions.append(
+                PROJECTS_TABLE.c.procurement_type.in_(normalized_procurement_types)
+            )
+        if normalized_closed_reasons:
+            conditions.append(
+                PROJECTS_TABLE.c.closed_reason.in_(normalized_closed_reasons)
+            )
+        if normalized_organization is not None:
+            conditions.append(
+                PROJECTS_TABLE.c.organization_name.ilike(f"%{normalized_organization}%")
+            )
+        if normalized_budget_min is not None:
+            conditions.append(PROJECTS_TABLE.c.budget_amount >= normalized_budget_min)
+        if normalized_budget_max is not None:
+            conditions.append(PROJECTS_TABLE.c.budget_amount <= normalized_budget_max)
+        if normalized_updated_after is not None:
+            conditions.append(
+                PROJECTS_TABLE.c.last_changed_at >= normalized_updated_after
+            )
+        changed_tor_project_ids = (
+            select(DOCUMENT_DIFFS_TABLE.c.project_id)
+            .join(
+                DOCUMENTS_TABLE,
+                DOCUMENTS_TABLE.c.id == DOCUMENT_DIFFS_TABLE.c.new_document_id,
+            )
+            .where(
+                and_(
+                    DOCUMENT_DIFFS_TABLE.c.tenant_id == normalized_tenant_id,
+                    DOCUMENTS_TABLE.c.tenant_id == normalized_tenant_id,
+                    DOCUMENT_DIFFS_TABLE.c.diff_type == "changed",
+                    DOCUMENTS_TABLE.c.document_type == "tor",
+                )
+            )
+            .distinct()
+        )
+        has_changed_tor_column = PROJECTS_TABLE.c.id.in_(changed_tor_project_ids).label(
+            "has_changed_tor"
+        )
+        if has_winner is not None:
+            winner_states = [
+                ProjectState.WINNER_ANNOUNCED.value,
+                ProjectState.CONTRACT_SIGNED.value,
+            ]
+            if has_winner:
+                conditions.append(PROJECTS_TABLE.c.project_state.in_(winner_states))
+            else:
+                conditions.append(PROJECTS_TABLE.c.project_state.not_in(winner_states))
+        if has_changed_tor is not None:
+            if has_changed_tor:
+                conditions.append(PROJECTS_TABLE.c.id.in_(changed_tor_project_ids))
+            else:
+                conditions.append(PROJECTS_TABLE.c.id.not_in(changed_tor_project_ids))
+        if normalized_keyword is not None:
+            keyword_like = f"%{normalized_keyword}%"
+            alias_project_ids = select(PROJECT_ALIASES_TABLE.c.project_id).where(
+                PROJECT_ALIASES_TABLE.c.alias_value.ilike(keyword_like)
+            )
+            conditions.append(
+                or_(
+                    PROJECTS_TABLE.c.project_name.ilike(keyword_like),
+                    PROJECTS_TABLE.c.organization_name.ilike(keyword_like),
+                    PROJECTS_TABLE.c.project_number.ilike(keyword_like),
+                    PROJECTS_TABLE.c.id.in_(alias_project_ids),
+                )
+            )
+
+        if conditions:
+            statement = statement.where(*conditions)
+            count_statement = count_statement.where(*conditions)
+        statement = statement.add_columns(has_changed_tor_column)
+        statement = (
+            statement.order_by(desc(PROJECTS_TABLE.c.last_changed_at))
+            .limit(normalized_limit)
+            .offset(normalized_offset)
         )
         with self._engine.connect() as connection:
             total = int(connection.execute(count_statement).scalar_one())
@@ -784,4 +1018,6 @@ def create_project_repository(
     engine: Engine | None = None,
     bootstrap_schema: bool = True,
 ) -> SqlProjectRepository:
-    return SqlProjectRepository(database_url=database_url, engine=engine, bootstrap_schema=bootstrap_schema)
+    return SqlProjectRepository(
+        database_url=database_url, engine=engine, bootstrap_schema=bootstrap_schema
+    )

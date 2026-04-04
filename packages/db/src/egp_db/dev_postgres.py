@@ -16,7 +16,10 @@ from psycopg import connect
 
 from egp_api.main import create_app
 from egp_db.migration_runner import apply_migrations
-from egp_db.repositories.project_repo import build_project_upsert_record, create_project_repository
+from egp_db.repositories.project_repo import (
+    build_project_upsert_record,
+    create_project_repository,
+)
 from egp_db.repositories.run_repo import create_run_repository
 from egp_shared_types.enums import ProcurementType, ProjectState
 
@@ -227,8 +230,12 @@ def run_phase1_postgres_smoke(
             },
         )
         document_id = ingest_response.json()["document"]["id"]
-        listed = client.get(f"/v1/documents/projects/{project_id}", params={"tenant_id": tenant_id})
-        download = client.get(f"/v1/documents/{document_id}/download", params={"tenant_id": tenant_id})
+        listed = client.get(
+            f"/v1/documents/projects/{project_id}", params={"tenant_id": tenant_id}
+        )
+        download = client.get(
+            f"/v1/documents/{document_id}/download", params={"tenant_id": tenant_id}
+        )
 
         return {
             "status_code": ingest_response.status_code,
@@ -304,7 +311,9 @@ def run_phase1_postgres_project_run_smoke(
             payload={"page": 1},
         )
         run_repository.mark_run_started(run.id)
-        run_repository.mark_task_finished(task.id, status="succeeded", result_json={"count": 1})
+        run_repository.mark_task_finished(
+            task.id, status="succeeded", result_json={"count": 1}
+        )
         finished = run_repository.mark_run_finished(
             run.id,
             status="succeeded",
@@ -316,8 +325,12 @@ def run_phase1_postgres_project_run_smoke(
             "tenant_id": tenant_id,
             "database_url": database_url,
             "project_id": project.id,
-            "alias_count": len(project_detail.aliases) if project_detail is not None else 0,
-            "status_event_count": len(project_detail.status_events) if project_detail is not None else 0,
+            "alias_count": len(project_detail.aliases)
+            if project_detail is not None
+            else 0,
+            "status_event_count": len(project_detail.status_events)
+            if project_detail is not None
+            else 0,
             "run_status": finished.status.value,
             "task_count": len(run_detail.tasks) if run_detail is not None else 0,
         }

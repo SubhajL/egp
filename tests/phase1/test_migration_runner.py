@@ -29,7 +29,7 @@ def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> N
                 rows = [row[0] for row in cursor.fetchall()]
 
         assert first_run.applied_versions == expected_versions
-        assert first_run.pending_versions == expected_versions
+        assert first_run.pending_versions == []
         assert second_run.applied_versions == []
         assert second_run.pending_versions == []
         assert rows == expected_versions

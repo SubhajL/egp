@@ -25,6 +25,7 @@ where = [
     "packages/document-classifier/src",
     "packages/db/src",
     "apps/worker/src",
+    "packages/notification-core/src",
 ]
 include = [
     "egp_api",
@@ -39,4 +40,6 @@ include = [
     "egp_db.*",
     "egp_worker",
     "egp_worker.*",
+    "egp_notifications",
+    "egp_notifications.*",
 ]

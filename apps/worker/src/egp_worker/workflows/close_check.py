@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from egp_crawler_core.closure_rules import check_winner_closure
-from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository, create_project_repository
+from egp_db.repositories.project_repo import (
+    ProjectRecord,
+    SqlProjectRepository,
+    create_project_repository,
+)
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.enums import ClosedReason, ProjectState
 
@@ -34,7 +38,9 @@ def run_close_check_workflow(
     if project_repository is None or run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
-        project_repository = project_repository or create_project_repository(database_url=database_url)
+        project_repository = project_repository or create_project_repository(
+            database_url=database_url
+        )
         run_repository = run_repository or create_run_repository(database_url=database_url)
 
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
@@ -53,7 +59,9 @@ def run_close_check_workflow(
             run_repository.mark_task_started(task.id)
             closed_reason = check_winner_closure(str(observation.get("source_status_text") or ""))
             if closed_reason is None:
-                run_repository.mark_task_finished(task.id, status="skipped", result_json={"matched": False})
+                run_repository.mark_task_finished(
+                    task.id, status="skipped", result_json={"matched": False}
+                )
                 continue
             project = project_repository.transition_project(
                 tenant_id=tenant_id,
@@ -80,7 +88,9 @@ def run_close_check_workflow(
 
     run_repository.mark_run_finished(
         run.id,
-        status="partial" if error_count and updated_projects else ("failed" if error_count else "succeeded"),
+        status="partial"
+        if error_count and updated_projects
+        else ("failed" if error_count else "succeeded"),
         summary_json={"updated_projects": len(updated_projects)},
         error_count=error_count,
     )

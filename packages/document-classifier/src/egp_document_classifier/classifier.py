@@ -34,7 +34,9 @@ def classify_document(
 
     if any(marker.casefold() in combined_text for marker in _TOR_MARKERS):
         phase = DocumentPhase.FINAL
-        if any(marker.casefold() in combined_text for marker in _PUBLIC_HEARING_MARKERS):
+        if any(
+            marker.casefold() in combined_text for marker in _PUBLIC_HEARING_MARKERS
+        ):
             phase = DocumentPhase.PUBLIC_HEARING
         return (DocumentType.TOR, phase)
 

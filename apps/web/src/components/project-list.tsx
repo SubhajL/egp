@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 
 import { fetchProjects, getApiBaseUrl, getTenantId, type ProjectSummary } from "@/lib/api";
 
+// Legacy Phase 1 component — kept for backwards compatibility
+
 const shellStyle: CSSProperties = {
   minHeight: "100vh",
   padding: "48px 20px 72px",
@@ -141,7 +143,7 @@ export function ProjectList() {
       try {
         const payload = await fetchProjects();
         if (!cancelled) {
-          setProjects(payload);
+          setProjects(payload.projects);
           setError(null);
         }
       } catch (loadError) {

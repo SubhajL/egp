@@ -50,7 +50,9 @@ def apply_migrations(*, database_url: str, migrations_dir: Path) -> MigrationRun
             cursor.execute("SELECT version FROM schema_migrations")
             applied_versions = {str(row[0]) for row in cursor.fetchall()}
 
-        pending_files = [path for path in migration_files if path.name not in applied_versions]
+        pending_files = [
+            path for path in migration_files if path.name not in applied_versions
+        ]
         pending_versions = [path.name for path in pending_files]
 
         for migration_file in pending_files:
@@ -64,7 +66,7 @@ def apply_migrations(*, database_url: str, migrations_dir: Path) -> MigrationRun
 
     return MigrationRunResult(
         applied_versions=pending_versions,
-        pending_versions=pending_versions,
+        pending_versions=[],
     )
 
 
