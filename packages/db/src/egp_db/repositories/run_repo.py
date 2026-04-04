@@ -70,6 +70,33 @@ class CrawlRunPage:
     offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectCrawlEvidenceRecord:
+    task_id: str
+    run_id: str
+    trigger_type: str
+    run_status: CrawlRunStatus
+    task_type: str
+    task_status: str
+    attempts: int
+    keyword: str | None
+    started_at: str | None
+    finished_at: str | None
+    created_at: str
+    payload: dict[str, object] | None
+    result_json: dict[str, object] | None
+    run_summary_json: dict[str, object] | None
+    run_error_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCrawlEvidencePage:
+    items: list[ProjectCrawlEvidenceRecord]
+    total: int
+    limit: int
+    offset: int
+
+
 METADATA = DB_METADATA
 
 CRAWL_RUNS_TABLE = Table(
@@ -194,6 +221,26 @@ def _task_from_mapping(row: RowMapping) -> CrawlTaskRecord:
         payload=row["payload"],
         result_json=row["result_json"],
         created_at=_dt_to_iso(row["created_at"]) or "",
+    )
+
+
+def _project_crawl_evidence_from_mapping(row: RowMapping) -> ProjectCrawlEvidenceRecord:
+    return ProjectCrawlEvidenceRecord(
+        task_id=str(row["task_id"]),
+        run_id=str(row["run_id"]),
+        trigger_type=str(row["trigger_type"]),
+        run_status=CrawlRunStatus(str(row["run_status"])),
+        task_type=str(row["task_type"]),
+        task_status=str(row["task_status"]),
+        attempts=int(row["attempts"]),
+        keyword=str(row["keyword"]) if row["keyword"] is not None else None,
+        started_at=_dt_to_iso(row["started_at"]),
+        finished_at=_dt_to_iso(row["finished_at"]),
+        created_at=_dt_to_iso(row["created_at"]) or "",
+        payload=row["payload"],
+        result_json=row["result_json"],
+        run_summary_json=row["run_summary_json"],
+        run_error_count=int(row["run_error_count"]),
     )
 
 
@@ -442,6 +489,67 @@ class SqlRunRepository:
         return CrawlRunDetail(
             run=_run_from_mapping(run_row),
             tasks=[_task_from_mapping(row) for row in task_rows],
+        )
+
+    def list_project_crawl_evidence(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> ProjectCrawlEvidencePage:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_project_id = normalize_uuid_string(project_id)
+        normalized_limit = max(1, min(int(limit), 100))
+        normalized_offset = max(0, int(offset))
+        joined_tables = CRAWL_TASKS_TABLE.join(
+            CRAWL_RUNS_TABLE,
+            CRAWL_RUNS_TABLE.c.id == CRAWL_TASKS_TABLE.c.run_id,
+        )
+        filters = and_(
+            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+            CRAWL_TASKS_TABLE.c.project_id == normalized_project_id,
+        )
+        with self._engine.connect() as connection:
+            total = int(
+                connection.execute(
+                    select(func.count()).select_from(joined_tables).where(filters)
+                ).scalar_one()
+            )
+            rows = connection.execute(
+                select(
+                    CRAWL_TASKS_TABLE.c.id.label("task_id"),
+                    CRAWL_TASKS_TABLE.c.run_id,
+                    CRAWL_RUNS_TABLE.c.trigger_type,
+                    CRAWL_RUNS_TABLE.c.status.label("run_status"),
+                    CRAWL_TASKS_TABLE.c.task_type,
+                    CRAWL_TASKS_TABLE.c.status.label("task_status"),
+                    CRAWL_TASKS_TABLE.c.attempts,
+                    CRAWL_TASKS_TABLE.c.keyword,
+                    CRAWL_TASKS_TABLE.c.started_at,
+                    CRAWL_TASKS_TABLE.c.finished_at,
+                    CRAWL_TASKS_TABLE.c.created_at,
+                    CRAWL_TASKS_TABLE.c.payload,
+                    CRAWL_TASKS_TABLE.c.result_json,
+                    CRAWL_RUNS_TABLE.c.summary_json.label("run_summary_json"),
+                    CRAWL_RUNS_TABLE.c.error_count.label("run_error_count"),
+                )
+                .select_from(joined_tables)
+                .where(filters)
+                .order_by(
+                    desc(CRAWL_TASKS_TABLE.c.finished_at),
+                    desc(CRAWL_TASKS_TABLE.c.started_at),
+                    desc(CRAWL_TASKS_TABLE.c.created_at),
+                )
+                .limit(normalized_limit)
+                .offset(normalized_offset)
+            ).mappings().all()
+        return ProjectCrawlEvidencePage(
+            items=[_project_crawl_evidence_from_mapping(row) for row in rows],
+            total=total,
+            limit=normalized_limit,
+            offset=normalized_offset,
         )
 
 

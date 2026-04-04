@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from egp_db.repositories.run_repo import CrawlRunDetail, CrawlTaskRecord, SqlRunRepository
+from egp_db.repositories.run_repo import (
+    CrawlRunDetail,
+    CrawlTaskRecord,
+    ProjectCrawlEvidencePage,
+    SqlRunRepository,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,4 +106,19 @@ class RunService:
             total=run_page.total,
             limit=run_page.limit,
             offset=run_page.offset,
+        )
+
+    def list_project_crawl_evidence(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> ProjectCrawlEvidencePage:
+        return self._repository.list_project_crawl_evidence(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            limit=limit,
+            offset=offset,
         )

@@ -15,6 +15,7 @@ export type ProjectSummary = {
   project_state: string;
   closed_reason: string | null;
   source_status_text: string | null;
+  has_changed_tor: boolean;
   first_seen_at: string;
   last_seen_at: string;
   last_changed_at: string;
@@ -72,6 +73,35 @@ export type DocumentSummary = {
 
 export type DocumentListResponse = {
   documents: DocumentSummary[];
+};
+
+export type DocumentDownloadResponse = {
+  download_url: string;
+};
+
+export type ProjectCrawlEvidence = {
+  task_id: string;
+  run_id: string;
+  trigger_type: string;
+  run_status: string;
+  task_type: string;
+  task_status: string;
+  attempts: number;
+  keyword: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  payload: Record<string, unknown> | null;
+  result_json: Record<string, unknown> | null;
+  run_summary_json: Record<string, unknown> | null;
+  run_error_count: number;
+};
+
+export type ProjectCrawlEvidenceListResponse = {
+  evidence: ProjectCrawlEvidence[];
+  total: number;
+  limit: number;
+  offset: number;
 };
 
 export type RunSummary = {
@@ -145,11 +175,26 @@ function getApiHeaders(): HeadersInit {
   };
 }
 
-function buildUrl(path: string, params: Record<string, string | number | undefined>): string {
+type QueryParamValue =
+  | string
+  | number
+  | boolean
+  | Array<string | number | boolean>
+  | undefined;
+
+function buildUrl(path: string, params: Record<string, QueryParamValue>): string {
   const tenantId = getTenantId();
   const searchParams = new URLSearchParams();
   if (tenantId) searchParams.set("tenant_id", tenantId);
   for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (entry !== undefined && entry !== "") {
+          searchParams.append(key, String(entry));
+        }
+      }
+      continue;
+    }
     if (value !== undefined && value !== "") {
       searchParams.set(key, String(value));
     }
@@ -173,7 +218,16 @@ async function apiFetch<T>(url: string): Promise<T> {
 /* ------------------------------------------------------------------ */
 
 export type FetchProjectsParams = {
-  project_state?: string;
+  project_state?: string[];
+  procurement_type?: string[];
+  closed_reason?: string[];
+  organization?: string;
+  keyword?: string;
+  budget_min?: string;
+  budget_max?: string;
+  updated_after?: string;
+  has_changed_tor?: boolean;
+  has_winner?: boolean;
   limit?: number;
   offset?: number;
 };
@@ -183,6 +237,15 @@ export async function fetchProjects(
 ): Promise<ProjectListResponse> {
   const url = buildUrl("/v1/projects", {
     project_state: params.project_state,
+    procurement_type: params.procurement_type,
+    closed_reason: params.closed_reason,
+    organization: params.organization,
+    keyword: params.keyword,
+    budget_min: params.budget_min,
+    budget_max: params.budget_max,
+    updated_after: params.updated_after,
+    has_changed_tor: params.has_changed_tor,
+    has_winner: params.has_winner,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
@@ -201,6 +264,20 @@ export async function fetchDocuments(
 ): Promise<DocumentListResponse> {
   const url = buildUrl(`/v1/documents/projects/${encodeURIComponent(projectId)}`, {});
   return apiFetch<DocumentListResponse>(url);
+}
+
+export async function fetchDocumentDownloadUrl(
+  documentId: string,
+): Promise<DocumentDownloadResponse> {
+  const url = buildUrl(`/v1/documents/${encodeURIComponent(documentId)}/download`, {});
+  return apiFetch<DocumentDownloadResponse>(url);
+}
+
+export async function fetchProjectCrawlEvidence(
+  projectId: string,
+): Promise<ProjectCrawlEvidenceListResponse> {
+  const url = buildUrl(`/v1/projects/${encodeURIComponent(projectId)}/crawl-evidence`, {});
+  return apiFetch<ProjectCrawlEvidenceListResponse>(url);
 }
 
 export type FetchRunsParams = {

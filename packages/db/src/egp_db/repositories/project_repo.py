@@ -23,6 +23,7 @@ from sqlalchemy import (
     desc,
     func,
     insert,
+    or_,
     select,
     update,
 )
@@ -31,6 +32,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_db.repositories.document_repo import DOCUMENT_DIFFS_TABLE, DOCUMENTS_TABLE
 from egp_crawler_core.canonical_id import build_project_aliases, generate_canonical_id
 from egp_crawler_core.project_lifecycle import transition_state
 from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
@@ -65,6 +67,7 @@ class ProjectRecord:
     project_state: ProjectState
     closed_reason: ClosedReason | None
     source_status_text: str | None
+    has_changed_tor: bool
     first_seen_at: str
     last_seen_at: str
     last_changed_at: str
@@ -248,6 +251,44 @@ def _normalize_run_id(value: str | None) -> str | None:
     return normalize_uuid_string(value)
 
 
+def _normalize_decimal_filter(value: Decimal | float | int | str | None) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    text = str(value).strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueError("budget filter must be numeric") from exc
+
+
+def _normalize_datetime_filter(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError("updated_after must be ISO-8601 datetime") from exc
+
+
+def _normalize_multi_value_filter(values: list[object] | tuple[object, ...] | None) -> list[str]:
+    normalized_values: list[str] = []
+    for raw_value in values or []:
+        for part in str(raw_value).split(","):
+            normalized = part.strip()
+            if normalized:
+                normalized_values.append(normalized)
+    return normalized_values
+
+
 _STRONG_ALIAS_TYPES = {"project_number", "fingerprint"}
 
 
@@ -280,6 +321,7 @@ def _project_from_mapping(row: RowMapping) -> ProjectRecord:
             ClosedReason(str(row["closed_reason"])) if row["closed_reason"] is not None else None
         ),
         source_status_text=_normalize_optional_text(row["source_status_text"]),
+        has_changed_tor=bool(row["has_changed_tor"]) if "has_changed_tor" in row else False,
         first_seen_at=as_iso(row["first_seen_at"]),
         last_seen_at=as_iso(row["last_seen_at"]),
         last_changed_at=as_iso(row["last_changed_at"]),
@@ -747,23 +789,93 @@ class SqlProjectRepository:
         self,
         *,
         tenant_id: str,
-        project_state: ProjectState | str | None = None,
+        project_states: list[ProjectState | str] | None = None,
+        procurement_types: list[ProcurementType | str] | None = None,
+        closed_reasons: list[ClosedReason | str] | None = None,
+        organization: str | None = None,
+        keyword: str | None = None,
+        budget_min: Decimal | float | int | str | None = None,
+        budget_max: Decimal | float | int | str | None = None,
+        updated_after: datetime | str | None = None,
+        has_changed_tor: bool | None = None,
+        has_winner: bool | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> ProjectPage:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_limit = max(1, min(int(limit), 200))
         normalized_offset = max(0, int(offset))
+        normalized_project_states = _normalize_multi_value_filter(project_states)
+        normalized_procurement_types = _normalize_multi_value_filter(procurement_types)
+        normalized_closed_reasons = _normalize_multi_value_filter(closed_reasons)
+        normalized_organization = _normalize_optional_text(organization)
+        normalized_keyword = _normalize_optional_text(keyword)
+        normalized_budget_min = _normalize_decimal_filter(budget_min)
+        normalized_budget_max = _normalize_decimal_filter(budget_max)
+        normalized_updated_after = _normalize_datetime_filter(updated_after)
         statement = select(PROJECTS_TABLE).where(PROJECTS_TABLE.c.tenant_id == normalized_tenant_id)
         count_statement = select(func.count()).select_from(PROJECTS_TABLE).where(
             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id
         )
-        if project_state is not None:
-            normalized_state = (
-                project_state.value if isinstance(project_state, ProjectState) else str(project_state).strip()
+        conditions = []
+
+        if normalized_project_states:
+            conditions.append(PROJECTS_TABLE.c.project_state.in_(normalized_project_states))
+        if normalized_procurement_types:
+            conditions.append(PROJECTS_TABLE.c.procurement_type.in_(normalized_procurement_types))
+        if normalized_closed_reasons:
+            conditions.append(PROJECTS_TABLE.c.closed_reason.in_(normalized_closed_reasons))
+        if normalized_organization is not None:
+            conditions.append(PROJECTS_TABLE.c.organization_name.ilike(f"%{normalized_organization}%"))
+        if normalized_budget_min is not None:
+            conditions.append(PROJECTS_TABLE.c.budget_amount >= normalized_budget_min)
+        if normalized_budget_max is not None:
+            conditions.append(PROJECTS_TABLE.c.budget_amount <= normalized_budget_max)
+        if normalized_updated_after is not None:
+            conditions.append(PROJECTS_TABLE.c.last_changed_at >= normalized_updated_after)
+        changed_tor_project_ids = (
+            select(DOCUMENT_DIFFS_TABLE.c.project_id)
+            .join(DOCUMENTS_TABLE, DOCUMENTS_TABLE.c.id == DOCUMENT_DIFFS_TABLE.c.new_document_id)
+            .where(
+                and_(
+                    DOCUMENT_DIFFS_TABLE.c.tenant_id == normalized_tenant_id,
+                    DOCUMENTS_TABLE.c.tenant_id == normalized_tenant_id,
+                    DOCUMENT_DIFFS_TABLE.c.diff_type == "changed",
+                    DOCUMENTS_TABLE.c.document_type == "tor",
+                )
             )
-            statement = statement.where(PROJECTS_TABLE.c.project_state == normalized_state)
-            count_statement = count_statement.where(PROJECTS_TABLE.c.project_state == normalized_state)
+            .distinct()
+        )
+        has_changed_tor_column = PROJECTS_TABLE.c.id.in_(changed_tor_project_ids).label("has_changed_tor")
+        if has_winner is not None:
+            winner_states = [ProjectState.WINNER_ANNOUNCED.value, ProjectState.CONTRACT_SIGNED.value]
+            if has_winner:
+                conditions.append(PROJECTS_TABLE.c.project_state.in_(winner_states))
+            else:
+                conditions.append(PROJECTS_TABLE.c.project_state.not_in(winner_states))
+        if has_changed_tor is not None:
+            if has_changed_tor:
+                conditions.append(PROJECTS_TABLE.c.id.in_(changed_tor_project_ids))
+            else:
+                conditions.append(PROJECTS_TABLE.c.id.not_in(changed_tor_project_ids))
+        if normalized_keyword is not None:
+            keyword_like = f"%{normalized_keyword}%"
+            alias_project_ids = select(PROJECT_ALIASES_TABLE.c.project_id).where(
+                PROJECT_ALIASES_TABLE.c.alias_value.ilike(keyword_like)
+            )
+            conditions.append(
+                or_(
+                    PROJECTS_TABLE.c.project_name.ilike(keyword_like),
+                    PROJECTS_TABLE.c.organization_name.ilike(keyword_like),
+                    PROJECTS_TABLE.c.project_number.ilike(keyword_like),
+                    PROJECTS_TABLE.c.id.in_(alias_project_ids),
+                )
+            )
+
+        if conditions:
+            statement = statement.where(*conditions)
+            count_statement = count_statement.where(*conditions)
+        statement = statement.add_columns(has_changed_tor_column)
         statement = statement.order_by(desc(PROJECTS_TABLE.c.last_changed_at)).limit(normalized_limit).offset(
             normalized_offset
         )
