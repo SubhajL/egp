@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, select
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    select,
+)
 from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
@@ -127,14 +136,18 @@ class SqlProfileRepository:
     def _ensure_schema(self) -> None:
         METADATA.create_all(self._engine)
 
-    def list_profiles_with_keywords(self, *, tenant_id: str) -> list[CrawlProfileDetail]:
+    def list_profiles_with_keywords(
+        self, *, tenant_id: str
+    ) -> list[CrawlProfileDetail]:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:
             profile_rows = (
                 connection.execute(
                     select(CRAWL_PROFILES_TABLE)
                     .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
-                    .order_by(CRAWL_PROFILES_TABLE.c.created_at, CRAWL_PROFILES_TABLE.c.id)
+                    .order_by(
+                        CRAWL_PROFILES_TABLE.c.created_at, CRAWL_PROFILES_TABLE.c.id
+                    )
                 )
                 .mappings()
                 .all()

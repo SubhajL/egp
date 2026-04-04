@@ -112,6 +112,8 @@ def describe_closure_rules() -> dict[str, object]:
         "contract_status_terms": list(_CONTRACT_STATUSES),
         "consulting_timeout_days": DEFAULT_CONSULTING_TIMEOUT_DAYS,
         "stale_no_tor_days": DEFAULT_STALE_TIMEOUT_DAYS,
-        "stale_eligible_states": sorted(state.value for state in _STALE_ELIGIBLE_STATES),
+        "stale_eligible_states": sorted(
+            state.value for state in _STALE_ELIGIBLE_STATES
+        ),
         "source": "packages/crawler-core/src/egp_crawler_core/closure_rules.py",
     }
