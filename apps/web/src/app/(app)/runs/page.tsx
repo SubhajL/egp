@@ -1,31 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import { Activity, Clock, CheckCircle, XCircle, ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
+import { Fragment, useEffect, useState, type ComponentType } from "react";
+import {
+  Activity,
+  CheckCircle,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  RotateCcw,
+  XCircle,
+} from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
+import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useRuns } from "@/lib/hooks";
 import { formatThaiDate } from "@/lib/utils";
-import type { RunDetailResponse } from "@/lib/api";
+import type { RunDetailResponse, TaskSummary } from "@/lib/api";
 
-/* ------------------------------------------------------------------ */
-/*  Mock Data                                                          */
-/* ------------------------------------------------------------------ */
-
-type MockRun = {
-  id: string;
-  profile: string;
-  trigger: string;
-  status: string;
-  startedAt: string;
-  duration: string;
-  discovered: number;
-  updated: number;
-  closed: number;
-  errors: number;
-};
-
-type MockTask = {
+type DisplayTask = {
   id: string;
   type: string;
   keyword: string;
@@ -35,32 +27,153 @@ type MockTask = {
   duration: string;
 };
 
-const MOCK_RUNS: MockRun[] = [
-  { id: "RUN-0156", profile: "TOR", trigger: "กำหนดเวลา", status: "running", startedAt: "3 เม.ย. 69 09:00", duration: "12 นาที...", discovered: 3, updated: 1, closed: 0, errors: 0 },
-  { id: "RUN-0155", profile: "TOR", trigger: "กำหนดเวลา", status: "succeeded", startedAt: "3 เม.ย. 69 06:00", duration: "45 นาที", discovered: 18, updated: 5, closed: 2, errors: 0 },
-  { id: "RUN-0154", profile: "TOE", trigger: "ด้วยตนเอง", status: "succeeded", startedAt: "2 เม.ย. 69 14:30", duration: "32 นาที", discovered: 7, updated: 3, closed: 1, errors: 0 },
-  { id: "RUN-0153", profile: "TOR", trigger: "กำหนดเวลา", status: "partial", startedAt: "2 เม.ย. 69 09:00", duration: "51 นาที", discovered: 15, updated: 4, closed: 0, errors: 3 },
-  { id: "RUN-0152", profile: "LUE", trigger: "กำหนดเวลา", status: "succeeded", startedAt: "2 เม.ย. 69 06:00", duration: "28 นาที", discovered: 5, updated: 2, closed: 0, errors: 0 },
-  { id: "RUN-0151", profile: "TOR", trigger: "ลองใหม่", status: "failed", startedAt: "1 เม.ย. 69 15:00", duration: "5 นาที", discovered: 0, updated: 0, closed: 0, errors: 12 },
-  { id: "RUN-0150", profile: "TOR", trigger: "กำหนดเวลา", status: "succeeded", startedAt: "1 เม.ย. 69 09:00", duration: "42 นาที", discovered: 14, updated: 6, closed: 1, errors: 0 },
-  { id: "RUN-0149", profile: "TOE", trigger: "กำหนดเวลา", status: "succeeded", startedAt: "1 เม.ย. 69 06:00", duration: "35 นาที", discovered: 9, updated: 3, closed: 0, errors: 0 },
-];
+type DisplayRun = {
+  id: string;
+  displayId: string;
+  profile: string;
+  trigger: string;
+  status: string;
+  startedAt: string;
+  duration: string;
+  discovered: number;
+  updated: number;
+  closed: number;
+  errors: number;
+  tasks: DisplayTask[];
+};
 
-const MOCK_TASKS: MockTask[] = [
-  { id: "TASK-001", type: "ค้นพบ", keyword: "ระบบสารสนเทศ", project: "—", status: "succeeded", attempts: 1, duration: "8 นาที" },
-  { id: "TASK-002", type: "ค้นพบ", keyword: "เทคโนโลยี", project: "—", status: "succeeded", attempts: 1, duration: "12 นาที" },
-  { id: "TASK-003", type: "ค้นพบ", keyword: "คลังข้อมูล", project: "—", status: "failed", attempts: 3, duration: "15 นาที" },
-  { id: "TASK-004", type: "ตรวจสอบปิด", keyword: "—", project: "EGP-2026-0098", status: "skipped", attempts: 1, duration: "2 วินาที" },
-];
+function formatRunTrigger(triggerType: string): string {
+  switch (triggerType) {
+    case "schedule":
+      return "กำหนดเวลา";
+    case "manual":
+      return "ด้วยตนเอง";
+    case "retry":
+      return "ลองใหม่";
+    case "backfill":
+      return "ย้อนเก็บข้อมูล";
+    default:
+      return triggerType;
+  }
+}
 
-/* ------------------------------------------------------------------ */
-/*  Component                                                          */
-/* ------------------------------------------------------------------ */
+function formatTaskType(taskType: string): string {
+  switch (taskType) {
+    case "discover":
+      return "ค้นหา";
+    case "update":
+      return "อัปเดต";
+    case "close_check":
+      return "ตรวจสอบปิด";
+    case "download":
+      return "ดาวน์โหลด";
+    default:
+      return taskType;
+  }
+}
 
-function StatCard({ label, value, icon: Icon, colorClass, bgClass }: {
+function formatDuration(
+  startedAt: string | null,
+  finishedAt: string | null,
+  status: string,
+): string {
+  if (!startedAt) {
+    return status === "queued" ? "รอคิว" : "—";
+  }
+  if (!finishedAt) {
+    return status === "running" ? "กำลังทำงาน..." : "—";
+  }
+
+  const diffMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+  if (diffMs < 60000) {
+    return `${Math.max(1, Math.round(diffMs / 1000))} วินาที`;
+  }
+
+  const totalMinutes = Math.round(diffMs / 60000);
+  if (totalMinutes < 60) {
+    return `${totalMinutes} นาที`;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours} ชม. ${minutes} นาที` : `${hours} ชม.`;
+}
+
+function readNumericSummary(
+  summary: Record<string, unknown> | null,
+  keys: string[],
+): number {
+  if (!summary) return 0;
+  for (const key of keys) {
+    const value = summary[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return 0;
+}
+
+function formatProfileLabel(profileId: string | null): string {
+  return profileId ? profileId.slice(0, 8).toUpperCase() : "—";
+}
+
+function buildDisplayTask(task: TaskSummary): DisplayTask {
+  return {
+    id: task.id.slice(0, 12),
+    type: formatTaskType(task.task_type),
+    keyword: task.keyword ?? "—",
+    project: task.project_id ? task.project_id.slice(0, 12) : "—",
+    status: task.status,
+    attempts: task.attempts,
+    duration: formatDuration(task.started_at, task.finished_at, task.status),
+  };
+}
+
+function buildDisplayRun(runDetail: RunDetailResponse): DisplayRun {
+  return {
+    id: runDetail.run.id,
+    displayId: runDetail.run.id.slice(0, 12),
+    profile: formatProfileLabel(runDetail.run.profile_id),
+    trigger: formatRunTrigger(runDetail.run.trigger_type),
+    status: runDetail.run.status,
+    startedAt: runDetail.run.started_at ? formatThaiDate(runDetail.run.started_at) : "—",
+    duration: formatDuration(
+      runDetail.run.started_at,
+      runDetail.run.finished_at,
+      runDetail.run.status,
+    ),
+    discovered: readNumericSummary(runDetail.run.summary_json, [
+      "projects_seen",
+      "projects_discovered",
+      "discovered",
+    ]),
+    updated: readNumericSummary(runDetail.run.summary_json, [
+      "projects_updated",
+      "updated",
+      "changes_detected",
+    ]),
+    closed: readNumericSummary(runDetail.run.summary_json, [
+      "projects_closed",
+      "closed",
+      "closed_projects",
+    ]),
+    errors: runDetail.run.error_count,
+    tasks: runDetail.tasks.map(buildDisplayTask),
+  };
+}
+
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+  colorClass,
+  bgClass,
+}: {
   label: string;
   value: string | number;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: ComponentType<{ className?: string }>;
   colorClass: string;
   bgClass: string;
 }) {
@@ -70,7 +183,9 @@ function StatCard({ label, value, icon: Icon, colorClass, bgClass }: {
         <Icon className={`size-5 ${colorClass}`} />
       </div>
       <div>
-        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{label}</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          {label}
+        </p>
         <p className={`font-mono text-2xl font-bold tabular-nums ${colorClass}`}>{value}</p>
       </div>
     </div>
@@ -78,162 +193,265 @@ function StatCard({ label, value, icon: Icon, colorClass, bgClass }: {
 }
 
 export default function RunsPage() {
-  const [expandedRun, setExpandedRun] = useState<string | null>("RUN-0153");
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 50;
-  const { data: runData } = useRuns({ limit: rowsPerPage, offset: (currentPage - 1) * rowsPerPage });
+  const { data, isLoading, isError, error, refetch, isFetching } = useRuns({
+    limit: rowsPerPage,
+    offset: (currentPage - 1) * rowsPerPage,
+  });
 
-  // Map API runs to display format, fall back to mock
-  const apiRuns: RunDetailResponse[] = runData?.runs ?? [];
-  const displayRuns: MockRun[] = apiRuns.length > 0
-    ? apiRuns.map((r) => ({
-        id: r.run.id.slice(0, 12),
-        profile: r.run.profile_id?.slice(0, 8) ?? "TOR",
-        trigger: r.run.trigger_type === "schedule" ? "กำหนดเวลา" : r.run.trigger_type === "manual" ? "ด้วยตนเอง" : r.run.trigger_type === "retry" ? "ลองใหม่" : r.run.trigger_type,
-        status: r.run.status,
-        startedAt: r.run.started_at ? formatThaiDate(r.run.started_at) : "—",
-        duration: r.run.started_at && r.run.finished_at
-          ? Math.round((new Date(r.run.finished_at).getTime() - new Date(r.run.started_at).getTime()) / 60000) + " นาที"
-          : r.run.status === "running" ? "กำลังทำงาน..." : "—",
-        discovered: (r.run.summary_json?.projects_seen as number) ?? 0,
-        updated: 0,
-        closed: 0,
-        errors: r.run.error_count,
-      }))
-    : MOCK_RUNS;
-  const totalRunCount = runData?.total ?? 156;
+  const displayRuns = (data?.runs ?? []).map(buildDisplayRun);
+  const totalRunCount = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(Math.max(totalRunCount, 1) / rowsPerPage));
+  const rangeStart = totalRunCount === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
+  const rangeEnd = totalRunCount === 0 ? 0 : rangeStart + displayRuns.length - 1;
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    if (expandedRun && !displayRuns.some((run) => run.id === expandedRun)) {
+      setExpandedRun(null);
+    }
+  }, [displayRuns, expandedRun]);
 
   return (
     <>
       <PageHeader
         title="การทำงานและปฏิบัติการ"
-        subtitle="ติดตามการทำงานของ Crawler และจัดการ Tasks"
+        subtitle="ติดตามประวัติการทำงานของ Crawler จากข้อมูลรันจริง"
         actions={
-          <>
-            <button type="button" className="flex items-center gap-1.5 rounded-xl border border-[var(--border-default)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">
-              <RotateCcw className="size-4" /> รีเฟรช
-            </button>
-            <button type="button" className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover">
-              สร้าง Run ใหม่
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            className="flex items-center gap-1.5 rounded-xl border border-[var(--border-default)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RotateCcw className={`size-4 ${isFetching ? "animate-spin" : ""}`} />
+            รีเฟรช
+          </button>
         }
       />
 
-      {/* Stat Cards */}
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-4">
-        <StatCard label="Run ทั้งหมด" value={totalRunCount} icon={Activity} colorClass="text-[var(--text-secondary)]" bgClass="bg-[var(--badge-gray-bg)]" />
-        <StatCard label="กำลังทำงาน" value={displayRuns.filter((r) => r.status === "running").length} icon={Clock} colorClass="text-[var(--badge-indigo-text)]" bgClass="bg-[var(--badge-indigo-bg)]" />
-        <StatCard label="สำเร็จ" value={displayRuns.filter((r) => r.status === "succeeded").length} icon={CheckCircle} colorClass="text-[var(--badge-green-text)]" bgClass="bg-[var(--badge-green-bg)]" />
-        <StatCard label="ล้มเหลว" value={displayRuns.filter((r) => r.status === "failed").length} icon={XCircle} colorClass="text-[var(--badge-red-text)]" bgClass="bg-[var(--badge-red-bg)]" />
+        <StatCard
+          label="Run ทั้งหมด"
+          value={totalRunCount}
+          icon={Activity}
+          colorClass="text-[var(--text-secondary)]"
+          bgClass="bg-[var(--badge-gray-bg)]"
+        />
+        <StatCard
+          label="กำลังทำงานในหน้า"
+          value={displayRuns.filter((run) => run.status === "running").length}
+          icon={Clock}
+          colorClass="text-[var(--badge-indigo-text)]"
+          bgClass="bg-[var(--badge-indigo-bg)]"
+        />
+        <StatCard
+          label="สำเร็จในหน้า"
+          value={displayRuns.filter((run) => run.status === "succeeded").length}
+          icon={CheckCircle}
+          colorClass="text-[var(--badge-green-text)]"
+          bgClass="bg-[var(--badge-green-bg)]"
+        />
+        <StatCard
+          label="ล้มเหลวในหน้า"
+          value={displayRuns.filter((run) => run.status === "failed").length}
+          icon={XCircle}
+          colorClass="text-[var(--badge-red-text)]"
+          bgClass="bg-[var(--badge-red-bg)]"
+        />
       </div>
 
-      {/* Runs Table */}
-      <div className="mt-6 rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)]">
-        <div className="border-b border-[var(--border-default)] px-6 py-4">
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">ประวัติการทำงาน</h2>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="bg-[var(--bg-surface-secondary)]">
-                <th className="w-8 px-3 py-2" />
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Run ID</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">โปรไฟล์</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">ทริกเกอร์</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">สถานะ</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">เริ่มเมื่อ</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">ระยะเวลา</th>
-                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">ค้นพบ</th>
-                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">อัปเดต</th>
-                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">ปิด</th>
-                <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">ข้อผิดพลาด</th>
-              </tr>
-            </thead>
-            <tbody>
-              {displayRuns.map((run) => (
-                <>
-                  <tr
-                    key={run.id}
-                    className="h-10 cursor-pointer border-b border-[var(--border-light)] hover:bg-[var(--bg-surface-hover)]"
-                    onClick={() => setExpandedRun(expandedRun === run.id ? null : run.id)}
-                  >
-                    <td className="px-3 py-2 text-[var(--text-muted)]">
-                      {expandedRun === run.id ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                    </td>
-                    <td className="px-3 py-2 font-mono font-medium">{run.id}</td>
-                    <td className="px-3 py-2">{run.profile}</td>
-                    <td className="px-3 py-2">{run.trigger}</td>
-                    <td className="px-3 py-2"><StatusBadge state={run.status} variant="run" /></td>
-                    <td className="px-3 py-2 text-[var(--text-muted)]">{run.startedAt}</td>
-                    <td className="px-3 py-2 font-mono tabular-nums">{run.duration}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{run.discovered}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{run.updated}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{run.closed}</td>
-                    <td className={`px-3 py-2 text-right font-mono tabular-nums ${run.errors > 0 ? "font-semibold text-[var(--badge-red-text)]" : ""}`}>{run.errors}</td>
-                  </tr>
-                  {expandedRun === run.id && (
-                    <tr key={`${run.id}-detail`}>
-                      <td colSpan={11} className="bg-[var(--bg-surface-secondary)] px-6 py-4">
-                        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Tasks ใน {run.id}</p>
-                        <table className="w-full text-[13px]">
-                          <thead>
-                            <tr className="border-b border-[var(--border-default)]">
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">Task ID</th>
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">ประเภท</th>
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">คำค้น</th>
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">โครงการ</th>
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">สถานะ</th>
-                              <th className="px-3 py-1.5 text-right text-xs font-semibold text-[var(--text-muted)]">ความพยายาม</th>
-                              <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">ระยะเวลา</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {MOCK_TASKS.map((task) => (
-                              <tr key={task.id} className="border-b border-[var(--border-light)]">
-                                <td className="px-3 py-1.5 font-mono">{task.id}</td>
-                                <td className="px-3 py-1.5">{task.type}</td>
-                                <td className="px-3 py-1.5">{task.keyword}</td>
-                                <td className="px-3 py-1.5 font-mono">{task.project}</td>
-                                <td className="px-3 py-1.5"><StatusBadge state={task.status} variant="task" /></td>
-                                <td className="px-3 py-1.5 text-right font-mono tabular-nums">{task.attempts}</td>
-                                <td className="px-3 py-1.5 font-mono tabular-nums">{task.duration}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        <div className="mt-3 flex items-center gap-3">
-                          <button type="button" className="text-sm font-medium text-primary hover:text-primary-hover">ดูรายละเอียดเต็ม →</button>
-                          {run.errors > 0 && (
-                            <button type="button" className="flex items-center gap-1 rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50">
-                              <RotateCcw className="size-3.5" /> ลองใหม่ Tasks ที่ล้มเหลว
-                            </button>
-                          )}
-                        </div>
+      <QueryState
+        isLoading={isLoading}
+        isError={isError}
+        error={error}
+        isEmpty={!isLoading && !isError && displayRuns.length === 0}
+        emptyMessage="ยังไม่มีประวัติการทำงานสำหรับ tenant นี้"
+      >
+        <div className="mt-6 rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)]">
+          <div className="border-b border-[var(--border-default)] px-6 py-4">
+            <h2 className="text-lg font-bold text-[var(--text-primary)]">ประวัติการทำงาน</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[13px]">
+              <thead>
+                <tr className="bg-[var(--bg-surface-secondary)]">
+                  <th className="w-8 px-3 py-2" />
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    Run ID
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    โปรไฟล์
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ทริกเกอร์
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    สถานะ
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    เริ่มเมื่อ
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ระยะเวลา
+                  </th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ค้นพบ
+                  </th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    อัปเดต
+                  </th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ปิด
+                  </th>
+                  <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ข้อผิดพลาด
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayRuns.map((run) => (
+                  <Fragment key={run.id}>
+                    <tr
+                      className="h-10 cursor-pointer border-b border-[var(--border-light)] hover:bg-[var(--bg-surface-hover)]"
+                      onClick={() => setExpandedRun(expandedRun === run.id ? null : run.id)}
+                    >
+                      <td className="px-3 py-2 text-[var(--text-muted)]">
+                        {expandedRun === run.id ? (
+                          <ChevronDown className="size-4" />
+                        ) : (
+                          <ChevronRight className="size-4" />
+                        )}
+                      </td>
+                      <td className="px-3 py-2 font-mono font-medium">{run.displayId}</td>
+                      <td className="px-3 py-2">{run.profile}</td>
+                      <td className="px-3 py-2">{run.trigger}</td>
+                      <td className="px-3 py-2">
+                        <StatusBadge state={run.status} variant="run" />
+                      </td>
+                      <td className="px-3 py-2 text-[var(--text-muted)]">{run.startedAt}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums">{run.duration}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">
+                        {run.discovered}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">
+                        {run.updated}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{run.closed}</td>
+                      <td
+                        className={`px-3 py-2 text-right font-mono tabular-nums ${
+                          run.errors > 0 ? "font-semibold text-[var(--badge-red-text)]" : ""
+                        }`}
+                      >
+                        {run.errors}
                       </td>
                     </tr>
-                  )}
-                </>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between border-t border-[var(--border-default)] px-6 py-3">
-          <span className="text-sm text-[var(--text-muted)]">แสดง 1-8 จาก 156 รายการ</span>
-          <div className="flex items-center gap-1">
-            <button type="button" className="rounded-lg px-3 py-1.5 text-sm text-[var(--text-disabled)]" disabled>ก่อนหน้า</button>
-            <button type="button" className="size-8 rounded-lg bg-primary text-sm font-semibold text-white">1</button>
-            <button type="button" className="size-8 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">2</button>
-            <button type="button" className="size-8 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">3</button>
-            <button type="button" className="size-8 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">4</button>
-            <button type="button" className="size-8 rounded-lg text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">5</button>
-            <button type="button" className="rounded-lg px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]">ถัดไป</button>
+                    {expandedRun === run.id && (
+                      <tr>
+                        <td
+                          colSpan={11}
+                          className="bg-[var(--bg-surface-secondary)] px-6 py-4"
+                        >
+                          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                            Tasks ใน {run.displayId}
+                          </p>
+                          {run.tasks.length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-6 text-sm text-[var(--text-muted)]">
+                              ยังไม่มี task ที่บันทึกไว้สำหรับ run นี้
+                            </div>
+                          ) : (
+                            <table className="w-full text-[13px]">
+                              <thead>
+                                <tr className="border-b border-[var(--border-default)]">
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    Task ID
+                                  </th>
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    ประเภท
+                                  </th>
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    คำค้น
+                                  </th>
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    โครงการ
+                                  </th>
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    สถานะ
+                                  </th>
+                                  <th className="px-3 py-1.5 text-right text-xs font-semibold text-[var(--text-muted)]">
+                                    ความพยายาม
+                                  </th>
+                                  <th className="px-3 py-1.5 text-left text-xs font-semibold text-[var(--text-muted)]">
+                                    ระยะเวลา
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {run.tasks.map((task) => (
+                                  <tr key={task.id} className="border-b border-[var(--border-light)]">
+                                    <td className="px-3 py-1.5 font-mono">{task.id}</td>
+                                    <td className="px-3 py-1.5">{task.type}</td>
+                                    <td className="px-3 py-1.5">{task.keyword}</td>
+                                    <td className="px-3 py-1.5 font-mono">{task.project}</td>
+                                    <td className="px-3 py-1.5">
+                                      <StatusBadge state={task.status} variant="task" />
+                                    </td>
+                                    <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                                      {task.attempts}
+                                    </td>
+                                    <td className="px-3 py-1.5 font-mono tabular-nums">
+                                      {task.duration}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
           </div>
-          <span className="text-sm text-[var(--text-muted)]">50 แถว/หน้า</span>
+
+          <div className="flex items-center justify-between border-t border-[var(--border-default)] px-6 py-3">
+            <span className="text-sm text-[var(--text-muted)]">
+              แสดง {rangeStart}-{rangeEnd} จาก {totalRunCount} รายการ
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                className="rounded-lg px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:text-[var(--text-disabled)]"
+                disabled={currentPage === 1}
+              >
+                ก่อนหน้า
+              </button>
+              <span className="text-sm font-medium text-[var(--text-secondary)]">
+                หน้า {currentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                className="rounded-lg px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:text-[var(--text-disabled)]"
+                disabled={currentPage >= totalPages}
+              >
+                ถัดไป
+              </button>
+            </div>
+            <span className="text-sm text-[var(--text-muted)]">{rowsPerPage} แถว/หน้า</span>
+          </div>
         </div>
-      </div>
+      </QueryState>
     </>
   );
 }

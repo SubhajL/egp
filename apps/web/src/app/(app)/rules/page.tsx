@@ -1,89 +1,395 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Clock3, Mail, Search, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
-
-/* ------------------------------------------------------------------ */
-/*  Mock Data                                                          */
-/* ------------------------------------------------------------------ */
-
-type Profile = {
-  name: string;
-  description: string;
-  active: boolean;
-  maxPages: number;
-  consultingDays: number;
-  staleDays: number;
-  keywords: string[];
-};
-
-const MOCK_PROFILES: Profile[] = [
-  {
-    name: "TOR",
-    description: "ค้นหาเอกสาร TOR และประกวดราคา",
-    active: true,
-    maxPages: 15,
-    consultingDays: 30,
-    staleDays: 45,
-    keywords: [
-      "วิเคราะห์ข้อมูล", "ระบบสารสนเทศ", "เทคโนโลยีสารสนเทศ",
-      "ระบบคลังข้อมูล", "ระบบฐานข้อมูลใหญ่", "แผนแม่บท",
-      "ที่ปรึกษา", "ระบบบริหาร", "จ้างพัฒนา",
-      "Digital", "ระบบดิจิทัล", "แพลตฟอร์ม",
-    ],
-  },
-  {
-    name: "TOE",
-    description: "ค้นหาเอกสารข้อกำหนดทางเทคนิค",
-    active: true,
-    maxPages: 10,
-    consultingDays: 30,
-    staleDays: 45,
-    keywords: [
-      "คอมพิวเตอร์", "ซอฟต์แวร์", "ระบบเครือข่าย",
-      "เครื่องแม่ข่าย", "อุปกรณ์จัดเก็บ", "ระบบรักษาความปลอดภัย",
-    ],
-  },
-  {
-    name: "LUE",
-    description: "ค้นหาเอกสารเงื่อนไขการใช้งาน",
-    active: false,
-    maxPages: 10,
-    consultingDays: 30,
-    staleDays: 45,
-    keywords: [
-      "สัญญา", "เงื่อนไข", "ข้อกำหนด", "การรับประกัน",
-    ],
-  },
-];
+import { QueryState } from "@/components/ui/query-state";
+import { useRules } from "@/lib/hooks";
+import type {
+  ClosureRulesSummary,
+  NotificationRulesSummary,
+  RuleProfile,
+  ScheduleRulesSummary,
+} from "@/lib/api";
 
 const TABS = [
   { key: "profiles", label: "โปรไฟล์คำค้น" },
   { key: "closure", label: "กฎการปิด" },
   { key: "notifications", label: "การแจ้งเตือน" },
   { key: "schedule", label: "กำหนดเวลา" },
-];
+] as const;
 
-/* ------------------------------------------------------------------ */
-/*  Component                                                          */
-/* ------------------------------------------------------------------ */
+const PROFILE_DESCRIPTIONS: Record<string, string> = {
+  tor: "ค้นหาเอกสาร TOR และงานประกวดราคาที่เกี่ยวข้อง",
+  toe: "ค้นหาเอกสารข้อกำหนดทางเทคนิคและไฟล์ประกอบ",
+  lue: "ค้นหาเงื่อนไขและเอกสารแนบท้ายสัญญา",
+  custom: "โปรไฟล์ที่ปรับแต่งคำค้นเฉพาะ tenant",
+};
+
+function StatusChip({
+  active,
+  activeLabel,
+  inactiveLabel,
+}: {
+  active: boolean;
+  activeLabel: string;
+  inactiveLabel: string;
+}) {
+  return (
+    <span
+      className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+        active
+          ? "bg-[var(--badge-green-bg)] text-[var(--badge-green-text)]"
+          : "bg-[var(--badge-gray-bg)] text-[var(--badge-gray-text)]"
+      }`}
+    >
+      {active ? activeLabel : inactiveLabel}
+    </span>
+  );
+}
+
+function ProfileCard({ profile }: { profile: RuleProfile }) {
+  const description = PROFILE_DESCRIPTIONS[profile.profile_type] ?? "โปรไฟล์คำค้นของระบบ";
+
+  return (
+    <div
+      className={`rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] ${
+        !profile.is_active ? "opacity-70" : ""
+      }`}
+    >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-bold text-[var(--text-primary)]">{profile.name}</h3>
+            <StatusChip active={profile.is_active} activeLabel="ใช้งาน" inactiveLabel="ปิดใช้งาน" />
+          </div>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">{description}</p>
+        </div>
+        <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-3 py-2 text-right">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            ชนิดโปรไฟล์
+          </p>
+          <p className="text-sm font-medium uppercase text-[var(--text-secondary)]">
+            {profile.profile_type}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-sm">
+        <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            หน้า/คำค้น
+          </p>
+          <p className="mt-1 font-mono text-lg font-bold text-[var(--text-primary)]">
+            {profile.max_pages_per_keyword}
+          </p>
+        </div>
+        <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            ที่ปรึกษา
+          </p>
+          <p className="mt-1 font-mono text-lg font-bold text-[var(--text-primary)]">
+            {profile.close_consulting_after_days} วัน
+          </p>
+        </div>
+        <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Stale
+          </p>
+          <p className="mt-1 font-mono text-lg font-bold text-[var(--text-primary)]">
+            {profile.close_stale_after_days} วัน
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+          คำค้นที่ใช้
+        </p>
+        {profile.keywords.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[var(--border-default)] px-4 py-5 text-sm text-[var(--text-muted)]">
+            ยังไม่มีคำค้นในโปรไฟล์นี้
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {profile.keywords.map((keyword) => (
+              <span
+                key={keyword}
+                className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
+              >
+                {keyword}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ClosureTab({ rules }: { rules: ClosureRulesSummary }) {
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <ShieldCheck className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            ปิดเมื่อพบสถานะผู้ชนะ
+          </h3>
+        </div>
+        <StatusChip active={rules.close_on_winner_status} activeLabel="เปิดใช้งาน" inactiveLabel="ปิดใช้งาน" />
+        <p className="mt-3 text-sm text-[var(--text-muted)]">สถานะที่ใช้จับคู่:</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {rules.winner_status_terms.map((term) => (
+            <span
+              key={term}
+              className="rounded-full bg-[var(--badge-indigo-bg)] px-2.5 py-1 text-xs font-medium text-[var(--badge-indigo-text)]"
+            >
+              {term}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <ShieldCheck className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            ปิดเมื่อพบการลงนามสัญญา
+          </h3>
+        </div>
+        <StatusChip
+          active={rules.close_on_contract_status}
+          activeLabel="เปิดใช้งาน"
+          inactiveLabel="ปิดใช้งาน"
+        />
+        <p className="mt-3 text-sm text-[var(--text-muted)]">สถานะที่ใช้จับคู่:</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {rules.contract_status_terms.map((term) => (
+            <span
+              key={term}
+              className="rounded-full bg-[var(--badge-green-bg)] px-2.5 py-1 text-xs font-medium text-[var(--badge-green-text)]"
+            >
+              {term}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <Clock3 className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            Timeout สำหรับงานที่ปรึกษา
+          </h3>
+        </div>
+        <p className="font-mono text-3xl font-bold text-[var(--text-primary)]">
+          {rules.consulting_timeout_days} วัน
+        </p>
+        <p className="mt-2 text-sm text-[var(--text-muted)]">
+          ใช้กับโครงการประเภทที่ปรึกษาตาม logic ปัจจุบันของ worker
+        </p>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <Clock3 className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            ปิดเมื่อไม่มี TOR ต่อเนื่อง
+          </h3>
+        </div>
+        <p className="font-mono text-3xl font-bold text-[var(--text-primary)]">
+          {rules.stale_no_tor_days} วัน
+        </p>
+        <p className="mt-2 text-sm text-[var(--text-muted)]">สถานะที่เข้าเกณฑ์ stale:</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {rules.stale_eligible_states.map((state) => (
+            <span
+              key={state}
+              className="rounded-full bg-[var(--badge-gray-bg)] px-2.5 py-1 text-xs font-medium text-[var(--badge-gray-text)]"
+            >
+              {state}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-dashed border-[var(--border-default)] bg-[var(--bg-surface)] p-5 text-sm text-[var(--text-muted)] lg:col-span-2">
+        แหล่งอ้างอิง logic:{" "}
+        <span className="font-mono text-[var(--text-secondary)]">{rules.source}</span>
+      </div>
+    </div>
+  );
+}
+
+function NotificationsTab({ rules }: { rules: NotificationRulesSummary }) {
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <Mail className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            ช่องทางที่แพลตฟอร์มรองรับ
+          </h3>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {rules.supported_channels.map((channel) => (
+            <span
+              key={channel}
+              className="rounded-full bg-[var(--badge-indigo-bg)] px-2.5 py-1 text-xs font-medium text-[var(--badge-indigo-text)]"
+            >
+              {channel}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <ShieldCheck className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            สถานะการเชื่อม event
+          </h3>
+        </div>
+        <StatusChip
+          active={rules.event_wiring_complete}
+          activeLabel="เชื่อมครบแล้ว"
+          inactiveLabel="ยังไม่เชื่อมครบ"
+        />
+        <p className="mt-3 text-sm text-[var(--text-muted)]">
+          หน้านี้แสดงสิ่งที่แพลตฟอร์มรองรับเชิงโครงสร้างในตอนนี้ แต่การยิงแจ้งเตือนจริงจะอยู่ในงานถัดไปของ Phase 2.5
+        </p>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] lg:col-span-2">
+        <h3 className="text-lg font-bold text-[var(--text-primary)]">เหตุการณ์ที่รองรับ</h3>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {rules.supported_types.map((type) => (
+            <span
+              key={type}
+              className="rounded-full border border-[var(--border-default)] px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)]"
+            >
+              {type}
+            </span>
+          ))}
+        </div>
+        <p className="mt-4 text-sm text-[var(--text-muted)]">
+          แหล่งอ้างอิง implementation:{" "}
+          <span className="font-mono text-[var(--text-secondary)]">{rules.source}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ScheduleTab({ rules }: { rules: ScheduleRulesSummary }) {
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <Clock3 className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            Trigger ที่ระบบบันทึกได้
+          </h3>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {rules.supported_trigger_types.map((triggerType) => (
+            <span
+              key={triggerType}
+              className="rounded-full bg-[var(--badge-green-bg)] px-2.5 py-1 text-xs font-medium text-[var(--badge-green-text)]"
+            >
+              {triggerType}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+        <div className="mb-3 flex items-center gap-3">
+          <ShieldCheck className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            ขอบเขตการควบคุมจากหน้า Product
+          </h3>
+        </div>
+        <StatusChip
+          active={rules.editable_in_product}
+          activeLabel="แก้ไขได้จาก UI"
+          inactiveLabel="อ่านอย่างเดียว"
+        />
+        <p className="mt-3 text-sm text-[var(--text-muted)]">
+          การตั้งเวลาในระบบ backend รองรับอยู่ แต่หน้านี้ยังเป็น surface สำหรับอ่านและตรวจสอบ configuration เท่านั้น
+        </p>
+      </div>
+
+      <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] lg:col-span-2">
+        <div className="mb-2 flex items-center gap-3">
+          <Search className="size-5 text-primary" />
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">
+            สถานะการทำงานตามเวลา
+          </h3>
+        </div>
+        <StatusChip
+          active={rules.schedule_execution_supported}
+          activeLabel="รองรับ trigger แบบกำหนดเวลา"
+          inactiveLabel="ยังไม่รองรับ"
+        />
+        <p className="mt-4 text-sm text-[var(--text-muted)]">
+          แหล่งอ้างอิง schema และ trigger type:{" "}
+          <span className="font-mono text-[var(--text-secondary)]">{rules.source}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export default function RulesPage() {
-  const [activeTab, setActiveTab] = useState("profiles");
-  const [consultingDays, setConsultingDays] = useState("30");
-  const [staleDays, setStaleDays] = useState("45");
-  const [closeOnWinner, setCloseOnWinner] = useState(true);
-  const [closeOnContract, setCloseOnContract] = useState(true);
+  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("profiles");
+  const { data, isLoading, isError, error } = useRules();
+
+  function renderTabContent() {
+    if (!data) return null;
+
+    if (activeTab === "profiles") {
+      if (data.profiles.length === 0) {
+        return (
+          <div className="rounded-2xl bg-[var(--bg-surface)] p-10 text-center shadow-[var(--shadow-soft)]">
+            <p className="text-lg font-semibold text-[var(--text-primary)]">
+              ยังไม่มีโปรไฟล์คำค้นสำหรับ tenant นี้
+            </p>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">
+              API พร้อมแล้วและจะแสดงข้อมูลทันทีเมื่อมีการบันทึก `crawl_profiles` และ `crawl_profile_keywords`
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          {data.profiles.map((profile) => (
+            <ProfileCard key={profile.id} profile={profile} />
+          ))}
+        </div>
+      );
+    }
+
+    if (activeTab === "closure") {
+      return <ClosureTab rules={data.closure_rules} />;
+    }
+
+    if (activeTab === "notifications") {
+      return <NotificationsTab rules={data.notification_rules} />;
+    }
+
+    return <ScheduleTab rules={data.schedule_rules} />;
+  }
 
   return (
     <>
       <PageHeader
         title="กฎและโปรไฟล์"
-        subtitle="จัดการคำค้น, กฎการปิดโครงการ, และการแจ้งเตือน"
+        subtitle="แสดงคำค้น กฎการปิด และการตั้งค่าระบบจาก logic ที่แพลตฟอร์มใช้อยู่จริง"
       />
 
-      {/* Tab Bar */}
       <div className="mb-6 flex gap-1 rounded-xl bg-[var(--bg-surface-secondary)] p-1">
         {TABS.map((tab) => (
           <button
@@ -101,178 +407,9 @@ export default function RulesPage() {
         ))}
       </div>
 
-      {/* Profiles Tab Content */}
-      {activeTab === "profiles" && (
-        <div className="space-y-6">
-          {/* Profile Cards */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            {MOCK_PROFILES.map((profile) => (
-              <div
-                key={profile.name}
-                className={`rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] ${
-                  !profile.active ? "opacity-60" : ""
-                }`}
-              >
-                {/* Header */}
-                <div className="mb-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-lg font-bold text-[var(--text-primary)]">{profile.name}</h3>
-                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      profile.active
-                        ? "bg-[var(--badge-green-bg)] text-[var(--badge-green-text)]"
-                        : "bg-[var(--badge-gray-bg)] text-[var(--badge-gray-text)]"
-                    }`}>
-                      {profile.active ? "ใช้งาน" : "ปิดใช้งาน"}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className={`relative h-6 w-11 rounded-full transition-colors ${
-                      profile.active ? "bg-primary" : "bg-[var(--text-disabled)]"
-                    }`}
-                  >
-                    <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-                      profile.active ? "left-[22px]" : "left-0.5"
-                    }`} />
-                  </button>
-                </div>
-
-                <p className="mb-3 text-sm text-[var(--text-muted)]">{profile.description}</p>
-
-                {/* Settings */}
-                <div className="mb-4 flex gap-4 text-xs text-[var(--text-muted)]">
-                  <span>หน้า: {profile.maxPages}</span>
-                  <span>ที่ปรึกษา: {profile.consultingDays} วัน</span>
-                  <span>Stale: {profile.staleDays} วัน</span>
-                </div>
-
-                {/* Keywords */}
-                <div className="mb-4 flex flex-wrap gap-1.5">
-                  {profile.keywords.map((kw) => (
-                    <span
-                      key={kw}
-                      className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
-                    >
-                      {kw}
-                      <X className="size-3 cursor-pointer opacity-50 hover:opacity-100" />
-                    </span>
-                  ))}
-                </div>
-
-                {/* Footer */}
-                <div className="flex gap-3">
-                  <button type="button" className="text-sm font-medium text-primary hover:text-primary-hover">
-                    + เพิ่มคำค้น
-                  </button>
-                  <button type="button" className="text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
-                    แก้ไขโปรไฟล์
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Add New Profile */}
-          <button
-            type="button"
-            className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-[var(--border-default)] py-6 text-sm font-medium text-[var(--text-muted)] transition-colors hover:border-primary hover:text-primary"
-          >
-            <Plus className="size-5" />
-            สร้างโปรไฟล์ใหม่
-          </button>
-
-          {/* Global Settings */}
-          <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
-            <h2 className="mb-4 text-lg font-bold text-[var(--text-primary)]">ตั้งค่าทั่วไป</h2>
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {/* Left: Timeouts */}
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-[var(--text-primary)]">
-                    ระยะเวลาปิดโครงการที่ปรึกษา
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={consultingDays}
-                      onChange={(e) => setConsultingDays(e.target.value)}
-                      className="h-10 w-20 rounded-lg border border-[var(--border-default)] px-3 text-center font-mono text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    />
-                    <span className="text-sm text-[var(--text-muted)]">วัน</span>
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-[var(--text-primary)]">
-                    ระยะเวลาปิดโครงการ Stale
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={staleDays}
-                      onChange={(e) => setStaleDays(e.target.value)}
-                      className="h-10 w-20 rounded-lg border border-[var(--border-default)] px-3 text-center font-mono text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    />
-                    <span className="text-sm text-[var(--text-muted)]">วัน</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right: Toggles */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">ปิดเมื่อประกาศผู้ชนะ</p>
-                    <p className="text-xs text-[var(--text-muted)]">ปิดอัตโนมัติเมื่อพบประกาศผู้ชนะ</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCloseOnWinner(!closeOnWinner)}
-                    className={`relative h-6 w-11 rounded-full transition-colors ${
-                      closeOnWinner ? "bg-primary" : "bg-[var(--text-disabled)]"
-                    }`}
-                  >
-                    <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-                      closeOnWinner ? "left-[22px]" : "left-0.5"
-                    }`} />
-                  </button>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">ปิดเมื่อลงนามสัญญา</p>
-                    <p className="text-xs text-[var(--text-muted)]">ปิดอัตโนมัติเมื่อพบการลงนามสัญญา</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCloseOnContract(!closeOnContract)}
-                    className={`relative h-6 w-11 rounded-full transition-colors ${
-                      closeOnContract ? "bg-primary" : "bg-[var(--text-disabled)]"
-                    }`}
-                  >
-                    <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-                      closeOnContract ? "left-[22px]" : "left-0.5"
-                    }`} />
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 flex justify-end">
-              <button type="button" className="rounded-xl bg-primary px-6 py-2.5 text-sm font-medium text-white hover:bg-primary-hover">
-                บันทึกการตั้งค่า
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Other tabs — placeholder content */}
-      {activeTab !== "profiles" && (
-        <div className="rounded-2xl bg-[var(--bg-surface)] p-12 text-center shadow-[var(--shadow-soft)]">
-          <p className="text-[var(--text-muted)]">
-            {TABS.find((t) => t.key === activeTab)?.label} — กำลังพัฒนา
-          </p>
-        </div>
-      )}
+      <QueryState isLoading={isLoading} isError={isError} error={error}>
+        {renderTabContent()}
+      </QueryState>
     </>
   );
 }

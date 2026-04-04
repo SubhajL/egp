@@ -15,6 +15,8 @@ _STALE_ELIGIBLE_STATES = {
     ProjectState.OPEN_CONSULTING,
     ProjectState.OPEN_PUBLIC_HEARING,
 }
+DEFAULT_CONSULTING_TIMEOUT_DAYS = 30
+DEFAULT_STALE_TIMEOUT_DAYS = 45
 
 
 def _coerce_procurement_type(
@@ -63,7 +65,7 @@ def check_consulting_timeout(
     procurement_type: ProcurementType | str | None,
     last_changed_at: datetime | None,
     now: datetime | None,
-    threshold_days: int = 30,
+    threshold_days: int = DEFAULT_CONSULTING_TIMEOUT_DAYS,
 ) -> ClosedReason | None:
     normalized_procurement_type = _coerce_procurement_type(procurement_type)
     normalized_last_changed_at = _coerce_datetime(last_changed_at)
@@ -85,7 +87,7 @@ def check_stale_closure(
     project_state: ProjectState | str,
     last_changed_at: datetime | None,
     now: datetime | None,
-    threshold_days: int = 45,
+    threshold_days: int = DEFAULT_STALE_TIMEOUT_DAYS,
 ) -> ClosedReason | None:
     normalized_procurement_type = _coerce_procurement_type(procurement_type)
     normalized_project_state = _coerce_project_state(project_state)
@@ -100,3 +102,18 @@ def check_stale_closure(
     if (normalized_now - normalized_last_changed_at).days < threshold_days:
         return None
     return ClosedReason.STALE_NO_TOR
+
+
+def describe_closure_rules() -> dict[str, object]:
+    return {
+        "close_on_winner_status": True,
+        "close_on_contract_status": True,
+        "winner_status_terms": list(_WINNER_STATUSES),
+        "contract_status_terms": list(_CONTRACT_STATUSES),
+        "consulting_timeout_days": DEFAULT_CONSULTING_TIMEOUT_DAYS,
+        "stale_no_tor_days": DEFAULT_STALE_TIMEOUT_DAYS,
+        "stale_eligible_states": sorted(
+            state.value for state in _STALE_ELIGIBLE_STATES
+        ),
+        "source": "packages/crawler-core/src/egp_crawler_core/closure_rules.py",
+    }
