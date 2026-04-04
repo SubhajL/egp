@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
@@ -63,7 +65,35 @@ class FakeSupabaseClient:
         self.storage = FakeSupabaseStorageClient()
 
 
+def seed_tenant(client: TestClient) -> None:
+    with client.app.state.db_engine.begin() as connection:
+        try:
+            existing = connection.execute(
+                text("SELECT 1 FROM tenants WHERE id = :tenant_id"),
+                {"tenant_id": TENANT_ID},
+            ).first()
+        except OperationalError:
+            return
+
+        if existing is None:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO tenants (id, name, slug, plan_code)
+                    VALUES (:tenant_id, :name, :slug, :plan_code)
+                    """
+                ),
+                {
+                    "tenant_id": TENANT_ID,
+                    "name": "Documents Test Tenant",
+                    "slug": "documents-test-tenant",
+                    "plan_code": "dev",
+                },
+            )
+
+
 def seed_project(client: TestClient) -> str:
+    seed_tenant(client)
     project = client.app.state.project_repository.upsert_project(
         build_project_upsert_record(
             tenant_id=TENANT_ID,
