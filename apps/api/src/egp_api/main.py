@@ -19,11 +19,13 @@ from egp_api.config import (
     get_supabase_service_role_key,
     get_supabase_url,
 )
+from egp_api.routes.dashboard import router as dashboard_router
 from egp_api.routes.documents import router as documents_router
 from egp_api.routes.exports import router as exports_router
 from egp_api.routes.projects import router as projects_router
 from egp_api.routes.rules import router as rules_router
 from egp_api.routes.runs import router as runs_router
+from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.export_service import ExportService
 from egp_api.services.project_service import ProjectService
@@ -93,6 +95,7 @@ def create_app(
     app.state.profile_repository = profile_repository
     app.state.run_repository = run_repository
     app.state.run_service = RunService(run_repository)
+    app.state.dashboard_service = DashboardService(project_repository, run_repository)
     app.state.rules_service = RulesService(profile_repository)
     app.state.export_service = ExportService(project_repository)
     app.state.auth_required = resolved_auth_required
@@ -132,6 +135,7 @@ def create_app(
     def health():
         return {"status": "ok"}
 
+    app.include_router(dashboard_router)
     app.include_router(documents_router)
     app.include_router(exports_router)
     app.include_router(projects_router)

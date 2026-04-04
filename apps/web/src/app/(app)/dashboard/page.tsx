@@ -4,7 +4,9 @@ import dynamic from "next/dynamic";
 import { Archive, AlertTriangle, CheckCircle, XCircle, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useProjects, useRuns } from "@/lib/hooks";
+import type { DashboardSummaryResponse } from "@/lib/api";
+import { useDashboardSummary } from "@/lib/hooks";
+import { formatRelativeTime } from "@/lib/utils";
 
 const DailyDiscoveryChart = dynamic(
   () => import("@/components/ui/dashboard-charts").then((m) => m.DailyDiscoveryChart),
@@ -16,27 +18,50 @@ const ProjectStateChart = dynamic(
   { ssr: false, loading: () => <div className="flex h-72 items-center justify-center rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)] md:col-span-4"><span className="text-[var(--text-muted)]">กำลังโหลดกราฟ...</span></div> },
 );
 
-const recentRuns = [
-  { id: "RUN-0156", profile: "TOR ทั่วไป", status: "succeeded" as const, duration: "4m 32s", found: 18 },
-  { id: "RUN-0155", profile: "ที่ปรึกษา", status: "succeeded" as const, duration: "3m 15s", found: 7 },
-  { id: "RUN-0154", profile: "TOR ทั่วไป", status: "partial" as const, duration: "5m 08s", found: 12 },
-  { id: "RUN-0153", profile: "จัดซื้อจัดจ้าง", status: "failed" as const, duration: "1m 47s", found: 0 },
-  { id: "RUN-0152", profile: "TOR ทั่วไป", status: "succeeded" as const, duration: "4m 01s", found: 15 },
-];
+const EMPTY_DASHBOARD_SUMMARY: DashboardSummaryResponse = {
+  kpis: {
+    active_projects: 0,
+    discovered_today: 0,
+    winner_projects_this_week: 0,
+    closed_today: 0,
+    changed_tor_projects: 0,
+    crawl_success_rate_percent: 0,
+    failed_runs_recent: 0,
+    crawl_success_window_runs: 0,
+  },
+  recent_runs: [],
+  recent_changes: [],
+  winner_projects: [],
+  daily_discovery: [],
+  project_state_breakdown: [
+    { bucket: "discovered", count: 0 },
+    { bucket: "open_invitation", count: 0 },
+    { bucket: "open_consulting", count: 0 },
+    { bucket: "tor_downloaded", count: 0 },
+    { bucket: "winner", count: 0 },
+    { bucket: "closed", count: 0 },
+  ],
+};
 
-const recentChanges = [
-  { name: "จ้างปรับปรุงระบบไฟฟ้าอาคาร...", newState: "winner_announced" },
-  { name: "ซื้อครุภัณฑ์คอมพิวเตอร์สำหรับ...", newState: "tor_downloaded" },
-  { name: "จ้างก่อสร้างถนนคอนกรีตเสริม...", newState: "open_consulting" },
-  { name: "จ้างที่ปรึกษาศึกษาความเหมาะสม...", newState: "closed_timeout_consulting" },
-  { name: "ซื้อวัสดุวิทยาศาสตร์การแพทย์...", newState: "open_invitation" },
-];
-
-const winnerProjects = [
-  "จ้างปรับปรุงระบบไฟฟ้าอาคารสำนักงาน",
-  "ซื้อครุภัณฑ์คอมพิวเตอร์ 50 ชุด",
-  "จ้างก่อสร้างอาคารหอประชุม",
-];
+function formatRunDuration(startedAt: string | null, finishedAt: string | null, status: string): string {
+  if (startedAt && finishedAt) {
+    const diffMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+    if (diffMs < 60000) {
+      return `${Math.max(1, Math.round(diffMs / 1000))} วินาที`;
+    }
+    const totalMinutes = Math.round(diffMs / 60000);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours > 0) {
+      return `${hours} ชม. ${minutes} นาที`;
+    }
+    return `${totalMinutes} นาที`;
+  }
+  if (status === "running") {
+    return "กำลังทำงาน...";
+  }
+  return "—";
+}
 
 /* ------------------------------------------------------------------ */
 /*  Stat Card Components                                               */
@@ -77,34 +102,10 @@ function SmallStatCard({
 /* ------------------------------------------------------------------ */
 
 export default function DashboardPage() {
-  const { data: projectData } = useProjects({ limit: 200 });
-  const { data: runData } = useRuns({ limit: 10 });
-
-  const projects = projectData?.projects ?? [];
-  const activeCount = projects.filter((p) =>
-    !p.project_state.startsWith("closed") && p.project_state !== "error"
-  ).length || 247;
-  const discoveredToday = projects.filter((p) => {
-    const created = new Date(p.created_at);
-    const today = new Date();
-    return created.toDateString() === today.toDateString();
-  }).length || 18;
-  const winnerCount = projects.filter((p) =>
-    p.project_state === "winner_announced" || p.project_state === "contract_signed"
-  ).length || 5;
-  const closedToday = projects.filter((p) => {
-    const updated = new Date(p.updated_at);
-    const today = new Date();
-    return p.project_state.startsWith("closed") && updated.toDateString() === today.toDateString();
-  }).length || 8;
-
-  const runs = runData?.runs ?? [];
-  const successfulRuns = runs.filter((r) => r.run.status === "succeeded").length;
-  const totalRuns = runs.length || 1;
-  const crawlSuccessRate = runs.length > 0
-    ? ((successfulRuns / totalRuns) * 100).toFixed(1) + "%"
-    : "94.2%";
-  const failedRuns = runs.filter((r) => r.run.status === "failed").length || 2;
+  const { data, error, isLoading } = useDashboardSummary();
+  const summary = data ?? EMPTY_DASHBOARD_SUMMARY;
+  const kpis = summary.kpis;
+  const crawlSuccessRate = `${kpis.crawl_success_rate_percent.toFixed(1)}%`;
 
   return (
     <>
@@ -112,6 +113,11 @@ export default function DashboardPage() {
         title="แดชบอร์ด"
         subtitle="ภาพรวมการติดตามโครงการจัดซื้อจัดจ้าง"
       />
+      {error ? (
+        <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          โหลดข้อมูลแดชบอร์ดไม่สำเร็จ: {error instanceof Error ? error.message : "unknown error"}
+        </div>
+      ) : null}
 
       {/* ── Row 1: Large KPI Cards ── */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-12">
@@ -120,10 +126,10 @@ export default function DashboardPage() {
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             โครงการที่กำลังดำเนินการ
           </p>
-          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-primary">{activeCount}</p>
+          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-primary">{kpis.active_projects}</p>
           <div className="mt-2 flex items-center gap-1 text-sm text-success">
             <TrendingUp className="size-4" />
-            <span>+{discoveredToday} วันนี้</span>
+            <span>+{kpis.discovered_today} วันนี้</span>
           </div>
           <p className="mt-1 text-xs text-[var(--text-muted)]">โครงการเปิดอยู่ทั้งหมด</p>
         </div>
@@ -133,8 +139,14 @@ export default function DashboardPage() {
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             โครงการใหม่วันนี้
           </p>
-          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-secondary">{discoveredToday}</p>
-          <p className="mt-2 text-sm text-[var(--text-muted)]">ค้นพบล่าสุด 2 ชม.ที่แล้ว</p>
+          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-secondary">{kpis.discovered_today}</p>
+          <p className="mt-2 text-sm text-[var(--text-muted)]">
+            {summary.recent_changes[0]
+              ? `อัปเดตล่าสุด ${formatRelativeTime(summary.recent_changes[0].last_changed_at)} ที่แล้ว`
+              : isLoading
+                ? "กำลังโหลดข้อมูลล่าสุด"
+                : "ยังไม่มีโครงการใหม่ในช่วงนี้"}
+          </p>
         </div>
 
         {/* Winner Announced */}
@@ -142,18 +154,20 @@ export default function DashboardPage() {
           <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             ประกาศผู้ชนะ
           </p>
-          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-purple">{winnerCount}</p>
+          <p className="mt-2 font-mono text-4xl font-bold tabular-nums text-purple">{kpis.winner_projects_this_week}</p>
           <p className="mt-2 text-sm text-[var(--text-muted)]">สัปดาห์นี้</p>
           <ul className="mt-3 space-y-1">
-            {winnerProjects.map((name) => (
+            {summary.winner_projects.length > 0 ? summary.winner_projects.map((winner) => (
               <li
-                key={name}
+                key={winner.project_id}
                 className="truncate text-xs text-[var(--text-secondary)]"
-                title={name}
+                title={winner.project_name}
               >
-                &bull; {name}
+                &bull; {winner.project_name}
               </li>
-            ))}
+            )) : (
+              <li className="text-xs text-[var(--text-muted)]">ยังไม่มีโครงการที่ประกาศผู้ชนะในช่วงนี้</li>
+            )}
           </ul>
         </div>
       </div>
@@ -163,7 +177,7 @@ export default function DashboardPage() {
         <div className="md:col-span-3">
           <SmallStatCard
             label="ปิดวันนี้"
-            value={closedToday}
+            value={kpis.closed_today}
             icon={Archive}
             colorClass="text-[var(--text-muted)]"
             bgClass="bg-[var(--badge-gray-bg)]"
@@ -172,7 +186,7 @@ export default function DashboardPage() {
         <div className="md:col-span-3">
           <SmallStatCard
             label="TOR เปลี่ยนแปลง"
-            value={3}
+            value={kpis.changed_tor_projects}
             icon={AlertTriangle}
             colorClass="text-[var(--badge-amber-text)]"
             bgClass="bg-[var(--badge-amber-bg)]"
@@ -190,7 +204,7 @@ export default function DashboardPage() {
         <div className="md:col-span-3">
           <SmallStatCard
             label="ล้มเหลว"
-            value={failedRuns}
+            value={kpis.failed_runs_recent}
             icon={XCircle}
             colorClass="text-[var(--badge-red-text)]"
             bgClass="bg-[var(--badge-red-bg)]"
@@ -200,8 +214,8 @@ export default function DashboardPage() {
 
       {/* ── Row 3: Charts ── */}
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-12">
-        <DailyDiscoveryChart />
-        <ProjectStateChart />
+        <DailyDiscoveryChart points={summary.daily_discovery} />
+        <ProjectStateChart breakdown={summary.project_state_breakdown} />
       </div>
 
       {/* ── Row 4: Tables ── */}
@@ -233,26 +247,34 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {recentRuns.map((run) => (
+                {summary.recent_runs.length > 0 ? summary.recent_runs.map((run) => (
                   <tr
                     key={run.id}
                     className="h-10 border-b border-[var(--border-light)] last:border-b-0"
                   >
                     <td className="px-3 py-2 font-mono text-xs tabular-nums text-[var(--text-primary)]">
-                      {run.id}
+                      {run.id.slice(0, 12)}
                     </td>
-                    <td className="px-3 py-2 text-[var(--text-secondary)]">{run.profile}</td>
+                    <td className="px-3 py-2 text-[var(--text-secondary)]">
+                      {run.profile_id ? run.profile_id.slice(0, 8) : "ค่าเริ่มต้น"}
+                    </td>
                     <td className="px-3 py-2">
                       <StatusBadge state={run.status} variant="run" />
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-xs tabular-nums text-[var(--text-muted)]">
-                      {run.duration}
+                      {formatRunDuration(run.started_at, run.finished_at, run.status)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text-primary)]">
-                      {run.found}
+                      {run.discovered_projects}
                     </td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                      {isLoading ? "กำลังโหลดการทำงานล่าสุด..." : "ยังไม่มีประวัติการทำงาน"}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -276,22 +298,28 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {recentChanges.map((change) => (
+                {summary.recent_changes.length > 0 ? summary.recent_changes.map((change) => (
                   <tr
-                    key={change.name}
+                    key={change.project_id}
                     className="h-10 border-b border-[var(--border-light)] last:border-b-0"
                   >
                     <td
                       className="max-w-[200px] truncate px-3 py-2 text-[var(--text-secondary)]"
-                      title={change.name}
+                      title={change.project_name}
                     >
-                      {change.name}
+                      {change.project_name}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <StatusBadge state={change.newState} variant="project" />
+                      <StatusBadge state={change.project_state} variant="project" />
                     </td>
                   </tr>
-                ))}
+                )) : (
+                  <tr>
+                    <td colSpan={2} className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                      {isLoading ? "กำลังโหลดการเปลี่ยนแปลง..." : "ยังไม่มีการเปลี่ยนแปลงล่าสุด"}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

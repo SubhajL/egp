@@ -97,6 +97,27 @@ class ProjectCrawlEvidencePage:
     offset: int
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardRecentRunRecord:
+    id: str
+    trigger_type: str
+    status: str
+    profile_id: str | None
+    started_at: str | None
+    finished_at: str | None
+    created_at: str
+    error_count: int
+    discovered_projects: int
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardRunSummary:
+    crawl_success_rate_percent: float
+    failed_runs_recent: int
+    crawl_success_window_runs: int
+    recent_runs: list[DashboardRecentRunRecord]
+
+
 METADATA = DB_METADATA
 
 CRAWL_RUNS_TABLE = Table(
@@ -249,6 +270,16 @@ def _project_crawl_evidence_from_mapping(row: RowMapping) -> ProjectCrawlEvidenc
         run_summary_json=row["run_summary_json"],
         run_error_count=int(row["run_error_count"]),
     )
+
+
+def _summary_projects_seen(summary_json: dict[str, object] | None) -> int:
+    if not isinstance(summary_json, dict):
+        return 0
+    raw_value = summary_json.get("projects_seen", 0)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return 0
 
 
 class SqlRunRepository:
@@ -633,6 +664,74 @@ class SqlRunRepository:
             total=total,
             limit=normalized_limit,
             offset=normalized_offset,
+        )
+
+    def get_dashboard_run_summary(
+        self,
+        *,
+        tenant_id: str,
+        recent_limit: int = 5,
+        success_window: int = 20,
+    ) -> DashboardRunSummary:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_recent_limit = max(1, int(recent_limit))
+        normalized_success_window = max(1, int(success_window))
+        with self._engine.connect() as connection:
+            recent_rows = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .order_by(desc(CRAWL_RUNS_TABLE.c.created_at))
+                    .limit(normalized_recent_limit)
+                )
+                .mappings()
+                .all()
+            )
+            window_rows = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .order_by(desc(CRAWL_RUNS_TABLE.c.created_at))
+                    .limit(normalized_success_window)
+                )
+                .mappings()
+                .all()
+            )
+
+        window_runs = [_run_from_mapping(row) for row in window_rows]
+        successful_runs = sum(
+            1 for run in window_runs if run.status is CrawlRunStatus.SUCCEEDED
+        )
+        failed_runs_recent = sum(
+            1 for run in window_runs if run.status is CrawlRunStatus.FAILED
+        )
+        total_window_runs = len(window_runs)
+        success_rate = (
+            round((successful_runs / total_window_runs) * 100, 1)
+            if total_window_runs > 0
+            else 0.0
+        )
+
+        return DashboardRunSummary(
+            crawl_success_rate_percent=success_rate,
+            failed_runs_recent=failed_runs_recent,
+            crawl_success_window_runs=total_window_runs,
+            recent_runs=[
+                DashboardRecentRunRecord(
+                    id=str(row["id"]),
+                    trigger_type=str(row["trigger_type"]),
+                    status=str(row["status"]),
+                    profile_id=str(row["profile_id"])
+                    if row["profile_id"] is not None
+                    else None,
+                    started_at=_dt_to_iso(row["started_at"]),
+                    finished_at=_dt_to_iso(row["finished_at"]),
+                    created_at=_dt_to_iso(row["created_at"]) or "",
+                    error_count=int(row["error_count"]),
+                    discovered_projects=_summary_projects_seen(row["summary_json"]),
+                )
+                for row in recent_rows
+            ],
         )
 
 

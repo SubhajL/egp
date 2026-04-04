@@ -194,6 +194,62 @@ export type ProjectExportResponse = {
   filename: string;
 };
 
+export type DashboardKpis = {
+  active_projects: number;
+  discovered_today: number;
+  winner_projects_this_week: number;
+  closed_today: number;
+  changed_tor_projects: number;
+  crawl_success_rate_percent: number;
+  failed_runs_recent: number;
+  crawl_success_window_runs: number;
+};
+
+export type DashboardRecentRun = {
+  id: string;
+  trigger_type: string;
+  status: string;
+  profile_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  error_count: number;
+  discovered_projects: number;
+};
+
+export type DashboardRecentProjectChange = {
+  project_id: string;
+  project_name: string;
+  project_state: string;
+  last_changed_at: string;
+};
+
+export type DashboardWinnerProject = {
+  project_id: string;
+  project_name: string;
+  project_state: string;
+  awarded_at: string;
+};
+
+export type DashboardDailyDiscoveryPoint = {
+  date: string;
+  count: number;
+};
+
+export type DashboardStateBreakdownPoint = {
+  bucket: string;
+  count: number;
+};
+
+export type DashboardSummaryResponse = {
+  kpis: DashboardKpis;
+  recent_runs: DashboardRecentRun[];
+  recent_changes: DashboardRecentProjectChange[];
+  winner_projects: DashboardWinnerProject[];
+  daily_discovery: DashboardDailyDiscoveryPoint[];
+  project_state_breakdown: DashboardStateBreakdownPoint[];
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -398,6 +454,11 @@ export async function fetchRuns(
     offset: params.offset ?? 0,
   });
   return apiFetch<RunListResponse>(url);
+}
+
+export async function fetchDashboardSummary(): Promise<DashboardSummaryResponse> {
+  const url = buildUrl("/v1/dashboard/summary", {});
+  return apiFetch<DashboardSummaryResponse>(url);
 }
 
 export async function fetchRules(): Promise<RulesResponse> {
