@@ -841,7 +841,9 @@ class SqlBillingRepository:
                 connection.execute(
                     select(BILLING_PAYMENT_REQUESTS_TABLE)
                     .where(
-                        BILLING_PAYMENT_REQUESTS_TABLE.c.billing_record_id.in_(normalized_ids)
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.billing_record_id.in_(
+                            normalized_ids
+                        )
                     )
                     .order_by(BILLING_PAYMENT_REQUESTS_TABLE.c.created_at.desc())
                 )
@@ -904,7 +906,9 @@ class SqlBillingRepository:
             )
         return _billing_record_from_mapping(row) if row is not None else None
 
-    def _get_payment_request_by_id(self, request_id: str) -> BillingPaymentRequestRecord | None:
+    def _get_payment_request_by_id(
+        self, request_id: str
+    ) -> BillingPaymentRequestRecord | None:
         normalized_request_id = normalize_uuid_string(request_id)
         with self._engine.begin() as connection:
             row = (
@@ -1057,7 +1061,9 @@ class SqlBillingRepository:
         self, *, tenant_id: str, record_id: str
     ) -> BillingRecordDetail:
         self._require_record_for_tenant(tenant_id=tenant_id, record_id=record_id)
-        detail = self.get_billing_record_detail(tenant_id=tenant_id, record_id=record_id)
+        detail = self.get_billing_record_detail(
+            tenant_id=tenant_id, record_id=record_id
+        )
         if detail is None:
             raise KeyError(record_id)
         return detail
@@ -1466,7 +1472,10 @@ class SqlBillingRepository:
         with self._engine.begin() as connection:
             connection.execute(
                 update(BILLING_PAYMENT_REQUESTS_TABLE)
-                .where(BILLING_PAYMENT_REQUESTS_TABLE.c.id == normalize_uuid_string(payment_request_id))
+                .where(
+                    BILLING_PAYMENT_REQUESTS_TABLE.c.id
+                    == normalize_uuid_string(payment_request_id)
+                )
                 .values(
                     status=target_status.value,
                     settled_at=resolved_settled_at,

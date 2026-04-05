@@ -16,7 +16,9 @@ class FailingPaymentProvider:
         raise RuntimeError("provider unavailable")
 
 
-def _create_client(tmp_path, payment_provider=None, callback_secret: str | None = None) -> TestClient:
+def _create_client(
+    tmp_path, payment_provider=None, callback_secret: str | None = None
+) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase3-payment-links.sqlite3'}"
     return TestClient(
         create_app(
@@ -31,7 +33,9 @@ def _create_client(tmp_path, payment_provider=None, callback_secret: str | None 
     )
 
 
-def _create_billing_record(client: TestClient, *, tenant_id: str = TENANT_ID) -> dict[str, object]:
+def _create_billing_record(
+    client: TestClient, *, tenant_id: str = TENANT_ID
+) -> dict[str, object]:
     response = client.post(
         "/v1/billing/records",
         json={
@@ -131,26 +135,40 @@ def test_create_payment_request_rejects_terminal_billing_record(tmp_path) -> Non
 def test_callback_settles_invoice_and_activates_subscription_once(tmp_path) -> None:
     client = _create_client(tmp_path)
     created = _create_billing_record(client)
-    request_detail = _create_payment_request(client, record_id=str(created["record"]["id"]))
+    request_detail = _create_payment_request(
+        client, record_id=str(created["record"]["id"])
+    )
     request_id = str(request_detail["payment_requests"][0]["id"])
 
-    first = _settle_request(client, request_id=request_id, provider_event_id="evt-settled-002")
-    second = _settle_request(client, request_id=request_id, provider_event_id="evt-settled-002")
+    first = _settle_request(
+        client, request_id=request_id, provider_event_id="evt-settled-002"
+    )
+    second = _settle_request(
+        client, request_id=request_id, provider_event_id="evt-settled-002"
+    )
 
     assert first["record"]["status"] == "paid"
     assert first["subscription"]["subscription_status"] == "active"
-    assert [payment["payment_method"] for payment in first["payments"]] == ["promptpay_qr"]
-    assert [payment["payment_status"] for payment in first["payments"]] == ["reconciled"]
+    assert [payment["payment_method"] for payment in first["payments"]] == [
+        "promptpay_qr"
+    ]
+    assert [payment["payment_status"] for payment in first["payments"]] == [
+        "reconciled"
+    ]
     assert first["payment_requests"][0]["status"] == "settled"
     assert second["subscription"]["id"] == first["subscription"]["id"]
     assert len(second["payments"]) == 1
-    assert [entry["event_type"] for entry in second["events"]].count("subscription_activated") == 1
+    assert [entry["event_type"] for entry in second["events"]].count(
+        "subscription_activated"
+    ) == 1
 
 
 def test_payment_request_and_callback_are_tenant_scoped(tmp_path) -> None:
     client = _create_client(tmp_path)
     created = _create_billing_record(client)
-    request_detail = _create_payment_request(client, record_id=str(created["record"]["id"]))
+    request_detail = _create_payment_request(
+        client, record_id=str(created["record"]["id"])
+    )
     request_id = str(request_detail["payment_requests"][0]["id"])
 
     foreign_create = client.post(
@@ -176,7 +194,9 @@ def test_payment_request_and_callback_are_tenant_scoped(tmp_path) -> None:
     assert foreign_callback.status_code == 403
 
 
-def test_provider_creation_failure_returns_502_without_persisting_request(tmp_path) -> None:
+def test_provider_creation_failure_returns_502_without_persisting_request(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path, payment_provider=FailingPaymentProvider())
     created = _create_billing_record(client)
     record_id = str(created["record"]["id"])
@@ -198,7 +218,9 @@ def test_provider_creation_failure_returns_502_without_persisting_request(tmp_pa
 def test_callback_requires_configured_secret(tmp_path) -> None:
     client = _create_client(tmp_path, callback_secret="top-secret")
     created = _create_billing_record(client)
-    request_detail = _create_payment_request(client, record_id=str(created["record"]["id"]))
+    request_detail = _create_payment_request(
+        client, record_id=str(created["record"]["id"])
+    )
     request_id = str(request_detail["payment_requests"][0]["id"])
 
     unauthorized = client.post(

@@ -9,7 +9,11 @@ from typing import Protocol
 from uuid import uuid4
 
 from egp_api.services.promptpay import build_promptpay_payload, render_promptpay_qr_svg
-from egp_shared_types.enums import BillingPaymentMethod, BillingPaymentProvider, BillingPaymentRequestStatus
+from egp_shared_types.enums import (
+    BillingPaymentMethod,
+    BillingPaymentProvider,
+    BillingPaymentRequestStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +52,9 @@ class ParsedPaymentCallback:
 
 
 class PaymentProvider(Protocol):
-    def create_payment_request(self, *, request: ProviderPaymentRequest) -> CreatedPaymentRequest: ...
+    def create_payment_request(
+        self, *, request: ProviderPaymentRequest
+    ) -> CreatedPaymentRequest: ...
 
     def parse_callback(
         self,
@@ -101,7 +107,9 @@ class MockPromptPayProvider:
         status = BillingPaymentRequestStatus(str(payload.get("status") or "").strip())
         amount = f"{Decimal(str(payload.get('amount') or '0')).quantize(Decimal('0.01')):.2f}"
         currency = str(payload.get("currency") or "").strip() or "THB"
-        reference_code = str(payload.get("reference_code")).strip() if payload.get("reference_code") else None
+        reference_code = (
+            str(payload.get("reference_code")).strip() if payload.get("reference_code") else None
+        )
         return ParsedPaymentCallback(
             provider_event_id=provider_event_id,
             status=status,

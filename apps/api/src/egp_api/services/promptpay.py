@@ -50,10 +50,7 @@ def build_promptpay_payload(
 ) -> str:
     proxy_id = _normalize_promptpay_proxy_id(promptpay_proxy_id)
     normalized_amount = _normalize_amount(amount)
-    merchant_account_info = (
-        _tlv("00", "A000000677010111")
-        + _tlv("01", proxy_id)
-    )
+    merchant_account_info = _tlv("00", "A000000677010111") + _tlv("01", proxy_id)
     additional_data = _tlv("05", str(reference).strip()[:25] or "EGP-PAYMENT")
     payload_without_crc = (
         _tlv("00", "01")
@@ -84,15 +81,14 @@ def render_promptpay_qr_svg(payload: str) -> str:
     for row in range(matrix_size):
         for column in range(matrix_size):
             if (
-                row < 7 and column < 7
-                or row < 7 and column >= matrix_size - 7
-                or row >= matrix_size - 7 and column < 7
+                row < 7
+                and column < 7
+                or row < 7
+                and column >= matrix_size - 7
+                or row >= matrix_size - 7
+                and column < 7
             ):
-                dark = (
-                    row in {0, 6}
-                    or column in {0, 6}
-                    or 2 <= row <= 4 and 2 <= column <= 4
-                )
+                dark = row in {0, 6} or column in {0, 6} or 2 <= row <= 4 and 2 <= column <= 4
             else:
                 byte = digest[bit_index % len(digest)]
                 dark = bool((byte >> (bit_index % 8)) & 1)
