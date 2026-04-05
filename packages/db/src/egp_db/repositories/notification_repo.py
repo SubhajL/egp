@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Integer,
     String,
     Table,
     UniqueConstraint,
@@ -94,6 +95,47 @@ NOTIFICATION_PREFERENCES_TABLE = Table(
     ),
 )
 
+WEBHOOK_SUBSCRIPTIONS_TABLE = Table(
+    "webhook_subscriptions",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column("name", String, nullable=False),
+    Column("url", String, nullable=False),
+    Column("signing_secret", String, nullable=False),
+    Column("notification_types", JSON, nullable=False),
+    Column("is_active", Boolean, nullable=False, default=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
+)
+
+WEBHOOK_DELIVERIES_TABLE = Table(
+    "webhook_deliveries",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column("webhook_subscription_id", UUID_SQL_TYPE, nullable=False),
+    Column("notification_id", UUID_SQL_TYPE, nullable=False),
+    Column("event_id", String, nullable=False),
+    Column("notification_type", String, nullable=False),
+    Column("project_id", UUID_SQL_TYPE, nullable=True),
+    Column("payload", JSON, nullable=False),
+    Column("attempt_count", Integer, nullable=False, default=0),
+    Column("delivery_status", String, nullable=False, default="pending"),
+    Column("last_response_status_code", Integer, nullable=True),
+    Column("last_response_body", String, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("last_attempted_at", DateTime(timezone=True), nullable=True),
+    Column("delivered_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint(
+        "webhook_subscription_id",
+        "event_id",
+        name="webhook_deliveries_subscription_event_uq",
+    ),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class UserRecord:
@@ -105,6 +147,54 @@ class UserRecord:
     status: str
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookSubscriptionRecord:
+    id: str
+    tenant_id: str
+    name: str
+    url: str
+    notification_types: list[str]
+    is_active: bool
+    created_at: str
+    updated_at: str
+    last_delivery_status: str | None
+    last_delivery_attempted_at: str | None
+    last_delivered_at: str | None
+    last_response_status_code: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookDispatchTarget:
+    id: str
+    tenant_id: str
+    name: str
+    url: str
+    signing_secret: str
+    notification_types: list[str]
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookDeliveryRecord:
+    id: str
+    tenant_id: str
+    webhook_subscription_id: str
+    notification_id: str
+    event_id: str
+    notification_type: str
+    project_id: str | None
+    payload: dict[str, object]
+    attempt_count: int
+    delivery_status: str
+    last_response_status_code: int | None
+    last_response_body: str | None
+    created_at: str
+    updated_at: str
+    last_attempted_at: str | None
+    delivered_at: str | None
 
 
 def _now() -> datetime:
@@ -143,6 +233,103 @@ def _from_user_row(row: RowMapping) -> UserRecord:
         status=str(row["status"]),
         created_at=_to_iso(row["created_at"]) or "",
         updated_at=_to_iso(row["updated_at"]) or "",
+    )
+
+
+def _normalize_notification_types(
+    notification_types: list[NotificationType | str],
+) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for notification_type in notification_types:
+        normalized = (
+            notification_type.value
+            if isinstance(notification_type, NotificationType)
+            else str(notification_type).strip()
+        )
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def _from_webhook_subscription_row(
+    row: RowMapping,
+    *,
+    summary_by_subscription_id: dict[str, WebhookDeliveryRecord] | None = None,
+) -> WebhookSubscriptionRecord:
+    summary = (
+        summary_by_subscription_id.get(str(row["id"]))
+        if summary_by_subscription_id is not None
+        else None
+    )
+    raw_types = (
+        row["notification_types"] if isinstance(row["notification_types"], list) else []
+    )
+    return WebhookSubscriptionRecord(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        name=str(row["name"]),
+        url=str(row["url"]),
+        notification_types=[str(value) for value in raw_types],
+        is_active=bool(row["is_active"]),
+        created_at=_to_iso(row["created_at"]) or "",
+        updated_at=_to_iso(row["updated_at"]) or "",
+        last_delivery_status=summary.delivery_status if summary is not None else None,
+        last_delivery_attempted_at=(
+            summary.last_attempted_at if summary is not None else None
+        ),
+        last_delivered_at=summary.delivered_at if summary is not None else None,
+        last_response_status_code=(
+            summary.last_response_status_code if summary is not None else None
+        ),
+    )
+
+
+def _from_webhook_dispatch_row(row: RowMapping) -> WebhookDispatchTarget:
+    raw_types = (
+        row["notification_types"] if isinstance(row["notification_types"], list) else []
+    )
+    return WebhookDispatchTarget(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        name=str(row["name"]),
+        url=str(row["url"]),
+        signing_secret=str(row["signing_secret"]),
+        notification_types=[str(value) for value in raw_types],
+        created_at=_to_iso(row["created_at"]) or "",
+        updated_at=_to_iso(row["updated_at"]) or "",
+    )
+
+
+def _from_webhook_delivery_row(row: RowMapping) -> WebhookDeliveryRecord:
+    payload = row["payload"] if isinstance(row["payload"], dict) else {}
+    return WebhookDeliveryRecord(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        webhook_subscription_id=str(row["webhook_subscription_id"]),
+        notification_id=str(row["notification_id"]),
+        event_id=str(row["event_id"]),
+        notification_type=str(row["notification_type"]),
+        project_id=str(row["project_id"]) if row["project_id"] is not None else None,
+        payload=dict(payload),
+        attempt_count=int(row["attempt_count"]),
+        delivery_status=str(row["delivery_status"]),
+        last_response_status_code=(
+            int(row["last_response_status_code"])
+            if row["last_response_status_code"] is not None
+            else None
+        ),
+        last_response_body=(
+            str(row["last_response_body"])
+            if row["last_response_body"] is not None
+            else None
+        ),
+        created_at=_to_iso(row["created_at"]) or "",
+        updated_at=_to_iso(row["updated_at"]) or "",
+        last_attempted_at=_to_iso(row["last_attempted_at"]),
+        delivered_at=_to_iso(row["delivered_at"]),
     )
 
 
@@ -494,6 +681,343 @@ class SqlNotificationRepository:
         return self.get_email_preferences(
             tenant_id=tenant_id, user_id=normalized_user_id
         )
+
+    def create_webhook_subscription(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        url: str,
+        notification_types: list[NotificationType | str],
+        signing_secret: str,
+    ) -> WebhookSubscriptionRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        now = _now()
+        normalized_types = _normalize_notification_types(notification_types)
+        subscription_id = str(uuid4())
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(WEBHOOK_SUBSCRIPTIONS_TABLE).values(
+                    id=subscription_id,
+                    tenant_id=normalized_tenant_id,
+                    name=str(name).strip(),
+                    url=str(url).strip(),
+                    signing_secret=str(signing_secret),
+                    notification_types=normalized_types,
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                    deleted_at=None,
+                )
+            )
+        return self.get_webhook_subscription(
+            tenant_id=normalized_tenant_id,
+            webhook_id=subscription_id,
+        )
+
+    def get_webhook_subscription(
+        self,
+        *,
+        tenant_id: str,
+        webhook_id: str,
+    ) -> WebhookSubscriptionRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_webhook_id = normalize_uuid_string(webhook_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(WEBHOOK_SUBSCRIPTIONS_TABLE).where(
+                        and_(
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.id == normalized_webhook_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            raise KeyError(normalized_webhook_id)
+        summaries = self._latest_webhook_delivery_by_subscription(
+            tenant_id=normalized_tenant_id
+        )
+        return _from_webhook_subscription_row(
+            row,
+            summary_by_subscription_id=summaries,
+        )
+
+    def list_webhook_subscriptions(
+        self, *, tenant_id: str
+    ) -> list[WebhookSubscriptionRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(WEBHOOK_SUBSCRIPTIONS_TABLE)
+                    .where(
+                        and_(
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
+                        )
+                    )
+                    .order_by(desc(WEBHOOK_SUBSCRIPTIONS_TABLE.c.created_at))
+                )
+                .mappings()
+                .all()
+            )
+        summaries = self._latest_webhook_delivery_by_subscription(
+            tenant_id=normalized_tenant_id
+        )
+        return [
+            _from_webhook_subscription_row(
+                row,
+                summary_by_subscription_id=summaries,
+            )
+            for row in rows
+        ]
+
+    def list_active_webhook_subscriptions(
+        self,
+        *,
+        tenant_id: str,
+        notification_type: NotificationType | str,
+    ) -> list[WebhookDispatchTarget]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_type = (
+            notification_type.value
+            if isinstance(notification_type, NotificationType)
+            else str(notification_type).strip()
+        )
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(WEBHOOK_SUBSCRIPTIONS_TABLE)
+                    .where(
+                        and_(
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
+                        )
+                    )
+                    .order_by(WEBHOOK_SUBSCRIPTIONS_TABLE.c.created_at)
+                )
+                .mappings()
+                .all()
+            )
+        return [
+            _from_webhook_dispatch_row(row)
+            for row in rows
+            if normalized_type
+            in [str(value) for value in (row["notification_types"] or [])]
+        ]
+
+    def deactivate_webhook_subscription(
+        self,
+        *,
+        tenant_id: str,
+        webhook_id: str,
+    ) -> bool:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_webhook_id = normalize_uuid_string(webhook_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(WEBHOOK_SUBSCRIPTIONS_TABLE)
+                .where(
+                    and_(
+                        WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id,
+                        WEBHOOK_SUBSCRIPTIONS_TABLE.c.id == normalized_webhook_id,
+                        WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
+                    )
+                )
+                .values(
+                    is_active=False,
+                    deleted_at=now,
+                    updated_at=now,
+                )
+            )
+        return bool(result.rowcount)
+
+    def create_or_get_webhook_delivery(
+        self,
+        *,
+        tenant_id: str,
+        webhook_subscription_id: str,
+        notification_id: str,
+        event_id: str,
+        notification_type: NotificationType | str,
+        project_id: str | None,
+        payload: dict[str, object],
+    ) -> WebhookDeliveryRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_subscription_id = normalize_uuid_string(webhook_subscription_id)
+        normalized_notification_id = normalize_uuid_string(notification_id)
+        normalized_type = (
+            notification_type.value
+            if isinstance(notification_type, NotificationType)
+            else str(notification_type).strip()
+        )
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE).where(
+                        and_(
+                            WEBHOOK_DELIVERIES_TABLE.c.webhook_subscription_id
+                            == normalized_subscription_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.event_id
+                            == str(event_id).strip(),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                connection.execute(
+                    insert(WEBHOOK_DELIVERIES_TABLE).values(
+                        id=str(uuid4()),
+                        tenant_id=normalized_tenant_id,
+                        webhook_subscription_id=normalized_subscription_id,
+                        notification_id=normalized_notification_id,
+                        event_id=str(event_id).strip(),
+                        notification_type=normalized_type,
+                        project_id=(
+                            normalize_uuid_string(project_id)
+                            if project_id is not None
+                            else None
+                        ),
+                        payload=payload,
+                        attempt_count=0,
+                        delivery_status="pending",
+                        last_response_status_code=None,
+                        last_response_body=None,
+                        created_at=_now(),
+                        updated_at=_now(),
+                        last_attempted_at=None,
+                        delivered_at=None,
+                    )
+                )
+                existing = (
+                    connection.execute(
+                        select(WEBHOOK_DELIVERIES_TABLE).where(
+                            and_(
+                                WEBHOOK_DELIVERIES_TABLE.c.webhook_subscription_id
+                                == normalized_subscription_id,
+                                WEBHOOK_DELIVERIES_TABLE.c.event_id
+                                == str(event_id).strip(),
+                            )
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+        if existing is None:
+            raise KeyError(normalized_subscription_id)
+        return _from_webhook_delivery_row(existing)
+
+    def record_webhook_delivery_attempt(
+        self,
+        *,
+        tenant_id: str,
+        delivery_id: str,
+        delivery_status: str,
+        response_status_code: int | None = None,
+        response_body: str | None = None,
+        delivered: bool = False,
+    ) -> WebhookDeliveryRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_delivery_id = normalize_uuid_string(delivery_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE).where(
+                        and_(
+                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.id == normalized_delivery_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                raise KeyError(normalized_delivery_id)
+            connection.execute(
+                update(WEBHOOK_DELIVERIES_TABLE)
+                .where(WEBHOOK_DELIVERIES_TABLE.c.id == normalized_delivery_id)
+                .values(
+                    attempt_count=int(existing["attempt_count"]) + 1,
+                    delivery_status=str(delivery_status).strip(),
+                    last_response_status_code=response_status_code,
+                    last_response_body=(
+                        str(response_body)[:2000] if response_body is not None else None
+                    ),
+                    updated_at=now,
+                    last_attempted_at=now,
+                    delivered_at=now if delivered else existing["delivered_at"],
+                )
+            )
+            row = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE).where(
+                        WEBHOOK_DELIVERIES_TABLE.c.id == normalized_delivery_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            raise KeyError(normalized_delivery_id)
+        return _from_webhook_delivery_row(row)
+
+    def list_webhook_deliveries(
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 50,
+    ) -> list[WebhookDeliveryRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE)
+                    .where(WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id)
+                    .order_by(desc(WEBHOOK_DELIVERIES_TABLE.c.updated_at))
+                    .limit(max(1, int(limit)))
+                )
+                .mappings()
+                .all()
+            )
+        return [_from_webhook_delivery_row(row) for row in rows]
+
+    def _latest_webhook_delivery_by_subscription(
+        self,
+        *,
+        tenant_id: str,
+    ) -> dict[str, WebhookDeliveryRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE)
+                    .where(WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id)
+                    .order_by(
+                        desc(WEBHOOK_DELIVERIES_TABLE.c.updated_at),
+                        desc(WEBHOOK_DELIVERIES_TABLE.c.created_at),
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        latest: dict[str, WebhookDeliveryRecord] = {}
+        for row in rows:
+            record = _from_webhook_delivery_row(row)
+            latest.setdefault(record.webhook_subscription_id, record)
+        return latest
 
 
 def create_notification_repository(

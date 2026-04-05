@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from egp_notifications.service import Notification, NotificationService
+from egp_notifications.webhook_delivery import WebhookDeliveryService
 from egp_shared_types.enums import NotificationType
 
 
@@ -22,6 +23,7 @@ class NotificationRecipientResolver(Protocol):
 class NotificationDispatcher:
     service: NotificationService
     recipient_resolver: NotificationRecipientResolver
+    webhook_delivery_service: WebhookDeliveryService | None = None
 
     def dispatch(
         self,
@@ -35,10 +37,30 @@ class NotificationDispatcher:
             tenant_id=tenant_id,
             notification_type=notification_type,
         )
-        return self.service.send(
+        created = self.service.send(
             tenant_id=tenant_id,
             notification_type=notification_type,
             project_id=project_id,
             recipient_emails=recipients,
             template_vars=template_vars,
+        )
+        if self.webhook_delivery_service is None:
+            return created
+        delivered = self.webhook_delivery_service.deliver(
+            notification=created,
+            template_vars=template_vars,
+        )
+        if not delivered or "webhook" in created.channel.split(","):
+            return created
+        return Notification(
+            id=created.id,
+            tenant_id=created.tenant_id,
+            project_id=created.project_id,
+            notification_type=created.notification_type,
+            channel=f"{created.channel},webhook",
+            subject=created.subject,
+            body=created.body,
+            status=created.status,
+            created_at=created.created_at,
+            sent_at=created.sent_at,
         )

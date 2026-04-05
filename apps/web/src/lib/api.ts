@@ -433,6 +433,24 @@ export type AdminSnapshotResponse = {
   billing: AdminBillingOverview;
 };
 
+export type WebhookSubscription = {
+  id: string;
+  name: string;
+  url: string;
+  notification_types: string[];
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  last_delivery_status: string | null;
+  last_delivery_attempted_at: string | null;
+  last_delivered_at: string | null;
+  last_response_status_code: number | null;
+};
+
+export type WebhookListResponse = {
+  webhooks: WebhookSubscription[];
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -523,6 +541,20 @@ async function apiJsonRequest<T>(url: string, init: RequestInit): Promise<T> {
     throw new Error(`API request failed: ${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
+}
+
+async function apiEmptyRequest(url: string, init: RequestInit): Promise<void> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      ...getApiHeaders(),
+      ...(init.headers ?? {}),
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  }
 }
 
 function parseDownloadFilename(contentDisposition: string | null): string {
@@ -722,6 +754,14 @@ export type UpdateTenantSettingsInput = {
   weekly_digest_enabled?: boolean;
 };
 
+export type CreateWebhookInput = {
+  tenant_id?: string;
+  name: string;
+  url: string;
+  notification_types: string[];
+  signing_secret: string;
+};
+
 export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
@@ -760,6 +800,11 @@ export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
 export async function fetchAdminSnapshot(): Promise<AdminSnapshotResponse> {
   const url = buildUrl("/v1/admin", {});
   return apiFetch<AdminSnapshotResponse>(url);
+}
+
+export async function fetchWebhooks(): Promise<WebhookListResponse> {
+  const url = buildUrl("/v1/webhooks", {});
+  return apiFetch<WebhookListResponse>(url);
 }
 
 export async function createBillingRecord(
@@ -891,4 +936,30 @@ export async function updateTenantSettings(
       ...payload,
     }),
   });
+}
+
+export async function createWebhook(
+  payload: CreateWebhookInput,
+): Promise<WebhookSubscription> {
+  const url = buildUrl("/v1/webhooks", {});
+  return apiJsonRequest<WebhookSubscription>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      name: payload.name,
+      url: payload.url,
+      notification_types: payload.notification_types,
+      signing_secret: payload.signing_secret,
+    }),
+  });
+}
+
+export async function deleteWebhook(
+  webhookId: string,
+  tenantId?: string,
+): Promise<void> {
+  const url = buildUrl(`/v1/webhooks/${encodeURIComponent(webhookId)}`, {
+    tenant_id: tenantId ?? (getTenantId() || undefined),
+  });
+  return apiEmptyRequest(url, { method: "DELETE" });
 }

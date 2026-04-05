@@ -178,7 +178,11 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
         == "packages/crawler-core/src/egp_crawler_core/closure_rules.py"
     )
 
-    assert body["notification_rules"]["supported_channels"] == ["in_app", "email"]
+    assert body["notification_rules"]["supported_channels"] == [
+        "in_app",
+        "email",
+        "webhook",
+    ]
     assert body["notification_rules"]["supported_types"] == [
         "new_project",
         "winner_announced",

@@ -257,11 +257,12 @@
             "id": 2,
             "title": "Add webhook notification delivery",
             "description": "Deliver machine-consumable notifications alongside email and in-product surfaces.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Implement tenant-configurable webhook subscriptions and outbound delivery with retry-safe semantics. Keep payloads auditable and compatible with the event model established earlier in the platform.",
             "testStrategy": "Use webhook receiver mocks to validate payload shape, retry behavior, signature or authentication handling, and tenant scoping.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-05T09:32:39.577Z"
           },
           {
             "id": 3,
@@ -314,12 +315,12 @@
             "parentId": "undefined"
           }
         ],
-        "updatedAt": "2026-04-05T03:22:25.774Z"
+        "updatedAt": "2026-04-05T09:32:39.577Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-05T06:32:43.000Z",
+      "lastModified": "2026-04-05T09:32:39.578Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [
