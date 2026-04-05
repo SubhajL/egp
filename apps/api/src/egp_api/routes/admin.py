@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
 from egp_api.services.admin_service import AdminService, AdminSnapshot, AdminUserView
+from egp_api.services.audit_service import AuditService
 from egp_db.repositories.admin_repo import TenantSettingsRecord
 from egp_shared_types.enums import UserRole
 
@@ -103,6 +104,29 @@ class AdminSnapshotResponse(BaseModel):
     billing: AdminBillingResponse
 
 
+class AuditLogEventResponse(BaseModel):
+    id: str
+    tenant_id: str
+    source: str
+    entity_type: str
+    entity_id: str
+    project_id: str | None
+    document_id: str | None
+    actor_subject: str | None
+    event_type: str
+    summary: str
+    metadata_json: dict[str, object] | None
+    occurred_at: str
+    created_at: str
+
+
+class AuditLogListResponse(BaseModel):
+    items: list[AuditLogEventResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class CreateAdminUserRequest(BaseModel):
     tenant_id: str | None = None
     email: str = Field(min_length=1)
@@ -135,6 +159,17 @@ class UpdateTenantSettingsRequest(BaseModel):
 
 def _service_from_request(request: Request) -> AdminService:
     return request.app.state.admin_service
+
+
+def _audit_service_from_request(request: Request) -> AuditService:
+    return request.app.state.audit_service
+
+
+def _actor_subject_from_request(request: Request) -> str:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is not None and getattr(auth_context, "subject", None):
+        return str(auth_context.subject)
+    return "manual-operator"
 
 
 def _serialize_user(user: AdminUserView) -> AdminUserResponse:
@@ -197,6 +232,15 @@ def _serialize_snapshot(snapshot: AdminSnapshot) -> AdminSnapshotResponse:
     )
 
 
+def _serialize_audit_log(page) -> AuditLogListResponse:
+    return AuditLogListResponse(
+        items=[AuditLogEventResponse(**asdict(item)) for item in page.items],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )
+
+
 @router.get("", response_model=AdminSnapshotResponse)
 def get_admin_snapshot(request: Request, tenant_id: str | None = None) -> AdminSnapshotResponse:
     require_admin_role(request)
@@ -207,6 +251,31 @@ def get_admin_snapshot(request: Request, tenant_id: str | None = None) -> AdminS
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
     return _serialize_snapshot(snapshot)
+
+
+@router.get("/audit-log", response_model=AuditLogListResponse)
+def get_admin_audit_log(
+    request: Request,
+    tenant_id: str | None = None,
+    source: str | None = None,
+    entity_type: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> AuditLogListResponse:
+    require_admin_role(request)
+    service = _audit_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    try:
+        page = service.list_events(
+            tenant_id=resolved_tenant_id,
+            source=source,
+            entity_type=entity_type,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_audit_log(page)
 
 
 @router.post("/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
@@ -221,6 +290,7 @@ def create_admin_user(request: Request, payload: CreateAdminUserRequest) -> Admi
             full_name=payload.full_name,
             role=payload.role,
             status=payload.status,
+            actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
@@ -243,6 +313,7 @@ def update_admin_user(
             role=payload.role,
             status=payload.status,
             full_name=payload.full_name,
+            actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=403, detail="user does not belong to tenant") from exc
@@ -263,6 +334,7 @@ def update_user_notification_preferences(
             tenant_id=resolved_tenant_id,
             user_id=user_id,
             email_preferences=payload.email_preferences,
+            actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=403, detail="user does not belong to tenant") from exc
@@ -288,6 +360,7 @@ def update_tenant_settings(
             locale=payload.locale,
             daily_digest_enabled=payload.daily_digest_enabled,
             weekly_digest_enabled=payload.weekly_digest_enabled,
+            actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc

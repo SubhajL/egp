@@ -268,11 +268,12 @@
             "id": 3,
             "title": "Build a full audit log",
             "description": "Capture material state changes and operator actions for investigation and compliance.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Persist project, document, billing, review, and admin events with actor and timestamp context. Reuse project_status_events patterns where possible and avoid leaving critical transitions outside the audit trail.",
             "testStrategy": "Verify representative state changes write durable audit entries that can be queried by tenant and entity.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-05T10:27:22.000Z"
           },
           {
             "id": 4,

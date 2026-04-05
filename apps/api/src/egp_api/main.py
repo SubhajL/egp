@@ -34,6 +34,7 @@ from egp_api.routes.rules import router as rules_router
 from egp_api.routes.runs import router as runs_router
 from egp_api.routes.webhooks import router as webhooks_router
 from egp_api.services.admin_service import AdminService
+from egp_api.services.audit_service import AuditService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.billing_service import BillingService
 from egp_api.services.document_ingest_service import DocumentIngestService
@@ -48,6 +49,7 @@ from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
 from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
+from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.document_repo import create_document_repository
@@ -115,6 +117,10 @@ def create_app(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
+    audit_repository = create_audit_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
     profile_repository = create_profile_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
@@ -153,11 +159,14 @@ def create_app(
     )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository
+    app.state.audit_repository = audit_repository
     app.state.billing_repository = billing_repository
+    app.state.audit_service = AuditService(audit_repository)
     app.state.admin_service = AdminService(
         admin_repository,
         notification_repository,
         billing_repository,
+        audit_repository,
     )
     app.state.billing_service = BillingService(
         billing_repository,
@@ -171,6 +180,7 @@ def create_app(
     app.state.webhook_service = WebhookService(
         admin_repository,
         notification_repository,
+        audit_repository,
     )
     app.state.payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     app.state.document_ingest_service = DocumentIngestService(
@@ -178,6 +188,7 @@ def create_app(
         entitlement_service=entitlement_service,
         project_repository=project_repository,
         notification_dispatcher=gated_notification_dispatcher,
+        audit_repository=audit_repository,
     )
     app.state.project_repository = project_repository
     app.state.project_service = ProjectService(project_repository)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.admin_repo import (
     SqlAdminRepository,
     TenantRecord,
@@ -65,10 +66,12 @@ class AdminService:
         admin_repository: SqlAdminRepository,
         notification_repository: SqlNotificationRepository,
         billing_repository: SqlBillingRepository,
+        audit_repository: SqlAuditRepository | None = None,
     ) -> None:
         self._admin_repository = admin_repository
         self._notification_repository = notification_repository
         self._billing_repository = billing_repository
+        self._audit_repository = audit_repository
 
     def get_snapshot(self, *, tenant_id: str) -> AdminSnapshot:
         tenant = self._admin_repository.get_tenant(tenant_id=tenant_id)
@@ -110,6 +113,7 @@ class AdminService:
         full_name: str | None = None,
         role: UserRole | str = UserRole.VIEWER,
         status: str = "active",
+        actor_subject: str | None = None,
     ) -> AdminUserView:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
             raise KeyError(tenant_id)
@@ -126,6 +130,21 @@ class AdminService:
         )
         if user is None:
             raise KeyError(created["id"])
+        if self._audit_repository is not None:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="admin",
+                entity_type="user",
+                entity_id=user.id,
+                actor_subject=actor_subject or "manual-operator",
+                event_type="user.created",
+                summary=f"Created user {user.email}",
+                metadata_json={
+                    "email": user.email,
+                    "role": user.role,
+                    "status": user.status,
+                },
+            )
         return _user_view(
             user,
             notification_preferences=self._notification_repository.get_email_preferences(
@@ -142,7 +161,11 @@ class AdminService:
         role: UserRole | str | None = None,
         status: str | None = None,
         full_name: str | None = None,
+        actor_subject: str | None = None,
     ) -> AdminUserView:
+        previous = self._notification_repository.get_user(tenant_id=tenant_id, user_id=user_id)
+        if previous is None:
+            raise KeyError(user_id)
         user = self._notification_repository.update_user(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -150,6 +173,24 @@ class AdminService:
             status=status,
             full_name=full_name,
         )
+        if self._audit_repository is not None:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="admin",
+                entity_type="user",
+                entity_id=user.id,
+                actor_subject=actor_subject or "manual-operator",
+                event_type="user.updated",
+                summary=f"Updated user {user.email}",
+                metadata_json={
+                    "role_before": previous.role,
+                    "role_after": user.role,
+                    "status_before": previous.status,
+                    "status_after": user.status,
+                    "full_name_before": previous.full_name,
+                    "full_name_after": user.full_name,
+                },
+            )
         return _user_view(
             user,
             notification_preferences=self._notification_repository.get_email_preferences(
@@ -164,6 +205,7 @@ class AdminService:
         tenant_id: str,
         user_id: str,
         email_preferences: dict[str, bool],
+        actor_subject: str | None = None,
     ) -> AdminUserView:
         valid_types = {notification_type.value for notification_type in NotificationType}
         invalid = sorted(set(email_preferences) - valid_types)
@@ -177,6 +219,17 @@ class AdminService:
         user = self._notification_repository.get_user(tenant_id=tenant_id, user_id=user_id)
         if user is None:
             raise KeyError(user_id)
+        if self._audit_repository is not None:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="admin",
+                entity_type="user",
+                entity_id=user.id,
+                actor_subject=actor_subject or "manual-operator",
+                event_type="user.notification_preferences_updated",
+                summary=f"Updated notification preferences for {user.email}",
+                metadata_json={"email_preferences": preferences},
+            )
         return _user_view(user, notification_preferences=preferences)
 
     def update_settings(
@@ -189,10 +242,12 @@ class AdminService:
         locale: str | None = None,
         daily_digest_enabled: bool | None = None,
         weekly_digest_enabled: bool | None = None,
+        actor_subject: str | None = None,
     ) -> TenantSettingsRecord:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
             raise KeyError(tenant_id)
-        return self._admin_repository.update_tenant_settings(
+        previous = self._admin_repository.get_tenant_settings(tenant_id=tenant_id)
+        updated = self._admin_repository.update_tenant_settings(
             tenant_id=tenant_id,
             support_email=support_email,
             billing_contact_email=billing_contact_email,
@@ -201,3 +256,32 @@ class AdminService:
             daily_digest_enabled=daily_digest_enabled,
             weekly_digest_enabled=weekly_digest_enabled,
         )
+        if self._audit_repository is not None:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="admin",
+                entity_type="tenant_settings",
+                entity_id=tenant_id,
+                actor_subject=actor_subject or "manual-operator",
+                event_type="tenant.settings_updated",
+                summary="Updated tenant settings",
+                metadata_json={
+                    "before": {
+                        "support_email": previous.support_email,
+                        "billing_contact_email": previous.billing_contact_email,
+                        "timezone": previous.timezone,
+                        "locale": previous.locale,
+                        "daily_digest_enabled": previous.daily_digest_enabled,
+                        "weekly_digest_enabled": previous.weekly_digest_enabled,
+                    },
+                    "after": {
+                        "support_email": updated.support_email,
+                        "billing_contact_email": updated.billing_contact_email,
+                        "timezone": updated.timezone,
+                        "locale": updated.locale,
+                        "daily_digest_enabled": updated.daily_digest_enabled,
+                        "weekly_digest_enabled": updated.weekly_digest_enabled,
+                    },
+                },
+            )
+        return updated

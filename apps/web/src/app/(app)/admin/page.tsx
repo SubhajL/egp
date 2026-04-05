@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Building2, CreditCard, Mail, Users, Webhook } from "lucide-react";
+import { Building2, CreditCard, Mail, ScrollText, Users, Webhook } from "lucide-react";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
@@ -15,14 +15,16 @@ import {
   updateAdminUserNotificationPreferences,
   updateTenantSettings,
   type AdminUser,
+  type AuditLogEvent,
   type WebhookSubscription,
 } from "@/lib/api";
-import { useAdminSnapshot, useWebhooks } from "@/lib/hooks";
+import { useAdminSnapshot, useAuditLog, useWebhooks } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const TABS = [
   { key: "users", label: "ผู้ใช้และบทบาท", icon: Users },
   { key: "notifications", label: "การแจ้งเตือน", icon: Mail },
+  { key: "audit", label: "Audit Log", icon: ScrollText },
   { key: "webhooks", label: "Webhook", icon: Webhook },
   { key: "billing", label: "แผนและบิล", icon: CreditCard },
   { key: "settings", label: "ตั้งค่าองค์กร", icon: Building2 },
@@ -168,6 +170,28 @@ function WebhookRow({
   );
 }
 
+function AuditLogRow({ event }: { event: AuditLogEvent }) {
+  return (
+    <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-soft)]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-[var(--badge-blue-bg)] px-3 py-1 text-xs font-semibold text-[var(--badge-blue-text)]">
+          {event.source}
+        </span>
+        <span className="rounded-full bg-[var(--badge-gray-bg)] px-3 py-1 text-xs font-semibold text-[var(--badge-gray-text)]">
+          {event.entity_type}
+        </span>
+        <span className="text-xs text-[var(--text-muted)]">{event.event_type}</span>
+      </div>
+      <p className="mt-3 text-sm font-semibold text-[var(--text-primary)]">{event.summary}</p>
+      <div className="mt-2 grid gap-1 text-xs text-[var(--text-muted)] md:grid-cols-3">
+        <p>ผู้กระทำ: {event.actor_subject ?? "system"}</p>
+        <p>เวลา: {formatThaiDate(event.occurred_at)}</p>
+        <p>อ้างอิง: {event.entity_id}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useAdminSnapshot();
@@ -177,6 +201,19 @@ export default function AdminPage() {
     isError: webhooksError,
     error: webhookError,
   } = useWebhooks();
+  const [auditSource, setAuditSource] = useState("all");
+  const [auditEntityType, setAuditEntityType] = useState("all");
+  const {
+    data: auditData,
+    isLoading: auditLoading,
+    isError: auditError,
+    error: auditQueryError,
+  } = useAuditLog({
+    source: auditSource !== "all" ? auditSource : undefined,
+    entity_type: auditEntityType !== "all" ? auditEntityType : undefined,
+    limit: 50,
+    offset: 0,
+  });
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("users");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -199,6 +236,7 @@ export default function AdminPage() {
   const users = data?.users ?? [];
   const billingRecords = data?.billing.records ?? [];
   const webhooks = webhookData?.webhooks ?? [];
+  const auditItems = auditData?.items ?? [];
   const currentSubscription = data?.billing.current_subscription ?? null;
   const summary = data?.billing.summary ?? {
     open_records: 0,
@@ -219,10 +257,12 @@ export default function AdminPage() {
 
   async function refreshSnapshot() {
     await queryClient.invalidateQueries({ queryKey: ["admin-snapshot"] });
+    await queryClient.invalidateQueries({ queryKey: ["audit-log"] });
   }
 
   async function refreshWebhooks() {
     await queryClient.invalidateQueries({ queryKey: ["webhooks"] });
+    await queryClient.invalidateQueries({ queryKey: ["audit-log"] });
   }
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
@@ -533,6 +573,59 @@ export default function AdminPage() {
               ) : (
                 <div className="rounded-2xl bg-[var(--bg-surface)] p-6 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
                   ยังไม่มี webhook endpoint สำหรับ tenant นี้
+                </div>
+              )}
+            </div>
+          </QueryState>
+        </div>
+      );
+    }
+
+    if (activeTab === "audit") {
+      return (
+        <div className="space-y-6">
+          <div className="grid gap-3 rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)] md:grid-cols-2">
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-[var(--text-secondary)]">Source</span>
+              <select
+                value={auditSource}
+                onChange={(event) => setAuditSource(event.target.value)}
+                className="w-full rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm outline-none"
+              >
+                <option value="all">ทั้งหมด</option>
+                <option value="admin">admin</option>
+                <option value="document">document</option>
+                <option value="review">review</option>
+                <option value="billing">billing</option>
+                <option value="project">project</option>
+              </select>
+            </label>
+            <label className="space-y-2">
+              <span className="text-sm font-medium text-[var(--text-secondary)]">Entity</span>
+              <select
+                value={auditEntityType}
+                onChange={(event) => setAuditEntityType(event.target.value)}
+                className="w-full rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm outline-none"
+              >
+                <option value="all">ทั้งหมด</option>
+                <option value="user">user</option>
+                <option value="tenant_settings">tenant_settings</option>
+                <option value="webhook">webhook</option>
+                <option value="document">document</option>
+                <option value="document_review">document_review</option>
+                <option value="billing_record">billing_record</option>
+                <option value="project">project</option>
+              </select>
+            </label>
+          </div>
+
+          <QueryState isLoading={auditLoading} isError={auditError} error={auditQueryError}>
+            <div className="space-y-3">
+              {auditItems.length > 0 ? (
+                auditItems.map((event) => <AuditLogRow key={event.id} event={event} />)
+              ) : (
+                <div className="rounded-2xl bg-[var(--bg-surface)] p-6 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
+                  ยังไม่มีเหตุการณ์ใน audit log สำหรับตัวกรองนี้
                 </div>
               )}
             </div>
