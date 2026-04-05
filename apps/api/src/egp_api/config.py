@@ -102,3 +102,31 @@ def get_smtp_config(override: SmtpConfig | None = None) -> SmtpConfig | None:
         use_tls=os.getenv("EGP_SMTP_USE_TLS", "true").strip().lower()
         not in {"0", "false", "no", "off"},
     )
+
+
+def get_payment_provider(override: str | None = None) -> str:
+    if override is not None:
+        return override.strip()
+    return os.getenv("EGP_PAYMENT_PROVIDER", "mock_promptpay").strip() or "mock_promptpay"
+
+
+def get_promptpay_proxy_id(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_PROMPTPAY_PROXY_ID", "").strip()
+    return raw or None
+
+
+def get_payment_base_url(override: str | None = None) -> str:
+    if override is not None:
+        return override.strip().rstrip("/")
+    return os.getenv("EGP_PAYMENT_BASE_URL", "http://localhost:8000").strip().rstrip("/")
+
+
+def get_payment_callback_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_PAYMENT_CALLBACK_SECRET", "").strip()
+    return raw or None

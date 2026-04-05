@@ -1,8 +1,9 @@
-"""Billing service for manual records and bank-transfer reconciliation."""
+"""Billing service for invoice lifecycle, payment requests, and reconciliation."""
 
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from egp_db.repositories.billing_repo import (
     BillingPage,
@@ -10,18 +11,31 @@ from egp_db.repositories.billing_repo import (
     BillingRecordDetail,
     SqlBillingRepository,
 )
+from egp_api.services.payment_provider import PaymentProvider, ProviderPaymentRequest
 from egp_shared_types.billing_plans import (
     BillingPlanDefinition,
     derive_plan_period_end,
     get_billing_plan_definition,
     list_billing_plan_definitions,
 )
-from egp_shared_types.enums import BillingPaymentMethod, BillingPaymentStatus, BillingRecordStatus
+from egp_shared_types.enums import (
+    BillingPaymentMethod,
+    BillingPaymentProvider,
+    BillingPaymentRequestStatus,
+    BillingPaymentStatus,
+    BillingRecordStatus,
+)
 
 
 class BillingService:
-    def __init__(self, repository: SqlBillingRepository) -> None:
+    def __init__(
+        self,
+        repository: SqlBillingRepository,
+        *,
+        payment_provider: PaymentProvider | None = None,
+    ) -> None:
         self._repository = repository
+        self._payment_provider = payment_provider
 
     def list_plans(self) -> list[BillingPlanDefinition]:
         return list_billing_plan_definitions()
@@ -131,6 +145,8 @@ class BillingService:
         note: str | None = None,
         actor_subject: str | None = None,
     ) -> BillingPaymentRecord:
+        if payment_method is not BillingPaymentMethod.BANK_TRANSFER:
+            raise ValueError("manual payment endpoint only accepts bank_transfer")
         return self._repository.record_bank_transfer_payment(
             tenant_id=tenant_id,
             billing_record_id=billing_record_id,
@@ -140,6 +156,137 @@ class BillingService:
             reference_code=reference_code,
             received_at=received_at,
             note=note,
+            actor_subject=actor_subject,
+        )
+
+    def create_payment_request(
+        self,
+        *,
+        tenant_id: str,
+        billing_record_id: str,
+        provider: BillingPaymentProvider,
+        expires_in_minutes: int = 30,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        if self._payment_provider is None:
+            raise RuntimeError("payment provider is not configured")
+        detail = self._repository.require_billing_record_detail(
+            tenant_id=tenant_id,
+            record_id=billing_record_id,
+        )
+        if detail.record.status in {
+            BillingRecordStatus.PAID,
+            BillingRecordStatus.CANCELLED,
+            BillingRecordStatus.REFUNDED,
+        }:
+            raise ValueError("billing record is not payable")
+        if Decimal(detail.record.outstanding_balance) <= Decimal("0.00"):
+            raise ValueError("billing record has no outstanding balance")
+        if provider is not BillingPaymentProvider.MOCK_PROMPTPAY:
+            raise ValueError("unsupported payment provider")
+        try:
+            created_request = self._payment_provider.create_payment_request(
+                request=ProviderPaymentRequest(
+                    tenant_id=tenant_id,
+                    billing_record_id=detail.record.id,
+                    record_number=detail.record.record_number,
+                    amount=detail.record.outstanding_balance,
+                    currency=detail.record.currency,
+                    expires_in_minutes=expires_in_minutes,
+                )
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("payment provider request failed") from exc
+        return self._repository.create_payment_request(
+            tenant_id=tenant_id,
+            billing_record_id=detail.record.id,
+            provider=created_request.provider,
+            payment_method=created_request.payment_method,
+            status=created_request.status,
+            provider_reference=created_request.provider_reference,
+            payment_url=created_request.payment_url,
+            qr_payload=created_request.qr_payload,
+            qr_svg=created_request.qr_svg,
+            amount=created_request.amount,
+            currency=created_request.currency,
+            expires_at=created_request.expires_at,
+            actor_subject=actor_subject,
+            note="PromptPay payment request created",
+        )
+
+    def handle_payment_request_callback(
+        self,
+        *,
+        tenant_id: str,
+        payment_request_id: str,
+        payload: dict[str, object],
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        if self._payment_provider is None:
+            raise RuntimeError("payment provider is not configured")
+        payment_request = self._repository.require_payment_request_detail(
+            tenant_id=tenant_id,
+            request_id=payment_request_id,
+        )
+        callback = self._payment_provider.parse_callback(payload=payload)
+        inserted = self._repository.record_provider_callback(
+            tenant_id=tenant_id,
+            payment_request_id=payment_request.id,
+            provider=payment_request.provider,
+            provider_event_id=callback.provider_event_id,
+            event_type=callback.status.value,
+            payload_json=callback.payload_json,
+        )
+        if not inserted:
+            detail = self._repository.get_billing_record_detail(
+                tenant_id=tenant_id,
+                record_id=payment_request.billing_record_id,
+            )
+            if detail is None:
+                raise KeyError(payment_request.billing_record_id)
+            return detail
+
+        detail = self._repository.update_payment_request_status(
+            tenant_id=tenant_id,
+            payment_request_id=payment_request.id,
+            status=callback.status,
+            settled_at=callback.occurred_at,
+            actor_subject=actor_subject,
+            note=callback.reference_code,
+        )
+        if callback.status is not BillingPaymentRequestStatus.SETTLED:
+            return detail
+
+        if payment_request.status is BillingPaymentRequestStatus.SETTLED:
+            return detail
+        if callback.currency != payment_request.currency:
+            raise ValueError("callback currency does not match payment request")
+        try:
+            callback_amount = Decimal(callback.amount)
+            request_amount = Decimal(payment_request.amount)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("invalid callback amount") from exc
+        if callback_amount != request_amount:
+            raise ValueError("callback amount does not match payment request")
+
+        recorded_payment = self._repository.record_payment(
+            tenant_id=tenant_id,
+            billing_record_id=payment_request.billing_record_id,
+            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            amount=callback.amount,
+            currency=callback.currency,
+            reference_code=callback.reference_code or payment_request.provider_reference,
+            received_at=callback.occurred_at,
+            note=callback.reference_code,
+            actor_subject=actor_subject,
+        )
+        return self._repository.reconcile_payment(
+            tenant_id=tenant_id,
+            payment_id=recorded_payment.id,
+            status=BillingPaymentStatus.RECONCILED,
+            note=callback.reference_code,
             actor_subject=actor_subject,
         )
 

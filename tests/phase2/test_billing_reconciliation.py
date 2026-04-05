@@ -250,4 +250,5 @@ def test_billing_payment_recording_rejects_non_bank_transfer_method(tmp_path) ->
             "received_at": "2026-04-16T03:30:00+00:00",
         },
     )
-    assert invalid_payment.status_code == 422
+    assert invalid_payment.status_code == 400
+    assert invalid_payment.json()["detail"] == "manual payment endpoint only accepts bank_transfer"

@@ -331,8 +331,27 @@ export type BillingEvent = {
   created_at: string;
 };
 
+export type BillingPaymentRequest = {
+  id: string;
+  billing_record_id: string;
+  provider: string;
+  payment_method: string;
+  status: string;
+  provider_reference: string;
+  payment_url: string;
+  qr_payload: string;
+  qr_svg: string;
+  amount: string;
+  currency: string;
+  expires_at: string | null;
+  settled_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type BillingRecordDetail = {
   record: BillingRecord;
+  payment_requests: BillingPaymentRequest[];
   payments: BillingPayment[];
   events: BillingEvent[];
   subscription: BillingSubscription | null;
@@ -622,6 +641,12 @@ export type TransitionBillingRecordInput = {
   note?: string;
 };
 
+export type CreateBillingPaymentRequestInput = {
+  tenant_id?: string;
+  provider?: string;
+  expires_in_minutes?: number;
+};
+
 export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
@@ -712,6 +737,21 @@ export async function transitionBillingRecord(
     body: JSON.stringify({
       tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       ...payload,
+    }),
+  });
+}
+
+export async function createBillingPaymentRequest(
+  recordId: string,
+  payload: CreateBillingPaymentRequestInput = {},
+): Promise<BillingRecordDetail> {
+  const url = buildUrl(`/v1/billing/records/${encodeURIComponent(recordId)}/payment-requests`, {});
+  return apiJsonRequest<BillingRecordDetail>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      provider: payload.provider ?? "mock_promptpay",
+      expires_in_minutes: payload.expires_in_minutes ?? 30,
     }),
   });
 }
