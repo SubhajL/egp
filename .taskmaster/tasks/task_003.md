@@ -44,7 +44,7 @@ Store structured diff metadata for document pairs, preserve both versions, and s
 
 ### 3.3. Add review workflow for document intelligence
 
-**Status:** pending  
+**Status:** done  
 **Dependencies:** None  
 
 Let operators review and disposition detected document changes before downstream actions.
@@ -52,6 +52,12 @@ Let operators review and disposition detected document changes before downstream
 **Details:**
 
 Implement review states, operator actions, and traceability for document-change review. Keep auditability explicit so future support and compliance work in phase 4 has a clean foundation.
+
+<info added on 2026-04-05T13:32:43.000+07:00>
+Implemented an API-first document review workflow on top of `document_diffs`. Added shared review enums in `packages/shared-types/src/egp_shared_types/enums.py` plus additive schema in `packages/db/src/migrations/006_document_reviews.sql` for `document_diff_reviews` and `document_review_events`. `packages/db/src/egp_db/repositories/document_repo.py` now auto-creates a pending review for each changed diff, supports tenant-scoped review listing/action history, and validates approve/reject/reopen transitions.
+
+`apps/api/src/egp_api/routes/documents.py` now exposes `GET /v1/documents/projects/{project_id}/reviews` and `POST /v1/documents/reviews/{review_id}/actions`, backed by new service methods in `apps/api/src/egp_api/services/document_ingest_service.py`. TOR-change notifications are no longer emitted at ingest time; they dispatch only on first approval so downstream actions are explicitly operator-gated. Coverage: `tests/phase1/test_document_persistence.py` and `tests/phase1/test_documents_api.py` now verify pending review creation, tenant scoping, action history, and approval-triggered notification dispatch.
+</info added on 2026-04-05T13:32:43.000+07:00>
 
 ### 3.4. Generate payment links and PromptPay QR codes
 

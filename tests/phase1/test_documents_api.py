@@ -11,7 +11,12 @@ from sqlalchemy import text
 from egp_api.main import create_app
 from egp_shared_types.enums import NotificationType
 from egp_db.repositories.project_repo import build_project_upsert_record
-from egp_shared_types.enums import ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    DocumentReviewEventType,
+    DocumentReviewStatus,
+    ProcurementType,
+    ProjectState,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -228,6 +233,35 @@ def seed_notification_user(
     )
 
 
+def ingest_changed_tor_pair(client: TestClient, *, project_id: str) -> tuple[dict, dict]:
+    first = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-v1.pdf",
+            "content_base64": base64.b64encode(b"tor-v1").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    second = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor-v2.pdf",
+            "content_base64": base64.b64encode(b"tor-v2").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    return first.json(), second.json()
+
+
 def test_ingest_document_endpoint_persists_and_classifies_document(tmp_path) -> None:
     client = create_test_client(tmp_path)
     project_id = seed_project(client)
@@ -425,7 +459,7 @@ def test_ingest_document_endpoint_uses_page_text_for_hearing_phase(tmp_path) -> 
     assert response.json()["document"]["document_phase"] == "public_hearing"
 
 
-def test_ingest_document_endpoint_emits_tor_changed_notification_for_superseding_tor(
+def test_ingest_document_endpoint_creates_pending_review_and_defers_tor_notification(
     tmp_path,
 ) -> None:
     sent: list[str] = []
@@ -435,35 +469,23 @@ def test_ingest_document_endpoint_emits_tor_changed_notification_for_superseding
     project_id = seed_project(client)
     seed_notification_user(client)
 
-    first = client.post(
-        "/v1/documents/ingest",
-        json={
-            "tenant_id": TENANT_ID,
-            "project_id": project_id,
-            "file_name": "tor-v1.pdf",
-            "content_base64": base64.b64encode(b"tor-v1").decode("ascii"),
-            "source_label": "เอกสารประกวดราคา",
-            "source_status_text": "ประกาศเชิญชวน",
-        },
-    )
-    second = client.post(
-        "/v1/documents/ingest",
-        json={
-            "tenant_id": TENANT_ID,
-            "project_id": project_id,
-            "file_name": "tor-v2.pdf",
-            "content_base64": base64.b64encode(b"tor-v2").decode("ascii"),
-            "source_label": "เอกสารประกวดราคา",
-            "source_status_text": "ประกาศเชิญชวน",
-        },
+    _, second = ingest_changed_tor_pair(client, project_id=project_id)
+    reviews = client.get(
+        f"/v1/documents/projects/{project_id}/reviews",
+        params={"tenant_id": TENANT_ID},
     )
 
     notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
 
-    assert first.status_code == 201
-    assert second.status_code == 201
-    assert sent == ["alerts@example.com"]
-    assert notifications[0].notification_type is NotificationType.TOR_CHANGED
+    assert reviews.status_code == 200
+    assert sent == []
+    assert notifications == []
+    assert reviews.json()["total"] == 1
+    assert reviews.json()["reviews"][0]["document_diff_id"] == second["diff_records"][0]["id"]
+    assert reviews.json()["reviews"][0]["status"] == DocumentReviewStatus.PENDING
+    assert reviews.json()["reviews"][0]["events"][0]["event_type"] == (
+        DocumentReviewEventType.CREATED
+    )
 
 
 def test_ingest_document_endpoint_duplicate_hash_does_not_emit_tor_changed_notification(
@@ -531,6 +553,108 @@ def test_ingest_document_endpoint_phase_transition_same_bytes_does_not_emit_tor_
     assert second.json()["diff_records"][0]["diff_type"] == "identical"
     assert sent == []
     assert client.app.state.notification_repository.list_for_tenant(TENANT_ID) == []
+
+
+def test_approve_document_review_dispatches_tor_changed_notification_once(tmp_path) -> None:
+    sent: list[str] = []
+    client = create_test_client(
+        tmp_path, notification_email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    project_id = seed_project(client)
+    seed_notification_user(client)
+    ingest_changed_tor_pair(client, project_id=project_id)
+
+    review_list = client.get(
+        f"/v1/documents/projects/{project_id}/reviews",
+        params={"tenant_id": TENANT_ID},
+    )
+    review_id = review_list.json()["reviews"][0]["id"]
+
+    first = client.post(
+        f"/v1/documents/reviews/{review_id}/actions",
+        json={
+            "tenant_id": TENANT_ID,
+            "action": "approve",
+            "note": "Confirmed meaningful TOR change",
+        },
+    )
+    second = client.post(
+        f"/v1/documents/reviews/{review_id}/actions",
+        json={
+            "tenant_id": TENANT_ID,
+            "action": "approve",
+            "note": "Duplicate approval should fail",
+        },
+    )
+
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert first.status_code == 200
+    assert first.json()["review"]["status"] == DocumentReviewStatus.APPROVED
+    assert first.json()["review"]["events"][-1]["event_type"] == (
+        DocumentReviewEventType.APPROVED
+    )
+    assert first.json()["review"]["events"][-1]["actor_subject"] == "manual-operator"
+    assert sent == ["alerts@example.com"]
+    assert [entry.notification_type for entry in notifications] == [NotificationType.TOR_CHANGED]
+    assert second.status_code == 422
+
+
+def test_reject_document_review_records_actor_and_note(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_changed_tor_pair(client, project_id=project_id)
+    review_list = client.get(
+        f"/v1/documents/projects/{project_id}/reviews",
+        params={"tenant_id": TENANT_ID},
+    )
+    review_id = review_list.json()["reviews"][0]["id"]
+
+    response = client.post(
+        f"/v1/documents/reviews/{review_id}/actions",
+        json={
+            "tenant_id": TENANT_ID,
+            "action": "reject",
+            "note": "False positive change",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["review"]["status"] == DocumentReviewStatus.REJECTED
+    assert response.json()["review"]["events"][-1] == {
+        "id": response.json()["review"]["events"][-1]["id"],
+        "review_id": review_id,
+        "document_diff_id": response.json()["review"]["document_diff_id"],
+        "event_type": DocumentReviewEventType.REJECTED,
+        "actor_subject": "manual-operator",
+        "note": "False positive change",
+        "from_status": DocumentReviewStatus.PENDING,
+        "to_status": DocumentReviewStatus.REJECTED,
+        "created_at": response.json()["review"]["events"][-1]["created_at"],
+    }
+
+
+def test_document_review_action_rejects_invalid_transition(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_changed_tor_pair(client, project_id=project_id)
+    review_list = client.get(
+        f"/v1/documents/projects/{project_id}/reviews",
+        params={"tenant_id": TENANT_ID},
+    )
+    review_id = review_list.json()["reviews"][0]["id"]
+
+    first = client.post(
+        f"/v1/documents/reviews/{review_id}/actions",
+        json={"tenant_id": TENANT_ID, "action": "reject", "note": "Reject once"},
+    )
+    second = client.post(
+        f"/v1/documents/reviews/{review_id}/actions",
+        json={"tenant_id": TENANT_ID, "action": "reject", "note": "Reject twice"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 422
 
 
 def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None:

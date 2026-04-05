@@ -199,11 +199,12 @@
             "id": 3,
             "title": "Add review workflow for document intelligence",
             "description": "Let operators review and disposition detected document changes before downstream actions.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
-            "details": "Implement review states, operator actions, and traceability for document-change review. Keep auditability explicit so future support and compliance work in phase 4 has a clean foundation.",
-            "testStrategy": "Exercise review assignment, approval/rejection, and persisted review history in the API and UI.",
-            "parentId": "undefined"
+            "details": "Implement review states, operator actions, and traceability for document-change review. Keep auditability explicit so future support and compliance work in phase 4 has a clean foundation.\n<info added on 2026-04-05T06:32:43.000Z>\nImplemented an API-first review workflow on top of document diffs. Added shared review enums in packages/shared-types/src/egp_shared_types/enums.py and additive schema in packages/db/src/migrations/006_document_reviews.sql for document_diff_reviews plus document_review_events. packages/db/src/egp_db/repositories/document_repo.py now auto-creates pending reviews for changed diffs, exposes tenant-scoped review list/detail/action behavior, and persists approve/reject/reopen event history. apps/api/src/egp_api/routes/documents.py now exposes GET /v1/documents/projects/{project_id}/reviews and POST /v1/documents/reviews/{review_id}/actions via apps/api/src/egp_api/services/document_ingest_service.py. TOR_CHANGED notifications are now gated on first approval instead of firing immediately at ingest. Regression coverage was added in tests/phase1/test_document_persistence.py and tests/phase1/test_documents_api.py.\n</info added on 2026-04-05T06:32:43.000Z>",
+            "testStrategy": "Exercise pending-review creation, approval/rejection/reopen transitions, tenant scoping, and approval-triggered notification dispatch in repository and API tests.",
+            "parentId": "undefined",
+            "updatedAt": "2026-04-05T06:32:43.000Z"
           },
           {
             "id": 4,
@@ -227,7 +228,7 @@
             "updatedAt": "2026-04-04T23:27:46.958Z"
           }
         ],
-        "updatedAt": "2026-04-04T23:27:46.958Z"
+        "updatedAt": "2026-04-05T06:32:43.000Z"
       },
       {
         "id": "4",
@@ -318,7 +319,7 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-05T03:22:25.774Z",
+      "lastModified": "2026-04-05T06:32:43.000Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [
