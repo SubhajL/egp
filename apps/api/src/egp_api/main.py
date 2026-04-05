@@ -16,6 +16,10 @@ from egp_api.config import (
     get_artifact_storage_backend,
     get_database_url,
     get_jwt_secret,
+    get_payment_base_url,
+    get_payment_callback_secret,
+    get_payment_provider,
+    get_promptpay_proxy_id,
     get_smtp_config,
     get_supabase_service_role_key,
     get_supabase_url,
@@ -35,6 +39,7 @@ from egp_api.services.entitlement_service import (
     TenantEntitlementService,
 )
 from egp_api.services.export_service import ExportService
+from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
@@ -64,6 +69,10 @@ def create_app(
     jwt_secret: str | None = None,
     smtp_config: SmtpConfig | None = None,
     notification_email_sender: EmailSender | None = None,
+    payment_provider: PaymentProvider | None = None,
+    payment_base_url: str | None = None,
+    promptpay_proxy_id: str | None = None,
+    payment_callback_secret: str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="e-GP Intelligence Platform",
@@ -121,18 +130,27 @@ def create_app(
         billing_repository,
         profile_repository,
     )
+    resolved_payment_provider = payment_provider or build_payment_provider(
+        provider_name=get_payment_provider(None),
+        base_url=get_payment_base_url(payment_base_url),
+        promptpay_proxy_id=get_promptpay_proxy_id(promptpay_proxy_id),
+    )
     gated_notification_dispatcher = EntitlementAwareNotificationDispatcher(
         notification_dispatcher,
         entitlement_service,
     )
     app.state.db_engine = shared_engine
     app.state.billing_repository = billing_repository
-    app.state.billing_service = BillingService(billing_repository)
+    app.state.billing_service = BillingService(
+        billing_repository,
+        payment_provider=resolved_payment_provider,
+    )
     app.state.entitlement_service = entitlement_service
     app.state.document_repository = repository
     app.state.notification_repository = notification_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
+    app.state.payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     app.state.document_ingest_service = DocumentIngestService(
         repository,
         entitlement_service=entitlement_service,
@@ -170,7 +188,10 @@ def create_app(
             "/docs",
             "/docs/oauth2-redirect",
             "/redoc",
-        }:
+        } or (
+            request.url.path.startswith("/v1/billing/payment-requests/")
+            and request.url.path.endswith("/callbacks")
+        ):
             request.state.auth_context = None
             return await call_next(request)
 

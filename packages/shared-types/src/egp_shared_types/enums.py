@@ -113,6 +113,7 @@ class BillingRecordStatus(StrEnum):
 
 class BillingPaymentMethod(StrEnum):
     BANK_TRANSFER = "bank_transfer"
+    PROMPTPAY_QR = "promptpay_qr"
 
 
 class BillingPaymentStatus(StrEnum):
@@ -124,6 +125,8 @@ class BillingPaymentStatus(StrEnum):
 class BillingEventType(StrEnum):
     BILLING_RECORD_CREATED = "billing_record_created"
     BILLING_RECORD_STATUS_CHANGED = "billing_record_status_changed"
+    PAYMENT_REQUEST_CREATED = "payment_request_created"
+    PAYMENT_REQUEST_SETTLED = "payment_request_settled"
     PAYMENT_RECORDED = "payment_recorded"
     PAYMENT_RECONCILED = "payment_reconciled"
     PAYMENT_REJECTED = "payment_rejected"
@@ -134,4 +137,16 @@ class BillingSubscriptionStatus(StrEnum):
     PENDING_ACTIVATION = "pending_activation"
     ACTIVE = "active"
     EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class BillingPaymentProvider(StrEnum):
+    MOCK_PROMPTPAY = "mock_promptpay"
+
+
+class BillingPaymentRequestStatus(StrEnum):
+    PENDING = "pending"
+    SETTLED = "settled"
+    EXPIRED = "expired"
+    FAILED = "failed"
     CANCELLED = "cancelled"

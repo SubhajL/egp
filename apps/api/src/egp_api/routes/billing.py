@@ -11,12 +11,19 @@ from egp_db.repositories.billing_repo import (
     BillingEventRecord,
     BillingPage,
     BillingPaymentRecord,
+    BillingPaymentRequestRecord,
     BillingRecordDetail,
     BillingRecordRecord,
     BillingSubscriptionRecord,
     BillingSummary,
 )
-from egp_shared_types.enums import BillingPaymentMethod, BillingPaymentStatus, BillingRecordStatus
+from egp_shared_types.enums import (
+    BillingPaymentMethod,
+    BillingPaymentProvider,
+    BillingPaymentRequestStatus,
+    BillingPaymentStatus,
+    BillingRecordStatus,
+)
 
 
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
@@ -70,6 +77,24 @@ class BillingEventResponse(BaseModel):
     created_at: str
 
 
+class BillingPaymentRequestResponse(BaseModel):
+    id: str
+    billing_record_id: str
+    provider: str
+    payment_method: str
+    status: str
+    provider_reference: str
+    payment_url: str
+    qr_payload: str
+    qr_svg: str
+    amount: str
+    currency: str
+    expires_at: str | None
+    settled_at: str | None
+    created_at: str
+    updated_at: str
+
+
 class BillingSubscriptionResponse(BaseModel):
     id: str
     tenant_id: str
@@ -87,6 +112,7 @@ class BillingSubscriptionResponse(BaseModel):
 
 class BillingRecordDetailResponse(BaseModel):
     record: BillingRecordResponse
+    payment_requests: list[BillingPaymentRequestResponse]
     payments: list[BillingPaymentResponse]
     events: list[BillingEventResponse]
     subscription: BillingSubscriptionResponse | None
@@ -159,6 +185,22 @@ class TransitionBillingRecordRequest(BaseModel):
     note: str | None = None
 
 
+class CreateBillingPaymentRequestRequest(BaseModel):
+    tenant_id: str | None = None
+    provider: BillingPaymentProvider = BillingPaymentProvider.MOCK_PROMPTPAY
+    expires_in_minutes: int = Field(default=30, ge=1, le=1440)
+
+
+class PaymentRequestCallbackRequest(BaseModel):
+    tenant_id: str | None = None
+    provider_event_id: str = Field(min_length=1)
+    status: BillingPaymentRequestStatus
+    amount: str = Field(min_length=1)
+    currency: str = Field(default="THB", min_length=1)
+    occurred_at: str = Field(min_length=1)
+    reference_code: str | None = None
+
+
 def _service_from_request(request: Request) -> BillingService:
     return request.app.state.billing_service
 
@@ -168,6 +210,17 @@ def _actor_subject_from_request(request: Request) -> str:
     if auth_context is not None and getattr(auth_context, "subject", None):
         return str(auth_context.subject)
     return "manual-operator"
+
+
+def _require_payment_callback_secret(request: Request) -> None:
+    configured_secret = getattr(request.app.state, "payment_callback_secret", None)
+    if configured_secret:
+        header_secret = request.headers.get("x-egp-payment-callback-secret", "").strip()
+        if header_secret != configured_secret:
+            raise HTTPException(status_code=401, detail="invalid payment callback secret")
+        return
+    if getattr(request.app.state, "auth_required", False):
+        raise HTTPException(status_code=503, detail="payment callback secret not configured")
 
 
 def _serialize_record(record: BillingRecordRecord) -> BillingRecordResponse:
@@ -224,6 +277,28 @@ def _serialize_event(event: BillingEventRecord) -> BillingEventResponse:
     )
 
 
+def _serialize_payment_request(
+    payment_request: BillingPaymentRequestRecord,
+) -> BillingPaymentRequestResponse:
+    return BillingPaymentRequestResponse(
+        id=payment_request.id,
+        billing_record_id=payment_request.billing_record_id,
+        provider=payment_request.provider.value,
+        payment_method=payment_request.payment_method.value,
+        status=payment_request.status.value,
+        provider_reference=payment_request.provider_reference,
+        payment_url=payment_request.payment_url,
+        qr_payload=payment_request.qr_payload,
+        qr_svg=payment_request.qr_svg,
+        amount=payment_request.amount,
+        currency=payment_request.currency,
+        expires_at=payment_request.expires_at,
+        settled_at=payment_request.settled_at,
+        created_at=payment_request.created_at,
+        updated_at=payment_request.updated_at,
+    )
+
+
 def _serialize_subscription(
     subscription: BillingSubscriptionRecord,
 ) -> BillingSubscriptionResponse:
@@ -246,6 +321,10 @@ def _serialize_subscription(
 def _serialize_detail(detail: BillingRecordDetail) -> BillingRecordDetailResponse:
     return BillingRecordDetailResponse(
         record=_serialize_record(detail.record),
+        payment_requests=[
+            _serialize_payment_request(payment_request)
+            for payment_request in detail.payment_requests
+        ],
         payments=[_serialize_payment(payment) for payment in detail.payments],
         events=[_serialize_event(event) for event in detail.events],
         subscription=(
@@ -393,6 +472,65 @@ def create_billing_payment(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED
     return _serialize_payment(payment)
+
+
+@router.post("/records/{record_id}/payment-requests", response_model=BillingRecordDetailResponse)
+def create_billing_payment_request(
+    record_id: str,
+    payload: CreateBillingPaymentRequestRequest,
+    request: Request,
+    response: Response,
+) -> BillingRecordDetailResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        detail = service.create_payment_request(
+            tenant_id=resolved_tenant_id,
+            billing_record_id=record_id,
+            provider=payload.provider,
+            expires_in_minutes=payload.expires_in_minutes,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="billing record not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="billing record not found for tenant") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response.status_code = status.HTTP_201_CREATED
+    return _serialize_detail(detail)
+
+
+@router.post(
+    "/payment-requests/{request_id}/callbacks",
+    response_model=BillingRecordDetailResponse,
+)
+def handle_billing_payment_request_callback(
+    request_id: str,
+    payload: PaymentRequestCallbackRequest,
+    request: Request,
+) -> BillingRecordDetailResponse:
+    _require_payment_callback_secret(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        detail = service.handle_payment_request_callback(
+            tenant_id=resolved_tenant_id,
+            payment_request_id=request_id,
+            payload=payload.model_dump(exclude_none=True),
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="payment request not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="payment request not found for tenant") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_detail(detail)
 
 
 @router.post("/payments/{payment_id}/reconcile", response_model=BillingRecordDetailResponse)

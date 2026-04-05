@@ -21,13 +21,16 @@ from sqlalchemy import (
 )
 from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy.exc import IntegrityError
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 from egp_shared_types.billing_plans import get_billing_plan_definition
 from egp_shared_types.enums import (
     BillingEventType,
+    BillingPaymentProvider,
     BillingPaymentMethod,
+    BillingPaymentRequestStatus,
     BillingPaymentStatus,
     BillingRecordStatus,
     BillingSubscriptionStatus,
@@ -73,6 +76,25 @@ class BillingPaymentRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class BillingPaymentRequestRecord:
+    id: str
+    billing_record_id: str
+    provider: BillingPaymentProvider
+    payment_method: BillingPaymentMethod
+    status: BillingPaymentRequestStatus
+    provider_reference: str
+    payment_url: str
+    qr_payload: str
+    qr_svg: str
+    amount: str
+    currency: str
+    expires_at: str | None
+    settled_at: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class BillingEventRecord:
     id: str
     billing_record_id: str
@@ -104,6 +126,7 @@ class BillingSubscriptionRecord:
 @dataclass(frozen=True, slots=True)
 class BillingRecordDetail:
     record: BillingRecordRecord
+    payment_requests: list[BillingPaymentRequestRecord]
     payments: list[BillingPaymentRecord]
     events: list[BillingEventRecord]
     subscription: BillingSubscriptionRecord | None
@@ -196,6 +219,45 @@ BILLING_PAYMENTS_TABLE = Table(
     ),
 )
 
+BILLING_PAYMENT_REQUESTS_TABLE = Table(
+    "billing_payment_requests",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column(
+        "billing_record_id",
+        UUID_SQL_TYPE,
+        ForeignKey("billing_records.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("provider", String, nullable=False),
+    Column("payment_method", String, nullable=False),
+    Column("status", String, nullable=False),
+    Column("provider_reference", String, nullable=False),
+    Column("payment_url", String, nullable=False),
+    Column("qr_payload", String, nullable=False),
+    Column("qr_svg", String, nullable=False),
+    Column("amount", Numeric(18, 2), nullable=False),
+    Column("currency", String, nullable=False, default="THB"),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("settled_at", DateTime(timezone=True), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        f"provider IN ({_enum_values(BillingPaymentProvider)})",
+        name="billing_payment_requests_provider_check",
+    ),
+    CheckConstraint(
+        f"payment_method IN ({_enum_values(BillingPaymentMethod)})",
+        name="billing_payment_requests_method_check",
+    ),
+    CheckConstraint(
+        f"status IN ({_enum_values(BillingPaymentRequestStatus)})",
+        name="billing_payment_requests_status_check",
+    ),
+    CheckConstraint("amount > 0", name="billing_payment_requests_amount_check"),
+)
+
 BILLING_EVENTS_TABLE = Table(
     "billing_events",
     METADATA,
@@ -222,6 +284,28 @@ BILLING_EVENTS_TABLE = Table(
     CheckConstraint(
         f"event_type IN ({_enum_values(BillingEventType)})",
         name="billing_events_type_check",
+    ),
+)
+
+BILLING_PROVIDER_EVENTS_TABLE = Table(
+    "billing_provider_events",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column(
+        "payment_request_id",
+        UUID_SQL_TYPE,
+        ForeignKey("billing_payment_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("provider", String, nullable=False),
+    Column("provider_event_id", String, nullable=False),
+    Column("event_type", String, nullable=False),
+    Column("payload_json", String, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        f"provider IN ({_enum_values(BillingPaymentProvider)})",
+        name="billing_provider_events_provider_check",
     ),
 )
 
@@ -282,9 +366,31 @@ Index(
     BILLING_PAYMENTS_TABLE.c.payment_status,
 )
 Index(
+    "idx_billing_payment_requests_tenant_created",
+    BILLING_PAYMENT_REQUESTS_TABLE.c.tenant_id,
+    BILLING_PAYMENT_REQUESTS_TABLE.c.created_at,
+)
+Index(
+    "idx_billing_payment_requests_record",
+    BILLING_PAYMENT_REQUESTS_TABLE.c.billing_record_id,
+    BILLING_PAYMENT_REQUESTS_TABLE.c.status,
+    BILLING_PAYMENT_REQUESTS_TABLE.c.created_at,
+)
+Index(
     "idx_billing_events_record_created",
     BILLING_EVENTS_TABLE.c.billing_record_id,
     BILLING_EVENTS_TABLE.c.created_at,
+)
+Index(
+    "idx_billing_provider_events_request_created",
+    BILLING_PROVIDER_EVENTS_TABLE.c.payment_request_id,
+    BILLING_PROVIDER_EVENTS_TABLE.c.created_at,
+)
+Index(
+    "uq_billing_provider_events_provider_event",
+    BILLING_PROVIDER_EVENTS_TABLE.c.provider,
+    BILLING_PROVIDER_EVENTS_TABLE.c.provider_event_id,
+    unique=True,
 )
 Index(
     "idx_billing_subscriptions_tenant_status",
@@ -313,6 +419,26 @@ class _BillingRecordRow:
     currency: str
     amount_due: Decimal
     notes: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BillingPaymentRequestRow:
+    id: str
+    tenant_id: str
+    billing_record_id: str
+    provider: BillingPaymentProvider
+    payment_method: BillingPaymentMethod
+    status: BillingPaymentRequestStatus
+    provider_reference: str
+    payment_url: str
+    qr_payload: str
+    qr_svg: str
+    amount: Decimal
+    currency: str
+    expires_at: str | None
+    settled_at: str | None
     created_at: str
     updated_at: str
 
@@ -409,6 +535,32 @@ def _normalize_payment_method(
         raise ValueError("invalid billing payment method") from exc
 
 
+def _normalize_payment_provider(
+    value: BillingPaymentProvider | str,
+) -> BillingPaymentProvider:
+    try:
+        return (
+            value
+            if isinstance(value, BillingPaymentProvider)
+            else BillingPaymentProvider(str(value).strip())
+        )
+    except ValueError as exc:
+        raise ValueError("invalid billing payment provider") from exc
+
+
+def _normalize_payment_request_status(
+    value: BillingPaymentRequestStatus | str,
+) -> BillingPaymentRequestStatus:
+    try:
+        return (
+            value
+            if isinstance(value, BillingPaymentRequestStatus)
+            else BillingPaymentRequestStatus(str(value).strip())
+        )
+    except ValueError as exc:
+        raise ValueError("invalid billing payment request status") from exc
+
+
 def _normalize_payment_status(
     value: BillingPaymentStatus | str,
 ) -> BillingPaymentStatus:
@@ -463,6 +615,26 @@ def _payment_from_mapping(row: RowMapping) -> BillingPaymentRecord:
         reconciled_by=(
             str(row["reconciled_by"]) if row["reconciled_by"] is not None else None
         ),
+    )
+
+
+def _payment_request_from_mapping(row: RowMapping) -> BillingPaymentRequestRecord:
+    return BillingPaymentRequestRecord(
+        id=str(row["id"]),
+        billing_record_id=str(row["billing_record_id"]),
+        provider=BillingPaymentProvider(str(row["provider"])),
+        payment_method=BillingPaymentMethod(str(row["payment_method"])),
+        status=BillingPaymentRequestStatus(str(row["status"])),
+        provider_reference=str(row["provider_reference"]),
+        payment_url=str(row["payment_url"]),
+        qr_payload=str(row["qr_payload"]),
+        qr_svg=str(row["qr_svg"]),
+        amount=_decimal_to_str(Decimal(str(row["amount"]))),
+        currency=str(row["currency"]),
+        expires_at=_dt_to_iso(row["expires_at"]),
+        settled_at=_dt_to_iso(row["settled_at"]),
+        created_at=_dt_to_iso(row["created_at"]) or "",
+        updated_at=_dt_to_iso(row["updated_at"]) or "",
     )
 
 
@@ -526,6 +698,15 @@ def _group_payments(
     return grouped
 
 
+def _group_payment_requests(
+    requests: list[BillingPaymentRequestRecord],
+) -> dict[str, list[BillingPaymentRequestRecord]]:
+    grouped: dict[str, list[BillingPaymentRequestRecord]] = {}
+    for request in requests:
+        grouped.setdefault(request.billing_record_id, []).append(request)
+    return grouped
+
+
 def _group_events(
     events: list[BillingEventRecord],
 ) -> dict[str, list[BillingEventRecord]]:
@@ -553,6 +734,7 @@ def _reconciled_total_for_payments(payments: list[BillingPaymentRecord]) -> Deci
 
 def _detail_from_row(
     row: _BillingRecordRow,
+    payment_requests: list[BillingPaymentRequestRecord],
     payments: list[BillingPaymentRecord],
     events: list[BillingEventRecord],
     subscription: BillingSubscriptionRecord | None,
@@ -580,6 +762,7 @@ def _detail_from_row(
     )
     return BillingRecordDetail(
         record=record,
+        payment_requests=payment_requests,
         payments=payments,
         events=events,
         subscription=subscription,
@@ -647,6 +830,28 @@ class SqlBillingRepository:
             )
         return [_payment_from_mapping(row) for row in rows]
 
+    def _load_payment_requests_for_records(
+        self, record_ids: list[str]
+    ) -> list[BillingPaymentRequestRecord]:
+        if not record_ids:
+            return []
+        normalized_ids = [normalize_uuid_string(record_id) for record_id in record_ids]
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(BILLING_PAYMENT_REQUESTS_TABLE)
+                    .where(
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.billing_record_id.in_(
+                            normalized_ids
+                        )
+                    )
+                    .order_by(BILLING_PAYMENT_REQUESTS_TABLE.c.created_at.desc())
+                )
+                .mappings()
+                .all()
+            )
+        return [_payment_request_from_mapping(row) for row in rows]
+
     def _load_events_for_records(
         self, record_ids: list[str]
     ) -> list[BillingEventRecord]:
@@ -701,6 +906,22 @@ class SqlBillingRepository:
             )
         return _billing_record_from_mapping(row) if row is not None else None
 
+    def _get_payment_request_by_id(
+        self, request_id: str
+    ) -> BillingPaymentRequestRecord | None:
+        normalized_request_id = normalize_uuid_string(request_id)
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(BILLING_PAYMENT_REQUESTS_TABLE)
+                    .where(BILLING_PAYMENT_REQUESTS_TABLE.c.id == normalized_request_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _payment_request_from_mapping(row) if row is not None else None
+
     def _require_record_for_tenant(
         self, *, tenant_id: str, record_id: str
     ) -> _BillingRecordRow:
@@ -710,6 +931,20 @@ class SqlBillingRepository:
         if row.tenant_id != normalize_uuid_string(tenant_id):
             raise PermissionError(record_id)
         return row
+
+    def _require_payment_request_for_tenant(
+        self, *, tenant_id: str, request_id: str
+    ) -> BillingPaymentRequestRecord:
+        request = self._get_payment_request_by_id(request_id)
+        if request is None:
+            raise KeyError(request_id)
+        record = self._require_record_for_tenant(
+            tenant_id=tenant_id,
+            record_id=request.billing_record_id,
+        )
+        if record.tenant_id != normalize_uuid_string(tenant_id):
+            raise PermissionError(request_id)
+        return request
 
     def _require_payment_for_tenant(
         self, *, tenant_id: str, payment_id: str
@@ -765,20 +1000,80 @@ class SqlBillingRepository:
             )
         )
 
+    def _record_provider_event(
+        self,
+        connection,
+        *,
+        tenant_id: str,
+        payment_request_id: str,
+        provider: BillingPaymentProvider,
+        provider_event_id: str,
+        event_type: str,
+        payload_json: str,
+    ) -> bool:
+        try:
+            connection.execute(
+                insert(BILLING_PROVIDER_EVENTS_TABLE).values(
+                    id=str(uuid4()),
+                    tenant_id=normalize_uuid_string(tenant_id),
+                    payment_request_id=normalize_uuid_string(payment_request_id),
+                    provider=provider.value,
+                    provider_event_id=str(provider_event_id).strip(),
+                    event_type=str(event_type).strip(),
+                    payload_json=str(payload_json),
+                    created_at=_now(),
+                )
+            )
+        except IntegrityError:
+            return False
+        return True
+
     def get_billing_record_detail(
         self, *, tenant_id: str, record_id: str
     ) -> BillingRecordDetail | None:
         row = self._get_record_row_by_id(record_id)
         if row is None or row.tenant_id != normalize_uuid_string(tenant_id):
             return None
+        payment_requests = self._load_payment_requests_for_records([row.id])
         payments = self._load_payments_for_records([row.id])
         events = self._load_events_for_records([row.id])
         subscriptions = self._load_subscriptions_for_records([row.id])
         return _detail_from_row(
             row,
+            payment_requests,
             payments,
             events,
             subscriptions[0] if subscriptions else None,
+        )
+
+    def get_payment_request_detail(
+        self, *, tenant_id: str, request_id: str
+    ) -> BillingPaymentRequestRecord | None:
+        try:
+            return self._require_payment_request_for_tenant(
+                tenant_id=tenant_id,
+                request_id=request_id,
+            )
+        except (KeyError, PermissionError):
+            return None
+
+    def require_billing_record_detail(
+        self, *, tenant_id: str, record_id: str
+    ) -> BillingRecordDetail:
+        self._require_record_for_tenant(tenant_id=tenant_id, record_id=record_id)
+        detail = self.get_billing_record_detail(
+            tenant_id=tenant_id, record_id=record_id
+        )
+        if detail is None:
+            raise KeyError(record_id)
+        return detail
+
+    def require_payment_request_detail(
+        self, *, tenant_id: str, request_id: str
+    ) -> BillingPaymentRequestRecord:
+        return self._require_payment_request_for_tenant(
+            tenant_id=tenant_id,
+            request_id=request_id,
         )
 
     def list_subscriptions_for_tenant(
@@ -840,6 +1135,9 @@ class SqlBillingRepository:
 
         page_rows = all_rows[normalized_offset : normalized_offset + normalized_limit]
         page_ids = [row.id for row in page_rows]
+        page_requests_by_record = _group_payment_requests(
+            self._load_payment_requests_for_records(page_ids)
+        )
         page_payments_by_record = _group_payments(
             self._load_payments_for_records(page_ids)
         )
@@ -850,6 +1148,7 @@ class SqlBillingRepository:
         details = [
             _detail_from_row(
                 row,
+                page_requests_by_record.get(row.id, []),
                 page_payments_by_record.get(row.id, []),
                 page_events_by_record.get(row.id, []),
                 page_subscriptions_by_record.get(row.id),
@@ -868,6 +1167,102 @@ class SqlBillingRepository:
                 collected_amount=_decimal_to_str(collected_amount),
             ),
         )
+
+    def create_payment_request(
+        self,
+        *,
+        tenant_id: str,
+        billing_record_id: str,
+        provider: BillingPaymentProvider | str,
+        payment_method: BillingPaymentMethod | str,
+        status: BillingPaymentRequestStatus | str,
+        provider_reference: str,
+        payment_url: str,
+        qr_payload: str,
+        qr_svg: str,
+        amount: Decimal | str | float | int,
+        currency: str,
+        expires_at: str | None,
+        actor_subject: str | None = None,
+        note: str | None = None,
+    ) -> BillingRecordDetail:
+        record = self._require_record_for_tenant(
+            tenant_id=tenant_id,
+            record_id=billing_record_id,
+        )
+        normalized_provider = _normalize_payment_provider(provider)
+        normalized_method = _normalize_payment_method(payment_method)
+        normalized_status = _normalize_payment_request_status(status)
+        normalized_amount = _normalize_amount(amount)
+        normalized_expires_at = _normalize_datetime(expires_at)
+        request_id = str(uuid4())
+        now = _now()
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(BILLING_PAYMENT_REQUESTS_TABLE).values(
+                    id=request_id,
+                    tenant_id=record.tenant_id,
+                    billing_record_id=record.id,
+                    provider=normalized_provider.value,
+                    payment_method=normalized_method.value,
+                    status=normalized_status.value,
+                    provider_reference=str(provider_reference).strip(),
+                    payment_url=str(payment_url).strip(),
+                    qr_payload=str(qr_payload),
+                    qr_svg=str(qr_svg),
+                    amount=normalized_amount,
+                    currency=str(currency).strip() or "THB",
+                    expires_at=normalized_expires_at,
+                    settled_at=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            self._append_event(
+                connection,
+                tenant_id=tenant_id,
+                billing_record_id=record.id,
+                payment_id=None,
+                event_type=BillingEventType.PAYMENT_REQUEST_CREATED,
+                actor_subject=actor_subject,
+                note=note,
+                from_status=record.status.value,
+                to_status=normalized_status.value,
+            )
+
+        detail = self.get_billing_record_detail(
+            tenant_id=tenant_id,
+            record_id=record.id,
+        )
+        if detail is None:
+            raise KeyError(record.id)
+        return detail
+
+    def record_provider_callback(
+        self,
+        *,
+        tenant_id: str,
+        payment_request_id: str,
+        provider: BillingPaymentProvider | str,
+        provider_event_id: str,
+        event_type: str,
+        payload_json: str,
+    ) -> bool:
+        payment_request = self._require_payment_request_for_tenant(
+            tenant_id=tenant_id,
+            request_id=payment_request_id,
+        )
+        normalized_provider = _normalize_payment_provider(provider)
+        with self._engine.begin() as connection:
+            return self._record_provider_event(
+                connection,
+                tenant_id=tenant_id,
+                payment_request_id=payment_request.id,
+                provider=normalized_provider,
+                provider_event_id=provider_event_id,
+                event_type=event_type,
+                payload_json=payload_json,
+            )
 
     def create_billing_record(
         self,
@@ -1045,7 +1440,69 @@ class SqlBillingRepository:
             raise KeyError(record_before.id)
         return detail
 
-    def record_bank_transfer_payment(
+    def update_payment_request_status(
+        self,
+        *,
+        tenant_id: str,
+        payment_request_id: str,
+        status: BillingPaymentRequestStatus | str,
+        settled_at: str | None = None,
+        actor_subject: str | None = None,
+        note: str | None = None,
+    ) -> BillingRecordDetail:
+        request_before = self._require_payment_request_for_tenant(
+            tenant_id=tenant_id,
+            request_id=payment_request_id,
+        )
+        target_status = _normalize_payment_request_status(status)
+        if request_before.status is target_status:
+            detail = self.get_billing_record_detail(
+                tenant_id=tenant_id,
+                record_id=request_before.billing_record_id,
+            )
+            if detail is None:
+                raise KeyError(request_before.billing_record_id)
+            return detail
+        record = self._require_record_for_tenant(
+            tenant_id=tenant_id,
+            record_id=request_before.billing_record_id,
+        )
+        now = _now()
+        resolved_settled_at = _normalize_datetime(settled_at)
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(BILLING_PAYMENT_REQUESTS_TABLE)
+                .where(
+                    BILLING_PAYMENT_REQUESTS_TABLE.c.id
+                    == normalize_uuid_string(payment_request_id)
+                )
+                .values(
+                    status=target_status.value,
+                    settled_at=resolved_settled_at,
+                    updated_at=now,
+                )
+            )
+            if target_status is BillingPaymentRequestStatus.SETTLED:
+                self._append_event(
+                    connection,
+                    tenant_id=tenant_id,
+                    billing_record_id=record.id,
+                    payment_id=None,
+                    event_type=BillingEventType.PAYMENT_REQUEST_SETTLED,
+                    actor_subject=actor_subject,
+                    note=note,
+                    from_status=request_before.status.value,
+                    to_status=target_status.value,
+                )
+        detail = self.get_billing_record_detail(
+            tenant_id=tenant_id,
+            record_id=request_before.billing_record_id,
+        )
+        if detail is None:
+            raise KeyError(request_before.billing_record_id)
+        return detail
+
+    def record_payment(
         self,
         *,
         tenant_id: str,
@@ -1105,6 +1562,31 @@ class SqlBillingRepository:
             tenant_id=tenant_id, payment_id=payment_id
         )
         return payment
+
+    def record_bank_transfer_payment(
+        self,
+        *,
+        tenant_id: str,
+        billing_record_id: str,
+        payment_method: BillingPaymentMethod | str,
+        amount: Decimal | str | float | int,
+        currency: str = "THB",
+        reference_code: str | None = None,
+        received_at: str,
+        note: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingPaymentRecord:
+        return self.record_payment(
+            tenant_id=tenant_id,
+            billing_record_id=billing_record_id,
+            payment_method=payment_method,
+            amount=amount,
+            currency=currency,
+            reference_code=reference_code,
+            received_at=received_at,
+            note=note,
+            actor_subject=actor_subject,
+        )
 
     def reconcile_payment(
         self,
