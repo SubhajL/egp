@@ -233,7 +233,9 @@ def seed_notification_user(
     )
 
 
-def ingest_changed_tor_pair(client: TestClient, *, project_id: str) -> tuple[dict, dict]:
+def ingest_changed_tor_pair(
+    client: TestClient, *, project_id: str
+) -> tuple[dict, dict]:
     first = client.post(
         "/v1/documents/ingest",
         json={
@@ -481,7 +483,10 @@ def test_ingest_document_endpoint_creates_pending_review_and_defers_tor_notifica
     assert sent == []
     assert notifications == []
     assert reviews.json()["total"] == 1
-    assert reviews.json()["reviews"][0]["document_diff_id"] == second["diff_records"][0]["id"]
+    assert (
+        reviews.json()["reviews"][0]["document_diff_id"]
+        == second["diff_records"][0]["id"]
+    )
     assert reviews.json()["reviews"][0]["status"] == DocumentReviewStatus.PENDING
     assert reviews.json()["reviews"][0]["events"][0]["event_type"] == (
         DocumentReviewEventType.CREATED
@@ -531,7 +536,9 @@ def test_ingest_document_endpoint_phase_transition_same_bytes_does_not_emit_tor_
             "tenant_id": TENANT_ID,
             "project_id": project_id,
             "file_name": "tor-hearing.pdf",
-            "content_base64": base64.b64encode(b"same-phase-transition").decode("ascii"),
+            "content_base64": base64.b64encode(b"same-phase-transition").decode(
+                "ascii"
+            ),
             "source_label": "ร่างขอบเขตของงาน",
             "source_status_text": "เปิดรับฟังคำวิจารณ์",
         },
@@ -542,7 +549,9 @@ def test_ingest_document_endpoint_phase_transition_same_bytes_does_not_emit_tor_
             "tenant_id": TENANT_ID,
             "project_id": project_id,
             "file_name": "tor-final.pdf",
-            "content_base64": base64.b64encode(b"same-phase-transition").decode("ascii"),
+            "content_base64": base64.b64encode(b"same-phase-transition").decode(
+                "ascii"
+            ),
             "source_label": "เอกสารประกวดราคา",
             "source_status_text": "ประกาศเชิญชวน",
         },
@@ -555,7 +564,9 @@ def test_ingest_document_endpoint_phase_transition_same_bytes_does_not_emit_tor_
     assert client.app.state.notification_repository.list_for_tenant(TENANT_ID) == []
 
 
-def test_approve_document_review_dispatches_tor_changed_notification_once(tmp_path) -> None:
+def test_approve_document_review_dispatches_tor_changed_notification_once(
+    tmp_path,
+) -> None:
     sent: list[str] = []
     client = create_test_client(
         tmp_path, notification_email_sender=lambda *, to, subject, body: sent.append(to)
@@ -596,7 +607,9 @@ def test_approve_document_review_dispatches_tor_changed_notification_once(tmp_pa
     )
     assert first.json()["review"]["events"][-1]["actor_subject"] == "manual-operator"
     assert sent == ["alerts@example.com"]
-    assert [entry.notification_type for entry in notifications] == [NotificationType.TOR_CHANGED]
+    assert [entry.notification_type for entry in notifications] == [
+        NotificationType.TOR_CHANGED
+    ]
     assert second.status_code == 422
 
 
@@ -667,7 +680,9 @@ def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None
             "tenant_id": TENANT_ID,
             "project_id": project_id,
             "file_name": "tor-hearing.pdf",
-            "content_base64": base64.b64encode(b"draft line\nshared line\n").decode("ascii"),
+            "content_base64": base64.b64encode(b"draft line\nshared line\n").decode(
+                "ascii"
+            ),
             "source_label": "ร่างขอบเขตของงาน",
             "source_status_text": "เปิดรับฟังคำวิจารณ์",
         },
@@ -678,7 +693,9 @@ def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None
             "tenant_id": TENANT_ID,
             "project_id": project_id,
             "file_name": "tor-final.pdf",
-            "content_base64": base64.b64encode(b"final line\nshared line\n").decode("ascii"),
+            "content_base64": base64.b64encode(b"final line\nshared line\n").decode(
+                "ascii"
+            ),
             "source_label": "เอกสารประกวดราคา",
             "source_status_text": "ประกาศเชิญชวน",
         },
@@ -697,10 +714,18 @@ def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None
     assert diff_list.status_code == 200
     assert len(diff_list.json()["diffs"]) == 1
     assert diff_list.json()["diffs"][0]["diff_type"] == "changed"
-    assert diff_list.json()["diffs"][0]["summary_json"]["comparison_scope"] == "phase_transition"
+    assert (
+        diff_list.json()["diffs"][0]["summary_json"]["comparison_scope"]
+        == "phase_transition"
+    )
     assert diff_detail.status_code == 200
-    assert diff_detail.json()["diff"]["old_document_id"] == hearing.json()["document"]["id"]
-    assert diff_detail.json()["diff"]["new_document_id"] == final.json()["document"]["id"]
+    assert (
+        diff_detail.json()["diff"]["old_document_id"]
+        == hearing.json()["document"]["id"]
+    )
+    assert (
+        diff_detail.json()["diff"]["new_document_id"] == final.json()["document"]["id"]
+    )
 
 
 def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None:

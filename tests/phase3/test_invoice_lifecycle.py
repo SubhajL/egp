@@ -21,7 +21,9 @@ def _create_client(tmp_path) -> TestClient:
     )
 
 
-def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscription(tmp_path) -> None:
+def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscription(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     future_start = date.today() + timedelta(days=5)
     future_end = future_start + timedelta(days=2)
@@ -81,14 +83,14 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
         f"/v1/billing/records/{record_id}/payments",
         json={
             "tenant_id": TENANT_ID,
-                "payment_method": "bank_transfer",
-                "amount": "300.00",
-                "currency": "THB",
-                "reference_code": "KBANK-OT-001",
-                "received_at": f"{future_start.isoformat()}T03:30:00+00:00",
-                "note": "Customer transfer",
-            },
-        )
+            "payment_method": "bank_transfer",
+            "amount": "300.00",
+            "currency": "THB",
+            "reference_code": "KBANK-OT-001",
+            "received_at": f"{future_start.isoformat()}T03:30:00+00:00",
+            "note": "Customer transfer",
+        },
+    )
     assert payment_response.status_code == 201
     payment = payment_response.json()
 
@@ -106,7 +108,9 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
     assert reconciled["subscription"]["subscription_status"] == "pending_activation"
     assert reconciled["subscription"]["plan_code"] == "one_time_search_pack"
     assert reconciled["subscription"]["keyword_limit"] == 1
-    assert reconciled["subscription"]["billing_period_start"] == future_start.isoformat()
+    assert (
+        reconciled["subscription"]["billing_period_start"] == future_start.isoformat()
+    )
     assert reconciled["subscription"]["billing_period_end"] == future_end.isoformat()
     assert [entry["event_type"] for entry in reconciled["events"]] == [
         "billing_record_created",
@@ -118,7 +122,9 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
     ]
 
 
-def test_monthly_membership_partial_payment_does_not_activate_subscription(tmp_path) -> None:
+def test_monthly_membership_partial_payment_does_not_activate_subscription(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     created_response = client.post(

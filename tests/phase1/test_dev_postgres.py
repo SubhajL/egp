@@ -9,7 +9,9 @@ from egp_db.dev_postgres import (
 )
 
 
-def test_run_phase1_postgres_smoke_round_trips_document_metadata_and_blob(tmp_path) -> None:
+def test_run_phase1_postgres_smoke_round_trips_document_metadata_and_blob(
+    tmp_path,
+) -> None:
     if not postgres_binaries_available():
         return
 

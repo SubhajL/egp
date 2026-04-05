@@ -19,7 +19,9 @@ def _create_client(tmp_path) -> TestClient:
     )
 
 
-def _create_billing_record(client: TestClient, *, tenant_id: str = TENANT_ID) -> dict[str, object]:
+def _create_billing_record(
+    client: TestClient, *, tenant_id: str = TENANT_ID
+) -> dict[str, object]:
     response = client.post(
         "/v1/billing/records",
         json={
@@ -83,7 +85,9 @@ def _reconcile_payment(
     return response.json()
 
 
-def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path) -> None:
+def test_billing_snapshot_supports_create_record_payment_and_reconcile(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     created = _create_billing_record(client)
@@ -93,7 +97,9 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
     assert created["payments"] == []
     assert created["events"][0]["event_type"] == "billing_record_created"
 
-    listed_before_payment = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
+    listed_before_payment = client.get(
+        "/v1/billing/records", params={"tenant_id": TENANT_ID}
+    )
     assert listed_before_payment.status_code == 200
     listed_before_body = listed_before_payment.json()
     assert listed_before_body["total"] == 1
@@ -120,7 +126,9 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
     assert reconciled["subscription"]["plan_code"] == "monthly_membership"
     assert reconciled["subscription"]["subscription_status"] == "active"
     assert reconciled["subscription"]["keyword_limit"] == 5
-    assert [entry["payment_status"] for entry in reconciled["payments"]] == ["reconciled"]
+    assert [entry["payment_status"] for entry in reconciled["payments"]] == [
+        "reconciled"
+    ]
     assert [entry["event_type"] for entry in reconciled["events"]] == [
         "billing_record_created",
         "payment_recorded",
@@ -128,7 +136,9 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
         "subscription_activated",
     ]
 
-    listed_after_payment = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
+    listed_after_payment = client.get(
+        "/v1/billing/records", params={"tenant_id": TENANT_ID}
+    )
     assert listed_after_payment.status_code == 200
     listed_after_body = listed_after_payment.json()
     assert listed_after_body["summary"] == {
@@ -140,7 +150,9 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(tmp_path)
     assert listed_after_body["records"][0]["record"]["status"] == "paid"
 
 
-def test_billing_snapshot_keeps_partial_payment_in_payment_detected_status(tmp_path) -> None:
+def test_billing_snapshot_keeps_partial_payment_in_payment_detected_status(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     created = _create_billing_record(client)
@@ -162,7 +174,9 @@ def test_billing_snapshot_keeps_partial_payment_in_payment_detected_status(tmp_p
     assert reconciled["subscription"] is None
 
 
-def test_billing_reconcile_is_idempotent_for_already_reconciled_payment(tmp_path) -> None:
+def test_billing_reconcile_is_idempotent_for_already_reconciled_payment(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     created = _create_billing_record(client)
@@ -188,7 +202,9 @@ def test_billing_reconcile_is_idempotent_for_already_reconciled_payment(tmp_path
     second = second_response.json()
     assert second["record"]["status"] == "paid"
     assert second["subscription"]["id"] == first["subscription"]["id"]
-    assert [entry["event_type"] for entry in second["events"]].count("subscription_activated") == 1
+    assert [entry["event_type"] for entry in second["events"]].count(
+        "subscription_activated"
+    ) == 1
 
 
 def test_billing_endpoints_are_tenant_scoped(tmp_path) -> None:
@@ -197,7 +213,9 @@ def test_billing_endpoints_are_tenant_scoped(tmp_path) -> None:
     created = _create_billing_record(client)
     record_id = created["record"]["id"]
 
-    foreign_list = client.get("/v1/billing/records", params={"tenant_id": OTHER_TENANT_ID})
+    foreign_list = client.get(
+        "/v1/billing/records", params={"tenant_id": OTHER_TENANT_ID}
+    )
     assert foreign_list.status_code == 200
     assert foreign_list.json()["records"] == []
 

@@ -5,7 +5,11 @@ from jose import jwt
 
 from egp_api.main import create_app
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
-from egp_db.repositories.project_repo import PROJECTS_TABLE, SqlProjectRepository, build_project_upsert_record
+from egp_db.repositories.project_repo import (
+    PROJECTS_TABLE,
+    SqlProjectRepository,
+    build_project_upsert_record,
+)
 from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import ProcurementType, ProjectState
 from egp_worker.workflows.discover import run_discover_workflow
@@ -47,8 +51,12 @@ class FakeSupabaseBucket:
     def remove(self, paths: list[str]):
         return {"paths": paths}
 
-    def create_signed_url(self, path: str, expires_in: int, options: dict[str, object] | None = None):
-        return {"signedURL": f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{path}"}
+    def create_signed_url(
+        self, path: str, expires_in: int, options: dict[str, object] | None = None
+    ):
+        return {
+            "signedURL": f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{path}"
+        }
 
 
 class FakeSupabaseStorageClient:
@@ -135,7 +143,9 @@ def test_projects_endpoint_requires_auth_and_uses_jwt_tenant(tmp_path) -> None:
 
 def test_discover_workflow_accepts_injected_repositories(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
-    project_repository = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
+    project_repository = SqlProjectRepository(
+        database_url=database_url, bootstrap_schema=True
+    )
     run_repository = SqlRunRepository(database_url=database_url, bootstrap_schema=False)
 
     result = run_discover_workflow(
@@ -160,7 +170,9 @@ def test_discover_workflow_accepts_injected_repositories(tmp_path) -> None:
     )
 
     project_page = project_repository.list_projects(tenant_id=TENANT_ID)
-    run_detail = run_repository.get_run_detail(tenant_id=TENANT_ID, run_id=result.run.run.id)
+    run_detail = run_repository.get_run_detail(
+        tenant_id=TENANT_ID, run_id=result.run.run.id
+    )
 
     assert len(project_page.items) == 1
     assert run_detail is not None
@@ -192,7 +204,9 @@ def test_supabase_artifact_store_uses_boolean_upsert_flag() -> None:
         client=client,
     )
 
-    store.put_bytes(key="tenant/project/file.pdf", data=b"data", content_type="application/pdf")
+    store.put_bytes(
+        key="tenant/project/file.pdf", data=b"data", content_type="application/pdf"
+    )
 
     assert client.storage.bucket.upload_calls[0]["file_options"]["upsert"] is False
 

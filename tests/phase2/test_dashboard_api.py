@@ -9,7 +9,12 @@ from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
-from egp_shared_types.enums import ClosedReason, CrawlRunStatus, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    ClosedReason,
+    CrawlRunStatus,
+    ProcurementType,
+    ProjectState,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -261,7 +266,11 @@ def _create_run(
 
 def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-dashboard.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
     _seed_active_subscription(client)
     _seed_active_profile_keyword(client, keyword="สุขภาพ")
 
@@ -314,8 +323,12 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         closed_reason=ClosedReason.WINNER_ANNOUNCED,
     )
 
-    _ingest_document(client, project_id=weekly_winner.id, file_name="tor-v1.pdf", content=b"tor-v1")
-    _ingest_document(client, project_id=weekly_winner.id, file_name="tor-v2.pdf", content=b"tor-v2")
+    _ingest_document(
+        client, project_id=weekly_winner.id, file_name="tor-v1.pdf", content=b"tor-v1"
+    )
+    _ingest_document(
+        client, project_id=weekly_winner.id, file_name="tor-v2.pdf", content=b"tor-v2"
+    )
 
     _create_run(
         client,
@@ -368,7 +381,9 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         consulting.project_name,
         "ผู้ชนะเก่าเกินสัปดาห์",
     ]
-    assert [item["project_name"] for item in body["winner_projects"]] == [weekly_winner.project_name]
+    assert [item["project_name"] for item in body["winner_projects"]] == [
+        weekly_winner.project_name
+    ]
 
     series = {point["date"]: point["count"] for point in body["daily_discovery"]}
     assert len(body["daily_discovery"]) == 14
@@ -378,7 +393,9 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
     assert series[(now - timedelta(days=10)).date().isoformat()] == 1
     assert series[(now - timedelta(days=12)).date().isoformat()] == 1
 
-    breakdown = {item["bucket"]: item["count"] for item in body["project_state_breakdown"]}
+    breakdown = {
+        item["bucket"]: item["count"] for item in body["project_state_breakdown"]
+    }
     assert breakdown == {
         "discovered": 1,
         "open_invitation": 1,
@@ -389,9 +406,15 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
     }
 
 
-def test_dashboard_summary_endpoint_returns_zero_safe_defaults_for_empty_tenant(tmp_path) -> None:
+def test_dashboard_summary_endpoint_returns_zero_safe_defaults_for_empty_tenant(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-dashboard-empty.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     response = client.get("/v1/dashboard/summary", params={"tenant_id": TENANT_ID})
 

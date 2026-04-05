@@ -103,7 +103,9 @@ def test_store_document_supersedes_previous_version_and_creates_diff(tmp_path) -
     assert second.created is True
     assert second.document.supersedes_document_id == first.document.id
     assert second.document.is_current is True
-    assert any(doc.id == first.document.id and doc.is_current is False for doc in listed)
+    assert any(
+        doc.id == first.document.id and doc.is_current is False for doc in listed
+    )
     assert len(second.diff_records) == 1
     assert second.diff_records[0].diff_type == "changed"
 
@@ -216,7 +218,9 @@ def test_store_document_persists_diff_rows_in_sql_metadata(tmp_path) -> None:
     assert row == (first.document.id, second.document.id, "changed")
 
 
-def test_store_document_persists_structured_diff_summary_for_phase_transition(tmp_path) -> None:
+def test_store_document_persists_structured_diff_summary_for_phase_transition(
+    tmp_path,
+) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
     repository.store_document(
         tenant_id=TENANT_ID,
@@ -252,7 +256,9 @@ def test_store_document_persists_structured_diff_summary_for_phase_transition(tm
     assert '"changed_line_count": 2' in row[1]
 
 
-def test_store_document_handles_missing_text_extraction_in_diff_summary(tmp_path) -> None:
+def test_store_document_handles_missing_text_extraction_in_diff_summary(
+    tmp_path,
+) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
     repository.store_document(
         tenant_id=TENANT_ID,
@@ -273,7 +279,9 @@ def test_store_document_handles_missing_text_extraction_in_diff_summary(tmp_path
 
     assert second.created is True
     assert second.diff_records[0].summary_json is not None
-    assert second.diff_records[0].summary_json["text_extraction_status"] == "unavailable"
+    assert (
+        second.diff_records[0].summary_json["text_extraction_status"] == "unavailable"
+    )
     assert second.diff_records[0].summary_json["text_diff_available"] is False
 
 
@@ -281,7 +289,9 @@ def test_store_document_hashes_and_classifies_once(tmp_path) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
 
     with (
-        patch("egp_db.repositories.document_repo.hash_file", return_value="hash-once") as hash_mock,
+        patch(
+            "egp_db.repositories.document_repo.hash_file", return_value="hash-once"
+        ) as hash_mock,
         patch(
             "egp_db.repositories.document_repo.classify_document",
             return_value=(DocumentType.TOR, DocumentPhase.FINAL),
@@ -331,7 +341,9 @@ def test_store_document_creates_pending_review_for_changed_diff(tmp_path) -> Non
     review = page.reviews[0]
     assert review.document_diff_id == second.diff_records[0].id
     assert review.status is DocumentReviewStatus.PENDING
-    assert [event.event_type for event in review.events] == [DocumentReviewEventType.CREATED]
+    assert [event.event_type for event in review.events] == [
+        DocumentReviewEventType.CREATED
+    ]
 
 
 def test_store_document_skips_review_for_identical_diff(tmp_path) -> None:
@@ -379,7 +391,9 @@ def test_apply_document_review_action_records_history(tmp_path) -> None:
         source_label="เอกสารประกวดราคา",
         source_status_text="ประกาศเชิญชวน",
     )
-    review = repository.list_document_reviews(tenant_id=TENANT_ID, project_id=PROJECT_ID).reviews[0]
+    review = repository.list_document_reviews(
+        tenant_id=TENANT_ID, project_id=PROJECT_ID
+    ).reviews[0]
 
     approved = repository.apply_document_review_action(
         tenant_id=TENANT_ID,
@@ -416,7 +430,9 @@ def test_document_review_action_is_tenant_scoped(tmp_path) -> None:
         source_label="เอกสารประกวดราคา",
         source_status_text="ประกาศเชิญชวน",
     )
-    review = repository.list_document_reviews(tenant_id=TENANT_ID, project_id=PROJECT_ID).reviews[0]
+    review = repository.list_document_reviews(
+        tenant_id=TENANT_ID, project_id=PROJECT_ID
+    ).reviews[0]
 
     try:
         repository.apply_document_review_action(

@@ -67,7 +67,11 @@ def _ingest_document(
 
 def test_projects_endpoint_supports_explorer_filters(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-filters.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     open_project = _seed_project(
         client,
@@ -130,7 +134,10 @@ def test_projects_endpoint_supports_explorer_filters(tmp_path) -> None:
     )
     procurement = client.get(
         "/v1/projects",
-        params={"tenant_id": TENANT_ID, "procurement_type": ProcurementType.CONSULTING.value},
+        params={
+            "tenant_id": TENANT_ID,
+            "procurement_type": ProcurementType.CONSULTING.value,
+        },
     )
     budget = client.get(
         "/v1/projects",
@@ -153,24 +160,42 @@ def test_projects_endpoint_supports_explorer_filters(tmp_path) -> None:
     }
 
     assert keyword.status_code == 200
-    assert [project["id"] for project in keyword.json()["projects"]] == [winner_project.id]
+    assert [project["id"] for project in keyword.json()["projects"]] == [
+        winner_project.id
+    ]
 
     assert procurement.status_code == 200
-    assert [project["id"] for project in procurement.json()["projects"]] == [winner_project.id]
+    assert [project["id"] for project in procurement.json()["projects"]] == [
+        winner_project.id
+    ]
 
     assert budget.status_code == 200
-    assert [project["id"] for project in budget.json()["projects"]] == [winner_project.id]
+    assert [project["id"] for project in budget.json()["projects"]] == [
+        winner_project.id
+    ]
 
     assert changed_tor.status_code == 200
-    assert [project["id"] for project in changed_tor.json()["projects"]] == [winner_project.id]
+    assert [project["id"] for project in changed_tor.json()["projects"]] == [
+        winner_project.id
+    ]
 
     assert winner_only.status_code == 200
-    assert [project["id"] for project in winner_only.json()["projects"]] == [winner_project.id]
+    assert [project["id"] for project in winner_only.json()["projects"]] == [
+        winner_project.id
+    ]
 
 
-def test_projects_endpoint_has_changed_tor_ignores_identical_phase_transition(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-identical-phase.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+def test_projects_endpoint_has_changed_tor_ignores_identical_phase_transition(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-project-identical-phase.sqlite3'}"
+    )
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
 
     unchanged_project = _seed_project(
         client,
@@ -230,12 +255,20 @@ def test_projects_endpoint_has_changed_tor_ignores_identical_phase_transition(tm
     )
 
     assert changed_tor.status_code == 200
-    assert [project["id"] for project in changed_tor.json()["projects"]] == [changed_project.id]
+    assert [project["id"] for project in changed_tor.json()["projects"]] == [
+        changed_project.id
+    ]
 
 
 def test_projects_endpoint_filters_by_closed_reason_and_updated_after(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-date-filter.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-project-date-filter.sqlite3'}"
+    )
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
     repository = client.app.state.project_repository
 
     old_project = repository.upsert_project(
@@ -283,5 +316,7 @@ def test_projects_endpoint_filters_by_closed_reason_and_updated_after(tmp_path) 
 
     assert filtered.status_code == 200
     assert filtered.json()["total"] == 1
-    assert [project["id"] for project in filtered.json()["projects"]] == [closed_project.id]
+    assert [project["id"] for project in filtered.json()["projects"]] == [
+        closed_project.id
+    ]
     assert old_project.id != closed_project.id

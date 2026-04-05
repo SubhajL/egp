@@ -298,10 +298,16 @@ def _review_event_from_mapping(row: RowMapping) -> DocumentReviewEventRecord:
         review_id=str(row["review_id"]),
         document_diff_id=str(row["document_diff_id"]),
         event_type=DocumentReviewEventType(str(row["event_type"])),
-        actor_subject=str(row["actor_subject"]) if row["actor_subject"] is not None else None,
+        actor_subject=str(row["actor_subject"])
+        if row["actor_subject"] is not None
+        else None,
         note=str(row["note"]) if row["note"] is not None else None,
-        from_status=DocumentReviewStatus(str(from_status)) if from_status is not None else None,
-        to_status=DocumentReviewStatus(str(to_status)) if to_status is not None else None,
+        from_status=DocumentReviewStatus(str(from_status))
+        if from_status is not None
+        else None,
+        to_status=DocumentReviewStatus(str(to_status))
+        if to_status is not None
+        else None,
         created_at=created_at.isoformat()
         if isinstance(created_at, datetime)
         else str(created_at),
@@ -322,14 +328,24 @@ def _normalize_limit_offset(*, limit: int, offset: int) -> tuple[int, int]:
     return (normalized_limit, normalized_offset)
 
 
-def _normalize_review_status(value: DocumentReviewStatus | str | None) -> DocumentReviewStatus | None:
+def _normalize_review_status(
+    value: DocumentReviewStatus | str | None,
+) -> DocumentReviewStatus | None:
     if value is None:
         return None
-    return value if isinstance(value, DocumentReviewStatus) else DocumentReviewStatus(str(value))
+    return (
+        value
+        if isinstance(value, DocumentReviewStatus)
+        else DocumentReviewStatus(str(value))
+    )
 
 
 def _normalize_review_action(value: DocumentReviewAction | str) -> DocumentReviewAction:
-    return value if isinstance(value, DocumentReviewAction) else DocumentReviewAction(str(value))
+    return (
+        value
+        if isinstance(value, DocumentReviewAction)
+        else DocumentReviewAction(str(value))
+    )
 
 
 def build_document_record(
@@ -447,7 +463,8 @@ class SqlDocumentRepository:
                 select(DOCUMENT_DIFF_REVIEWS_TABLE.c.id).where(
                     and_(
                         DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id == tenant_id,
-                        DOCUMENT_DIFF_REVIEWS_TABLE.c.document_diff_id == diff_record.id,
+                        DOCUMENT_DIFF_REVIEWS_TABLE.c.document_diff_id
+                        == diff_record.id,
                     )
                 )
             )
@@ -517,7 +534,9 @@ class SqlDocumentRepository:
             return {}
         rows = (
             connection.execute(
-                select(DOCUMENT_DIFFS_TABLE).where(DOCUMENT_DIFFS_TABLE.c.id.in_(diff_ids))
+                select(DOCUMENT_DIFFS_TABLE).where(
+                    DOCUMENT_DIFFS_TABLE.c.id.in_(diff_ids)
+                )
             )
             .mappings()
             .all()
@@ -970,7 +989,9 @@ class SqlDocumentRepository:
             DOCUMENT_DIFF_REVIEWS_TABLE.c.project_id == normalized_project_id,
         ]
         if normalized_status is not None:
-            criteria.append(DOCUMENT_DIFF_REVIEWS_TABLE.c.status == normalized_status.value)
+            criteria.append(
+                DOCUMENT_DIFF_REVIEWS_TABLE.c.status == normalized_status.value
+            )
         with self._engine.connect() as connection:
             total = int(
                 connection.execute(
@@ -1023,7 +1044,8 @@ class SqlDocumentRepository:
                     select(DOCUMENT_DIFF_REVIEWS_TABLE)
                     .where(
                         and_(
-                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             DOCUMENT_DIFF_REVIEWS_TABLE.c.id == normalized_review_id,
                         )
                     )
@@ -1034,7 +1056,9 @@ class SqlDocumentRepository:
             )
             if row is None:
                 return None
-            event_map = self._load_review_events(connection, review_ids=[normalized_review_id])
+            event_map = self._load_review_events(
+                connection, review_ids=[normalized_review_id]
+            )
             diff_map = self._load_diffs_by_id(
                 connection,
                 diff_ids=[str(row["document_diff_id"])],
@@ -1064,7 +1088,8 @@ class SqlDocumentRepository:
                     select(DOCUMENT_DIFF_REVIEWS_TABLE)
                     .where(
                         and_(
-                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             DOCUMENT_DIFF_REVIEWS_TABLE.c.id == normalized_review_id,
                         )
                     )
@@ -1090,7 +1115,9 @@ class SqlDocumentRepository:
                 resolved_at = now
             else:
                 if current_status is DocumentReviewStatus.PENDING:
-                    raise ValueError("reopen action requires approved or rejected review status")
+                    raise ValueError(
+                        "reopen action requires approved or rejected review status"
+                    )
                 next_status = DocumentReviewStatus.PENDING
                 event_type = DocumentReviewEventType.REOPENED
                 resolved_at = None
