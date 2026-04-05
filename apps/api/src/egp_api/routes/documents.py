@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
@@ -11,8 +11,12 @@ from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_db.repositories.document_repo import (
     DocumentDiffRecord,
     DocumentRecord,
+    DocumentReviewDetail,
+    DocumentReviewEventRecord,
+    DocumentReviewPage,
     StoreDocumentResult,
 )
+from egp_shared_types.enums import DocumentReviewAction, DocumentReviewStatus
 
 
 router = APIRouter(prefix="/v1/documents", tags=["documents"])
@@ -76,8 +80,56 @@ class DocumentDownloadResponse(BaseModel):
     download_url: str
 
 
+class DocumentReviewEventResponse(BaseModel):
+    id: str
+    review_id: str
+    document_diff_id: str
+    event_type: str
+    actor_subject: str | None
+    note: str | None
+    from_status: str | None
+    to_status: str | None
+    created_at: str
+
+
+class DocumentReviewResponse(BaseModel):
+    id: str
+    project_id: str
+    document_diff_id: str
+    status: str
+    resolved_at: str | None
+    created_at: str
+    updated_at: str
+    diff: DocumentDiffResponse
+    events: list[DocumentReviewEventResponse]
+
+
+class ListDocumentReviewsResponse(BaseModel):
+    reviews: list[DocumentReviewResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class ApplyDocumentReviewActionRequest(BaseModel):
+    tenant_id: str | None = None
+    action: DocumentReviewAction
+    note: str | None = None
+
+
+class DocumentReviewActionResponse(BaseModel):
+    review: DocumentReviewResponse
+
+
 def _service_from_request(request: Request) -> DocumentIngestService:
     return request.app.state.document_ingest_service
+
+
+def _actor_subject_from_request(request: Request) -> str:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is not None and getattr(auth_context, "subject", None):
+        return str(auth_context.subject)
+    return "manual-operator"
 
 
 def _serialize_document(document: DocumentRecord) -> DocumentResponse:
@@ -115,6 +167,43 @@ def _serialize_store_result(result: StoreDocumentResult) -> StoreDocumentRespons
         created=result.created,
         document=_serialize_document(result.document),
         diff_records=[_serialize_diff(diff_record) for diff_record in result.diff_records],
+    )
+
+
+def _serialize_review_event(event: DocumentReviewEventRecord) -> DocumentReviewEventResponse:
+    return DocumentReviewEventResponse(
+        id=event.id,
+        review_id=event.review_id,
+        document_diff_id=event.document_diff_id,
+        event_type=event.event_type.value,
+        actor_subject=event.actor_subject,
+        note=event.note,
+        from_status=event.from_status.value if event.from_status is not None else None,
+        to_status=event.to_status.value if event.to_status is not None else None,
+        created_at=event.created_at,
+    )
+
+
+def _serialize_review(review: DocumentReviewDetail) -> DocumentReviewResponse:
+    return DocumentReviewResponse(
+        id=review.id,
+        project_id=review.project_id,
+        document_diff_id=review.document_diff_id,
+        status=review.status.value,
+        resolved_at=review.resolved_at,
+        created_at=review.created_at,
+        updated_at=review.updated_at,
+        diff=_serialize_diff(review.diff),
+        events=[_serialize_review_event(event) for event in review.events],
+    )
+
+
+def _serialize_review_page(page: DocumentReviewPage) -> ListDocumentReviewsResponse:
+    return ListDocumentReviewsResponse(
+        reviews=[_serialize_review(review) for review in page.reviews],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
     )
 
 
@@ -183,6 +272,56 @@ def get_document_diff(
     if diff is None:
         raise HTTPException(status_code=404, detail="document diff not found")
     return DocumentDiffDetailResponse(diff=_serialize_diff(diff))
+
+
+@router.get("/projects/{project_id}/reviews", response_model=ListDocumentReviewsResponse)
+def list_document_reviews(
+    project_id: str,
+    request: Request,
+    tenant_id: str | None = None,
+    status_filter: DocumentReviewStatus | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> ListDocumentReviewsResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    try:
+        page = service.list_document_reviews(
+            tenant_id=resolved_tenant_id,
+            project_id=project_id,
+            status=status_filter,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_review_page(page)
+
+
+@router.post(
+    "/reviews/{review_id}/actions",
+    response_model=DocumentReviewActionResponse,
+)
+def apply_document_review_action(
+    review_id: str,
+    payload: ApplyDocumentReviewActionRequest,
+    request: Request,
+) -> DocumentReviewActionResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        review = service.apply_document_review_action(
+            tenant_id=resolved_tenant_id,
+            review_id=review_id,
+            action=payload.action,
+            actor_subject=_actor_subject_from_request(request),
+            note=payload.note,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="document review not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return DocumentReviewActionResponse(review=_serialize_review(review))
 
 
 @router.get("/{document_id}/download", response_model=DocumentDownloadResponse)

@@ -72,7 +72,9 @@ class FakeSupabaseBucket:
                 "options": options or {},
             }
         )
-        return {"signedURL": f"https://project.supabase.co/storage/v1/object/sign/{self.bucket_name}/{path}"}
+        return {
+            "signedURL": f"https://project.supabase.co/storage/v1/object/sign/{self.bucket_name}/{path}"
+        }
 
 
 class FakeSupabaseStorageClient:
@@ -97,7 +99,9 @@ def test_create_app_uses_database_url_override_for_document_metadata(tmp_path) -
     database_url = f"sqlite+pysqlite:///{database_path}"
     artifact_root = tmp_path / "artifacts"
     client = TestClient(
-        create_app(artifact_root=artifact_root, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=artifact_root, database_url=database_url, auth_required=False
+        )
     )
 
     response = client.post(
@@ -159,7 +163,10 @@ def test_s3_artifact_store_puts_prefixed_key_and_presigns_download_url() -> None
     )
     signed_url = store.download_url(stored_key, expires_in=900)
 
-    assert stored_key == "dev/raw/tenants/tenant-1/projects/project-1/artifacts/hash/tor.pdf"
+    assert (
+        stored_key
+        == "dev/raw/tenants/tenant-1/projects/project-1/artifacts/hash/tor.pdf"
+    )
     assert client.put_calls == [
         {
             "Bucket": "egp-documents",
@@ -196,7 +203,10 @@ def test_supabase_artifact_store_uploads_and_signs_download_url() -> None:
     signed_url = store.download_url(stored_key, expires_in=900)
 
     bucket = client.storage.from_("egp-documents")
-    assert stored_key == "dev/raw/tenants/tenant-1/projects/project-1/artifacts/hash/tor.pdf"
+    assert (
+        stored_key
+        == "dev/raw/tenants/tenant-1/projects/project-1/artifacts/hash/tor.pdf"
+    )
     assert bucket.upload_calls == [
         {
             "path": stored_key,
@@ -207,7 +217,10 @@ def test_supabase_artifact_store_uploads_and_signs_download_url() -> None:
             },
         }
     ]
-    assert signed_url == f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{stored_key}"
+    assert (
+        signed_url
+        == f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{stored_key}"
+    )
     assert bucket.sign_calls == [
         {
             "path": stored_key,

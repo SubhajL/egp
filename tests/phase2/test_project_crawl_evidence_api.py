@@ -9,9 +9,17 @@ from egp_shared_types.enums import CrawlRunStatus, ProcurementType, ProjectState
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
 
-def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-crawl-evidence.sqlite3'}"
-    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-project-crawl-evidence.sqlite3'}"
+    )
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
     project_repository = client.app.state.project_repository
     run_repository = client.app.state.run_repository
 
@@ -104,6 +112,12 @@ def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(tmp_pa
     assert body["evidence"][0]["task_status"] == "succeeded"
     assert body["evidence"][0]["keyword"] == "ระบบติดตาม"
     assert body["evidence"][0]["payload"] == {"page": 2}
-    assert body["evidence"][0]["result_json"] == {"documents_checked": 3, "changes_detected": 1}
-    assert body["evidence"][0]["run_summary_json"] == {"projects_seen": 2, "projects_failed": 1}
+    assert body["evidence"][0]["result_json"] == {
+        "documents_checked": 3,
+        "changes_detected": 1,
+    }
+    assert body["evidence"][0]["run_summary_json"] == {
+        "projects_seen": 2,
+        "projects_failed": 1,
+    }
     assert body["evidence"][0]["run_error_count"] == 1

@@ -20,8 +20,12 @@ def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> N
         cluster.create_database("egp_migration_runner_test")
         database_url = cluster.database_url("egp_migration_runner_test")
 
-        first_run = apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
-        second_run = apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+        first_run = apply_migrations(
+            database_url=database_url, migrations_dir=migrations_dir
+        )
+        second_run = apply_migrations(
+            database_url=database_url, migrations_dir=migrations_dir
+        )
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:

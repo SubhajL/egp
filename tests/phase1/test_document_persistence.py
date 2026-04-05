@@ -4,7 +4,13 @@ import sqlite3
 from unittest.mock import patch
 
 from egp_db.repositories.document_repo import FilesystemDocumentRepository
-from egp_shared_types.enums import DocumentPhase, DocumentType
+from egp_shared_types.enums import (
+    DocumentPhase,
+    DocumentReviewAction,
+    DocumentReviewEventType,
+    DocumentReviewStatus,
+    DocumentType,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROJECT_ID = "22222222-2222-2222-2222-222222222222"
@@ -97,7 +103,9 @@ def test_store_document_supersedes_previous_version_and_creates_diff(tmp_path) -
     assert second.created is True
     assert second.document.supersedes_document_id == first.document.id
     assert second.document.is_current is True
-    assert any(doc.id == first.document.id and doc.is_current is False for doc in listed)
+    assert any(
+        doc.id == first.document.id and doc.is_current is False for doc in listed
+    )
     assert len(second.diff_records) == 1
     assert second.diff_records[0].diff_type == "changed"
 
@@ -210,7 +218,9 @@ def test_store_document_persists_diff_rows_in_sql_metadata(tmp_path) -> None:
     assert row == (first.document.id, second.document.id, "changed")
 
 
-def test_store_document_persists_structured_diff_summary_for_phase_transition(tmp_path) -> None:
+def test_store_document_persists_structured_diff_summary_for_phase_transition(
+    tmp_path,
+) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
     repository.store_document(
         tenant_id=TENANT_ID,
@@ -246,7 +256,9 @@ def test_store_document_persists_structured_diff_summary_for_phase_transition(tm
     assert '"changed_line_count": 2' in row[1]
 
 
-def test_store_document_handles_missing_text_extraction_in_diff_summary(tmp_path) -> None:
+def test_store_document_handles_missing_text_extraction_in_diff_summary(
+    tmp_path,
+) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
     repository.store_document(
         tenant_id=TENANT_ID,
@@ -267,7 +279,9 @@ def test_store_document_handles_missing_text_extraction_in_diff_summary(tmp_path
 
     assert second.created is True
     assert second.diff_records[0].summary_json is not None
-    assert second.diff_records[0].summary_json["text_extraction_status"] == "unavailable"
+    assert (
+        second.diff_records[0].summary_json["text_extraction_status"] == "unavailable"
+    )
     assert second.diff_records[0].summary_json["text_diff_available"] is False
 
 
@@ -275,7 +289,9 @@ def test_store_document_hashes_and_classifies_once(tmp_path) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
 
     with (
-        patch("egp_db.repositories.document_repo.hash_file", return_value="hash-once") as hash_mock,
+        patch(
+            "egp_db.repositories.document_repo.hash_file", return_value="hash-once"
+        ) as hash_mock,
         patch(
             "egp_db.repositories.document_repo.classify_document",
             return_value=(DocumentType.TOR, DocumentPhase.FINAL),
@@ -296,3 +312,137 @@ def test_store_document_hashes_and_classifies_once(tmp_path) -> None:
     assert stored.document.document_phase is DocumentPhase.FINAL
     assert hash_mock.call_count == 1
     assert classify_mock.call_count == 1
+
+
+def test_store_document_creates_pending_review_for_changed_diff(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"version-one",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"version-two",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    page = repository.list_document_reviews(tenant_id=TENANT_ID, project_id=PROJECT_ID)
+
+    assert second.created is True
+    assert page.total == 1
+    assert page.limit == 50
+    review = page.reviews[0]
+    assert review.document_diff_id == second.diff_records[0].id
+    assert review.status is DocumentReviewStatus.PENDING
+    assert [event.event_type for event in review.events] == [
+        DocumentReviewEventType.CREATED
+    ]
+
+
+def test_store_document_skips_review_for_identical_diff(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-hearing.pdf",
+        file_bytes=b"same-tor-bytes",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-final.pdf",
+        file_bytes=b"same-tor-bytes",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    page = repository.list_document_reviews(tenant_id=TENANT_ID, project_id=PROJECT_ID)
+
+    assert second.created is True
+    assert second.diff_records[0].diff_type == "identical"
+    assert page.total == 0
+    assert page.reviews == []
+
+
+def test_apply_document_review_action_records_history(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"version-one",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"version-two",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    review = repository.list_document_reviews(
+        tenant_id=TENANT_ID, project_id=PROJECT_ID
+    ).reviews[0]
+
+    approved = repository.apply_document_review_action(
+        tenant_id=TENANT_ID,
+        review_id=review.id,
+        action=DocumentReviewAction.APPROVE,
+        actor_subject="operator-1",
+        note="Confirmed meaningful TOR change",
+    )
+
+    assert approved.status is DocumentReviewStatus.APPROVED
+    assert [event.event_type for event in approved.events] == [
+        DocumentReviewEventType.CREATED,
+        DocumentReviewEventType.APPROVED,
+    ]
+    assert approved.events[-1].actor_subject == "operator-1"
+    assert approved.events[-1].note == "Confirmed meaningful TOR change"
+
+
+def test_document_review_action_is_tenant_scoped(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"version-one",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"version-two",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    review = repository.list_document_reviews(
+        tenant_id=TENANT_ID, project_id=PROJECT_ID
+    ).reviews[0]
+
+    try:
+        repository.apply_document_review_action(
+            tenant_id="99999999-9999-9999-9999-999999999999",
+            review_id=review.id,
+            action=DocumentReviewAction.REJECT,
+            actor_subject="foreign-operator",
+            note="Should not be allowed",
+        )
+    except KeyError as exc:
+        assert str(exc) == f"'{review.id}'"
+    else:
+        raise AssertionError("expected tenant-scoped review lookup to fail")

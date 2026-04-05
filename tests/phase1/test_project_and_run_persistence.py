@@ -4,7 +4,10 @@ import sqlite3
 
 import pytest
 
-from egp_db.repositories.project_repo import SqlProjectRepository, build_project_upsert_record
+from egp_db.repositories.project_repo import (
+    SqlProjectRepository,
+    build_project_upsert_record,
+)
 from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import CrawlRunStatus, ProcurementType, ProjectState
 
@@ -169,7 +172,9 @@ def test_project_repository_persists_alias_and_status_event_rows(tmp_path) -> No
     assert status_event == ("เปิดรับฟังคำวิจารณ์", "open_consulting")
 
 
-def test_projects_with_same_display_name_but_different_fingerprint_do_not_merge(tmp_path) -> None:
+def test_projects_with_same_display_name_but_different_fingerprint_do_not_merge(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "phase1.sqlite3"
     repository = SqlProjectRepository(
         database_url=f"sqlite+pysqlite:///{database_path}",
@@ -346,7 +351,9 @@ def test_project_and_run_listing_supports_limit_and_offset(tmp_path) -> None:
     first_run = run_repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
     run_repository.create_run(tenant_id=TENANT_ID, trigger_type="retry")
 
-    project_page = project_repository.list_projects(tenant_id=TENANT_ID, limit=1, offset=1)
+    project_page = project_repository.list_projects(
+        tenant_id=TENANT_ID, limit=1, offset=1
+    )
     run_page = run_repository.list_runs(tenant_id=TENANT_ID, limit=1, offset=1)
 
     assert project_page.total == 2

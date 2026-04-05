@@ -8,7 +8,13 @@ from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult
-from egp_shared_types.enums import DocumentType, NotificationType
+from egp_shared_types.enums import (
+    DocumentReviewAction,
+    DocumentReviewEventType,
+    DocumentReviewStatus,
+    DocumentType,
+    NotificationType,
+)
 
 if TYPE_CHECKING:
     from egp_db.repositories.project_repo import SqlProjectRepository
@@ -66,26 +72,6 @@ class DocumentIngestService:
             source_page_text=source_page_text,
             project_state=project_state,
         )
-        if (
-            self._notification_dispatcher is not None
-            and self._project_repository is not None
-            and result.created
-            and any(diff.diff_type == "changed" for diff in result.diff_records)
-            and result.document.document_type is DocumentType.TOR
-        ):
-            project = self._project_repository.get_project(
-                tenant_id=tenant_id, project_id=project_id
-            )
-            if project is not None:
-                self._notification_dispatcher.dispatch(
-                    tenant_id=tenant_id,
-                    notification_type=NotificationType.TOR_CHANGED,
-                    project_id=project_id,
-                    template_vars={
-                        "project_name": project.project_name,
-                        "organization": project.organization_name or "",
-                    },
-                )
         return result
 
     def ingest_document(
@@ -135,6 +121,69 @@ class DocumentIngestService:
             document_id=document_id,
             other_document_id=other_document_id,
         )
+
+    def list_document_reviews(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        status: DocumentReviewStatus | str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        return self._repository.list_document_reviews(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
+
+    def apply_document_review_action(
+        self,
+        *,
+        tenant_id: str,
+        review_id: str,
+        action: DocumentReviewAction | str,
+        actor_subject: str | None = None,
+        note: str | None = None,
+    ):
+        detail = self._repository.apply_document_review_action(
+            tenant_id=tenant_id,
+            review_id=review_id,
+            action=action,
+            actor_subject=actor_subject,
+            note=note,
+        )
+        approved_event_count = sum(
+            1 for event in detail.events if event.event_type is DocumentReviewEventType.APPROVED
+        )
+        if (
+            approved_event_count == 1
+            and detail.status is DocumentReviewStatus.APPROVED
+            and self._notification_dispatcher is not None
+            and self._project_repository is not None
+        ):
+            new_document = self._repository.get_document(
+                tenant_id=tenant_id,
+                document_id=detail.diff.new_document_id,
+            )
+            if new_document is not None and new_document.document_type is DocumentType.TOR:
+                project = self._project_repository.get_project(
+                    tenant_id=tenant_id,
+                    project_id=detail.project_id,
+                )
+                if project is not None:
+                    self._notification_dispatcher.dispatch(
+                        tenant_id=tenant_id,
+                        notification_type=NotificationType.TOR_CHANGED,
+                        project_id=detail.project_id,
+                        template_vars={
+                            "project_name": project.project_name,
+                            "organization": project.organization_name or "",
+                        },
+                    )
+        return detail
 
     def get_download_url(
         self,

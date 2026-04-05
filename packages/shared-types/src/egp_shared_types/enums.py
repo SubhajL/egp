@@ -48,6 +48,25 @@ class DocumentPhase(StrEnum):
     UNKNOWN = "unknown"
 
 
+class DocumentReviewStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class DocumentReviewAction(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+    REOPEN = "reopen"
+
+
+class DocumentReviewEventType(StrEnum):
+    CREATED = "created"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    REOPENED = "reopened"
+
+
 class CrawlRunStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"

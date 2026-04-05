@@ -377,7 +377,9 @@ def test_over_limit_profiles_block_new_discover_tasks(tmp_path) -> None:
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "active keyword configuration exceeds plan limit"
+    assert (
+        response.json()["detail"] == "active keyword configuration exceeds plan limit"
+    )
 
 
 def test_export_requires_active_subscription(tmp_path) -> None:
@@ -402,12 +404,17 @@ def test_document_download_requires_active_subscription(tmp_path) -> None:
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "active subscription required for document downloads"
+    assert (
+        response.json()["detail"]
+        == "active subscription required for document downloads"
+    )
 
 
 def test_notifications_are_suppressed_when_entitlement_inactive(tmp_path) -> None:
     sent: list[str] = []
-    client = _create_client(tmp_path, email_sender=lambda *, to, subject, body: sent.append(to))
+    client = _create_client(
+        tmp_path, email_sender=lambda *, to, subject, body: sent.append(to)
+    )
     client.app.state.notification_repository.create_user(
         tenant_id=TENANT_ID,
         email="ops@example.com",
@@ -415,8 +422,12 @@ def test_notifications_are_suppressed_when_entitlement_inactive(tmp_path) -> Non
     )
     project = _seed_project(client)
 
-    first = _ingest_document(client, project_id=project.id, content=b"tor-v1", file_name="tor-v1.pdf")
-    second = _ingest_document(client, project_id=project.id, content=b"tor-v2", file_name="tor-v2.pdf")
+    first = _ingest_document(
+        client, project_id=project.id, content=b"tor-v1", file_name="tor-v1.pdf"
+    )
+    second = _ingest_document(
+        client, project_id=project.id, content=b"tor-v2", file_name="tor-v2.pdf"
+    )
 
     notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
 
