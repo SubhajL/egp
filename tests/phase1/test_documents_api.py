@@ -187,11 +187,27 @@ def seed_tenant(client: TestClient) -> None:
             return
 
         if existing is None:
+            now = datetime.now(UTC).isoformat()
             connection.execute(
                 text(
                     """
-                    INSERT INTO tenants (id, name, slug, plan_code)
-                    VALUES (:tenant_id, :name, :slug, :plan_code)
+                    INSERT INTO tenants (
+                        id,
+                        name,
+                        slug,
+                        plan_code,
+                        is_active,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :tenant_id,
+                        :name,
+                        :slug,
+                        :plan_code,
+                        :is_active,
+                        :created_at,
+                        :updated_at
+                    )
                     """
                 ),
                 {
@@ -199,6 +215,9 @@ def seed_tenant(client: TestClient) -> None:
                     "name": "Documents Test Tenant",
                     "slug": "documents-test-tenant",
                     "plan_code": "dev",
+                    "is_active": True,
+                    "created_at": now,
+                    "updated_at": now,
                 },
             )
 

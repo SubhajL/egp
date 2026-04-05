@@ -80,6 +80,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "การทำงาน", href: "/runs" },
   { label: "กฎและโปรไฟล์", href: "/rules" },
   { label: "บิลและชำระเงิน", href: "/billing" },
+  { label: "แอดมิน", href: "/admin" },
 ];
 
 export const BADGE_STYLE_MAP: Record<BadgeColor, string> = {

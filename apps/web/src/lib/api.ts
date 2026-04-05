@@ -388,6 +388,51 @@ export type BillingPlansResponse = {
   plans: BillingPlan[];
 };
 
+export type AdminTenantSummary = {
+  id: string;
+  name: string;
+  slug: string;
+  plan_code: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminTenantSettings = {
+  support_email: string | null;
+  billing_contact_email: string | null;
+  timezone: string;
+  locale: string;
+  daily_digest_enabled: boolean;
+  weekly_digest_enabled: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  notification_preferences: Record<string, boolean>;
+};
+
+export type AdminBillingOverview = {
+  summary: BillingSummary;
+  current_subscription: BillingSubscription | null;
+  records: BillingRecord[];
+};
+
+export type AdminSnapshotResponse = {
+  tenant: AdminTenantSummary;
+  settings: AdminTenantSettings;
+  users: AdminUser[];
+  billing: AdminBillingOverview;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -647,6 +692,36 @@ export type CreateBillingPaymentRequestInput = {
   expires_in_minutes?: number;
 };
 
+export type CreateAdminUserInput = {
+  tenant_id?: string;
+  email: string;
+  full_name?: string;
+  role?: string;
+  status?: string;
+};
+
+export type UpdateAdminUserInput = {
+  tenant_id?: string;
+  full_name?: string;
+  role?: string;
+  status?: string;
+};
+
+export type UpdateAdminUserNotificationPreferencesInput = {
+  tenant_id?: string;
+  email_preferences: Record<string, boolean>;
+};
+
+export type UpdateTenantSettingsInput = {
+  tenant_id?: string;
+  support_email?: string;
+  billing_contact_email?: string;
+  timezone?: string;
+  locale?: string;
+  daily_digest_enabled?: boolean;
+  weekly_digest_enabled?: boolean;
+};
+
 export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
@@ -680,6 +755,11 @@ export async function fetchBillingRecords(
 export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
   const url = buildUrl("/v1/billing/plans", {});
   return apiFetch<BillingPlansResponse>(url);
+}
+
+export async function fetchAdminSnapshot(): Promise<AdminSnapshotResponse> {
+  const url = buildUrl("/v1/admin", {});
+  return apiFetch<AdminSnapshotResponse>(url);
 }
 
 export async function createBillingRecord(
@@ -752,6 +832,63 @@ export async function createBillingPaymentRequest(
       tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       provider: payload.provider ?? "mock_promptpay",
       expires_in_minutes: payload.expires_in_minutes ?? 30,
+    }),
+  });
+}
+
+export async function createAdminUser(payload: CreateAdminUserInput): Promise<AdminUser> {
+  const url = buildUrl("/v1/admin/users", {});
+  return apiJsonRequest<AdminUser>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      email: payload.email,
+      full_name: payload.full_name,
+      role: payload.role ?? "viewer",
+      status: payload.status ?? "active",
+    }),
+  });
+}
+
+export async function updateAdminUser(
+  userId: string,
+  payload: UpdateAdminUserInput,
+): Promise<AdminUser> {
+  const url = buildUrl(`/v1/admin/users/${encodeURIComponent(userId)}`, {});
+  return apiJsonRequest<AdminUser>(url, {
+    method: "PATCH",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      full_name: payload.full_name,
+      role: payload.role,
+      status: payload.status,
+    }),
+  });
+}
+
+export async function updateAdminUserNotificationPreferences(
+  userId: string,
+  payload: UpdateAdminUserNotificationPreferencesInput,
+): Promise<AdminUser> {
+  const url = buildUrl(`/v1/admin/users/${encodeURIComponent(userId)}/notification-preferences`, {});
+  return apiJsonRequest<AdminUser>(url, {
+    method: "PUT",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      email_preferences: payload.email_preferences,
+    }),
+  });
+}
+
+export async function updateTenantSettings(
+  payload: UpdateTenantSettingsInput,
+): Promise<AdminTenantSettings> {
+  const url = buildUrl("/v1/admin/settings", {});
+  return apiJsonRequest<AdminTenantSettings>(url, {
+    method: "PATCH",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      ...payload,
     }),
   });
 }
