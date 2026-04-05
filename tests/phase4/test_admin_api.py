@@ -244,7 +244,9 @@ def _create_failed_run(client: TestClient, *, tenant_id: str = TENANT_ID) -> str
         payload={"page": 1},
     )
     repository.mark_task_started(task.id)
-    repository.mark_task_finished(task.id, status="failed", result_json={"reason": "timeout"})
+    repository.mark_task_finished(
+        task.id, status="failed", result_json={"reason": "timeout"}
+    )
     repository.mark_run_finished(
         created.id,
         status="failed",
@@ -564,7 +566,9 @@ def test_admin_support_search_matches_name_slug_and_contact_email(tmp_path) -> N
         },
     )
 
-    by_slug = client.get("/v1/admin/support/tenants", params={"query": "acme-intelligence"})
+    by_slug = client.get(
+        "/v1/admin/support/tenants", params={"query": "acme-intelligence"}
+    )
     by_support_email = client.get(
         "/v1/admin/support/tenants", params={"query": "support@acme.example"}
     )
@@ -577,7 +581,10 @@ def test_admin_support_search_matches_name_slug_and_contact_email(tmp_path) -> N
     assert by_user_email.status_code == 200
     assert by_slug.json()["tenants"][0]["id"] == TENANT_ID
     assert by_slug.json()["tenants"][0]["support_email"] == "support@acme.example"
-    assert by_support_email.json()["tenants"][0]["billing_contact_email"] == "billing@acme.example"
+    assert (
+        by_support_email.json()["tenants"][0]["billing_contact_email"]
+        == "billing@acme.example"
+    )
     assert by_user_email.json()["tenants"][0]["active_user_count"] == 1
 
 
@@ -685,13 +692,18 @@ def test_admin_support_summary_returns_triage_and_cost_report(tmp_path) -> None:
     assert body["recent_failed_runs"][0]["status"] == "failed"
     assert body["pending_reviews"][0]["status"] == "pending"
     assert body["failed_webhooks"][0]["id"] == webhook_delivery_id
-    assert body["billing_issues"][0]["record_number"] == billing_detail["record"]["record_number"]
+    assert (
+        body["billing_issues"][0]["record_number"]
+        == billing_detail["record"]["record_number"]
+    )
 
 
 def test_support_role_can_access_selected_tenant_context(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
-    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+    _seed_tenant(
+        client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant"
+    )
 
     support_snapshot = client.get(
         "/v1/admin",
@@ -723,7 +735,9 @@ def test_support_role_can_access_selected_tenant_context(tmp_path) -> None:
 def test_non_support_roles_cannot_cross_tenant_or_use_support_lookup(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
-    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+    _seed_tenant(
+        client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant"
+    )
 
     foreign_snapshot = client.get(
         "/v1/admin",
@@ -745,7 +759,9 @@ def test_non_support_roles_cannot_cross_tenant_or_use_support_lookup(tmp_path) -
 def test_support_role_remains_tenant_scoped_on_non_support_routes(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
-    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+    _seed_tenant(
+        client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant"
+    )
 
     response = client.get(
         "/v1/projects",

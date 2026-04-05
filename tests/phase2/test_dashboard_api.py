@@ -264,7 +264,9 @@ def _create_run(
     return finished.json()
 
 
-def _seed_notification_activity(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
+def _seed_notification_activity(
+    client: TestClient, *, tenant_id: str = TENANT_ID
+) -> None:
     now = datetime.now(UTC).isoformat()
     with client.app.state.db_engine.begin() as connection:
         connection.execute(

@@ -410,9 +410,7 @@ def search_support_tenants(
     require_support_role(request)
     service = _support_service_from_request(request)
     tenants = service.search_tenants(query=query, limit=limit)
-    return SupportTenantListResponse(
-        tenants=[_serialize_support_tenant(item) for item in tenants]
-    )
+    return SupportTenantListResponse(tenants=[_serialize_support_tenant(item) for item in tenants])
 
 
 @router.get("/support/tenants/{tenant_id}/summary", response_model=SupportSummaryResponse)

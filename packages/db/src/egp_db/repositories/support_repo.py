@@ -17,7 +17,10 @@ from egp_db.repositories.billing_repo import (
     BILLING_PAYMENT_REQUESTS_TABLE,
     BILLING_RECORDS_TABLE,
 )
-from egp_db.repositories.document_repo import DOCUMENT_DIFF_REVIEWS_TABLE, DOCUMENTS_TABLE
+from egp_db.repositories.document_repo import (
+    DOCUMENT_DIFF_REVIEWS_TABLE,
+    DOCUMENTS_TABLE,
+)
 from egp_db.repositories.notification_repo import (
     NOTIFICATIONS_TABLE,
     USERS_TABLE,
@@ -176,7 +179,9 @@ def _tenant_from_mapping(row: RowMapping) -> SupportTenantRecord:
         slug=str(row["slug"]),
         plan_code=str(row["plan_code"]),
         is_active=bool(row["is_active"]),
-        support_email=str(row["support_email"]) if row["support_email"] is not None else None,
+        support_email=str(row["support_email"])
+        if row["support_email"] is not None
+        else None,
         billing_contact_email=(
             str(row["billing_contact_email"])
             if row["billing_contact_email"] is not None
@@ -285,7 +290,9 @@ class SqlSupportRepository:
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
-                    self._tenant_identity_query().where(TENANTS_TABLE.c.id == normalized_tenant_id)
+                    self._tenant_identity_query().where(
+                        TENANTS_TABLE.c.id == normalized_tenant_id
+                    )
                 )
                 .mappings()
                 .first()
@@ -294,7 +301,9 @@ class SqlSupportRepository:
             return None
         return _tenant_from_mapping(row)
 
-    def search_tenants(self, *, query: str, limit: int = 20) -> list[SupportTenantRecord]:
+    def search_tenants(
+        self, *, query: str, limit: int = 20
+    ) -> list[SupportTenantRecord]:
         normalized_query = str(query).strip().lower()
         if not normalized_query:
             return []
@@ -308,13 +317,17 @@ class SqlSupportRepository:
                         or_(
                             func.lower(TENANTS_TABLE.c.name).like(pattern),
                             func.lower(TENANTS_TABLE.c.slug).like(pattern),
-                            func.lower(func.coalesce(TENANT_SETTINGS_TABLE.c.support_email, "")).like(
+                            func.lower(
+                                func.coalesce(TENANT_SETTINGS_TABLE.c.support_email, "")
+                            ).like(pattern),
+                            func.lower(
+                                func.coalesce(
+                                    TENANT_SETTINGS_TABLE.c.billing_contact_email, ""
+                                )
+                            ).like(pattern),
+                            func.lower(func.coalesce(USERS_TABLE.c.email, "")).like(
                                 pattern
                             ),
-                            func.lower(
-                                func.coalesce(TENANT_SETTINGS_TABLE.c.billing_contact_email, "")
-                            ).like(pattern),
-                            func.lower(func.coalesce(USERS_TABLE.c.email, "")).like(pattern),
                         )
                     )
                     .order_by(TENANTS_TABLE.c.slug.asc())
@@ -325,7 +338,9 @@ class SqlSupportRepository:
             )
         return [_tenant_from_mapping(row) for row in rows]
 
-    def get_cost_summary(self, *, tenant_id: str, window_days: int = 30) -> SupportCostSummary:
+    def get_cost_summary(
+        self, *, tenant_id: str, window_days: int = 30
+    ) -> SupportCostSummary:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_window_days = max(1, min(int(window_days), 90))
         cutoff = _now() - timedelta(days=normalized_window_days)
@@ -410,7 +425,8 @@ class SqlSupportRepository:
                     .select_from(WEBHOOK_DELIVERIES_TABLE)
                     .where(
                         and_(
-                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_DELIVERIES_TABLE.c.created_at >= cutoff,
                             WEBHOOK_DELIVERIES_TABLE.c.delivery_status == "failed",
                         )
@@ -435,7 +451,8 @@ class SqlSupportRepository:
                     .select_from(BILLING_PAYMENT_REQUESTS_TABLE)
                     .where(
                         and_(
-                            BILLING_PAYMENT_REQUESTS_TABLE.c.tenant_id == normalized_tenant_id,
+                            BILLING_PAYMENT_REQUESTS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             BILLING_PAYMENT_REQUESTS_TABLE.c.created_at >= cutoff,
                         )
                     )
@@ -460,7 +477,9 @@ class SqlSupportRepository:
             + Decimal(task_count) * _CRAWL_TASK_RATE
             + Decimal(failed_run_count) * _FAILED_RUN_RATE
         )
-        storage_cost_value = Decimal(_count(document_row["document_count"])) * _DOCUMENT_RATE
+        storage_cost_value = (
+            Decimal(_count(document_row["document_count"])) * _DOCUMENT_RATE
+        )
         notification_cost_value = (
             Decimal(sent_count) * _SENT_NOTIFICATION_RATE
             + Decimal(failed_webhook_delivery_count) * _FAILED_WEBHOOK_RATE
@@ -537,7 +556,8 @@ class SqlSupportRepository:
                     .select_from(DOCUMENT_DIFF_REVIEWS_TABLE)
                     .where(
                         and_(
-                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             DOCUMENT_DIFF_REVIEWS_TABLE.c.status == "pending",
                         )
                     )
@@ -549,7 +569,8 @@ class SqlSupportRepository:
                     .select_from(WEBHOOK_DELIVERIES_TABLE)
                     .where(
                         and_(
-                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_DELIVERIES_TABLE.c.delivery_status == "failed",
                         )
                     )
@@ -590,7 +611,8 @@ class SqlSupportRepository:
                     select(DOCUMENT_DIFF_REVIEWS_TABLE)
                     .where(
                         and_(
-                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DOCUMENT_DIFF_REVIEWS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             DOCUMENT_DIFF_REVIEWS_TABLE.c.status == "pending",
                         )
                     )
@@ -605,7 +627,8 @@ class SqlSupportRepository:
                     select(WEBHOOK_DELIVERIES_TABLE)
                     .where(
                         and_(
-                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_DELIVERIES_TABLE.c.delivery_status == "failed",
                         )
                     )
@@ -642,10 +665,18 @@ class SqlSupportRepository:
                 outstanding_billing_records=outstanding_billing_records,
             ),
             cost_summary=cost_summary,
-            recent_failed_runs=[_failed_run_from_mapping(row) for row in failed_run_rows],
-            pending_reviews=[_pending_review_from_mapping(row) for row in pending_review_rows],
-            failed_webhooks=[_failed_webhook_from_mapping(row) for row in failed_webhook_rows],
-            billing_issues=[_billing_issue_from_mapping(row) for row in billing_issue_rows],
+            recent_failed_runs=[
+                _failed_run_from_mapping(row) for row in failed_run_rows
+            ],
+            pending_reviews=[
+                _pending_review_from_mapping(row) for row in pending_review_rows
+            ],
+            failed_webhooks=[
+                _failed_webhook_from_mapping(row) for row in failed_webhook_rows
+            ],
+            billing_issues=[
+                _billing_issue_from_mapping(row) for row in billing_issue_rows
+            ],
         )
 
 
