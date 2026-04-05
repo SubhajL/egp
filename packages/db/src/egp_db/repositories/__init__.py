@@ -6,6 +6,7 @@ from .billing_repo import (
     BillingPaymentRecord,
     BillingRecordDetail,
     BillingRecordRecord,
+    BillingSubscriptionRecord,
     BillingSummary,
     create_billing_repository,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "BillingPaymentRecord",
     "BillingRecordDetail",
     "BillingRecordRecord",
+    "BillingSubscriptionRecord",
     "BillingSummary",
     "DocumentDiffRecord",
     "DocumentRecord",

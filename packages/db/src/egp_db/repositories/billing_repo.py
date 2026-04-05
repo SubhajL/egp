@@ -12,6 +12,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Integer,
     Index,
     Numeric,
     String,
@@ -23,11 +24,13 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_shared_types.billing_plans import get_billing_plan_definition
 from egp_shared_types.enums import (
     BillingEventType,
     BillingPaymentMethod,
     BillingPaymentStatus,
     BillingRecordStatus,
+    BillingSubscriptionStatus,
 )
 
 
@@ -83,10 +86,27 @@ class BillingEventRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class BillingSubscriptionRecord:
+    id: str
+    tenant_id: str
+    billing_record_id: str
+    plan_code: str
+    subscription_status: BillingSubscriptionStatus
+    billing_period_start: str
+    billing_period_end: str
+    keyword_limit: int | None
+    activated_at: str
+    activated_by_payment_id: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class BillingRecordDetail:
     record: BillingRecordRecord
     payments: list[BillingPaymentRecord]
     events: list[BillingEventRecord]
+    subscription: BillingSubscriptionRecord | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +225,42 @@ BILLING_EVENTS_TABLE = Table(
     ),
 )
 
+BILLING_SUBSCRIPTIONS_TABLE = Table(
+    "billing_subscriptions",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column(
+        "billing_record_id",
+        UUID_SQL_TYPE,
+        ForeignKey("billing_records.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("plan_code", String, nullable=False),
+    Column("status", String, nullable=False),
+    Column("billing_period_start", Date, nullable=False),
+    Column("billing_period_end", Date, nullable=False),
+    Column("keyword_limit", Integer, nullable=True),
+    Column("activated_at", DateTime(timezone=True), nullable=False),
+    Column(
+        "activated_by_payment_id",
+        UUID_SQL_TYPE,
+        ForeignKey("billing_payments.id", ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "billing_period_end >= billing_period_start",
+        name="billing_subscriptions_period_order_check",
+    ),
+    CheckConstraint(
+        f"status IN ({_enum_values(BillingSubscriptionStatus)})",
+        name="billing_subscriptions_status_check",
+    ),
+)
+
 Index(
     "idx_billing_records_tenant_created",
     BILLING_RECORDS_TABLE.c.tenant_id,
@@ -230,6 +286,16 @@ Index(
     BILLING_EVENTS_TABLE.c.billing_record_id,
     BILLING_EVENTS_TABLE.c.created_at,
 )
+Index(
+    "idx_billing_subscriptions_tenant_status",
+    BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id,
+    BILLING_SUBSCRIPTIONS_TABLE.c.status,
+    BILLING_SUBSCRIPTIONS_TABLE.c.billing_period_end,
+)
+Index(
+    "idx_billing_subscriptions_record",
+    BILLING_SUBSCRIPTIONS_TABLE.c.billing_record_id,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +313,22 @@ class _BillingRecordRow:
     currency: str
     amount_due: Decimal
     notes: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BillingSubscriptionRow:
+    id: str
+    tenant_id: str
+    billing_record_id: str
+    plan_code: str
+    status: BillingSubscriptionStatus
+    billing_period_start: str
+    billing_period_end: str
+    keyword_limit: int | None
+    activated_at: str
+    activated_by_payment_id: str | None
     created_at: str
     updated_at: str
 
@@ -290,6 +372,17 @@ def _normalize_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(str(value).strip())
     except ValueError as exc:
         raise ValueError("invalid billing timestamp") from exc
+
+
+def _subscription_status_for_period(
+    *, now: datetime, period_start: date, period_end: date
+) -> BillingSubscriptionStatus:
+    today = now.date()
+    if today < period_start:
+        return BillingSubscriptionStatus.PENDING_ACTIVATION
+    if today > period_end:
+        return BillingSubscriptionStatus.EXPIRED
+    return BillingSubscriptionStatus.ACTIVE
 
 
 def _normalize_record_status(value: BillingRecordStatus | str) -> BillingRecordStatus:
@@ -389,6 +482,41 @@ def _event_from_mapping(row: RowMapping) -> BillingEventRecord:
     )
 
 
+def _subscription_from_mapping(row: RowMapping) -> BillingSubscriptionRecord:
+    period_start = row["billing_period_start"]
+    period_end = row["billing_period_end"]
+    stored_status = BillingSubscriptionStatus(str(row["status"]))
+    effective_status = (
+        BillingSubscriptionStatus.CANCELLED
+        if stored_status is BillingSubscriptionStatus.CANCELLED
+        else _subscription_status_for_period(
+            now=_now(),
+            period_start=period_start,
+            period_end=period_end,
+        )
+    )
+    return BillingSubscriptionRecord(
+        id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
+        billing_record_id=str(row["billing_record_id"]),
+        plan_code=str(row["plan_code"]),
+        subscription_status=effective_status,
+        billing_period_start=_dt_to_iso(period_start) or "",
+        billing_period_end=_dt_to_iso(period_end) or "",
+        keyword_limit=int(row["keyword_limit"])
+        if row["keyword_limit"] is not None
+        else None,
+        activated_at=_dt_to_iso(row["activated_at"]) or "",
+        activated_by_payment_id=(
+            str(row["activated_by_payment_id"])
+            if row["activated_by_payment_id"] is not None
+            else None
+        ),
+        created_at=_dt_to_iso(row["created_at"]) or "",
+        updated_at=_dt_to_iso(row["updated_at"]) or "",
+    )
+
+
 def _group_payments(
     payments: list[BillingPaymentRecord],
 ) -> dict[str, list[BillingPaymentRecord]]:
@@ -407,6 +535,14 @@ def _group_events(
     return grouped
 
 
+def _group_subscriptions(
+    subscriptions: list[BillingSubscriptionRecord],
+) -> dict[str, BillingSubscriptionRecord]:
+    return {
+        subscription.billing_record_id: subscription for subscription in subscriptions
+    }
+
+
 def _reconciled_total_for_payments(payments: list[BillingPaymentRecord]) -> Decimal:
     total = Decimal("0.00")
     for payment in payments:
@@ -419,6 +555,7 @@ def _detail_from_row(
     row: _BillingRecordRow,
     payments: list[BillingPaymentRecord],
     events: list[BillingEventRecord],
+    subscription: BillingSubscriptionRecord | None,
 ) -> BillingRecordDetail:
     reconciled_total = _reconciled_total_for_payments(payments)
     outstanding = max(row.amount_due - reconciled_total, Decimal("0.00"))
@@ -441,7 +578,12 @@ def _detail_from_row(
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
-    return BillingRecordDetail(record=record, payments=payments, events=events)
+    return BillingRecordDetail(
+        record=record,
+        payments=payments,
+        events=events,
+        subscription=subscription,
+    )
 
 
 class SqlBillingRepository:
@@ -522,6 +664,28 @@ class SqlBillingRepository:
                 .all()
             )
         return [_event_from_mapping(row) for row in rows]
+
+    def _load_subscriptions_for_records(
+        self, record_ids: list[str]
+    ) -> list[BillingSubscriptionRecord]:
+        if not record_ids:
+            return []
+        normalized_ids = [normalize_uuid_string(record_id) for record_id in record_ids]
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(BILLING_SUBSCRIPTIONS_TABLE)
+                    .where(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.billing_record_id.in_(
+                            normalized_ids
+                        )
+                    )
+                    .order_by(BILLING_SUBSCRIPTIONS_TABLE.c.created_at.desc())
+                )
+                .mappings()
+                .all()
+            )
+        return [_subscription_from_mapping(row) for row in rows]
 
     def _get_record_row_by_id(self, record_id: str) -> _BillingRecordRow | None:
         normalized_record_id = normalize_uuid_string(record_id)
@@ -609,7 +773,13 @@ class SqlBillingRepository:
             return None
         payments = self._load_payments_for_records([row.id])
         events = self._load_events_for_records([row.id])
-        return _detail_from_row(row, payments, events)
+        subscriptions = self._load_subscriptions_for_records([row.id])
+        return _detail_from_row(
+            row,
+            payments,
+            events,
+            subscriptions[0] if subscriptions else None,
+        )
 
     def list_billing_records(
         self, *, tenant_id: str, limit: int = 50, offset: int = 0
@@ -652,11 +822,15 @@ class SqlBillingRepository:
             self._load_payments_for_records(page_ids)
         )
         page_events_by_record = _group_events(self._load_events_for_records(page_ids))
+        page_subscriptions_by_record = _group_subscriptions(
+            self._load_subscriptions_for_records(page_ids)
+        )
         details = [
             _detail_from_row(
                 row,
                 page_payments_by_record.get(row.id, []),
                 page_events_by_record.get(row.id, []),
+                page_subscriptions_by_record.get(row.id),
             )
             for row in page_rows
         ]
@@ -697,6 +871,15 @@ class SqlBillingRepository:
         normalized_amount = _normalize_amount(amount_due)
         normalized_due_at = _normalize_datetime(due_at)
         normalized_issued_at = _normalize_datetime(issued_at)
+        if (
+            normalized_status
+            in {
+                BillingRecordStatus.ISSUED,
+                BillingRecordStatus.AWAITING_PAYMENT,
+            }
+            and normalized_issued_at is None
+        ):
+            normalized_issued_at = _now()
         now = _now()
         record_id = str(uuid4())
 
@@ -737,6 +920,107 @@ class SqlBillingRepository:
         )
         if detail is None:
             raise KeyError(record_id)
+        return detail
+
+    def transition_billing_record_status(
+        self,
+        *,
+        tenant_id: str,
+        billing_record_id: str,
+        status: BillingRecordStatus | str,
+        note: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        record_before = self._require_record_for_tenant(
+            tenant_id=tenant_id,
+            record_id=billing_record_id,
+        )
+        target_status = _normalize_record_status(status)
+        if target_status is record_before.status:
+            detail = self.get_billing_record_detail(
+                tenant_id=tenant_id,
+                record_id=record_before.id,
+            )
+            if detail is None:
+                raise KeyError(record_before.id)
+            return detail
+
+        allowed_transitions = {
+            BillingRecordStatus.DRAFT: {
+                BillingRecordStatus.ISSUED,
+                BillingRecordStatus.CANCELLED,
+            },
+            BillingRecordStatus.ISSUED: {
+                BillingRecordStatus.AWAITING_PAYMENT,
+                BillingRecordStatus.CANCELLED,
+            },
+            BillingRecordStatus.AWAITING_PAYMENT: {
+                BillingRecordStatus.OVERDUE,
+                BillingRecordStatus.CANCELLED,
+                BillingRecordStatus.FAILED,
+            },
+            BillingRecordStatus.OVERDUE: {
+                BillingRecordStatus.AWAITING_PAYMENT,
+                BillingRecordStatus.CANCELLED,
+                BillingRecordStatus.FAILED,
+            },
+            BillingRecordStatus.FAILED: {
+                BillingRecordStatus.AWAITING_PAYMENT,
+                BillingRecordStatus.CANCELLED,
+            },
+            BillingRecordStatus.PAYMENT_DETECTED: {
+                BillingRecordStatus.AWAITING_PAYMENT,
+                BillingRecordStatus.CANCELLED,
+            },
+        }
+        if target_status not in allowed_transitions.get(record_before.status, set()):
+            raise ValueError(
+                f"cannot transition billing record from {record_before.status.value} to {target_status.value}"
+            )
+
+        now = _now()
+        issued_at = record_before.issued_at
+        if (
+            target_status
+            in {
+                BillingRecordStatus.ISSUED,
+                BillingRecordStatus.AWAITING_PAYMENT,
+            }
+            and issued_at is None
+        ):
+            issued_at = now.isoformat()
+
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(BILLING_RECORDS_TABLE)
+                .where(
+                    BILLING_RECORDS_TABLE.c.id
+                    == normalize_uuid_string(record_before.id)
+                )
+                .values(
+                    status=target_status.value,
+                    issued_at=_normalize_datetime(issued_at),
+                    updated_at=now,
+                )
+            )
+            self._append_event(
+                connection,
+                tenant_id=tenant_id,
+                billing_record_id=record_before.id,
+                payment_id=None,
+                event_type=BillingEventType.BILLING_RECORD_STATUS_CHANGED,
+                actor_subject=actor_subject,
+                note=note,
+                from_status=record_before.status.value,
+                to_status=target_status.value,
+            )
+
+        detail = self.get_billing_record_detail(
+            tenant_id=tenant_id,
+            record_id=record_before.id,
+        )
+        if detail is None:
+            raise KeyError(record_before.id)
         return detail
 
     def record_bank_transfer_payment(
@@ -812,12 +1096,20 @@ class SqlBillingRepository:
         normalized_payment = self._require_payment_for_tenant(
             tenant_id=tenant_id, payment_id=payment_id
         )
+        target_status = _normalize_payment_status(status)
         if (
             normalized_payment.payment_status
             is not BillingPaymentStatus.PENDING_RECONCILIATION
         ):
+            if normalized_payment.payment_status is target_status:
+                detail = self.get_billing_record_detail(
+                    tenant_id=tenant_id,
+                    record_id=normalized_payment.billing_record_id,
+                )
+                if detail is None:
+                    raise KeyError(normalized_payment.billing_record_id)
+                return detail
             raise ValueError("payment is already reconciled")
-        target_status = _normalize_payment_status(status)
         if target_status is BillingPaymentStatus.PENDING_RECONCILIATION:
             raise ValueError("payment reconciliation status must be final")
 
@@ -894,6 +1186,67 @@ class SqlBillingRepository:
                 from_status=record_before.status.value,
                 to_status=record_after_status.value,
             )
+            if (
+                target_status is BillingPaymentStatus.RECONCILED
+                and record_after_status is BillingRecordStatus.PAID
+            ):
+                existing_subscription_row = (
+                    connection.execute(
+                        select(BILLING_SUBSCRIPTIONS_TABLE)
+                        .where(
+                            BILLING_SUBSCRIPTIONS_TABLE.c.billing_record_id
+                            == normalize_uuid_string(record_before.id)
+                        )
+                        .limit(1)
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if existing_subscription_row is None:
+                    plan_definition = get_billing_plan_definition(
+                        record_before.plan_code
+                    )
+                    period_start = date.fromisoformat(
+                        record_before.billing_period_start
+                    )
+                    period_end = date.fromisoformat(record_before.billing_period_end)
+                    subscription_status = _subscription_status_for_period(
+                        now=now,
+                        period_start=period_start,
+                        period_end=period_end,
+                    )
+                    subscription_id = str(uuid4())
+                    connection.execute(
+                        insert(BILLING_SUBSCRIPTIONS_TABLE).values(
+                            id=subscription_id,
+                            tenant_id=normalize_uuid_string(tenant_id),
+                            billing_record_id=normalize_uuid_string(record_before.id),
+                            plan_code=record_before.plan_code,
+                            status=subscription_status.value,
+                            billing_period_start=period_start,
+                            billing_period_end=period_end,
+                            keyword_limit=(
+                                plan_definition.keyword_limit
+                                if plan_definition is not None
+                                else None
+                            ),
+                            activated_at=now,
+                            activated_by_payment_id=normalize_uuid_string(payment_id),
+                            created_at=now,
+                            updated_at=now,
+                        )
+                    )
+                    self._append_event(
+                        connection,
+                        tenant_id=tenant_id,
+                        billing_record_id=record_before.id,
+                        payment_id=payment_id,
+                        event_type=BillingEventType.SUBSCRIPTION_ACTIVATED,
+                        actor_subject=actor_subject,
+                        note=note,
+                        from_status=None,
+                        to_status=subscription_status.value,
+                    )
 
         detail = self.get_billing_record_detail(
             tenant_id=tenant_id, record_id=record_before.id

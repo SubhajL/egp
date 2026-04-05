@@ -5,5 +5,12 @@ from .classifier import (
     classify_document,
     classify_document_details,
 )
+from .diff_engine import DocumentDiffResult, build_document_diff
 
-__all__ = ["DocumentClassification", "classify_document", "classify_document_details"]
+__all__ = [
+    "DocumentClassification",
+    "DocumentDiffResult",
+    "build_document_diff",
+    "classify_document",
+    "classify_document_details",
+]

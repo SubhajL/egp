@@ -2,7 +2,7 @@
   "master": {
     "tasks": [
       {
-        "id": 1,
+        "id": "1",
         "title": "Phase 1: Foundation and State Correctness",
         "description": "Replace fragile script-state assumptions with the canonical platform foundation described in PRD phase 1.",
         "status": "done",
@@ -81,7 +81,7 @@
         "updatedAt": "2026-04-03T08:30:00.000Z"
       },
       {
-        "id": 2,
+        "id": "2",
         "title": "Phase 2: Product MVP",
         "description": "Deliver the internal beta product surface described in PRD phase 2.",
         "status": "done",
@@ -162,7 +162,7 @@
         "updatedAt": "2026-04-04T15:15:44.864Z"
       },
       {
-        "id": 3,
+        "id": "3",
         "title": "Phase 3: TOR Intelligence and Payments",
         "description": "Deliver the commercial beta intelligence and payment workflows described in PRD phase 3.",
         "status": "in-progress",
@@ -188,11 +188,12 @@
             "id": 2,
             "title": "Build the diff engine and surfaced change alerts",
             "description": "Generate meaningful document diffs and attach them to reviewable project events.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
-            "details": "Store structured diff metadata for document pairs, preserve both versions, and surface change alerts without false positives when bytes are identical. The document processor should write durable diff records rather than transient filesystem artifacts.",
+            "details": "Store structured diff metadata for document pairs, preserve both versions, and surface change alerts without false positives when bytes are identical. The document processor should write durable diff records rather than transient filesystem artifacts.\n<info added on 2026-04-04T16:45:19.156Z>\nImplemented structured, durable document diffs persisted in the document_diffs table. Added packages/document-classifier/src/egp_document_classifier/diff_engine.py (build_document_diff) to generate diff_type (identical/changed) plus summary_json including comparison_scope (same_phase_version vs phase_transition), similarity_ratio, added/removed/changed line counts, and text_extraction_status/text_diff_available (with small text previews when UTF-8 decode works). Wired this into packages/db/src/egp_db/repositories/document_repo.py: store_document now creates diff rows for same-phase supersession and TOR PUBLIC_HEARING<->FINAL transitions (and keeps identical-byte transitions as diff_type=identical for audit without triggering alerts), exposes list_document_diffs/get_document_diff, and persists summary_json; Postgres tenant scoping/backfill is handled in packages/db/src/migrations/002_document_tenant_scope.sql. Exposed APIs via apps/api/src/egp_api/routes/documents.py: GET /v1/documents/projects/{project_id}/diffs and GET /v1/documents/{document_id}/diff/{other_document_id}. Tightened alerting and surfacing so TOR_CHANGED notifications and has_changed_tor / dashboard changed_tor_projects only consider diff_type=changed (apps/api/src/egp_api/services/document_ingest_service.py, packages/db/src/egp_db/repositories/project_repo.py). Added regression coverage in tests/phase3/test_document_diff_engine.py, tests/phase1/test_document_persistence.py, tests/phase1/test_documents_api.py, and tests/phase2/test_project_explorer_api.py.\n</info added on 2026-04-04T16:45:19.156Z>",
             "testStrategy": "Validate diff persistence, diff retrieval, and alert generation for identical, modified, and missing-text extraction cases.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T23:27:46.951Z"
           },
           {
             "id": 3,
@@ -218,17 +219,18 @@
             "id": 5,
             "title": "Implement invoice lifecycle and subscription activation",
             "description": "Move from manual billing records to invoice-driven activation and entitlement changes.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
-            "details": "Define invoice states, payment reconciliation hooks, and subscription activation behavior in the API and data model. Preserve auditability and ensure successful payment activates the right tenant entitlements without cross-tenant leakage.",
+            "details": "Define invoice states, payment reconciliation hooks, and subscription activation behavior in the API and data model. Preserve auditability and ensure successful payment activates the right tenant entitlements without cross-tenant leakage.\n<info added on 2026-04-04T23:35:15.710Z>\nImplementation note: Invoice lifecycle + subscription activation are implemented across packages/shared-types/src/egp_shared_types/billing_plans.py (plan catalog; defaults: one_time_search_pack 300.00 THB for 3 days/1 keyword, monthly_membership 1500.00 THB for 1 month/5 keywords), packages/db/src/migrations/004_invoice_subscriptions.sql (billing_subscriptions + expanded billing_events types), packages/db/src/egp_db/repositories/billing_repo.py (tenant-scoped transitions/reconciliation/subscription creation), apps/api/src/egp_api/services/billing_service.py and apps/api/src/egp_api/routes/billing.py, with UI in apps/web/src/app/(app)/billing/page.tsx (via apps/web/src/lib/api.ts and apps/web/src/lib/hooks.ts). Allowed record status transitions are enforced in the repo (draft→issued, issued→awaiting_payment, awaiting_payment→overdue/failed/cancelled, overdue→awaiting_payment/failed/cancelled, failed→awaiting_payment/cancelled, payment_detected→awaiting_payment/cancelled); reconciliation sets payment_detected on partial payments and paid (with paid_at) when reconciled_total >= amount_due. On full reconciliation, the repo creates a single billing_subscriptions row per record (unique billing_record_id) and emits subscription_activated, with subscription status computed from the billing period (pending_activation for future starts, otherwise active/expired). Reconciliation is idempotent for already-final payments (repeat reconcile returns existing detail and does not duplicate subscription_activated). Regression coverage is captured in tests/phase2/test_billing_reconciliation.py and tests/phase3/test_invoice_lifecycle.py.\n</info added on 2026-04-04T23:35:15.710Z>",
             "testStrategy": "Cover invoice creation, payment confirmation, activation, duplicate-callback handling, and rollback/error paths.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-04T23:27:46.958Z"
           }
         ],
-        "updatedAt": "2026-04-04T16:05:50.353Z"
+        "updatedAt": "2026-04-04T23:27:46.958Z"
       },
       {
-        "id": 4,
+        "id": "4",
         "title": "Phase 4: Commercial Hardening",
         "description": "Harden the platform for production readiness as described in PRD phase 4.",
         "status": "pending",
@@ -314,14 +316,12 @@
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T16:05:50.353Z",
+      "lastModified": "2026-04-04T23:27:46.958Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [
         "master"
-      ],
-      "created": "2026-04-04T16:06:06.634Z",
-      "description": "Tasks for master context"
+      ]
     }
   }
 }

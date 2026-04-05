@@ -21,6 +21,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -37,3 +38,8 @@ jobs:
             - Crawler workers emit events only; API owns state
 
             Focus on actionable feedback. Be concise.
+
+      - name: Report advisory Claude review failure
+        if: steps.claude-review.outcome != 'success'
+        run: |
+          echo "::warning title=Claude review unavailable::Claude review is advisory and did not complete successfully. Check the workflow logs and repository secret configuration."

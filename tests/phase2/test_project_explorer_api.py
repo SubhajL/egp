@@ -168,6 +168,71 @@ def test_projects_endpoint_supports_explorer_filters(tmp_path) -> None:
     assert [project["id"] for project in winner_only.json()["projects"]] == [winner_project.id]
 
 
+def test_projects_endpoint_has_changed_tor_ignores_identical_phase_transition(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-identical-phase.sqlite3'}"
+    client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+
+    unchanged_project = _seed_project(
+        client,
+        project_number="EGP-2026-2291",
+        project_name="โครงการ TOR เท่าเดิม",
+        organization_name="กรมข้อมูล",
+        procurement_type=ProcurementType.SERVICES,
+        project_state=ProjectState.OPEN_INVITATION,
+        budget_amount="1000000",
+    )
+    changed_project = _seed_project(
+        client,
+        project_number="EGP-2026-2292",
+        project_name="โครงการ TOR เปลี่ยน",
+        organization_name="กรมข้อมูล",
+        procurement_type=ProcurementType.SERVICES,
+        project_state=ProjectState.OPEN_INVITATION,
+        budget_amount="1200000",
+    )
+
+    _ingest_document(
+        client,
+        project_id=unchanged_project.id,
+        file_name="tor-hearing.pdf",
+        content=b"same-phase-transition",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    _ingest_document(
+        client,
+        project_id=unchanged_project.id,
+        file_name="tor-final.pdf",
+        content=b"same-phase-transition",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    _ingest_document(
+        client,
+        project_id=changed_project.id,
+        file_name="tor-hearing.pdf",
+        content=b"draft line\nshared line\n",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    _ingest_document(
+        client,
+        project_id=changed_project.id,
+        file_name="tor-final.pdf",
+        content=b"final line\nshared line\n",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    changed_tor = client.get(
+        "/v1/projects",
+        params={"tenant_id": TENANT_ID, "has_changed_tor": "true"},
+    )
+
+    assert changed_tor.status_code == 200
+    assert [project["id"] for project in changed_tor.json()["projects"]] == [changed_project.id]
+
+
 def test_projects_endpoint_filters_by_closed_reason_and_updated_after(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-project-date-filter.sqlite3'}"
     client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
