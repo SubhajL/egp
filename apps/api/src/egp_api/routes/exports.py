@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from egp_api.auth import resolve_request_tenant_id
+from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.export_service import ExportService
 
 
@@ -51,6 +52,8 @@ def export_excel(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return Response(
         content=excel_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

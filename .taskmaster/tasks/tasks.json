@@ -233,7 +233,7 @@
         "id": "4",
         "title": "Phase 4: Commercial Hardening",
         "description": "Harden the platform for production readiness as described in PRD phase 4.",
-        "status": "pending",
+        "status": "in-progress",
         "dependencies": [
           "3"
         ],
@@ -245,11 +245,12 @@
             "id": 1,
             "title": "Implement multi-tenant quotas and entitlement enforcement",
             "description": "Enforce per-tenant limits and plan-based product boundaries.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Add tenant-level quota tracking and enforcement in the API and supporting data model. Tie quota behavior to subscription state from phase 3 and ensure limits are applied consistently across runs, exports, documents, and notifications. This includes enforcing launch-package entitlements: `One-Time Search Pack` allows exactly `1 keyword` for `3 days`, while `Monthly Membership` allows up to `5 active keywords` during the prepaid billing period.",
             "testStrategy": "Cover quota allow/deny scenarios, plan upgrades, and tenant isolation for over-limit behavior.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-05T03:22:25.774Z"
           },
           {
             "id": 2,
@@ -311,12 +312,13 @@
             "testStrategy": "Validate representative cost signals are captured and that support operators can diagnose seeded issues without bypassing tenant boundaries.",
             "parentId": "undefined"
           }
-        ]
+        ],
+        "updatedAt": "2026-04-05T03:22:25.774Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-04T23:27:46.958Z",
+      "lastModified": "2026-04-05T03:22:25.774Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [

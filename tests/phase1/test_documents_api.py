@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import OperationalError
@@ -69,7 +71,7 @@ class FakeSupabaseClient:
 
 
 def create_test_client(tmp_path, **overrides) -> TestClient:
-    return TestClient(
+    client = TestClient(
         create_app(
             artifact_root=tmp_path,
             database_url=f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}",
@@ -77,6 +79,96 @@ def create_test_client(tmp_path, **overrides) -> TestClient:
             **overrides,
         )
     )
+    seed_active_subscription(client)
+    return client
+
+
+def seed_active_subscription(client: TestClient) -> None:
+    today = date.today()
+    now = datetime.now(UTC).isoformat()
+    record_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    'monthly_membership',
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '1500.00',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": record_id,
+                "tenant_id": TENANT_ID,
+                "record_number": f"INV-{record_id[:8]}",
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=29)).isoformat(),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    'monthly_membership',
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    5,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "billing_record_id": record_id,
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=29)).isoformat(),
+                "activated_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
 
 
 def seed_tenant(client: TestClient) -> None:

@@ -6,6 +6,7 @@ import base64
 import binascii
 from typing import TYPE_CHECKING
 
+from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult
 from egp_shared_types.enums import DocumentType, NotificationType
 
@@ -19,10 +20,12 @@ class DocumentIngestService:
         self,
         repository: SqlDocumentRepository,
         *,
+        entitlement_service: TenantEntitlementService | None = None,
         project_repository: SqlProjectRepository | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
         self._repository = repository
+        self._entitlement_service = entitlement_service
         self._project_repository = project_repository
         self._notification_dispatcher = notification_dispatcher
 
@@ -140,6 +143,11 @@ class DocumentIngestService:
         document_id: str,
         expires_in: int = 300,
     ) -> str:
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="document downloads",
+            )
         return self._repository.get_download_url(
             tenant_id=tenant_id,
             document_id=document_id,

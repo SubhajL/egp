@@ -781,6 +781,28 @@ class SqlBillingRepository:
             subscriptions[0] if subscriptions else None,
         )
 
+    def list_subscriptions_for_tenant(
+        self, *, tenant_id: str
+    ) -> list[BillingSubscriptionRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(BILLING_SUBSCRIPTIONS_TABLE)
+                    .where(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
+                    .order_by(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.billing_period_end.desc(),
+                        BILLING_SUBSCRIPTIONS_TABLE.c.billing_period_start.desc(),
+                        BILLING_SUBSCRIPTIONS_TABLE.c.created_at.desc(),
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [_subscription_from_mapping(row) for row in rows]
+
     def list_billing_records(
         self, *, tenant_id: str, limit: int = 50, offset: int = 0
     ) -> BillingPage:

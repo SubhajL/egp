@@ -2,7 +2,7 @@
 
 **Title:** Phase 4: Commercial Hardening
 
-**Status:** pending
+**Status:** in-progress
 
 **Dependencies:** 3
 
@@ -22,7 +22,7 @@ Validate production-readiness outcomes with quota enforcement tests, webhook con
 
 ### 4.1. Implement multi-tenant quotas and entitlement enforcement
 
-**Status:** pending  
+**Status:** done  
 **Dependencies:** None  
 
 Enforce per-tenant limits and plan-based product boundaries.
@@ -30,6 +30,10 @@ Enforce per-tenant limits and plan-based product boundaries.
 **Details:**
 
 Add tenant-level quota tracking and enforcement in the API and supporting data model. Tie quota behavior to subscription state from phase 3 and ensure limits are applied consistently across runs, exports, documents, and notifications. This includes enforcing launch-package entitlements: `One-Time Search Pack` allows exactly `1 keyword` for `3 days`, while `Monthly Membership` allows up to `5 active keywords` during the prepaid billing period.
+
+Implementation note:
+
+Task 4.1 is implemented through a new entitlement layer in `apps/api/src/egp_api/services/entitlement_service.py`, backed by tenant-scoped subscription truth from `packages/db/src/egp_db/repositories/billing_repo.py` and active keyword enumeration from `packages/db/src/egp_db/repositories/profile_repo.py`. The API now fail-closes on unpaid or expired access for `POST /v1/runs`, `POST /v1/runs/{run_id}/tasks` discover keywords, `GET /v1/exports/excel`, and `GET /v1/documents/{document_id}/download`, while notification delivery for `RUN_FAILED`, `EXPORT_READY`, and `TOR_CHANGED` is suppressed when the tenant lacks an active subscription via the entitlement-aware dispatcher wired in `apps/api/src/egp_api/main.py`. `GET /v1/rules` and `apps/web/src/app/(app)/rules/page.tsx` now expose the live entitlement snapshot: active plan, subscription status, keyword limit, active keyword count, remaining slots, and whether the tenant is over limit. Regression coverage was added in `tests/phase4/test_entitlements.py` and extended in `tests/phase2/test_rules_api.py`, with legacy paid-capability fixtures updated in phase 1/2 API tests.
 
 ### 4.2. Add webhook notification delivery
 

@@ -7,6 +7,7 @@ import { QueryState } from "@/components/ui/query-state";
 import { useRules } from "@/lib/hooks";
 import type {
   ClosureRulesSummary,
+  EntitlementSummary,
   NotificationRulesSummary,
   RuleProfile,
   ScheduleRulesSummary,
@@ -122,6 +123,118 @@ function ProfileCard({ profile }: { profile: RuleProfile }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function EntitlementCard({ entitlements }: { entitlements: EntitlementSummary }) {
+  const statusLabel = entitlements.has_active_subscription
+    ? "ใช้งานได้"
+    : entitlements.subscription_status === "pending_activation"
+      ? "รอเริ่มสิทธิ์"
+      : entitlements.subscription_status === "expired"
+        ? "หมดอายุแล้ว"
+        : "ยังไม่มีสิทธิ์ใช้งาน";
+
+  return (
+    <div className="mb-6 rounded-[28px] border border-primary/15 bg-[linear-gradient(135deg,rgba(22,163,74,0.08),rgba(14,116,144,0.08))] p-6 shadow-[var(--shadow-soft)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--text-muted)]">
+            Entitlements
+          </p>
+          <h2 className="mt-2 text-2xl font-bold text-[var(--text-primary)]">
+            {entitlements.plan_label ?? "ยังไม่มีแพ็กเกจที่เปิดใช้งาน"}
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
+            ตรวจสอบสิทธิ์ใช้งานจริงจาก subscription และคำค้นที่เปิดอยู่ใน tenant นี้ เพื่อให้รู้ทันทีว่าระบบจะอนุญาตให้รันงาน ส่งออกข้อมูล ดาวน์โหลดเอกสาร และส่งแจ้งเตือนได้หรือไม่
+          </p>
+        </div>
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            สถานะ subscription
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <StatusChip active={entitlements.has_active_subscription} activeLabel={statusLabel} inactiveLabel={statusLabel} />
+            {entitlements.plan_code ? (
+              <span className="font-mono text-xs text-[var(--text-secondary)]">
+                {entitlements.plan_code}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Keyword limit
+          </p>
+          <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+            {entitlements.keyword_limit ?? "—"}
+          </p>
+        </div>
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Active keywords
+          </p>
+          <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+            {entitlements.active_keyword_count}
+          </p>
+        </div>
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Remaining slots
+          </p>
+          <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+            {entitlements.remaining_keyword_slots ?? "—"}
+          </p>
+        </div>
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Runs / Exports
+          </p>
+          <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+            {entitlements.runs_allowed ? "อนุญาตรัน" : "บล็อกรัน"} / {entitlements.exports_allowed ? "ส่งออกได้" : "งดส่งออก"}
+          </p>
+        </div>
+        <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            Documents / Notify
+          </p>
+          <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+            {entitlements.document_download_allowed ? "ดาวน์โหลดได้" : "งดดาวน์โหลด"} / {entitlements.notifications_allowed ? "แจ้งเตือนได้" : "งดแจ้งเตือน"}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap gap-2">
+          {entitlements.active_keywords.length === 0 ? (
+            <span className="rounded-full border border-dashed border-[var(--border-default)] px-3 py-1.5 text-xs text-[var(--text-muted)]">
+              ยังไม่มี active keywords
+            </span>
+          ) : (
+            entitlements.active_keywords.map((keyword) => (
+              <span
+                key={keyword}
+                className="rounded-full border border-primary/20 bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-primary"
+              >
+                {keyword}
+              </span>
+            ))
+          )}
+        </div>
+        <div className="text-sm text-[var(--text-muted)]">
+          {entitlements.over_keyword_limit ? (
+            <span className="font-semibold text-[var(--badge-red-text)]">
+              active keyword เกิน quota ของแพ็กเกจและจะบล็อก discover task ใหม่
+            </span>
+          ) : (
+            <span>source: <span className="font-mono text-[var(--text-secondary)]">{entitlements.source}</span></span>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -389,6 +502,8 @@ export default function RulesPage() {
         title="กฎและโปรไฟล์"
         subtitle="แสดงคำค้น กฎการปิด และการตั้งค่าระบบจาก logic ที่แพลตฟอร์มใช้อยู่จริง"
       />
+
+      {data ? <EntitlementCard entitlements={data.entitlements} /> : null}
 
       <div className="mb-6 flex gap-1 rounded-xl bg-[var(--bg-surface-secondary)] p-1">
         {TABS.map((tab) => (

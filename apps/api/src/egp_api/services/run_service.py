@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
     CrawlTaskRecord,
@@ -30,9 +31,11 @@ class RunService:
         self,
         repository: SqlRunRepository,
         *,
+        entitlement_service: TenantEntitlementService | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
         self._repository = repository
+        self._entitlement_service = entitlement_service
         self._notification_dispatcher = notification_dispatcher
 
     def create_run(
@@ -43,6 +46,11 @@ class RunService:
         profile_id: str | None = None,
         summary_json: dict[str, object] | None = None,
     ) -> CrawlRunDetail:
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="runs",
+            )
         run = self._repository.create_run(
             tenant_id=tenant_id,
             trigger_type=trigger_type,
@@ -69,6 +77,16 @@ class RunService:
             raise KeyError(run_id)
         if run.tenant_id != tenant_id:
             raise PermissionError(run_id)
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="runs",
+            )
+            if task_type.strip().casefold() == "discover":
+                self._entitlement_service.require_discover_keyword(
+                    tenant_id=tenant_id,
+                    keyword=keyword or "",
+                )
         task = self._repository.create_task(
             run_id=run_id,
             task_type=task_type,

@@ -8,6 +8,8 @@ from egp_crawler_core.closure_rules import describe_closure_rules
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
 from egp_shared_types.enums import NotificationType
 
+from egp_api.services.entitlement_service import TenantEntitlementService, TenantEntitlementSnapshot
+
 
 @dataclass(frozen=True, slots=True)
 class RuleProfile:
@@ -54,6 +56,7 @@ class ScheduleRulesView:
 @dataclass(frozen=True, slots=True)
 class RulesSnapshot:
     profiles: list[RuleProfile]
+    entitlements: TenantEntitlementSnapshot
     closure_rules: ClosureRulesView
     notification_rules: NotificationRulesView
     schedule_rules: ScheduleRulesView
@@ -79,16 +82,38 @@ class RulesService:
         self,
         repository: SqlProfileRepository,
         *,
+        entitlement_service: TenantEntitlementService | None = None,
         notification_event_wiring_complete: bool = True,
     ) -> None:
         self._repository = repository
+        self._entitlement_service = entitlement_service
         self._notification_event_wiring_complete = notification_event_wiring_complete
 
     def get_rules(self, *, tenant_id: str) -> RulesSnapshot:
         profiles = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
         closure_metadata = describe_closure_rules()
+        entitlements = (
+            self._entitlement_service.get_snapshot(tenant_id=tenant_id)
+            if self._entitlement_service is not None
+            else TenantEntitlementSnapshot(
+                plan_code=None,
+                plan_label=None,
+                subscription_status=None,
+                has_active_subscription=False,
+                keyword_limit=None,
+                active_keyword_count=0,
+                remaining_keyword_slots=None,
+                active_keywords=[],
+                over_keyword_limit=False,
+                runs_allowed=False,
+                exports_allowed=False,
+                document_download_allowed=False,
+                notifications_allowed=False,
+            )
+        )
         return RulesSnapshot(
             profiles=[_map_profile(profile) for profile in profiles],
+            entitlements=entitlements,
             closure_rules=ClosureRulesView(
                 close_on_winner_status=bool(closure_metadata["close_on_winner_status"]),
                 close_on_contract_status=bool(closure_metadata["close_on_contract_status"]),

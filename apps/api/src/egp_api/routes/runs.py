@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
+from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.run_service import RunService
 from egp_db.repositories.run_repo import CrawlRunDetail, CrawlRunRecord, CrawlTaskRecord
 
@@ -122,12 +123,15 @@ def create_run(
 ) -> RunDetailResponse:
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
-    detail = service.create_run(
-        tenant_id=resolved_tenant_id,
-        trigger_type=payload.trigger_type,
-        profile_id=payload.profile_id,
-        summary_json=payload.summary_json,
-    )
+    try:
+        detail = service.create_run(
+            tenant_id=resolved_tenant_id,
+            trigger_type=payload.trigger_type,
+            profile_id=payload.profile_id,
+            summary_json=payload.summary_json,
+        )
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED
     return _serialize_detail(detail)
 
@@ -153,6 +157,8 @@ def create_task(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="run not found for tenant") from exc
     response.status_code = status.HTTP_201_CREATED
