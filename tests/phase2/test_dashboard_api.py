@@ -1,15 +1,170 @@
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ClosedReason, CrawlRunStatus, ProcurementType, ProjectState
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _seed_active_subscription(client: TestClient) -> None:
+    today = date.today()
+    now = datetime.now(UTC).isoformat()
+    record_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    'monthly_membership',
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '1500.00',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": record_id,
+                "tenant_id": TENANT_ID,
+                "record_number": f"INV-{record_id[:8]}",
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=29)).isoformat(),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    'monthly_membership',
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    5,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "billing_record_id": record_id,
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=29)).isoformat(),
+                "activated_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+
+def _seed_active_profile_keyword(client: TestClient, *, keyword: str) -> None:
+    profile_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profiles (
+                    id,
+                    tenant_id,
+                    name,
+                    profile_type,
+                    is_active,
+                    max_pages_per_keyword,
+                    close_consulting_after_days,
+                    close_stale_after_days,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'TOR',
+                    'tor',
+                    1,
+                    15,
+                    30,
+                    45,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": profile_id,
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-05T00:00:00+00:00",
+                "updated_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profile_keywords (
+                    id,
+                    profile_id,
+                    keyword,
+                    position,
+                    created_at
+                ) VALUES (
+                    :id,
+                    :profile_id,
+                    :keyword,
+                    1,
+                    :created_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "profile_id": profile_id,
+                "keyword": keyword,
+                "created_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
 
 
 def _seed_project(
@@ -81,7 +236,7 @@ def _create_run(
     )
     assert created.status_code == 201
     run_id = created.json()["run"]["id"]
-    client.post(
+    task = client.post(
         f"/v1/runs/{run_id}/tasks",
         params={"tenant_id": TENANT_ID},
         json={
@@ -90,6 +245,7 @@ def _create_run(
             "payload": {"page": 1},
         },
     )
+    assert task.status_code == 201
     finished = client.post(
         f"/v1/runs/{run_id}/finish",
         params={"tenant_id": TENANT_ID},
@@ -106,6 +262,8 @@ def _create_run(
 def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-dashboard.sqlite3'}"
     client = TestClient(create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False))
+    _seed_active_subscription(client)
+    _seed_active_profile_keyword(client, keyword="สุขภาพ")
 
     now = datetime.now(UTC).replace(microsecond=0)
     today_open = _seed_project(
