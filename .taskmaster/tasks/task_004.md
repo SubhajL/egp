@@ -37,7 +37,7 @@ Task 4.1 is implemented through a new entitlement layer in `apps/api/src/egp_api
 
 ### 4.2. Add webhook notification delivery
 
-**Status:** pending  
+**Status:** done  
 **Dependencies:** None  
 
 Deliver machine-consumable notifications alongside email and in-product surfaces.
@@ -45,6 +45,10 @@ Deliver machine-consumable notifications alongside email and in-product surfaces
 **Details:**
 
 Implement tenant-configurable webhook subscriptions and outbound delivery with retry-safe semantics. Keep payloads auditable and compatible with the event model established earlier in the platform.
+
+<info added on 2026-04-05T16:32:39.578+07:00>
+Implementation note: Webhook notification delivery is implemented across packages/db/src/migrations/008_webhook_notifications.sql (tenant-scoped webhook_subscriptions + webhook_deliveries tables), packages/db/src/egp_db/repositories/notification_repo.py (subscription CRUD, active subscription resolution, delivery audit persistence), and packages/notification-core/src/egp_notifications/webhook_delivery.py plus packages/notification-core/src/egp_notifications/dispatcher.py (signed JSON delivery, bounded retry-safe semantics, fail-open behavior, and already-delivered event-id suppression). Tenant admin CRUD is exposed via apps/api/src/egp_api/routes/webhooks.py and apps/api/src/egp_api/services/webhook_service.py, wired in apps/api/src/egp_api/main.py, with supported notification channels updated in apps/api/src/egp_api/services/rules_service.py. The admin UI now includes webhook management in apps/web/src/app/(app)/admin/page.tsx via apps/web/src/lib/api.ts and apps/web/src/lib/hooks.ts. Regression coverage was added in tests/phase2/test_notification_dispatch.py, tests/phase2/test_rules_api.py, and tests/phase4/test_webhooks_api.py.
+</info added on 2026-04-05T16:32:39.578+07:00>
 
 ### 4.3. Build a full audit log
 

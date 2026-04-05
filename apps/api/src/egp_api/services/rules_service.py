@@ -125,7 +125,7 @@ class RulesService:
                 source=str(closure_metadata["source"]),
             ),
             notification_rules=NotificationRulesView(
-                supported_channels=["in_app", "email"],
+                supported_channels=["in_app", "email", "webhook"],
                 supported_types=[notification_type.value for notification_type in NotificationType],
                 event_wiring_complete=self._notification_event_wiring_complete,
                 source="packages/notification-core/src/egp_notifications/service.py",

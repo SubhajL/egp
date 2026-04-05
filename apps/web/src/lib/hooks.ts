@@ -12,6 +12,7 @@ import {
   fetchDocuments,
   fetchRules,
   fetchRuns,
+  fetchWebhooks,
   type FetchBillingParams,
   type FetchProjectsParams,
   type FetchRunsParams,
@@ -87,5 +88,12 @@ export function useAdminSnapshot() {
   return useQuery({
     queryKey: ["admin-snapshot"],
     queryFn: () => fetchAdminSnapshot(),
+  });
+}
+
+export function useWebhooks() {
+  return useQuery({
+    queryKey: ["webhooks"],
+    queryFn: () => fetchWebhooks(),
   });
 }

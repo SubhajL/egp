@@ -2,24 +2,28 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Building2, CreditCard, Mail, Users } from "lucide-react";
+import { Building2, CreditCard, Mail, Users, Webhook } from "lucide-react";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
   createAdminUser,
+  createWebhook,
+  deleteWebhook,
   updateAdminUser,
   updateAdminUserNotificationPreferences,
   updateTenantSettings,
   type AdminUser,
+  type WebhookSubscription,
 } from "@/lib/api";
-import { useAdminSnapshot } from "@/lib/hooks";
+import { useAdminSnapshot, useWebhooks } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const TABS = [
   { key: "users", label: "ผู้ใช้และบทบาท", icon: Users },
   { key: "notifications", label: "การแจ้งเตือน", icon: Mail },
+  { key: "webhooks", label: "Webhook", icon: Webhook },
   { key: "billing", label: "แผนและบิล", icon: CreditCard },
   { key: "settings", label: "ตั้งค่าองค์กร", icon: Building2 },
 ] as const;
@@ -110,9 +114,69 @@ function UserRow({
   );
 }
 
+function WebhookRow({
+  webhook,
+  onDelete,
+  busy,
+}: {
+  webhook: WebhookSubscription;
+  onDelete: (webhookId: string) => Promise<void>;
+  busy: boolean;
+}) {
+  return (
+    <div className="grid gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 lg:grid-cols-[1.3fr_1fr_auto]">
+      <div>
+        <p className="font-semibold text-[var(--text-primary)]">{webhook.name}</p>
+        <p className="text-sm text-[var(--text-muted)]">{webhook.url}</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {webhook.notification_types.map((type) => (
+            <span
+              key={type}
+              className="rounded-full bg-[var(--badge-blue-bg)] px-3 py-1 text-xs font-semibold text-[var(--badge-blue-text)]"
+            >
+              {type}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="space-y-2 text-sm text-[var(--text-secondary)]">
+        <p>
+          สถานะล่าสุด:{" "}
+          <span className="font-semibold text-[var(--text-primary)]">
+            {webhook.last_delivery_status ?? "ยังไม่เคยส่ง"}
+          </span>
+        </p>
+        <p>
+          ส่งล่าสุด:{" "}
+          {webhook.last_delivery_attempted_at
+            ? formatThaiDate(webhook.last_delivery_attempted_at)
+            : "-"}
+        </p>
+        <p>HTTP ล่าสุด: {webhook.last_response_status_code ?? "-"}</p>
+      </div>
+      <div className="flex items-start justify-end">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onDelete(webhook.id)}
+          className="rounded-xl border border-[var(--badge-red-bg)] px-4 py-2 text-sm font-semibold text-[var(--badge-red-text)] disabled:opacity-60"
+        >
+          ลบ
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useAdminSnapshot();
+  const {
+    data: webhookData,
+    isLoading: webhooksLoading,
+    isError: webhooksError,
+    error: webhookError,
+  } = useWebhooks();
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("users");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -125,9 +189,16 @@ export default function AdminPage() {
   const [locale, setLocale] = useState("th-TH");
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(true);
   const [weeklyDigestEnabled, setWeeklyDigestEnabled] = useState(false);
+  const [webhookName, setWebhookName] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [selectedWebhookTypes, setSelectedWebhookTypes] = useState<string[]>([
+    "new_project",
+  ]);
 
   const users = data?.users ?? [];
   const billingRecords = data?.billing.records ?? [];
+  const webhooks = webhookData?.webhooks ?? [];
   const currentSubscription = data?.billing.current_subscription ?? null;
   const summary = data?.billing.summary ?? {
     open_records: 0,
@@ -148,6 +219,10 @@ export default function AdminPage() {
 
   async function refreshSnapshot() {
     await queryClient.invalidateQueries({ queryKey: ["admin-snapshot"] });
+  }
+
+  async function refreshWebhooks() {
+    await queryClient.invalidateQueries({ queryKey: ["webhooks"] });
   }
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
@@ -230,6 +305,54 @@ export default function AdminPage() {
     } catch (mutationError) {
       setSubmitError(
         mutationError instanceof Error ? mutationError.message : "ไม่สามารถบันทึกการตั้งค่าได้",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleWebhookType(notificationType: string) {
+    setSelectedWebhookTypes((current) =>
+      current.includes(notificationType)
+        ? current.filter((item) => item !== notificationType)
+        : [...current, notificationType],
+    );
+  }
+
+  async function handleCreateWebhook(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitError(null);
+    setBusy(true);
+    try {
+      await createWebhook({
+        name: webhookName.trim(),
+        url: webhookUrl.trim(),
+        notification_types: selectedWebhookTypes,
+        signing_secret: webhookSecret,
+      });
+      setWebhookName("");
+      setWebhookUrl("");
+      setWebhookSecret("");
+      setSelectedWebhookTypes(["new_project"]);
+      await refreshWebhooks();
+    } catch (mutationError) {
+      setSubmitError(
+        mutationError instanceof Error ? mutationError.message : "ไม่สามารถสร้าง webhook ได้",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteWebhook(webhookId: string) {
+    setSubmitError(null);
+    setBusy(true);
+    try {
+      await deleteWebhook(webhookId);
+      await refreshWebhooks();
+    } catch (mutationError) {
+      setSubmitError(
+        mutationError instanceof Error ? mutationError.message : "ไม่สามารถลบ webhook ได้",
       );
     } finally {
       setBusy(false);
@@ -332,6 +455,88 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      );
+    }
+
+    if (activeTab === "webhooks") {
+      return (
+        <div className="space-y-6">
+          <form
+            onSubmit={handleCreateWebhook}
+            className="grid gap-4 rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]"
+          >
+            <div className="grid gap-3 lg:grid-cols-2">
+              <input
+                required
+                value={webhookName}
+                onChange={(event) => setWebhookName(event.target.value)}
+                placeholder="ชื่อ endpoint"
+                className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm outline-none"
+              />
+              <input
+                required
+                type="url"
+                value={webhookUrl}
+                onChange={(event) => setWebhookUrl(event.target.value)}
+                placeholder="https://hooks.example.com/egp"
+                className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm outline-none"
+              />
+            </div>
+            <input
+              required
+              value={webhookSecret}
+              onChange={(event) => setWebhookSecret(event.target.value)}
+              placeholder="shared secret สำหรับลงลายเซ็น"
+              className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm outline-none"
+            />
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {NOTIFICATION_TYPES.map((item) => {
+                const checked = selectedWebhookTypes.includes(item.key);
+                return (
+                  <label
+                    key={item.key}
+                    className="flex items-center gap-3 rounded-xl border border-[var(--border-default)] p-3"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleWebhookType(item.key)}
+                    />
+                    <span className="text-sm text-[var(--text-secondary)]">{item.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={busy || selectedWebhookTypes.length === 0}
+                className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                เพิ่ม webhook
+              </button>
+            </div>
+          </form>
+
+          <QueryState isLoading={webhooksLoading} isError={webhooksError} error={webhookError}>
+            <div className="space-y-3">
+              {webhooks.length > 0 ? (
+                webhooks.map((webhook) => (
+                  <WebhookRow
+                    key={webhook.id}
+                    webhook={webhook}
+                    onDelete={handleDeleteWebhook}
+                    busy={busy}
+                  />
+                ))
+              ) : (
+                <div className="rounded-2xl bg-[var(--bg-surface)] p-6 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
+                  ยังไม่มี webhook endpoint สำหรับ tenant นี้
+                </div>
+              )}
+            </div>
+          </QueryState>
         </div>
       );
     }

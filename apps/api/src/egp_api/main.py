@@ -32,6 +32,7 @@ from egp_api.routes.exports import router as exports_router
 from egp_api.routes.projects import router as projects_router
 from egp_api.routes.rules import router as rules_router
 from egp_api.routes.runs import router as runs_router
+from egp_api.routes.webhooks import router as webhooks_router
 from egp_api.services.admin_service import AdminService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.billing_service import BillingService
@@ -45,6 +46,7 @@ from egp_api.services.payment_provider import PaymentProvider, build_payment_pro
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
+from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.billing_repo import create_billing_repository
@@ -55,6 +57,7 @@ from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
+from egp_notifications.webhook_delivery import WebhookDeliveryService
 
 
 def create_app(
@@ -129,9 +132,11 @@ def create_app(
         in_app_store=notification_repository,
         email_sender=notification_email_sender,
     )
+    webhook_delivery_service = WebhookDeliveryService(repository=notification_repository)
     notification_dispatcher = NotificationDispatcher(
         service=notification_service,
         recipient_resolver=notification_repository,
+        webhook_delivery_service=webhook_delivery_service,
     )
     entitlement_service = TenantEntitlementService(
         billing_repository,
@@ -163,6 +168,10 @@ def create_app(
     app.state.notification_repository = notification_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
+    app.state.webhook_service = WebhookService(
+        admin_repository,
+        notification_repository,
+    )
     app.state.payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     app.state.document_ingest_service = DocumentIngestService(
         repository,
@@ -238,6 +247,7 @@ def create_app(
     app.include_router(projects_router)
     app.include_router(rules_router)
     app.include_router(runs_router)
+    app.include_router(webhooks_router)
     return app
 
 
