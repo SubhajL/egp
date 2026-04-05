@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchAdminSnapshot,
   fetchBillingPlans,
   fetchBillingRecords,
   fetchDashboardSummary,
@@ -79,5 +80,12 @@ export function useBillingPlans() {
   return useQuery({
     queryKey: ["billing-plans"],
     queryFn: () => fetchBillingPlans(),
+  });
+}
+
+export function useAdminSnapshot() {
+  return useQuery({
+    queryKey: ["admin-snapshot"],
+    queryFn: () => fetchAdminSnapshot(),
   });
 }

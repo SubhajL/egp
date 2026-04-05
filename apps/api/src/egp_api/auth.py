@@ -78,3 +78,36 @@ def resolve_request_tenant_id(request: Request, supplied_tenant_id: str | None) 
     if supplied_tenant_id is None:
         raise HTTPException(status_code=401, detail="tenant_id is required when auth is disabled")
     return normalize_uuid_string(supplied_tenant_id)
+
+
+def extract_request_role(request: Request) -> str | None:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is None:
+        return None
+    claims = auth_context.claims
+    direct = claims.get("role")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    app_metadata = claims.get("app_metadata")
+    if isinstance(app_metadata, dict):
+        role = app_metadata.get("role")
+        if isinstance(role, str) and role.strip():
+            return role.strip()
+
+    user_metadata = claims.get("user_metadata")
+    if isinstance(user_metadata, dict):
+        role = user_metadata.get("role")
+        if isinstance(role, str) and role.strip():
+            return role.strip()
+
+    return None
+
+
+def require_admin_role(request: Request) -> None:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is None:
+        return
+    role = extract_request_role(request)
+    if role not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="admin role required")

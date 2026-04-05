@@ -100,8 +100,11 @@ class UserRecord:
     id: str
     tenant_id: str
     email: str
+    full_name: str | None
     role: str
     status: str
+    created_at: str
+    updated_at: str
 
 
 def _now() -> datetime:
@@ -135,8 +138,11 @@ def _from_user_row(row: RowMapping) -> UserRecord:
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
         email=str(row["email"]),
+        full_name=str(row["full_name"]) if row["full_name"] is not None else None,
         role=str(row["role"]),
         status=str(row["status"]),
+        created_at=_to_iso(row["created_at"]) or "",
+        updated_at=_to_iso(row["updated_at"]) or "",
     )
 
 
@@ -246,6 +252,84 @@ class SqlNotificationRepository:
             "email": str(email).strip(),
         }
 
+    def list_users(self, *, tenant_id: str) -> list[UserRecord]:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(USERS_TABLE)
+                    .where(USERS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .order_by(USERS_TABLE.c.created_at)
+                )
+                .mappings()
+                .all()
+            )
+        return [_from_user_row(row) for row in rows]
+
+    def get_user(self, *, tenant_id: str, user_id: str) -> UserRecord | None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_user_id = normalize_uuid_string(user_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(USERS_TABLE).where(
+                        and_(
+                            USERS_TABLE.c.tenant_id == normalized_tenant_id,
+                            USERS_TABLE.c.id == normalized_user_id,
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return _from_user_row(row)
+
+    def update_user(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        role: UserRole | str | None = None,
+        status: str | None = None,
+        full_name: str | None = None,
+    ) -> UserRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_user_id = normalize_uuid_string(user_id)
+        existing = self.get_user(tenant_id=normalized_tenant_id, user_id=normalized_user_id)
+        if existing is None:
+            raise KeyError(normalized_user_id)
+        normalized_role = (
+            role.value if isinstance(role, UserRole) else str(role).strip()
+            if role is not None
+            else existing.role
+        )
+        normalized_status = (
+            str(status).strip() if status is not None else existing.status
+        )
+        next_full_name = existing.full_name if full_name is None else str(full_name).strip() or None
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(USERS_TABLE)
+                .where(
+                    and_(
+                        USERS_TABLE.c.tenant_id == normalized_tenant_id,
+                        USERS_TABLE.c.id == normalized_user_id,
+                    )
+                )
+                .values(
+                    role=normalized_role,
+                    status=normalized_status,
+                    full_name=next_full_name,
+                    updated_at=_now(),
+                )
+            )
+        updated = self.get_user(tenant_id=normalized_tenant_id, user_id=normalized_user_id)
+        if updated is None:
+            raise KeyError(normalized_user_id)
+        return updated
+
     def set_email_preference(
         self,
         *,
@@ -347,6 +431,57 @@ class SqlNotificationRepository:
             if explicit is True or user.role in DEFAULT_EMAIL_ENABLED_ROLES:
                 recipients.append(user.email)
         return recipients
+
+    def get_email_preferences(self, *, tenant_id: str, user_id: str) -> dict[str, bool]:
+        user = self.get_user(tenant_id=tenant_id, user_id=user_id)
+        if user is None:
+            raise KeyError(normalize_uuid_string(user_id))
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_user_id = normalize_uuid_string(user_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(NOTIFICATION_PREFERENCES_TABLE).where(
+                        and_(
+                            NOTIFICATION_PREFERENCES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            NOTIFICATION_PREFERENCES_TABLE.c.user_id
+                            == normalized_user_id,
+                            NOTIFICATION_PREFERENCES_TABLE.c.channel == "email",
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        explicit_by_type = {
+            str(row["notification_type"]): bool(row["is_enabled"]) for row in rows
+        }
+        defaults_enabled = user.role in DEFAULT_EMAIL_ENABLED_ROLES
+        return {
+            notification_type.value: explicit_by_type.get(notification_type.value, defaults_enabled)
+            for notification_type in NotificationType
+        }
+
+    def replace_email_preferences(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        email_preferences: dict[str, bool],
+    ) -> dict[str, bool]:
+        normalized_user_id = normalize_uuid_string(user_id)
+        user = self.get_user(tenant_id=tenant_id, user_id=normalized_user_id)
+        if user is None:
+            raise KeyError(normalized_user_id)
+        for notification_type, enabled in email_preferences.items():
+            self.set_email_preference(
+                tenant_id=tenant_id,
+                user_id=normalized_user_id,
+                notification_type=notification_type,
+                enabled=enabled,
+            )
+        return self.get_email_preferences(tenant_id=tenant_id, user_id=normalized_user_id)
 
 
 def create_notification_repository(
