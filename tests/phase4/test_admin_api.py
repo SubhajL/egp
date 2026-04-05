@@ -230,7 +230,9 @@ def test_admin_snapshot_returns_tenant_users_settings_and_billing(tmp_path) -> N
     assert body["billing"]["records"][0]["record_number"].startswith("INV-")
 
 
-def test_admin_routes_can_create_users_update_preferences_and_patch_settings(tmp_path) -> None:
+def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
 

@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, String, Table, UniqueConstraint, insert, select, update
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    String,
+    Table,
+    UniqueConstraint,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.engine import Engine
 
 from egp_db.connection import DB_METADATA, create_shared_engine
@@ -91,9 +101,13 @@ def _tenant_from_mapping(row) -> TenantRecord:
 
 def _settings_from_mapping(row) -> TenantSettingsRecord:
     return TenantSettingsRecord(
-        support_email=str(row["support_email"]) if row["support_email"] is not None else None,
+        support_email=str(row["support_email"])
+        if row["support_email"] is not None
+        else None,
         billing_contact_email=(
-            str(row["billing_contact_email"]) if row["billing_contact_email"] is not None else None
+            str(row["billing_contact_email"])
+            if row["billing_contact_email"] is not None
+            else None
         ),
         timezone=str(row["timezone"]),
         locale=str(row["locale"]),
@@ -129,7 +143,9 @@ class SqlAdminRepository:
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
-                    select(TENANTS_TABLE).where(TENANTS_TABLE.c.id == normalized_tenant_id)
+                    select(TENANTS_TABLE).where(
+                        TENANTS_TABLE.c.id == normalized_tenant_id
+                    )
                 )
                 .mappings()
                 .first()
@@ -196,7 +212,9 @@ class SqlAdminRepository:
                         timezone=timezone or "Asia/Bangkok",
                         locale=locale or "th-TH",
                         daily_digest_enabled=(
-                            True if daily_digest_enabled is None else bool(daily_digest_enabled)
+                            True
+                            if daily_digest_enabled is None
+                            else bool(daily_digest_enabled)
                         ),
                         weekly_digest_enabled=(
                             False

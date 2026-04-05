@@ -297,18 +297,24 @@ class SqlNotificationRepository:
     ) -> UserRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_user_id = normalize_uuid_string(user_id)
-        existing = self.get_user(tenant_id=normalized_tenant_id, user_id=normalized_user_id)
+        existing = self.get_user(
+            tenant_id=normalized_tenant_id, user_id=normalized_user_id
+        )
         if existing is None:
             raise KeyError(normalized_user_id)
         normalized_role = (
-            role.value if isinstance(role, UserRole) else str(role).strip()
+            role.value
+            if isinstance(role, UserRole)
+            else str(role).strip()
             if role is not None
             else existing.role
         )
         normalized_status = (
             str(status).strip() if status is not None else existing.status
         )
-        next_full_name = existing.full_name if full_name is None else str(full_name).strip() or None
+        next_full_name = (
+            existing.full_name if full_name is None else str(full_name).strip() or None
+        )
         with self._engine.begin() as connection:
             connection.execute(
                 update(USERS_TABLE)
@@ -325,7 +331,9 @@ class SqlNotificationRepository:
                     updated_at=_now(),
                 )
             )
-        updated = self.get_user(tenant_id=normalized_tenant_id, user_id=normalized_user_id)
+        updated = self.get_user(
+            tenant_id=normalized_tenant_id, user_id=normalized_user_id
+        )
         if updated is None:
             raise KeyError(normalized_user_id)
         return updated
@@ -459,7 +467,9 @@ class SqlNotificationRepository:
         }
         defaults_enabled = user.role in DEFAULT_EMAIL_ENABLED_ROLES
         return {
-            notification_type.value: explicit_by_type.get(notification_type.value, defaults_enabled)
+            notification_type.value: explicit_by_type.get(
+                notification_type.value, defaults_enabled
+            )
             for notification_type in NotificationType
         }
 
@@ -481,7 +491,9 @@ class SqlNotificationRepository:
                 notification_type=notification_type,
                 enabled=enabled,
             )
-        return self.get_email_preferences(tenant_id=tenant_id, user_id=normalized_user_id)
+        return self.get_email_preferences(
+            tenant_id=tenant_id, user_id=normalized_user_id
+        )
 
 
 def create_notification_repository(

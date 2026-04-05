@@ -46,9 +46,7 @@ class AdminSnapshot:
     billing: AdminBillingView
 
 
-def _user_view(
-    user: UserRecord, *, notification_preferences: dict[str, bool]
-) -> AdminUserView:
+def _user_view(user: UserRecord, *, notification_preferences: dict[str, bool]) -> AdminUserView:
     return AdminUserView(
         id=user.id,
         email=user.email,
