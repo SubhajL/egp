@@ -309,19 +309,20 @@
             "id": 7,
             "title": "Add cost observability and support tooling",
             "description": "Expose operating cost signals and internal tooling needed to support customers at production scale.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Implement dashboards or reports for crawl, storage, notification, and payment-related costs, then add internal support tooling for tenant lookup, issue triage, and safe intervention paths.",
             "testStrategy": "Validate representative cost signals are captured and that support operators can diagnose seeded issues without bypassing tenant boundaries.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-04-05T10:59:02.309Z"
           }
         ],
-        "updatedAt": "2026-04-05T09:32:39.577Z"
+        "updatedAt": "2026-04-05T10:59:02.309Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-05T09:32:39.578Z",
+      "lastModified": "2026-04-05T10:59:02.309Z",
       "taskCount": 4,
       "completedCount": 2,
       "tags": [

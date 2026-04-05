@@ -7,9 +7,10 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from egp_api.auth import require_admin_role, resolve_request_tenant_id
+from egp_api.auth import require_admin_role, require_support_role, resolve_request_tenant_id
 from egp_api.services.admin_service import AdminService, AdminSnapshot, AdminUserView
 from egp_api.services.audit_service import AuditService
+from egp_api.services.support_service import SupportService
 from egp_db.repositories.admin_repo import TenantSettingsRecord
 from egp_shared_types.enums import UserRole
 
@@ -127,6 +128,80 @@ class AuditLogListResponse(BaseModel):
     offset: int
 
 
+class SupportTenantResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    plan_code: str
+    is_active: bool
+    support_email: str | None
+    billing_contact_email: str | None
+    active_user_count: int
+
+
+class SupportTenantListResponse(BaseModel):
+    tenants: list[SupportTenantResponse]
+
+
+class SupportTriageResponse(BaseModel):
+    failed_runs_recent: int
+    pending_document_reviews: int
+    failed_webhook_deliveries: int
+    outstanding_billing_records: int
+
+
+class SupportFailedRunResponse(BaseModel):
+    id: str
+    trigger_type: str
+    status: str
+    error_count: int
+    created_at: str
+
+
+class SupportPendingReviewResponse(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    created_at: str
+
+
+class SupportFailedWebhookResponse(BaseModel):
+    id: str
+    webhook_subscription_id: str
+    delivery_status: str
+    last_response_status_code: int | None
+    last_attempted_at: str | None
+
+
+class SupportBillingIssueResponse(BaseModel):
+    id: str
+    record_number: str
+    status: str
+    amount_due: str
+    due_at: str | None
+    created_at: str
+
+
+class SupportCostSummaryResponse(BaseModel):
+    window_days: int
+    currency: str
+    estimated_total_thb: str
+    crawl: dict[str, object]
+    storage: dict[str, object]
+    notifications: dict[str, object]
+    payments: dict[str, object]
+
+
+class SupportSummaryResponse(BaseModel):
+    tenant: SupportTenantResponse
+    triage: SupportTriageResponse
+    cost_summary: SupportCostSummaryResponse
+    recent_failed_runs: list[SupportFailedRunResponse]
+    pending_reviews: list[SupportPendingReviewResponse]
+    failed_webhooks: list[SupportFailedWebhookResponse]
+    billing_issues: list[SupportBillingIssueResponse]
+
+
 class CreateAdminUserRequest(BaseModel):
     tenant_id: str | None = None
     email: str = Field(min_length=1)
@@ -163,6 +238,10 @@ def _service_from_request(request: Request) -> AdminService:
 
 def _audit_service_from_request(request: Request) -> AuditService:
     return request.app.state.audit_service
+
+
+def _support_service_from_request(request: Request) -> SupportService:
+    return request.app.state.support_service
 
 
 def _actor_subject_from_request(request: Request) -> str:
@@ -241,11 +320,51 @@ def _serialize_audit_log(page) -> AuditLogListResponse:
     )
 
 
+def _serialize_support_tenant(tenant) -> SupportTenantResponse:
+    return SupportTenantResponse(**asdict(tenant))
+
+
+def _serialize_support_cost_summary(summary) -> SupportCostSummaryResponse:
+    return SupportCostSummaryResponse(
+        window_days=summary.window_days,
+        currency=summary.currency,
+        estimated_total_thb=summary.estimated_total_thb,
+        crawl=asdict(summary.crawl),
+        storage=asdict(summary.storage),
+        notifications=asdict(summary.notifications),
+        payments=asdict(summary.payments),
+    )
+
+
+def _serialize_support_summary(summary) -> SupportSummaryResponse:
+    return SupportSummaryResponse(
+        tenant=_serialize_support_tenant(summary.tenant),
+        triage=SupportTriageResponse(**asdict(summary.triage)),
+        cost_summary=_serialize_support_cost_summary(summary.cost_summary),
+        recent_failed_runs=[
+            SupportFailedRunResponse(**asdict(item)) for item in summary.recent_failed_runs
+        ],
+        pending_reviews=[
+            SupportPendingReviewResponse(**asdict(item)) for item in summary.pending_reviews
+        ],
+        failed_webhooks=[
+            SupportFailedWebhookResponse(**asdict(item)) for item in summary.failed_webhooks
+        ],
+        billing_issues=[
+            SupportBillingIssueResponse(**asdict(item)) for item in summary.billing_issues
+        ],
+    )
+
+
 @router.get("", response_model=AdminSnapshotResponse)
 def get_admin_snapshot(request: Request, tenant_id: str | None = None) -> AdminSnapshotResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
     try:
         snapshot = service.get_snapshot(tenant_id=resolved_tenant_id)
     except KeyError as exc:
@@ -264,7 +383,11 @@ def get_admin_audit_log(
 ) -> AuditLogListResponse:
     require_admin_role(request)
     service = _audit_service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
     try:
         page = service.list_events(
             tenant_id=resolved_tenant_id,
@@ -278,11 +401,42 @@ def get_admin_audit_log(
     return _serialize_audit_log(page)
 
 
+@router.get("/support/tenants", response_model=SupportTenantListResponse)
+def search_support_tenants(
+    request: Request,
+    query: str = Query(default=""),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> SupportTenantListResponse:
+    require_support_role(request)
+    service = _support_service_from_request(request)
+    tenants = service.search_tenants(query=query, limit=limit)
+    return SupportTenantListResponse(tenants=[_serialize_support_tenant(item) for item in tenants])
+
+
+@router.get("/support/tenants/{tenant_id}/summary", response_model=SupportSummaryResponse)
+def get_support_summary(
+    tenant_id: str,
+    request: Request,
+    window_days: int = Query(default=30, ge=1, le=90),
+) -> SupportSummaryResponse:
+    require_support_role(request)
+    service = _support_service_from_request(request)
+    try:
+        summary = service.get_summary(tenant_id=tenant_id, window_days=window_days)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    return _serialize_support_summary(summary)
+
+
 @router.post("/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED)
 def create_admin_user(request: Request, payload: CreateAdminUserRequest) -> AdminUserResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         user = service.create_user(
             tenant_id=resolved_tenant_id,
@@ -305,7 +459,11 @@ def update_admin_user(
 ) -> AdminUserResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         user = service.update_user(
             tenant_id=resolved_tenant_id,
@@ -328,7 +486,11 @@ def update_user_notification_preferences(
 ) -> AdminUserResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         user = service.update_user_notification_preferences(
             tenant_id=resolved_tenant_id,
@@ -350,7 +512,11 @@ def update_tenant_settings(
 ) -> AdminTenantSettingsResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         settings = service.update_settings(
             tenant_id=resolved_tenant_id,

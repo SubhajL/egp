@@ -66,13 +66,21 @@ def authenticate_request(*, authorization_header: str | None, jwt_secret: str) -
     )
 
 
-def resolve_request_tenant_id(request: Request, supplied_tenant_id: str | None) -> str:
+def resolve_request_tenant_id(
+    request: Request,
+    supplied_tenant_id: str | None,
+    *,
+    allow_support_override: bool = False,
+) -> str:
     auth_context = getattr(request.state, "auth_context", None)
     if auth_context is not None:
         if supplied_tenant_id is not None:
             normalized_supplied = normalize_uuid_string(supplied_tenant_id)
             if normalized_supplied != auth_context.tenant_id:
+                if allow_support_override and request_has_support_role(request):
+                    return normalized_supplied
                 raise HTTPException(status_code=403, detail="tenant mismatch")
+            return normalized_supplied
         return auth_context.tenant_id
 
     if supplied_tenant_id is None:
@@ -104,10 +112,22 @@ def extract_request_role(request: Request) -> str | None:
     return None
 
 
+def request_has_support_role(request: Request) -> bool:
+    return extract_request_role(request) == "support"
+
+
 def require_admin_role(request: Request) -> None:
     auth_context = getattr(request.state, "auth_context", None)
     if auth_context is None:
         return
     role = extract_request_role(request)
-    if role not in {"owner", "admin"}:
+    if role not in {"owner", "admin", "support"}:
         raise HTTPException(status_code=403, detail="admin role required")
+
+
+def require_support_role(request: Request) -> None:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is None:
+        return
+    if not request_has_support_role(request):
+        raise HTTPException(status_code=403, detail="support role required")

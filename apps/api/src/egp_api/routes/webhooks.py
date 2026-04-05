@@ -62,7 +62,11 @@ def _serialize_list(result: WebhookList) -> WebhookListResponse:
 def list_webhooks(request: Request, tenant_id: str | None = None) -> WebhookListResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
     try:
         result = service.list_webhooks(tenant_id=resolved_tenant_id)
     except KeyError as exc:
@@ -74,7 +78,11 @@ def list_webhooks(request: Request, tenant_id: str | None = None) -> WebhookList
 def create_webhook(request: Request, payload: CreateWebhookRequest) -> WebhookResponse:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         created = service.create_webhook(
             tenant_id=resolved_tenant_id,
@@ -97,7 +105,11 @@ def delete_webhook(
 ) -> None:
     require_admin_role(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
     try:
         service.delete_webhook(
             tenant_id=resolved_tenant_id,

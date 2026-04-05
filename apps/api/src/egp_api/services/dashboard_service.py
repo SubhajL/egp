@@ -17,6 +17,7 @@ from egp_db.repositories.run_repo import (
     DashboardRunSummary,
     SqlRunRepository,
 )
+from egp_db.repositories.support_repo import SqlSupportRepository, SupportCostSummary
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,7 @@ class DashboardSummary:
     winner_projects: list[DashboardWinnerProjectRecord]
     daily_discovery: list[DashboardDailyDiscoveryPoint]
     project_state_breakdown: list[DashboardStateBreakdownPoint]
+    cost_summary: SupportCostSummary
 
 
 class DashboardService:
@@ -46,9 +48,11 @@ class DashboardService:
         self,
         project_repository: SqlProjectRepository,
         run_repository: SqlRunRepository,
+        support_repository: SqlSupportRepository,
     ) -> None:
         self._project_repository = project_repository
         self._run_repository = run_repository
+        self._support_repository = support_repository
 
     def get_summary(self, *, tenant_id: str) -> DashboardSummary:
         project_summary: DashboardProjectSummary = (
@@ -73,4 +77,5 @@ class DashboardService:
             winner_projects=project_summary.winner_projects,
             daily_discovery=project_summary.daily_discovery,
             project_state_breakdown=project_summary.project_state_breakdown,
+            cost_summary=self._support_repository.get_cost_summary(tenant_id=tenant_id),
         )

@@ -251,4 +251,7 @@ def test_billing_payment_recording_rejects_non_bank_transfer_method(tmp_path) ->
         },
     )
     assert invalid_payment.status_code == 400
-    assert invalid_payment.json()["detail"] == "manual payment endpoint only accepts bank_transfer"
+    assert (
+        invalid_payment.json()["detail"]
+        == "manual payment endpoint only accepts bank_transfer"
+    )

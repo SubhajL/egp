@@ -259,6 +259,42 @@ export type DashboardStateBreakdownPoint = {
   count: number;
 };
 
+export type DashboardCrawlCostSummary = {
+  estimated_cost_thb: string;
+  run_count: number;
+  task_count: number;
+  failed_run_count: number;
+};
+
+export type DashboardStorageCostSummary = {
+  estimated_cost_thb: string;
+  document_count: number;
+  total_bytes: number;
+};
+
+export type DashboardNotificationCostSummary = {
+  estimated_cost_thb: string;
+  sent_count: number;
+  failed_webhook_delivery_count: number;
+};
+
+export type DashboardPaymentCostSummary = {
+  estimated_cost_thb: string;
+  billing_record_count: number;
+  payment_request_count: number;
+  collected_amount_thb: string;
+};
+
+export type DashboardCostSummary = {
+  window_days: number;
+  currency: string;
+  estimated_total_thb: string;
+  crawl: DashboardCrawlCostSummary;
+  storage: DashboardStorageCostSummary;
+  notifications: DashboardNotificationCostSummary;
+  payments: DashboardPaymentCostSummary;
+};
+
 export type DashboardSummaryResponse = {
   kpis: DashboardKpis;
   recent_runs: DashboardRecentRun[];
@@ -266,6 +302,7 @@ export type DashboardSummaryResponse = {
   winner_projects: DashboardWinnerProject[];
   daily_discovery: DashboardDailyDiscoveryPoint[];
   project_state_breakdown: DashboardStateBreakdownPoint[];
+  cost_summary: DashboardCostSummary;
 };
 
 export type BillingRecord = {
@@ -472,6 +509,70 @@ export type AuditLogListResponse = {
   total: number;
   limit: number;
   offset: number;
+};
+
+export type SupportTenant = {
+  id: string;
+  name: string;
+  slug: string;
+  plan_code: string;
+  is_active: boolean;
+  support_email: string | null;
+  billing_contact_email: string | null;
+  active_user_count: number;
+};
+
+export type SupportTenantListResponse = {
+  tenants: SupportTenant[];
+};
+
+export type SupportTriageSummary = {
+  failed_runs_recent: number;
+  pending_document_reviews: number;
+  failed_webhook_deliveries: number;
+  outstanding_billing_records: number;
+};
+
+export type SupportFailedRun = {
+  id: string;
+  trigger_type: string;
+  status: string;
+  error_count: number;
+  created_at: string;
+};
+
+export type SupportPendingReview = {
+  id: string;
+  project_id: string;
+  status: string;
+  created_at: string;
+};
+
+export type SupportFailedWebhook = {
+  id: string;
+  webhook_subscription_id: string;
+  delivery_status: string;
+  last_response_status_code: number | null;
+  last_attempted_at: string | null;
+};
+
+export type SupportBillingIssue = {
+  id: string;
+  record_number: string;
+  status: string;
+  amount_due: string;
+  due_at: string | null;
+  created_at: string;
+};
+
+export type SupportSummaryResponse = {
+  tenant: SupportTenant;
+  triage: SupportTriageSummary;
+  cost_summary: DashboardCostSummary;
+  recent_failed_runs: SupportFailedRun[];
+  pending_reviews: SupportPendingReview[];
+  failed_webhooks: SupportFailedWebhook[];
+  billing_issues: SupportBillingIssue[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -696,20 +797,45 @@ export async function fetchProjectCrawlEvidence(
 }
 
 export type FetchRunsParams = {
+  tenant_id?: string;
   limit?: number;
   offset?: number;
 };
 
 export type FetchBillingParams = {
+  tenant_id?: string;
   limit?: number;
   offset?: number;
 };
 
 export type FetchAuditLogParams = {
+  tenant_id?: string;
   source?: string;
   entity_type?: string;
   limit?: number;
   offset?: number;
+};
+
+export type FetchDashboardSummaryParams = {
+  tenant_id?: string;
+};
+
+export type FetchAdminSnapshotParams = {
+  tenant_id?: string;
+};
+
+export type FetchWebhooksParams = {
+  tenant_id?: string;
+};
+
+export type FetchSupportTenantsParams = {
+  query: string;
+  limit?: number;
+};
+
+export type FetchSupportSummaryParams = {
+  tenant_id: string;
+  window_days?: number;
 };
 
 export type CreateBillingRecordInput = {
@@ -796,14 +922,19 @@ export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
   const url = buildUrl("/v1/runs", {
+    tenant_id: params.tenant_id,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
   return apiFetch<RunListResponse>(url);
 }
 
-export async function fetchDashboardSummary(): Promise<DashboardSummaryResponse> {
-  const url = buildUrl("/v1/dashboard/summary", {});
+export async function fetchDashboardSummary(
+  params: FetchDashboardSummaryParams = {},
+): Promise<DashboardSummaryResponse> {
+  const url = buildUrl("/v1/dashboard/summary", {
+    tenant_id: params.tenant_id,
+  });
   return apiFetch<DashboardSummaryResponse>(url);
 }
 
@@ -816,6 +947,7 @@ export async function fetchBillingRecords(
   params: FetchBillingParams = {},
 ): Promise<BillingListResponse> {
   const url = buildUrl("/v1/billing/records", {
+    tenant_id: params.tenant_id,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
@@ -827,13 +959,21 @@ export async function fetchBillingPlans(): Promise<BillingPlansResponse> {
   return apiFetch<BillingPlansResponse>(url);
 }
 
-export async function fetchAdminSnapshot(): Promise<AdminSnapshotResponse> {
-  const url = buildUrl("/v1/admin", {});
+export async function fetchAdminSnapshot(
+  params: FetchAdminSnapshotParams = {},
+): Promise<AdminSnapshotResponse> {
+  const url = buildUrl("/v1/admin", {
+    tenant_id: params.tenant_id,
+  });
   return apiFetch<AdminSnapshotResponse>(url);
 }
 
-export async function fetchWebhooks(): Promise<WebhookListResponse> {
-  const url = buildUrl("/v1/webhooks", {});
+export async function fetchWebhooks(
+  params: FetchWebhooksParams = {},
+): Promise<WebhookListResponse> {
+  const url = buildUrl("/v1/webhooks", {
+    tenant_id: params.tenant_id,
+  });
   return apiFetch<WebhookListResponse>(url);
 }
 
@@ -841,12 +981,32 @@ export async function fetchAuditLog(
   params: FetchAuditLogParams = {},
 ): Promise<AuditLogListResponse> {
   const url = buildUrl("/v1/admin/audit-log", {
+    tenant_id: params.tenant_id,
     source: params.source,
     entity_type: params.entity_type,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
   return apiFetch<AuditLogListResponse>(url);
+}
+
+export async function fetchSupportTenants(
+  params: FetchSupportTenantsParams,
+): Promise<SupportTenantListResponse> {
+  const url = buildUrl("/v1/admin/support/tenants", {
+    query: params.query,
+    limit: params.limit ?? 20,
+  });
+  return apiFetch<SupportTenantListResponse>(url);
+}
+
+export async function fetchSupportSummary(
+  params: FetchSupportSummaryParams,
+): Promise<SupportSummaryResponse> {
+  const url = buildUrl(`/v1/admin/support/tenants/${encodeURIComponent(params.tenant_id)}/summary`, {
+    window_days: params.window_days ?? 30,
+  });
+  return apiFetch<SupportSummaryResponse>(url);
 }
 
 export async function createBillingRecord(
