@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_shared_types.enums import NotificationType
 
 if TYPE_CHECKING:
@@ -101,9 +102,11 @@ class ExportService:
         self,
         project_repository: SqlProjectRepository,
         *,
+        entitlement_service: TenantEntitlementService | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
         self._repository = project_repository
+        self._entitlement_service = entitlement_service
         self._notification_dispatcher = notification_dispatcher
 
     def export_to_excel(
@@ -121,6 +124,11 @@ class ExportService:
         has_changed_tor: bool | None = None,
         has_winner: bool | None = None,
     ) -> bytes:
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="exports",
+            )
         page = self._repository.list_projects(
             tenant_id=tenant_id,
             project_states=project_states,

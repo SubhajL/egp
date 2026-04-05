@@ -182,6 +182,24 @@ class SqlProfileRepository:
             for row in profile_rows
         ]
 
+    def list_active_keywords(self, *, tenant_id: str) -> list[str]:
+        profiles = self.list_profiles_with_keywords(tenant_id=tenant_id)
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for detail in profiles:
+            if not detail.profile.is_active:
+                continue
+            for keyword in detail.keywords:
+                normalized = str(keyword.keyword).strip()
+                if not normalized:
+                    continue
+                dedupe_key = normalized.casefold()
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                ordered.append(normalized)
+        return ordered
+
 
 def create_profile_repository(
     *,

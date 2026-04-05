@@ -30,6 +30,10 @@ from egp_api.routes.runs import router as runs_router
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.billing_service import BillingService
 from egp_api.services.document_ingest_service import DocumentIngestService
+from egp_api.services.entitlement_service import (
+    EntitlementAwareNotificationDispatcher,
+    TenantEntitlementService,
+)
 from egp_api.services.export_service import ExportService
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
@@ -113,17 +117,27 @@ def create_app(
         service=notification_service,
         recipient_resolver=notification_repository,
     )
+    entitlement_service = TenantEntitlementService(
+        billing_repository,
+        profile_repository,
+    )
+    gated_notification_dispatcher = EntitlementAwareNotificationDispatcher(
+        notification_dispatcher,
+        entitlement_service,
+    )
     app.state.db_engine = shared_engine
     app.state.billing_repository = billing_repository
     app.state.billing_service = BillingService(billing_repository)
+    app.state.entitlement_service = entitlement_service
     app.state.document_repository = repository
     app.state.notification_repository = notification_repository
     app.state.notification_service = notification_service
-    app.state.notification_dispatcher = notification_dispatcher
+    app.state.notification_dispatcher = gated_notification_dispatcher
     app.state.document_ingest_service = DocumentIngestService(
         repository,
+        entitlement_service=entitlement_service,
         project_repository=project_repository,
-        notification_dispatcher=notification_dispatcher,
+        notification_dispatcher=gated_notification_dispatcher,
     )
     app.state.project_repository = project_repository
     app.state.project_service = ProjectService(project_repository)
@@ -131,15 +145,19 @@ def create_app(
     app.state.run_repository = run_repository
     app.state.run_service = RunService(
         run_repository,
-        notification_dispatcher=notification_dispatcher,
+        entitlement_service=entitlement_service,
+        notification_dispatcher=gated_notification_dispatcher,
     )
     app.state.dashboard_service = DashboardService(project_repository, run_repository)
     app.state.rules_service = RulesService(
-        profile_repository, notification_event_wiring_complete=True
+        profile_repository,
+        entitlement_service=entitlement_service,
+        notification_event_wiring_complete=True,
     )
     app.state.export_service = ExportService(
         project_repository,
-        notification_dispatcher=notification_dispatcher,
+        entitlement_service=entitlement_service,
+        notification_dispatcher=gated_notification_dispatcher,
     )
     app.state.auth_required = resolved_auth_required
     app.state.jwt_secret = resolved_jwt_secret

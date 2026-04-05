@@ -182,8 +182,26 @@ export type ScheduleRulesSummary = {
   source: string;
 };
 
+export type EntitlementSummary = {
+  plan_code: string | null;
+  plan_label: string | null;
+  subscription_status: string | null;
+  has_active_subscription: boolean;
+  keyword_limit: number | null;
+  active_keyword_count: number;
+  remaining_keyword_slots: number | null;
+  active_keywords: string[];
+  over_keyword_limit: boolean;
+  runs_allowed: boolean;
+  exports_allowed: boolean;
+  document_download_allowed: boolean;
+  notifications_allowed: boolean;
+  source: string;
+};
+
 export type RulesResponse = {
   profiles: RuleProfile[];
+  entitlements: EntitlementSummary;
   closure_rules: ClosureRulesSummary;
   notification_rules: NotificationRulesSummary;
   schedule_rules: ScheduleRulesSummary;

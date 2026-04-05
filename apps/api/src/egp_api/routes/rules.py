@@ -52,8 +52,26 @@ class ScheduleRulesResponse(BaseModel):
     source: str
 
 
+class EntitlementSummaryResponse(BaseModel):
+    plan_code: str | None
+    plan_label: str | None
+    subscription_status: str | None
+    has_active_subscription: bool
+    keyword_limit: int | None
+    active_keyword_count: int
+    remaining_keyword_slots: int | None
+    active_keywords: list[str]
+    over_keyword_limit: bool
+    runs_allowed: bool
+    exports_allowed: bool
+    document_download_allowed: bool
+    notifications_allowed: bool
+    source: str
+
+
 class RulesResponse(BaseModel):
     profiles: list[RuleProfileResponse]
+    entitlements: EntitlementSummaryResponse
     closure_rules: ClosureRulesResponse
     notification_rules: NotificationRulesResponse
     schedule_rules: ScheduleRulesResponse
@@ -66,6 +84,7 @@ def _service_from_request(request: Request) -> RulesService:
 def _serialize_rules(snapshot: RulesSnapshot) -> RulesResponse:
     return RulesResponse(
         profiles=[RuleProfileResponse(**asdict(profile)) for profile in snapshot.profiles],
+        entitlements=EntitlementSummaryResponse(**asdict(snapshot.entitlements)),
         closure_rules=ClosureRulesResponse(**asdict(snapshot.closure_rules)),
         notification_rules=NotificationRulesResponse(**asdict(snapshot.notification_rules)),
         schedule_rules=ScheduleRulesResponse(**asdict(snapshot.schedule_rules)),

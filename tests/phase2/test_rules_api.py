@@ -138,6 +138,23 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
     assert body["profiles"][1]["is_active"] is False
     assert body["profiles"][1]["keywords"] == ["เครื่องแม่ข่าย"]
 
+    assert body["entitlements"] == {
+        "plan_code": None,
+        "plan_label": None,
+        "subscription_status": None,
+        "has_active_subscription": False,
+        "keyword_limit": None,
+        "active_keyword_count": 2,
+        "remaining_keyword_slots": None,
+        "active_keywords": ["วิเคราะห์ข้อมูล", "ระบบสารสนเทศ"],
+        "over_keyword_limit": False,
+        "runs_allowed": False,
+        "exports_allowed": False,
+        "document_download_allowed": False,
+        "notifications_allowed": False,
+        "source": "billing_subscriptions + crawl_profile_keywords",
+    }
+
     assert body["closure_rules"]["close_on_winner_status"] is True
     assert body["closure_rules"]["close_on_contract_status"] is True
     assert body["closure_rules"]["winner_status_terms"] == [
@@ -203,6 +220,22 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
     assert response.status_code == 200
     body = response.json()
     assert body["profiles"] == []
+    assert body["entitlements"] == {
+        "plan_code": None,
+        "plan_label": None,
+        "subscription_status": None,
+        "has_active_subscription": False,
+        "keyword_limit": None,
+        "active_keyword_count": 0,
+        "remaining_keyword_slots": None,
+        "active_keywords": [],
+        "over_keyword_limit": False,
+        "runs_allowed": False,
+        "exports_allowed": False,
+        "document_download_allowed": False,
+        "notifications_allowed": False,
+        "source": "billing_subscriptions + crawl_profile_keywords",
+    }
     assert body["closure_rules"]["consulting_timeout_days"] == 30
     assert body["closure_rules"]["stale_no_tor_days"] == 45
     assert body["notification_rules"]["event_wiring_complete"] is True

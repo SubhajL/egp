@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
+from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_db.repositories.document_repo import (
     DocumentDiffRecord,
@@ -201,4 +202,6 @@ def get_document_download_url(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return DocumentDownloadResponse(download_url=download_url)
