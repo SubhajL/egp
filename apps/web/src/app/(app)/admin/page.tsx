@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Building2, CreditCard, Mail, ScrollText, Users, Webhook } from "lucide-react";
+import { Building2, CreditCard, LifeBuoy, Mail, ScrollText, Search, Users, Webhook } from "lucide-react";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
@@ -16,12 +16,14 @@ import {
   updateTenantSettings,
   type AdminUser,
   type AuditLogEvent,
+  type SupportTenant,
   type WebhookSubscription,
 } from "@/lib/api";
-import { useAdminSnapshot, useAuditLog, useWebhooks } from "@/lib/hooks";
+import { useAdminSnapshot, useAuditLog, useSupportSummary, useSupportTenants, useWebhooks } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const TABS = [
+  { key: "support", label: "Support", icon: LifeBuoy },
   { key: "users", label: "ผู้ใช้และบทบาท", icon: Users },
   { key: "notifications", label: "การแจ้งเตือน", icon: Mail },
   { key: "audit", label: "Audit Log", icon: ScrollText },
@@ -194,13 +196,17 @@ function AuditLogRow({ event }: { event: AuditLogEvent }) {
 
 export default function AdminPage() {
   const queryClient = useQueryClient();
-  const { data, isLoading, isError, error } = useAdminSnapshot();
+  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
+  const [supportQuery, setSupportQuery] = useState("");
+  const [submittedSupportQuery, setSubmittedSupportQuery] = useState("");
+  const activeTenantId = selectedTenantId;
+  const { data, isLoading, isError, error } = useAdminSnapshot({ tenant_id: activeTenantId });
   const {
     data: webhookData,
     isLoading: webhooksLoading,
     isError: webhooksError,
     error: webhookError,
-  } = useWebhooks();
+  } = useWebhooks({ tenant_id: activeTenantId });
   const [auditSource, setAuditSource] = useState("all");
   const [auditEntityType, setAuditEntityType] = useState("all");
   const {
@@ -209,11 +215,27 @@ export default function AdminPage() {
     isError: auditError,
     error: auditQueryError,
   } = useAuditLog({
+    tenant_id: activeTenantId,
     source: auditSource !== "all" ? auditSource : undefined,
     entity_type: auditEntityType !== "all" ? auditEntityType : undefined,
     limit: 50,
     offset: 0,
   });
+  const {
+    data: supportTenantData,
+    isLoading: supportSearchLoading,
+    isError: supportSearchError,
+    error: supportSearchQueryError,
+  } = useSupportTenants({
+    query: submittedSupportQuery,
+    limit: 8,
+  });
+  const {
+    data: supportSummaryData,
+    isLoading: supportSummaryLoading,
+    isError: supportSummaryError,
+    error: supportSummaryQueryError,
+  } = useSupportSummary(activeTenantId ? { tenant_id: activeTenantId } : null);
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("users");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -237,6 +259,7 @@ export default function AdminPage() {
   const billingRecords = data?.billing.records ?? [];
   const webhooks = webhookData?.webhooks ?? [];
   const auditItems = auditData?.items ?? [];
+  const supportResults = supportTenantData?.tenants ?? [];
   const currentSubscription = data?.billing.current_subscription ?? null;
   const summary = data?.billing.summary ?? {
     open_records: 0,
@@ -271,6 +294,7 @@ export default function AdminPage() {
     setBusy(true);
     try {
       await createAdminUser({
+        tenant_id: activeTenantId,
         email: newEmail.trim(),
         full_name: newFullName.trim() || undefined,
         role: newRole,
@@ -293,6 +317,7 @@ export default function AdminPage() {
     setBusy(true);
     try {
       await updateAdminUser(userId, {
+        tenant_id: activeTenantId,
         role,
         status,
         full_name: fullName.trim() || undefined,
@@ -312,6 +337,7 @@ export default function AdminPage() {
     setBusy(true);
     try {
       await updateAdminUserNotificationPreferences(user.id, {
+        tenant_id: activeTenantId,
         email_preferences: {
           [notificationType]: !user.notification_preferences[notificationType],
         },
@@ -334,6 +360,7 @@ export default function AdminPage() {
     setBusy(true);
     try {
       await updateTenantSettings({
+        tenant_id: activeTenantId,
         support_email: supportEmail.trim() || undefined,
         billing_contact_email: billingEmail.trim() || undefined,
         timezone,
@@ -365,6 +392,7 @@ export default function AdminPage() {
     setBusy(true);
     try {
       await createWebhook({
+        tenant_id: activeTenantId,
         name: webhookName.trim(),
         url: webhookUrl.trim(),
         notification_types: selectedWebhookTypes,
@@ -388,7 +416,7 @@ export default function AdminPage() {
     setSubmitError(null);
     setBusy(true);
     try {
-      await deleteWebhook(webhookId);
+      await deleteWebhook(webhookId, activeTenantId);
       await refreshWebhooks();
     } catch (mutationError) {
       setSubmitError(
@@ -399,8 +427,267 @@ export default function AdminPage() {
     }
   }
 
+  function handleSearchSupport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmittedSupportQuery(supportQuery.trim());
+  }
+
+  function handleSelectSupportTenant(tenant: SupportTenant) {
+    setSelectedTenantId(tenant.id);
+    setActiveTab("support");
+  }
+
   function renderTabContent() {
     if (!data) return null;
+
+    if (activeTab === "support") {
+      return (
+        <div className="space-y-6">
+          <form
+            onSubmit={handleSearchSupport}
+            className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]"
+          >
+            <div className="flex flex-col gap-3 lg:flex-row">
+              <div className="relative flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[var(--text-muted)]" />
+                <input
+                  value={supportQuery}
+                  onChange={(event) => setSupportQuery(event.target.value)}
+                  placeholder="ค้นหาจากชื่อ tenant, slug, support email หรือ user email"
+                  className="w-full rounded-xl border border-[var(--border-default)] bg-transparent py-2 pl-9 pr-3 text-sm outline-none"
+                />
+              </div>
+              <button
+                type="submit"
+                className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white"
+              >
+                ค้นหา Support
+              </button>
+              {activeTenantId ? (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTenantId(undefined)}
+                  className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)]"
+                >
+                  กลับสู่ tenant ปัจจุบัน
+                </button>
+              ) : null}
+            </div>
+            <p className="mt-3 text-sm text-[var(--text-muted)]">
+              เมื่อเลือก tenant แล้ว แท็บ Users, Notifications, Audit, Webhooks, Billing และ Settings จะทำงานกับ tenant นั้นทันที
+            </p>
+          </form>
+
+          <QueryState
+            isLoading={supportSearchLoading}
+            isError={supportSearchError}
+            error={supportSearchQueryError}
+          >
+            <div className="grid gap-3">
+              {submittedSupportQuery && supportResults.length === 0 ? (
+                <div className="rounded-2xl bg-[var(--bg-surface)] p-5 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
+                  ไม่พบ tenant ที่ตรงกับคำค้นนี้
+                </div>
+              ) : null}
+              {supportResults.map((tenant) => (
+                <button
+                  key={tenant.id}
+                  type="button"
+                  onClick={() => handleSelectSupportTenant(tenant)}
+                  className={`grid gap-3 rounded-2xl border p-4 text-left shadow-[var(--shadow-soft)] ${
+                    activeTenantId === tenant.id
+                      ? "border-primary bg-[var(--bg-surface-secondary)]"
+                      : "border-[var(--border-default)] bg-[var(--bg-surface)]"
+                  }`}
+                >
+                  <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <p className="font-semibold text-[var(--text-primary)]">{tenant.name}</p>
+                      <p className="text-sm text-[var(--text-muted)]">
+                        {tenant.slug} • {tenant.plan_code}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <StatusBadge state={tenant.is_active ? "active" : "deactivated"} />
+                      <span className="rounded-full bg-[var(--badge-blue-bg)] px-3 py-1 text-xs font-semibold text-[var(--badge-blue-text)]">
+                        {tenant.active_user_count} active users
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-1 text-sm text-[var(--text-secondary)] md:grid-cols-2">
+                    <p>Support: {tenant.support_email ?? "-"}</p>
+                    <p>Billing: {tenant.billing_contact_email ?? "-"}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </QueryState>
+
+          {activeTenantId ? (
+            <QueryState
+              isLoading={supportSummaryLoading}
+              isError={supportSummaryError}
+              error={supportSummaryQueryError}
+            >
+              {supportSummaryData ? (
+                <div className="space-y-6">
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <SummaryCard
+                      label="Failed Runs"
+                      value={supportSummaryData.triage.failed_runs_recent}
+                      hint="การรันที่ล้มเหลวในช่วงล่าสุด"
+                    />
+                    <SummaryCard
+                      label="Pending Reviews"
+                      value={supportSummaryData.triage.pending_document_reviews}
+                      hint="Document reviews ที่ยังรอการตัดสินใจ"
+                    />
+                    <SummaryCard
+                      label="Webhook Failures"
+                      value={supportSummaryData.triage.failed_webhook_deliveries}
+                      hint="ปลายทาง webhook ที่ต้องตามต่อ"
+                    />
+                    <SummaryCard
+                      label="Open Billing Issues"
+                      value={supportSummaryData.triage.outstanding_billing_records}
+                      hint="บิลที่ยังไม่เข้าสถานะสิ้นสุด"
+                    />
+                  </div>
+
+                  <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                          Cost Report
+                        </p>
+                        <h3 className="mt-2 text-2xl font-bold text-[var(--text-primary)]">
+                          {supportSummaryData.tenant.name}
+                        </h3>
+                        <p className="mt-1 text-sm text-[var(--text-muted)]">
+                          {supportSummaryData.tenant.slug} • {supportSummaryData.cost_summary.window_days} วันย้อนหลัง
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-[var(--bg-surface-secondary)] px-4 py-3">
+                        <p className="text-xs uppercase tracking-wider text-[var(--text-muted)]">
+                          Estimated Total
+                        </p>
+                        <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+                          {formatBudget(supportSummaryData.cost_summary.estimated_total_thb)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-4 md:grid-cols-4">
+                      <SummaryCard
+                        label="Crawl"
+                        value={formatBudget(supportSummaryData.cost_summary.crawl.estimated_cost_thb)}
+                        hint={`${supportSummaryData.cost_summary.crawl.run_count} runs / ${supportSummaryData.cost_summary.crawl.task_count} tasks`}
+                      />
+                      <SummaryCard
+                        label="Storage"
+                        value={formatBudget(supportSummaryData.cost_summary.storage.estimated_cost_thb)}
+                        hint={`${supportSummaryData.cost_summary.storage.document_count} docs / ${supportSummaryData.cost_summary.storage.total_bytes.toLocaleString()} bytes`}
+                      />
+                      <SummaryCard
+                        label="Notifications"
+                        value={formatBudget(supportSummaryData.cost_summary.notifications.estimated_cost_thb)}
+                        hint={`${supportSummaryData.cost_summary.notifications.sent_count} sent / ${supportSummaryData.cost_summary.notifications.failed_webhook_delivery_count} failed`}
+                      />
+                      <SummaryCard
+                        label="Payments"
+                        value={formatBudget(supportSummaryData.cost_summary.payments.estimated_cost_thb)}
+                        hint={`${supportSummaryData.cost_summary.payments.billing_record_count} bills / ${supportSummaryData.cost_summary.payments.payment_request_count} requests`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">Failed Runs</h3>
+                      <div className="mt-3 space-y-3">
+                        {supportSummaryData.recent_failed_runs.length > 0 ? supportSummaryData.recent_failed_runs.map((run) => (
+                          <div key={run.id} className="rounded-2xl border border-[var(--border-default)] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="font-mono text-xs text-[var(--text-primary)]">{run.id.slice(0, 12)}</p>
+                              <StatusBadge state={run.status} variant="run" />
+                            </div>
+                            <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                              {run.trigger_type} • errors {run.error_count}
+                            </p>
+                          </div>
+                        )) : (
+                          <p className="text-sm text-[var(--text-muted)]">ไม่มี failed runs ในช่วงนี้</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">Pending Reviews</h3>
+                      <div className="mt-3 space-y-3">
+                        {supportSummaryData.pending_reviews.length > 0 ? supportSummaryData.pending_reviews.map((review) => (
+                          <div key={review.id} className="rounded-2xl border border-[var(--border-default)] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="font-mono text-xs text-[var(--text-primary)]">{review.id.slice(0, 12)}</p>
+                              <StatusBadge state={review.status} />
+                            </div>
+                            <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                              project {review.project_id.slice(0, 12)}
+                            </p>
+                          </div>
+                        )) : (
+                          <p className="text-sm text-[var(--text-muted)]">ไม่มี review ที่ค้างอยู่</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">Failed Webhooks</h3>
+                      <div className="mt-3 space-y-3">
+                        {supportSummaryData.failed_webhooks.length > 0 ? supportSummaryData.failed_webhooks.map((webhook) => (
+                          <div key={webhook.id} className="rounded-2xl border border-[var(--border-default)] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="font-mono text-xs text-[var(--text-primary)]">{webhook.id.slice(0, 12)}</p>
+                              <StatusBadge state={webhook.delivery_status} />
+                            </div>
+                            <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                              HTTP {webhook.last_response_status_code ?? "-"}
+                            </p>
+                          </div>
+                        )) : (
+                          <p className="text-sm text-[var(--text-muted)]">ไม่มี webhook failures ในช่วงนี้</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                      <h3 className="text-sm font-semibold text-[var(--text-primary)]">Billing Issues</h3>
+                      <div className="mt-3 space-y-3">
+                        {supportSummaryData.billing_issues.length > 0 ? supportSummaryData.billing_issues.map((issue) => (
+                          <div key={issue.id} className="rounded-2xl border border-[var(--border-default)] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="font-semibold text-[var(--text-primary)]">{issue.record_number}</p>
+                              <StatusBadge state={issue.status} variant="billing" />
+                            </div>
+                            <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                              {formatBudget(issue.amount_due)}
+                            </p>
+                          </div>
+                        )) : (
+                          <p className="text-sm text-[var(--text-muted)]">ไม่มี billing issue ที่ต้องติดตาม</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </QueryState>
+          ) : (
+            <div className="rounded-2xl bg-[var(--bg-surface)] p-6 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
+              เริ่มจากการค้นหา tenant เพื่อเปิด support summary และสลับบริบทของแท็บอื่นให้ทำงานกับ tenant ที่เลือก
+            </div>
+          )}
+        </div>
+      );
+    }
 
     if (activeTab === "users") {
       return (
@@ -794,7 +1081,7 @@ export default function AdminPage() {
     <>
       <PageHeader
         title="แอดมินองค์กร"
-        subtitle="จัดการผู้ใช้ การแจ้งเตือน สิทธิ์ใช้งาน และการตั้งค่าองค์กรภายใต้ tenant เดียวกัน"
+        subtitle="จัดการผู้ใช้ การแจ้งเตือน สิทธิ์ใช้งาน การตั้งค่าองค์กร และ support context"
       />
 
       {submitError ? (
@@ -806,6 +1093,12 @@ export default function AdminPage() {
       <QueryState isLoading={isLoading} isError={isError} error={error}>
         {data ? (
           <>
+            {activeTenantId ? (
+              <div className="mb-4 rounded-2xl border border-[var(--badge-blue-bg)] bg-[var(--bg-surface)] p-4 text-sm text-[var(--text-secondary)]">
+                กำลังทำงานใน support context ของ <span className="font-semibold text-[var(--text-primary)]">{data.tenant.name}</span> ({data.tenant.slug})
+              </div>
+            ) : null}
+
             <div className="mb-6 grid gap-4 md:grid-cols-3">
               <SummaryCard
                 label="ผู้ใช้ในระบบ"

@@ -6,7 +6,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { DashboardSummaryResponse } from "@/lib/api";
 import { useDashboardSummary } from "@/lib/hooks";
-import { formatRelativeTime } from "@/lib/utils";
+import { formatBudget, formatRelativeTime } from "@/lib/utils";
 
 const DailyDiscoveryChart = dynamic(
   () => import("@/components/ui/dashboard-charts").then((m) => m.DailyDiscoveryChart),
@@ -41,6 +41,33 @@ const EMPTY_DASHBOARD_SUMMARY: DashboardSummaryResponse = {
     { bucket: "winner", count: 0 },
     { bucket: "closed", count: 0 },
   ],
+  cost_summary: {
+    window_days: 30,
+    currency: "THB",
+    estimated_total_thb: "0.00",
+    crawl: {
+      estimated_cost_thb: "0.00",
+      run_count: 0,
+      task_count: 0,
+      failed_run_count: 0,
+    },
+    storage: {
+      estimated_cost_thb: "0.00",
+      document_count: 0,
+      total_bytes: 0,
+    },
+    notifications: {
+      estimated_cost_thb: "0.00",
+      sent_count: 0,
+      failed_webhook_delivery_count: 0,
+    },
+    payments: {
+      estimated_cost_thb: "0.00",
+      billing_record_count: 0,
+      payment_request_count: 0,
+      collected_amount_thb: "0.00",
+    },
+  },
 };
 
 function formatRunDuration(startedAt: string | null, finishedAt: string | null, status: string): string {
@@ -106,6 +133,7 @@ export default function DashboardPage() {
   const summary = data ?? EMPTY_DASHBOARD_SUMMARY;
   const kpis = summary.kpis;
   const crawlSuccessRate = `${kpis.crawl_success_rate_percent.toFixed(1)}%`;
+  const costSummary = summary.cost_summary;
 
   return (
     <>
@@ -209,6 +237,55 @@ export default function DashboardPage() {
             colorClass="text-[var(--badge-red-text)]"
             bgClass="bg-[var(--badge-red-bg)]"
           />
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-3xl bg-[linear-gradient(135deg,#0f172a_0%,#1e293b_100%)] p-6 text-white shadow-[var(--shadow-soft)]">
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-300">
+              Cost Observatory
+            </p>
+            <h2 className="mt-2 text-3xl font-bold">ต้นทุนเชิงปฏิบัติการย้อนหลัง {costSummary.window_days} วัน</h2>
+            <p className="mt-2 max-w-2xl text-sm text-slate-300">
+              สรุปตัวขับต้นทุนหลักจากการ crawl, การเก็บเอกสาร, การแจ้งเตือน และขั้นตอนการชำระเงิน เพื่อให้ทีมปฏิบัติการเห็นจุดที่ต้องควบคุมก่อนต้นทุนสูงเกินแผน
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white/10 px-5 py-4 backdrop-blur">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-300">Estimated Total</p>
+            <p className="mt-2 text-3xl font-bold">{formatBudget(costSummary.estimated_total_thb)}</p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-4">
+          <div className="rounded-2xl bg-white/8 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-300">Crawl</p>
+            <p className="mt-2 text-2xl font-bold">{formatBudget(costSummary.crawl.estimated_cost_thb)}</p>
+            <p className="mt-3 text-sm text-slate-200">
+              {costSummary.crawl.run_count} runs, {costSummary.crawl.task_count} tasks, ล้มเหลว {costSummary.crawl.failed_run_count}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white/8 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-300">Storage</p>
+            <p className="mt-2 text-2xl font-bold">{formatBudget(costSummary.storage.estimated_cost_thb)}</p>
+            <p className="mt-3 text-sm text-slate-200">
+              {costSummary.storage.document_count} เอกสาร, {costSummary.storage.total_bytes.toLocaleString()} bytes
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white/8 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-300">Notifications</p>
+            <p className="mt-2 text-2xl font-bold">{formatBudget(costSummary.notifications.estimated_cost_thb)}</p>
+            <p className="mt-3 text-sm text-slate-200">
+              ส่งแล้ว {costSummary.notifications.sent_count}, webhook fail {costSummary.notifications.failed_webhook_delivery_count}
+            </p>
+          </div>
+          <div className="rounded-2xl bg-white/8 p-4">
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-300">Payments</p>
+            <p className="mt-2 text-2xl font-bold">{formatBudget(costSummary.payments.estimated_cost_thb)}</p>
+            <p className="mt-3 text-sm text-slate-200">
+              {costSummary.payments.billing_record_count} billing records, {costSummary.payments.payment_request_count} payment requests
+            </p>
+          </div>
         </div>
       </div>
 

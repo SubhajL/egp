@@ -383,7 +383,11 @@ def list_billing_records(
     offset: int = Query(default=0, ge=0),
 ) -> BillingListResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
     return _serialize_page(
         service.list_snapshot(tenant_id=resolved_tenant_id, limit=limit, offset=offset)
     )
@@ -396,7 +400,11 @@ def create_billing_record(
     response: Response,
 ) -> BillingRecordDetailResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         detail = service.create_record(
             tenant_id=resolved_tenant_id,
@@ -425,7 +433,11 @@ def transition_billing_record(
     request: Request,
 ) -> BillingRecordDetailResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         detail = service.transition_record(
             tenant_id=resolved_tenant_id,
@@ -451,7 +463,11 @@ def create_billing_payment(
     response: Response,
 ) -> BillingPaymentResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         payment = service.record_payment(
             tenant_id=resolved_tenant_id,
@@ -482,7 +498,11 @@ def create_billing_payment_request(
     response: Response,
 ) -> BillingRecordDetailResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         detail = service.create_payment_request(
             tenant_id=resolved_tenant_id,
@@ -514,7 +534,11 @@ def handle_billing_payment_request_callback(
 ) -> BillingRecordDetailResponse:
     _require_payment_callback_secret(request)
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         detail = service.handle_payment_request_callback(
             tenant_id=resolved_tenant_id,
@@ -540,7 +564,11 @@ def reconcile_billing_payment(
     request: Request,
 ) -> BillingRecordDetailResponse:
     service = _service_from_request(request)
-    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
     try:
         detail = service.reconcile_payment(
             tenant_id=resolved_tenant_id,

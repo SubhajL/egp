@@ -47,6 +47,7 @@ from egp_api.services.payment_provider import PaymentProvider, build_payment_pro
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
+from egp_api.services.support_service import SupportService
 from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.audit_repo import create_audit_repository
@@ -57,6 +58,7 @@ from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
+from egp_db.repositories.support_repo import create_support_repository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
 from egp_notifications.webhook_delivery import WebhookDeliveryService
@@ -133,6 +135,10 @@ def create_app(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
+    support_repository = create_support_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
     notification_service = NotificationService(
         smtp_config=get_smtp_config(smtp_config),
         in_app_store=notification_repository,
@@ -175,8 +181,10 @@ def create_app(
     app.state.entitlement_service = entitlement_service
     app.state.document_repository = repository
     app.state.notification_repository = notification_repository
+    app.state.support_repository = support_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
+    app.state.support_service = SupportService(support_repository)
     app.state.webhook_service = WebhookService(
         admin_repository,
         notification_repository,
@@ -199,7 +207,11 @@ def create_app(
         entitlement_service=entitlement_service,
         notification_dispatcher=gated_notification_dispatcher,
     )
-    app.state.dashboard_service = DashboardService(project_repository, run_repository)
+    app.state.dashboard_service = DashboardService(
+        project_repository,
+        run_repository,
+        support_repository,
+    )
     app.state.rules_service = RulesService(
         profile_repository,
         entitlement_service=entitlement_service,

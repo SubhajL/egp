@@ -264,6 +264,45 @@ def _create_run(
     return finished.json()
 
 
+def _seed_notification_activity(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
+    now = datetime.now(UTC).isoformat()
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO notifications (
+                    id,
+                    tenant_id,
+                    project_id,
+                    notification_type,
+                    channel,
+                    status,
+                    payload,
+                    created_at,
+                    sent_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    NULL,
+                    'run_failed',
+                    'email',
+                    'sent',
+                    :payload,
+                    :created_at,
+                    :sent_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": tenant_id,
+                "payload": '{"subject":"Run failed","body":"Investigate the crawl."}',
+                "created_at": now,
+                "sent_at": now,
+            },
+        )
+
+
 def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-dashboard.sqlite3'}"
     client = TestClient(
@@ -356,6 +395,7 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         status=CrawlRunStatus.SUCCEEDED,
         projects_seen=8,
     )
+    _seed_notification_activity(client)
 
     response = client.get("/v1/dashboard/summary", params={"tenant_id": TENANT_ID})
 
@@ -404,6 +444,33 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         "winner": 2,
         "closed": 1,
     }
+    assert body["cost_summary"] == {
+        "window_days": 30,
+        "currency": "THB",
+        "estimated_total_thb": "2.61",
+        "crawl": {
+            "estimated_cost_thb": "1.10",
+            "run_count": 4,
+            "task_count": 4,
+            "failed_run_count": 1,
+        },
+        "storage": {
+            "estimated_cost_thb": "0.06",
+            "document_count": 2,
+            "total_bytes": 12,
+        },
+        "notifications": {
+            "estimated_cost_thb": "0.20",
+            "sent_count": 1,
+            "failed_webhook_delivery_count": 0,
+        },
+        "payments": {
+            "estimated_cost_thb": "1.25",
+            "billing_record_count": 1,
+            "payment_request_count": 0,
+            "collected_amount_thb": "0.00",
+        },
+    }
 
 
 def test_dashboard_summary_endpoint_returns_zero_safe_defaults_for_empty_tenant(
@@ -443,3 +510,30 @@ def test_dashboard_summary_endpoint_returns_zero_safe_defaults_for_empty_tenant(
         {"bucket": "winner", "count": 0},
         {"bucket": "closed", "count": 0},
     ]
+    assert body["cost_summary"] == {
+        "window_days": 30,
+        "currency": "THB",
+        "estimated_total_thb": "0.00",
+        "crawl": {
+            "estimated_cost_thb": "0.00",
+            "run_count": 0,
+            "task_count": 0,
+            "failed_run_count": 0,
+        },
+        "storage": {
+            "estimated_cost_thb": "0.00",
+            "document_count": 0,
+            "total_bytes": 0,
+        },
+        "notifications": {
+            "estimated_cost_thb": "0.00",
+            "sent_count": 0,
+            "failed_webhook_delivery_count": 0,
+        },
+        "payments": {
+            "estimated_cost_thb": "0.00",
+            "billing_record_count": 0,
+            "payment_request_count": 0,
+            "collected_amount_thb": "0.00",
+        },
+    }

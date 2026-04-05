@@ -13,11 +13,18 @@ import {
   fetchDocuments,
   fetchRules,
   fetchRuns,
+  fetchSupportSummary,
+  fetchSupportTenants,
   fetchWebhooks,
+  type FetchAdminSnapshotParams,
   type FetchAuditLogParams,
   type FetchBillingParams,
+  type FetchDashboardSummaryParams,
   type FetchProjectsParams,
   type FetchRunsParams,
+  type FetchSupportSummaryParams,
+  type FetchSupportTenantsParams,
+  type FetchWebhooksParams,
 } from "./api";
 
 export function useProjects(params: FetchProjectsParams = {}) {
@@ -27,10 +34,10 @@ export function useProjects(params: FetchProjectsParams = {}) {
   });
 }
 
-export function useDashboardSummary() {
+export function useDashboardSummary(params: FetchDashboardSummaryParams = {}) {
   return useQuery({
-    queryKey: ["dashboard-summary"],
-    queryFn: () => fetchDashboardSummary(),
+    queryKey: ["dashboard-summary", params],
+    queryFn: () => fetchDashboardSummary(params),
   });
 }
 
@@ -86,17 +93,17 @@ export function useBillingPlans() {
   });
 }
 
-export function useAdminSnapshot() {
+export function useAdminSnapshot(params: FetchAdminSnapshotParams = {}) {
   return useQuery({
-    queryKey: ["admin-snapshot"],
-    queryFn: () => fetchAdminSnapshot(),
+    queryKey: ["admin-snapshot", params],
+    queryFn: () => fetchAdminSnapshot(params),
   });
 }
 
-export function useWebhooks() {
+export function useWebhooks(params: FetchWebhooksParams = {}) {
   return useQuery({
-    queryKey: ["webhooks"],
-    queryFn: () => fetchWebhooks(),
+    queryKey: ["webhooks", params],
+    queryFn: () => fetchWebhooks(params),
   });
 }
 
@@ -104,5 +111,27 @@ export function useAuditLog(params: FetchAuditLogParams = {}) {
   return useQuery({
     queryKey: ["audit-log", params],
     queryFn: () => fetchAuditLog(params),
+  });
+}
+
+export function useSupportTenants(params: FetchSupportTenantsParams) {
+  const normalizedQuery = params.query.trim();
+  return useQuery({
+    queryKey: ["support-tenants", normalizedQuery, params.limit ?? 20],
+    queryFn: () => fetchSupportTenants({ ...params, query: normalizedQuery }),
+    enabled: normalizedQuery.length > 0,
+  });
+}
+
+export function useSupportSummary(params: FetchSupportSummaryParams | null) {
+  return useQuery({
+    queryKey: ["support-summary", params],
+    queryFn: () =>
+      fetchSupportSummary(
+        params ?? {
+          tenant_id: "",
+        },
+      ),
+    enabled: !!params?.tenant_id,
   });
 }

@@ -233,6 +233,125 @@ def _create_billing_record(
     return response.json()
 
 
+def _create_failed_run(client: TestClient, *, tenant_id: str = TENANT_ID) -> str:
+    repository = client.app.state.run_repository
+    created = repository.create_run(tenant_id=tenant_id, trigger_type="manual")
+    repository.mark_run_started(created.id)
+    task = repository.create_task(
+        run_id=created.id,
+        task_type="discover",
+        keyword="ระบบ",
+        payload={"page": 1},
+    )
+    repository.mark_task_started(task.id)
+    repository.mark_task_finished(task.id, status="failed", result_json={"reason": "timeout"})
+    repository.mark_run_finished(
+        created.id,
+        status="failed",
+        summary_json={"projects_seen": 0},
+        error_count=2,
+    )
+    return created.id
+
+
+def _seed_webhook_delivery_failure(
+    client: TestClient,
+    *,
+    tenant_id: str = TENANT_ID,
+    notification_id: str,
+) -> str:
+    subscription_id = str(uuid4())
+    delivery_id = str(uuid4())
+    now = datetime.now(UTC).isoformat()
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO webhook_subscriptions (
+                    id,
+                    tenant_id,
+                    name,
+                    url,
+                    signing_secret,
+                    notification_types,
+                    is_active,
+                    created_at,
+                    updated_at,
+                    deleted_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'Support endpoint',
+                    'https://example.com/hooks/support',
+                    'secret-123',
+                    '["run_failed"]',
+                    1,
+                    :created_at,
+                    :updated_at,
+                    NULL
+                )
+                """
+            ),
+            {
+                "id": subscription_id,
+                "tenant_id": tenant_id,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO webhook_deliveries (
+                    id,
+                    tenant_id,
+                    webhook_subscription_id,
+                    notification_id,
+                    event_id,
+                    notification_type,
+                    project_id,
+                    payload,
+                    attempt_count,
+                    delivery_status,
+                    last_response_status_code,
+                    last_response_body,
+                    created_at,
+                    updated_at,
+                    last_attempted_at,
+                    delivered_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :webhook_subscription_id,
+                    :notification_id,
+                    'evt-support-1',
+                    'run_failed',
+                    NULL,
+                    '{"summary":"failure"}',
+                    2,
+                    'failed',
+                    500,
+                    'internal error',
+                    :created_at,
+                    :updated_at,
+                    :last_attempted_at,
+                    NULL
+                )
+                """
+            ),
+            {
+                "id": delivery_id,
+                "tenant_id": tenant_id,
+                "webhook_subscription_id": subscription_id,
+                "notification_id": notification_id,
+                "created_at": now,
+                "updated_at": now,
+                "last_attempted_at": now,
+            },
+        )
+    return delivery_id
+
+
 def _auth_headers(*, tenant_id: str = TENANT_ID, role: str) -> dict[str, str]:
     token = jwt.encode(
         {
@@ -423,6 +542,219 @@ def test_admin_routes_require_owner_or_admin_role_when_auth_enabled(tmp_path) ->
     assert viewer_response.json()["detail"] == "admin role required"
     assert admin_response.status_code == 200
     assert admin_response.json()["tenant"]["id"] == TENANT_ID
+
+
+def test_admin_support_search_matches_name_slug_and_contact_email(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    client.patch(
+        "/v1/admin/settings",
+        json={
+            "tenant_id": TENANT_ID,
+            "support_email": "support@acme.example",
+            "billing_contact_email": "billing@acme.example",
+        },
+    )
+    client.post(
+        "/v1/admin/users",
+        json={
+            "tenant_id": TENANT_ID,
+            "email": "owner@acme.example",
+            "role": "owner",
+        },
+    )
+
+    by_slug = client.get("/v1/admin/support/tenants", params={"query": "acme-intelligence"})
+    by_support_email = client.get(
+        "/v1/admin/support/tenants", params={"query": "support@acme.example"}
+    )
+    by_user_email = client.get(
+        "/v1/admin/support/tenants", params={"query": "owner@acme.example"}
+    )
+
+    assert by_slug.status_code == 200
+    assert by_support_email.status_code == 200
+    assert by_user_email.status_code == 200
+    assert by_slug.json()["tenants"][0]["id"] == TENANT_ID
+    assert by_slug.json()["tenants"][0]["support_email"] == "support@acme.example"
+    assert by_support_email.json()["tenants"][0]["billing_contact_email"] == "billing@acme.example"
+    assert by_user_email.json()["tenants"][0]["active_user_count"] == 1
+
+
+def test_admin_support_summary_returns_triage_and_cost_report(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    project = _seed_project(client)
+    _create_failed_run(client)
+    billing_detail = _create_billing_record(client)
+
+    notification_id = str(uuid4())
+    now = datetime.now(UTC).isoformat()
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO notifications (
+                    id,
+                    tenant_id,
+                    project_id,
+                    notification_type,
+                    channel,
+                    status,
+                    payload,
+                    created_at,
+                    sent_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    NULL,
+                    'run_failed',
+                    'email',
+                    'sent',
+                    '{"subject":"Run failed","body":"Support investigate"}',
+                    :created_at,
+                    :sent_at
+                )
+                """
+            ),
+            {
+                "id": notification_id,
+                "tenant_id": TENANT_ID,
+                "created_at": now,
+                "sent_at": now,
+            },
+        )
+    webhook_delivery_id = _seed_webhook_delivery_failure(
+        client,
+        notification_id=notification_id,
+    )
+
+    _ingest_document(
+        client,
+        project_id=project.id,
+        file_name="tor-v1.pdf",
+        content=b"draft-v1",
+    )
+    _ingest_document(
+        client,
+        project_id=project.id,
+        file_name="tor-v2.pdf",
+        content=b"draft-v2",
+    )
+
+    summary = client.get(
+        f"/v1/admin/support/tenants/{TENANT_ID}/summary",
+    )
+
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["tenant"]["id"] == TENANT_ID
+    assert body["triage"] == {
+        "failed_runs_recent": 1,
+        "pending_document_reviews": 1,
+        "failed_webhook_deliveries": 1,
+        "outstanding_billing_records": 1,
+    }
+    assert body["cost_summary"] == {
+        "window_days": 30,
+        "currency": "THB",
+        "estimated_total_thb": "1.87",
+        "crawl": {
+            "estimated_cost_thb": "0.35",
+            "run_count": 1,
+            "task_count": 1,
+            "failed_run_count": 1,
+        },
+        "storage": {
+            "estimated_cost_thb": "0.06",
+            "document_count": 2,
+            "total_bytes": 16,
+        },
+        "notifications": {
+            "estimated_cost_thb": "0.21",
+            "sent_count": 1,
+            "failed_webhook_delivery_count": 1,
+        },
+        "payments": {
+            "estimated_cost_thb": "1.25",
+            "billing_record_count": 1,
+            "payment_request_count": 0,
+            "collected_amount_thb": "0.00",
+        },
+    }
+    assert body["recent_failed_runs"][0]["status"] == "failed"
+    assert body["pending_reviews"][0]["status"] == "pending"
+    assert body["failed_webhooks"][0]["id"] == webhook_delivery_id
+    assert body["billing_issues"][0]["record_number"] == billing_detail["record"]["record_number"]
+
+
+def test_support_role_can_access_selected_tenant_context(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
+    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+
+    support_snapshot = client.get(
+        "/v1/admin",
+        params={"tenant_id": OTHER_TENANT_ID},
+        headers=_auth_headers(role="support"),
+    )
+    support_settings = client.patch(
+        "/v1/admin/settings",
+        json={
+            "tenant_id": OTHER_TENANT_ID,
+            "support_email": "support@other.example",
+        },
+        headers=_auth_headers(role="support"),
+    )
+    admin_lookup = client.get(
+        "/v1/admin/support/tenants",
+        params={"query": "tenant-two"},
+        headers=_auth_headers(role="admin"),
+    )
+
+    assert support_snapshot.status_code == 200
+    assert support_snapshot.json()["tenant"]["id"] == OTHER_TENANT_ID
+    assert support_settings.status_code == 200
+    assert support_settings.json()["support_email"] == "support@other.example"
+    assert admin_lookup.status_code == 403
+    assert admin_lookup.json()["detail"] == "support role required"
+
+
+def test_non_support_roles_cannot_cross_tenant_or_use_support_lookup(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
+    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+
+    foreign_snapshot = client.get(
+        "/v1/admin",
+        params={"tenant_id": OTHER_TENANT_ID},
+        headers=_auth_headers(role="admin"),
+    )
+    support_lookup = client.get(
+        "/v1/admin/support/tenants",
+        params={"query": "tenant-two"},
+        headers=_auth_headers(role="viewer"),
+    )
+
+    assert foreign_snapshot.status_code == 403
+    assert foreign_snapshot.json()["detail"] == "tenant mismatch"
+    assert support_lookup.status_code == 403
+    assert support_lookup.json()["detail"] == "support role required"
+
+
+def test_support_role_remains_tenant_scoped_on_non_support_routes(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
+    _seed_tenant(client, tenant_id=OTHER_TENANT_ID, slug="tenant-two", name="Other Tenant")
+
+    response = client.get(
+        "/v1/projects",
+        params={"tenant_id": OTHER_TENANT_ID},
+        headers=_auth_headers(role="support"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "tenant mismatch"
 
 
 def test_admin_audit_log_returns_cross_domain_feed_and_filters(tmp_path) -> None:
