@@ -220,6 +220,7 @@ def ingest_document(payload: DocumentIngestRequest, request: Request, response: 
             source_label=payload.source_label,
             source_status_text=payload.source_status_text,
             source_page_text=payload.source_page_text,
+            actor_subject=_actor_subject_from_request(request),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

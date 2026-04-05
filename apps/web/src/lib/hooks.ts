@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchAuditLog,
   fetchAdminSnapshot,
   fetchBillingPlans,
   fetchBillingRecords,
@@ -13,6 +14,7 @@ import {
   fetchRules,
   fetchRuns,
   fetchWebhooks,
+  type FetchAuditLogParams,
   type FetchBillingParams,
   type FetchProjectsParams,
   type FetchRunsParams,
@@ -95,5 +97,12 @@ export function useWebhooks() {
   return useQuery({
     queryKey: ["webhooks"],
     queryFn: () => fetchWebhooks(),
+  });
+}
+
+export function useAuditLog(params: FetchAuditLogParams = {}) {
+  return useQuery({
+    queryKey: ["audit-log", params],
+    queryFn: () => fetchAuditLog(params),
   });
 }

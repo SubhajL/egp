@@ -45,6 +45,13 @@ def _service_from_request(request: Request) -> WebhookService:
     return request.app.state.webhook_service
 
 
+def _actor_subject_from_request(request: Request) -> str:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is not None and getattr(auth_context, "subject", None):
+        return str(auth_context.subject)
+    return "manual-operator"
+
+
 def _serialize_list(result: WebhookList) -> WebhookListResponse:
     return WebhookListResponse(
         webhooks=[WebhookResponse(**asdict(webhook)) for webhook in result.webhooks]
@@ -75,6 +82,7 @@ def create_webhook(request: Request, payload: CreateWebhookRequest) -> WebhookRe
             url=str(payload.url),
             notification_types=payload.notification_types,
             signing_secret=payload.signing_secret,
+            actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
@@ -91,6 +99,10 @@ def delete_webhook(
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
     try:
-        service.delete_webhook(tenant_id=resolved_tenant_id, webhook_id=webhook_id)
+        service.delete_webhook(
+            tenant_id=resolved_tenant_id,
+            webhook_id=webhook_id,
+            actor_subject=_actor_subject_from_request(request),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="webhook not found") from exc

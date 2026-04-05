@@ -451,6 +451,29 @@ export type WebhookListResponse = {
   webhooks: WebhookSubscription[];
 };
 
+export type AuditLogEvent = {
+  id: string;
+  tenant_id: string;
+  source: string;
+  entity_type: string;
+  entity_id: string;
+  project_id: string | null;
+  document_id: string | null;
+  actor_subject: string | null;
+  event_type: string;
+  summary: string;
+  metadata_json: Record<string, unknown> | null;
+  occurred_at: string;
+  created_at: string;
+};
+
+export type AuditLogListResponse = {
+  items: AuditLogEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
@@ -682,6 +705,13 @@ export type FetchBillingParams = {
   offset?: number;
 };
 
+export type FetchAuditLogParams = {
+  source?: string;
+  entity_type?: string;
+  limit?: number;
+  offset?: number;
+};
+
 export type CreateBillingRecordInput = {
   tenant_id?: string;
   record_number: string;
@@ -805,6 +835,18 @@ export async function fetchAdminSnapshot(): Promise<AdminSnapshotResponse> {
 export async function fetchWebhooks(): Promise<WebhookListResponse> {
   const url = buildUrl("/v1/webhooks", {});
   return apiFetch<WebhookListResponse>(url);
+}
+
+export async function fetchAuditLog(
+  params: FetchAuditLogParams = {},
+): Promise<AuditLogListResponse> {
+  const url = buildUrl("/v1/admin/audit-log", {
+    source: params.source,
+    entity_type: params.entity_type,
+    limit: params.limit ?? 50,
+    offset: params.offset ?? 0,
+  });
+  return apiFetch<AuditLogListResponse>(url);
 }
 
 export async function createBillingRecord(

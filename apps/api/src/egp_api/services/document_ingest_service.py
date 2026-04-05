@@ -7,6 +7,7 @@ import binascii
 from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
+from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult
 from egp_shared_types.enums import (
     DocumentReviewAction,
@@ -29,11 +30,13 @@ class DocumentIngestService:
         entitlement_service: TenantEntitlementService | None = None,
         project_repository: SqlProjectRepository | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
+        audit_repository: SqlAuditRepository | None = None,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
         self._project_repository = project_repository
         self._notification_dispatcher = notification_dispatcher
+        self._audit_repository = audit_repository
 
     def _resolve_project_context(
         self, *, tenant_id: str, project_id: str, source_status_text: str
@@ -56,6 +59,7 @@ class DocumentIngestService:
         source_label: str,
         source_status_text: str,
         source_page_text: str = "",
+        actor_subject: str | None = None,
     ) -> StoreDocumentResult:
         resolved_status_text, project_state = self._resolve_project_context(
             tenant_id=tenant_id,
@@ -72,6 +76,23 @@ class DocumentIngestService:
             source_page_text=source_page_text,
             project_state=project_state,
         )
+        if self._audit_repository is not None and result.created:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="document",
+                entity_type="document",
+                entity_id=result.document.id,
+                project_id=project_id,
+                document_id=result.document.id,
+                actor_subject=actor_subject or "system:api",
+                event_type="document.created",
+                summary=f"Stored document {result.document.file_name}",
+                metadata_json={
+                    "document_type": result.document.document_type.value,
+                    "document_phase": result.document.document_phase.value,
+                    "file_name": result.document.file_name,
+                },
+            )
         return result
 
     def ingest_document(
@@ -84,6 +105,7 @@ class DocumentIngestService:
         source_label: str,
         source_status_text: str,
         source_page_text: str = "",
+        actor_subject: str | None = None,
     ) -> StoreDocumentResult:
         try:
             file_bytes = base64.b64decode(content_base64, validate=True)
@@ -98,6 +120,7 @@ class DocumentIngestService:
             source_label=source_label,
             source_status_text=source_status_text,
             source_page_text=source_page_text,
+            actor_subject=actor_subject,
         )
 
     def list_documents(self, *, tenant_id: str, project_id: str):

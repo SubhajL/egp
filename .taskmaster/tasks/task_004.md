@@ -52,7 +52,7 @@ Implementation note: Webhook notification delivery is implemented across package
 
 ### 4.3. Build a full audit log
 
-**Status:** pending  
+**Status:** done  
 **Dependencies:** None  
 
 Capture material state changes and operator actions for investigation and compliance.
@@ -60,6 +60,10 @@ Capture material state changes and operator actions for investigation and compli
 **Details:**
 
 Persist project, document, billing, review, and admin events with actor and timestamp context. Reuse project_status_events patterns where possible and avoid leaving critical transitions outside the audit trail.
+
+<info added on 2026-04-05T17:27:22.000+07:00>
+Implementation note: Task 4.3 adds additive schema in packages/db/src/migrations/009_audit_log.sql for direct `audit_log_events`, then exposes a unified tenant-scoped feed through packages/db/src/egp_db/repositories/audit_repo.py and apps/api/src/egp_api/services/audit_service.py. The API now serves `GET /v1/admin/audit-log` from apps/api/src/egp_api/routes/admin.py, wired in apps/api/src/egp_api/main.py, while admin/user/webhook mutations and new document ingests append durable audit rows through apps/api/src/egp_api/services/admin_service.py, apps/api/src/egp_api/services/webhook_service.py, and apps/api/src/egp_api/services/document_ingest_service.py. The admin UI now includes an Audit Log tab in apps/web/src/app/(app)/admin/page.tsx via new clients in apps/web/src/lib/api.ts and apps/web/src/lib/hooks.ts. Regression coverage was added in tests/phase4/test_admin_api.py and validated alongside tests/phase4/test_webhooks_api.py, tests/phase1/test_documents_api.py, and tests/phase3/test_invoice_lifecycle.py.
+</info added on 2026-04-05T17:27:22.000+07:00>
 
 ### 4.4. Implement self-service admin capabilities
 
