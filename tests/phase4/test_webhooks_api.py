@@ -161,7 +161,9 @@ def test_webhook_routes_require_admin_role(tmp_path) -> None:
     assert admin_response.status_code == 200
 
 
-def test_webhook_routes_reject_invalid_notification_types_and_bad_urls(tmp_path) -> None:
+def test_webhook_routes_reject_invalid_notification_types_and_bad_urls(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
 

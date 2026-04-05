@@ -264,7 +264,9 @@ def _from_webhook_subscription_row(
         if summary_by_subscription_id is not None
         else None
     )
-    raw_types = row["notification_types"] if isinstance(row["notification_types"], list) else []
+    raw_types = (
+        row["notification_types"] if isinstance(row["notification_types"], list) else []
+    )
     return WebhookSubscriptionRecord(
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
@@ -286,7 +288,9 @@ def _from_webhook_subscription_row(
 
 
 def _from_webhook_dispatch_row(row: RowMapping) -> WebhookDispatchTarget:
-    raw_types = row["notification_types"] if isinstance(row["notification_types"], list) else []
+    raw_types = (
+        row["notification_types"] if isinstance(row["notification_types"], list) else []
+    )
     return WebhookDispatchTarget(
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]),
@@ -724,7 +728,8 @@ class SqlNotificationRepository:
                 connection.execute(
                     select(WEBHOOK_SUBSCRIPTIONS_TABLE).where(
                         and_(
-                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_SUBSCRIPTIONS_TABLE.c.id == normalized_webhook_id,
                         )
                     )
@@ -742,7 +747,9 @@ class SqlNotificationRepository:
             summary_by_subscription_id=summaries,
         )
 
-    def list_webhook_subscriptions(self, *, tenant_id: str) -> list[WebhookSubscriptionRecord]:
+    def list_webhook_subscriptions(
+        self, *, tenant_id: str
+    ) -> list[WebhookSubscriptionRecord]:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:
             rows = (
@@ -750,7 +757,8 @@ class SqlNotificationRepository:
                     select(WEBHOOK_SUBSCRIPTIONS_TABLE)
                     .where(
                         and_(
-                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
                         )
                     )
@@ -788,7 +796,8 @@ class SqlNotificationRepository:
                     select(WEBHOOK_SUBSCRIPTIONS_TABLE)
                     .where(
                         and_(
-                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
                         )
                     )
@@ -857,7 +866,8 @@ class SqlNotificationRepository:
                         and_(
                             WEBHOOK_DELIVERIES_TABLE.c.webhook_subscription_id
                             == normalized_subscription_id,
-                            WEBHOOK_DELIVERIES_TABLE.c.event_id == str(event_id).strip(),
+                            WEBHOOK_DELIVERIES_TABLE.c.event_id
+                            == str(event_id).strip(),
                         )
                     )
                 )
@@ -895,7 +905,8 @@ class SqlNotificationRepository:
                             and_(
                                 WEBHOOK_DELIVERIES_TABLE.c.webhook_subscription_id
                                 == normalized_subscription_id,
-                                WEBHOOK_DELIVERIES_TABLE.c.event_id == str(event_id).strip(),
+                                WEBHOOK_DELIVERIES_TABLE.c.event_id
+                                == str(event_id).strip(),
                             )
                         )
                     )
@@ -924,7 +935,8 @@ class SqlNotificationRepository:
                 connection.execute(
                     select(WEBHOOK_DELIVERIES_TABLE).where(
                         and_(
-                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id == normalized_tenant_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             WEBHOOK_DELIVERIES_TABLE.c.id == normalized_delivery_id,
                         )
                     )
@@ -942,9 +954,7 @@ class SqlNotificationRepository:
                     delivery_status=str(delivery_status).strip(),
                     last_response_status_code=response_status_code,
                     last_response_body=(
-                        str(response_body)[:2000]
-                        if response_body is not None
-                        else None
+                        str(response_body)[:2000] if response_body is not None else None
                     ),
                     updated_at=now,
                     last_attempted_at=now,

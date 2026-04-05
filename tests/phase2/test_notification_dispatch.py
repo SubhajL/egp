@@ -230,7 +230,9 @@ def test_dispatch_delivers_webhook_for_matching_tenant_and_type(tmp_path) -> Non
     assert deliveries[0].last_response_status_code == 202
 
 
-def test_dispatch_retries_retryable_webhook_failures_with_same_event_id(tmp_path) -> None:
+def test_dispatch_retries_retryable_webhook_failures_with_same_event_id(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-retry.sqlite3'}"
     repository = SqlNotificationRepository(
         database_url=database_url, bootstrap_schema=True
@@ -315,7 +317,9 @@ def test_dispatch_does_not_retry_non_retryable_4xx_webhook_failure(tmp_path) -> 
 def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
     tmp_path,
 ) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-fail-open.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-fail-open.sqlite3'}"
+    )
     repository = SqlNotificationRepository(
         database_url=database_url, bootstrap_schema=True
     )
@@ -357,14 +361,19 @@ def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
 
     assert sent == ["owner@example.com"]
     assert created.channel == "in_app,email"
-    assert repository.list_for_tenant(TENANT_ID)[0].notification_type is NotificationType.NEW_PROJECT
+    assert (
+        repository.list_for_tenant(TENANT_ID)[0].notification_type
+        is NotificationType.NEW_PROJECT
+    )
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
     assert deliveries[0].delivery_status == "failed"
     assert deliveries[0].attempt_count == 3
 
 
 def test_webhook_delivery_skips_already_delivered_event_id(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-idempotent.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-idempotent.sqlite3'}"
+    )
     repository = SqlNotificationRepository(
         database_url=database_url, bootstrap_schema=True
     )
@@ -395,14 +404,20 @@ def test_webhook_delivery_skips_already_delivered_event_id(tmp_path) -> None:
         sent_at="2026-04-05T00:00:00+00:00",
     )
 
-    assert delivery_service.deliver(
-        notification=notification,
-        template_vars={"project_name": "ทดสอบ"},
-    ) is True
-    assert delivery_service.deliver(
-        notification=notification,
-        template_vars={"project_name": "ทดสอบ"},
-    ) is True
+    assert (
+        delivery_service.deliver(
+            notification=notification,
+            template_vars={"project_name": "ทดสอบ"},
+        )
+        is True
+    )
+    assert (
+        delivery_service.deliver(
+            notification=notification,
+            template_vars={"project_name": "ทดสอบ"},
+        )
+        is True
+    )
 
     assert len(transport.calls) == 1
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
