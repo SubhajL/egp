@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
+except (
+    ModuleNotFoundError
+):  # pragma: no cover - exercised in CI import environments without Playwright
+
+    class PlaywrightTimeout(Exception):
+        pass
+
+    def sync_playwright():
+        raise ModuleNotFoundError("playwright is required for live browser close checks")
+
 
 from .browser_discovery import (
     MAIN_PAGE_URL,
@@ -39,17 +50,23 @@ def crawl_live_close_check(
         chrome_proc = launch_real_chrome(resolved_settings)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, resolved_settings)
-        page.goto(MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms)
+        page.goto(
+            MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
+        )
         _logged_sleep(3)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms)
+        page.goto(
+            SEARCH_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
+        )
         _logged_sleep(5)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
 
         for index, project in enumerate(projects):
             if index > 0:
                 clear_search(page, resolved_settings)
-            observation = _search_and_observe_project(page, project=project, settings=resolved_settings)
+            observation = _search_and_observe_project(
+                page, project=project, settings=resolved_settings
+            )
             if observation is not None:
                 observations.append(observation)
         return observations
@@ -57,7 +74,9 @@ def crawl_live_close_check(
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
 
 
-def _search_and_observe_project(page, *, project: dict[str, object], settings: BrowserDiscoverySettings):
+def _search_and_observe_project(
+    page, *, project: dict[str, object], settings: BrowserDiscoverySettings
+):
     term = str(project.get("project_number") or project.get("project_name") or "").strip()
     if not term:
         return None
@@ -121,7 +140,9 @@ def _search_and_observe_project(page, *, project: dict[str, object], settings: B
     return None
 
 
-def _find_matching_observation_on_page(page, *, project: dict[str, object]) -> dict[str, object] | None:
+def _find_matching_observation_on_page(
+    page, *, project: dict[str, object]
+) -> dict[str, object] | None:
     expected_number = str(project.get("project_number") or "").strip()
     expected_name = str(project.get("project_name") or "").strip()
     for row in page.query_selector_all("table tbody tr"):

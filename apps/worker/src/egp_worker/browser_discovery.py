@@ -11,8 +11,19 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
+except (
+    ModuleNotFoundError
+):  # pragma: no cover - exercised in CI import environments without Playwright
+
+    class PlaywrightTimeout(Exception):
+        pass
+
+    def sync_playwright():
+        raise ModuleNotFoundError("playwright is required for live browser discovery")
+
 
 from egp_shared_types.enums import ProcurementType, ProjectState
 
@@ -56,10 +67,14 @@ def crawl_live_discovery(
         chrome_proc = launch_real_chrome(resolved_settings)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, resolved_settings)
-        page.goto(MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms)
+        page.goto(
+            MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
+        )
         _logged_sleep(3)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms)
+        page.goto(
+            SEARCH_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
+        )
         _logged_sleep(5)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
 
@@ -102,7 +117,9 @@ def _collect_keyword_projects(
                 continue
             if any(blocked in row_payload["project_name"] for blocked in SKIP_KEYWORDS_IN_PROJECT):
                 continue
-            dedupe_key = str(row_payload.get("project_number") or row_payload["project_name"]).casefold()
+            dedupe_key = str(
+                row_payload.get("project_number") or row_payload["project_name"]
+            ).casefold()
             if dedupe_key in seen_keys:
                 continue
             eligible_rows.append((row_index, row_payload["project_name"]))
@@ -201,7 +218,9 @@ def open_and_extract_project(
         return None
     proposal_submission_date = _normalize_buddhist_date(detail.get("proposal_submission_date"))
     budget_amount = _normalize_budget(detail.get("budget"))
-    project_state = _infer_project_state(project_name=project_name, organization_name=organization_name)
+    project_state = _infer_project_state(
+        project_name=project_name, organization_name=organization_name
+    )
     downloaded_documents = collect_downloaded_documents(page) if include_documents else []
     return {
         "keyword": keyword,

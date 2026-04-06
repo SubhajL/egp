@@ -133,9 +133,8 @@ class RulesService:
             existing_keywords = _active_keywords_from_details(existing_details)
             prospective_keywords = _merge_keywords(existing_keywords, normalized_keywords)
             snapshot = self._entitlement_service.get_snapshot(tenant_id=tenant_id)
-            if (
-                snapshot.keyword_limit is not None
-                and len(prospective_keywords) > int(snapshot.keyword_limit)
+            if snapshot.keyword_limit is not None and len(prospective_keywords) > int(
+                snapshot.keyword_limit
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
 
@@ -181,9 +180,7 @@ class RulesService:
         tenant_crawl_interval_hours = (
             tenant_settings.crawl_interval_hours if tenant_settings is not None else None
         )
-        effective_crawl_interval_hours = (
-            tenant_crawl_interval_hours or DEFAULT_CRAWL_INTERVAL_HOURS
-        )
+        effective_crawl_interval_hours = tenant_crawl_interval_hours or DEFAULT_CRAWL_INTERVAL_HOURS
         return RulesSnapshot(
             profiles=[_map_profile(profile) for profile in profiles],
             entitlements=entitlements,

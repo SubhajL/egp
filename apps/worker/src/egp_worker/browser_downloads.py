@@ -8,7 +8,15 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeout
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+except (
+    ModuleNotFoundError
+):  # pragma: no cover - exercised in CI import environments without Playwright
+
+    class PlaywrightTimeout(Exception):
+        pass
+
 
 from .workflows.document_ingest import ingest_document_artifact
 
@@ -156,7 +164,9 @@ def _handle_direct_or_page_download(page, btn, doc_name: str) -> list[dict[str, 
     if page.url != url_before:
         return _save_from_content_page(page, doc_name)
 
-    new_pages = [current_page for current_page in page.context.pages if current_page not in pages_before]
+    new_pages = [
+        current_page for current_page in page.context.pages if current_page not in pages_before
+    ]
     if new_pages:
         new_page = new_pages[-1]
         try:
@@ -220,7 +230,9 @@ def _save_from_content_page(page, doc_name: str) -> list[dict[str, object]]:
     return [document] if document is not None else []
 
 
-def _save_from_new_tab(new_page, doc_name: str, fallback_url: str | None = None) -> list[dict[str, object]]:
+def _save_from_new_tab(
+    new_page, doc_name: str, fallback_url: str | None = None
+) -> list[dict[str, object]]:
     try:
         new_page.wait_for_load_state("domcontentloaded", timeout=10_000)
     except Exception:
@@ -277,7 +289,9 @@ def _handle_subpage_download(page, btn) -> list[dict[str, object]]:
             _click_back_or_exit(page)
             return []
         for table in page.query_selector_all("table"):
-            header = " ".join(header.inner_text().strip() for header in table.query_selector_all("th"))
+            header = " ".join(
+                header.inner_text().strip() for header in table.query_selector_all("th")
+            )
             if "ดาวน์โหลด" in header:
                 download_table = table
                 break
@@ -323,7 +337,9 @@ def _handle_subpage_download(page, btn) -> list[dict[str, object]]:
                 retries=DOWNLOAD_CLICK_RETRIES,
             )
             downloaded_documents.append(
-                _download_to_document(download, source_label=file_label, file_name=download.suggested_filename)
+                _download_to_document(
+                    download, source_label=file_label, file_name=download.suggested_filename
+                )
             )
         except PlaywrightTimeout:
             _cancel_pending_downloads(page)
@@ -356,7 +372,9 @@ def _find_modal_with_downloads(page):
         try:
             if not modal.is_visible():
                 continue
-            header = " ".join(title.inner_text().strip() for title in modal.query_selector_all("th"))
+            header = " ".join(
+                title.inner_text().strip() for title in modal.query_selector_all("th")
+            )
             if "ดาวน์โหลด" in header:
                 return modal
         except Exception:
@@ -493,7 +511,9 @@ def _extract_click_metadata(btn) -> dict[str, object]:
         return {"href": None, "onclick": None, "tag": None}
 
 
-def _download_to_document(download, *, source_label: str, file_name: str | None = None) -> dict[str, object]:
+def _download_to_document(
+    download, *, source_label: str, file_name: str | None = None
+) -> dict[str, object]:
     path = download.path()
     file_bytes = Path(path).read_bytes() if path else b""
     return {
@@ -505,8 +525,12 @@ def _download_to_document(download, *, source_label: str, file_name: str | None 
     }
 
 
-def _save_via_request(page, doc_name: str, fallback_url: str | None = None) -> dict[str, object] | None:
-    url = _infer_document_url_from_page(page) or resolve_http_url(fallback_url, base_url=getattr(page, "url", None))
+def _save_via_request(
+    page, doc_name: str, fallback_url: str | None = None
+) -> dict[str, object] | None:
+    url = _infer_document_url_from_page(page) or resolve_http_url(
+        fallback_url, base_url=getattr(page, "url", None)
+    )
     if not url or not is_allowed_download_url(url):
         return None
     response = page.request.get(url, timeout=SUBPAGE_DOWNLOAD_TIMEOUT)
@@ -520,7 +544,11 @@ def _save_via_request(page, doc_name: str, fallback_url: str | None = None) -> d
         response.headers.get("content-disposition") if hasattr(response, "headers") else None
     )
     sniffed_ext = sniff_extension_from_bytes(data)
-    ext = sniffed_ext or guess_extension_from_content_type(content_type) or (Path(urlparse(url).path).suffix or None)
+    ext = (
+        sniffed_ext
+        or guess_extension_from_content_type(content_type)
+        or (Path(urlparse(url).path).suffix or None)
+    )
     if guessed:
         filename = sanitize_filename_preserve_suffix(guessed, max_len=100)
         if sniffed_ext and not filename.lower().endswith(sniffed_ext):
@@ -684,7 +712,13 @@ def sniff_extension_from_bytes(data: bytes) -> str | None:
 
 def looks_like_html_bytes(data: bytes) -> bool:
     prefix = data.lstrip()[:2048].lower()
-    return prefix.startswith(b"<!doctype html") or prefix.startswith(b"<html") or b"<html" in prefix or b"<head" in prefix or b"<title" in prefix
+    return (
+        prefix.startswith(b"<!doctype html")
+        or prefix.startswith(b"<html")
+        or b"<html" in prefix
+        or b"<head" in prefix
+        or b"<title" in prefix
+    )
 
 
 def is_allowed_download_url(url: str) -> bool:
@@ -697,7 +731,9 @@ def is_allowed_download_url(url: str) -> bool:
     host = (parsed.hostname or "").strip().lower()
     if not host or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host) or host == "localhost":
         return False
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_DOWNLOAD_HOST_SUFFIXES)
+    return any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in ALLOWED_DOWNLOAD_HOST_SUFFIXES
+    )
 
 
 def resolve_http_url(candidate: str | None, base_url: str | None = None) -> str | None:
@@ -711,7 +747,9 @@ def resolve_http_url(candidate: str | None, base_url: str | None = None) -> str 
         raw = extracted
     if raw.startswith(("http://", "https://")):
         return raw
-    if base_url and not raw.lower().startswith(("javascript:", "data:", "blob:", "chrome:", "about:")):
+    if base_url and not raw.lower().startswith(
+        ("javascript:", "data:", "blob:", "chrome:", "about:")
+    ):
         try:
             resolved = urljoin(base_url, raw)
         except Exception:
@@ -755,7 +793,9 @@ def extract_url_from_onclick(onclick: str | None, base_url: str | None = None) -
     return None
 
 
-def save_show_htmlfile_as_file(page, doc_name: str, prefer_pdf: bool = True) -> dict[str, object] | None:
+def save_show_htmlfile_as_file(
+    page, doc_name: str, prefer_pdf: bool = True
+) -> dict[str, object] | None:
     try:
         url = page.url
     except Exception:

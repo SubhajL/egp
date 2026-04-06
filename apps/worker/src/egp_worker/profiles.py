@@ -68,7 +68,9 @@ PROFILE_DEFAULTS: dict[str, WorkerProfileDefaults] = {
 }
 
 
-def resolve_profile_keywords(*, profile: str | None = None, keyword: str | None = None) -> list[str]:
+def resolve_profile_keywords(
+    *, profile: str | None = None, keyword: str | None = None
+) -> list[str]:
     if keyword is not None and keyword.strip():
         return [keyword.strip()]
     normalized_profile = (profile or "tor").strip().casefold()

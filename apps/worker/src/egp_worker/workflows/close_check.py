@@ -41,7 +41,8 @@ def run_close_check_workflow(
     notification_dispatcher: NotificationDispatcher | None = None,
     live: bool = False,
     live_projects: list[dict[str, object]] | None = None,
-    live_observation_sweep: Callable[[list[dict[str, object]]], list[dict[str, object]]] | None = None,
+    live_observation_sweep: Callable[[list[dict[str, object]]], list[dict[str, object]]]
+    | None = None,
 ) -> CloseCheckWorkflowResult:
     if run_repository is None:
         if database_url is None:

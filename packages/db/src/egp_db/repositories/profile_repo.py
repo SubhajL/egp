@@ -208,7 +208,9 @@ class SqlProfileRepository:
                 ordered.append(normalized)
         return ordered
 
-    def get_profile_detail(self, *, tenant_id: str, profile_id: str) -> CrawlProfileDetail | None:
+    def get_profile_detail(
+        self, *, tenant_id: str, profile_id: str
+    ) -> CrawlProfileDetail | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_profile_id = normalize_uuid_string(profile_id)
         with self._engine.connect() as connection:
@@ -226,7 +228,10 @@ class SqlProfileRepository:
             keyword_rows = (
                 connection.execute(
                     select(CRAWL_PROFILE_KEYWORDS_TABLE)
-                    .where(CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == normalized_profile_id)
+                    .where(
+                        CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id
+                        == normalized_profile_id
+                    )
                     .order_by(
                         CRAWL_PROFILE_KEYWORDS_TABLE.c.position,
                         CRAWL_PROFILE_KEYWORDS_TABLE.c.created_at,
@@ -280,7 +285,9 @@ class SqlProfileRepository:
                         created_at=now,
                     )
                 )
-        detail = self.get_profile_detail(tenant_id=normalized_tenant_id, profile_id=profile_id)
+        detail = self.get_profile_detail(
+            tenant_id=normalized_tenant_id, profile_id=profile_id
+        )
         if detail is None:
             raise RuntimeError(f"profile {profile_id} not found after creation")
         return detail
@@ -339,7 +346,8 @@ class SqlProfileRepository:
             if keywords is not None:
                 connection.execute(
                     delete(CRAWL_PROFILE_KEYWORDS_TABLE).where(
-                        CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == normalized_profile_id
+                        CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id
+                        == normalized_profile_id
                     )
                 )
                 for position, keyword in enumerate(keywords, start=1):
