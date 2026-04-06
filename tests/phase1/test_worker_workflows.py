@@ -14,7 +14,11 @@ from egp_db.repositories.run_repo import SqlRunRepository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import NotificationService
 from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
-from egp_shared_types.project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
+from egp_shared_types.project_events import (
+    CloseCheckProjectEvent,
+    DiscoveredProjectEvent,
+)
+from egp_worker.main import run_worker_job
 from egp_worker.project_event_sink import ApiProjectEventSink
 from egp_worker.workflows.close_check import run_close_check_workflow
 from egp_worker.workflows.discover import run_discover_workflow
@@ -152,7 +156,9 @@ def test_close_check_workflow_emits_close_events_after_reason_match(tmp_path) ->
     assert updated.closed_reason is None
 
 
-def test_close_check_workflow_skips_non_matching_status_without_sink_call(tmp_path) -> None:
+def test_close_check_workflow_skips_non_matching_status_without_sink_call(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     sink = FakeProjectEventSink()
     run_repository = SqlRunRepository(database_url=database_url, bootstrap_schema=True)
@@ -169,7 +175,9 @@ def test_close_check_workflow_skips_non_matching_status_without_sink_call(tmp_pa
         ],
     )
 
-    run_detail = run_repository.get_run_detail(tenant_id=TENANT_ID, run_id=result.run.run.id)
+    run_detail = run_repository.get_run_detail(
+        tenant_id=TENANT_ID, run_id=result.run.run.id
+    )
 
     assert result.updated_projects == []
     assert sink.close_check_events == []
@@ -209,7 +217,9 @@ def test_discover_workflow_uses_service_backed_sink_for_notifications(tmp_path) 
     assert notifications[0].notification_type.value == "new_project"
 
 
-def test_close_check_workflow_uses_service_backed_sink_for_winner_notification(tmp_path) -> None:
+def test_close_check_workflow_uses_service_backed_sink_for_winner_notification(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     repository, dispatcher = _notification_dispatcher(database_url)
     project_repository = SqlProjectRepository(
@@ -245,7 +255,9 @@ def test_close_check_workflow_uses_service_backed_sink_for_winner_notification(t
     assert notifications[0].notification_type.value == "winner_announced"
 
 
-def test_close_check_workflow_uses_service_backed_sink_for_contract_notification(tmp_path) -> None:
+def test_close_check_workflow_uses_service_backed_sink_for_contract_notification(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     repository, dispatcher = _notification_dispatcher(database_url)
     project_repository = SqlProjectRepository(
@@ -327,7 +339,9 @@ def test_api_project_event_sink_posts_discovery_to_auth_enabled_api(tmp_path) ->
 
 
 def test_api_project_event_sink_posts_close_check_to_auth_enabled_api(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-remote-close.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-remote-close.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path,
@@ -376,3 +390,50 @@ def test_api_project_event_sink_posts_close_check_to_auth_enabled_api(tmp_path) 
     assert stored is not None
     assert stored.project_state is ProjectState.WINNER_ANNOUNCED
     assert stored.closed_reason is ClosedReason.WINNER_ANNOUNCED
+
+
+def test_run_worker_job_dispatches_discover_workflow(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-dispatch.sqlite3'}"
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": database_url,
+            "tenant_id": TENANT_ID,
+            "keyword": "โรงพยาบาล",
+            "discovered_projects": [
+                {
+                    "project_number": "EGP-2026-3009",
+                    "search_name": "ระบบข้อมูลกลาง",
+                    "detail_name": "โครงการระบบข้อมูลกลาง",
+                    "project_name": "โครงการระบบข้อมูลกลาง",
+                    "organization_name": "กรมตัวอย่าง",
+                    "proposal_submission_date": "2026-05-01",
+                    "budget_amount": "1500000.00",
+                    "procurement_type": ProcurementType.SERVICES.value,
+                    "project_state": ProjectState.OPEN_INVITATION.value,
+                    "source_status_text": "ประกาศเชิญชวน",
+                }
+            ],
+        }
+    )
+
+    assert result["command"] == "discover"
+    assert result["run_status"] == "succeeded"
+    assert result["project_count"] == 1
+
+
+def test_run_worker_job_dispatches_timeout_evaluation() -> None:
+    result = run_worker_job(
+        {
+            "command": "timeout_evaluate",
+            "procurement_type": ProcurementType.CONSULTING.value,
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "last_changed_at": "2026-01-01T00:00:00+00:00",
+            "now": "2026-02-15T00:00:00+00:00",
+        }
+    )
+
+    assert result["command"] == "timeout_evaluate"
+    assert result["transition"]["closed_reason"] == "consulting_timeout_30d"
+    assert result["transition"]["project_state"] == "closed_timeout_consulting"
