@@ -1,13 +1,14 @@
-"""Read-only rules routes for profiles and platform logic."""
+"""Rules routes for profiles and platform logic."""
 
 from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
 
-from egp_api.auth import resolve_request_tenant_id
+from egp_api.auth import require_admin_role, resolve_request_tenant_id
+from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
 
 
@@ -49,6 +50,9 @@ class ScheduleRulesResponse(BaseModel):
     supported_trigger_types: list[str]
     schedule_execution_supported: bool
     editable_in_product: bool
+    tenant_crawl_interval_hours: int | None
+    default_crawl_interval_hours: int
+    effective_crawl_interval_hours: int
     source: str
 
 
@@ -77,6 +81,17 @@ class RulesResponse(BaseModel):
     schedule_rules: ScheduleRulesResponse
 
 
+class CreateRuleProfileRequest(BaseModel):
+    tenant_id: str | None = None
+    name: str = Field(min_length=1)
+    profile_type: str = Field(default="custom", min_length=1)
+    is_active: bool = True
+    keywords: list[str] = Field(min_length=1)
+    max_pages_per_keyword: int = Field(default=15, ge=1, le=100)
+    close_consulting_after_days: int = Field(default=30, ge=1, le=365)
+    close_stale_after_days: int = Field(default=45, ge=1, le=365)
+
+
 def _service_from_request(request: Request) -> RulesService:
     return request.app.state.rules_service
 
@@ -97,3 +112,31 @@ def get_rules(request: Request, tenant_id: str | None = None) -> RulesResponse:
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
     snapshot = service.get_rules(tenant_id=resolved_tenant_id)
     return _serialize_rules(snapshot)
+
+
+@router.post("/profiles", response_model=RuleProfileResponse)
+def create_rule_profile(
+    payload: CreateRuleProfileRequest,
+    request: Request,
+    response: Response,
+) -> RuleProfileResponse:
+    require_admin_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        profile = service.create_profile(
+            tenant_id=resolved_tenant_id,
+            name=payload.name,
+            profile_type=payload.profile_type,
+            is_active=payload.is_active,
+            keywords=payload.keywords,
+            max_pages_per_keyword=payload.max_pages_per_keyword,
+            close_consulting_after_days=payload.close_consulting_after_days,
+            close_stale_after_days=payload.close_stale_after_days,
+        )
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response.status_code = status.HTTP_201_CREATED
+    return RuleProfileResponse(**asdict(profile))

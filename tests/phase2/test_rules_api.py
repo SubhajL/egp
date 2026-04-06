@@ -204,10 +204,13 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
         "backfill",
     ]
     assert body["schedule_rules"]["schedule_execution_supported"] is True
-    assert body["schedule_rules"]["editable_in_product"] is False
+    assert body["schedule_rules"]["editable_in_product"] is True
+    assert body["schedule_rules"]["tenant_crawl_interval_hours"] is None
+    assert body["schedule_rules"]["default_crawl_interval_hours"] == 24
+    assert body["schedule_rules"]["effective_crawl_interval_hours"] == 24
     assert (
         body["schedule_rules"]["source"]
-        == "packages/db/src/migrations/001_initial_schema.sql"
+        == "tenant_settings + default schedule policy"
     )
 
 
@@ -249,6 +252,7 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
         "retry",
         "backfill",
     ]
+    assert body["schedule_rules"]["effective_crawl_interval_hours"] == 24
 
 
 def test_billing_plans_include_free_trial(tmp_path) -> None:
@@ -274,3 +278,195 @@ def test_billing_plans_include_free_trial(tmp_path) -> None:
         "duration_days": 7,
         "duration_months": None,
     }
+
+
+def test_rules_endpoint_returns_tenant_crawl_schedule_override(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-schedule.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_settings (
+                    id,
+                    tenant_id,
+                    timezone,
+                    locale,
+                    daily_digest_enabled,
+                    weekly_digest_enabled,
+                    crawl_interval_hours,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'Asia/Bangkok',
+                    'th-TH',
+                    1,
+                    0,
+                    6,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-06T00:00:00+00:00",
+                "updated_at": "2026-04-06T00:00:00+00:00",
+            },
+        )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schedule_rules"]["tenant_crawl_interval_hours"] == 6
+    assert body["schedule_rules"]["effective_crawl_interval_hours"] == 6
+
+
+def test_admin_can_create_custom_profile_from_rules_api(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-create.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Keyword Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics", "  analytics  ", "cloud procurement"],
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Keyword Watchlist"
+    assert body["profile_type"] == "custom"
+    assert body["keywords"] == ["analytics", "cloud procurement"]
+
+    listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    assert listing.status_code == 200
+    assert listing.json()["profiles"][0]["keywords"] == ["analytics", "cloud procurement"]
+
+
+def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-limit.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'INV-LIMIT',
+                    'free_trial',
+                    'paid',
+                    '2026-04-05',
+                    '2026-04-11',
+                    'THB',
+                    '0.00',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": "aaaaaaaa-1111-1111-1111-111111111111",
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-05T00:00:00+00:00",
+                "updated_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'aaaaaaaa-1111-1111-1111-111111111111',
+                    'free_trial',
+                    'active',
+                    '2026-04-05',
+                    '2026-04-11',
+                    1,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": "bbbbbbbb-1111-1111-1111-111111111111",
+                "tenant_id": TENANT_ID,
+                "activated_at": "2026-04-05T00:00:00+00:00",
+                "created_at": "2026-04-05T00:00:00+00:00",
+                "updated_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
+    _seed_profile(
+        client,
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        name="Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("first keyword", 1)],
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Second Profile",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["second keyword"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active keyword configuration exceeds plan limit"

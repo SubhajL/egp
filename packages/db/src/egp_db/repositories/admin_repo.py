@@ -8,8 +8,10 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
+    Integer,
     String,
     Table,
     UniqueConstraint,
@@ -48,8 +50,13 @@ TENANT_SETTINGS_TABLE = Table(
     Column("locale", String, nullable=False, default="th-TH"),
     Column("daily_digest_enabled", Boolean, nullable=False, default=True),
     Column("weekly_digest_enabled", Boolean, nullable=False, default=False),
+    Column("crawl_interval_hours", Integer, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "crawl_interval_hours IS NULL OR crawl_interval_hours > 0",
+        name="tenant_settings_crawl_interval_hours_check",
+    ),
     UniqueConstraint("tenant_id", name="tenant_settings_tenant_uq"),
 )
 
@@ -73,6 +80,7 @@ class TenantSettingsRecord:
     locale: str
     daily_digest_enabled: bool
     weekly_digest_enabled: bool
+    crawl_interval_hours: int | None
     created_at: str | None
     updated_at: str | None
 
@@ -113,6 +121,11 @@ def _settings_from_mapping(row) -> TenantSettingsRecord:
         locale=str(row["locale"]),
         daily_digest_enabled=bool(row["daily_digest_enabled"]),
         weekly_digest_enabled=bool(row["weekly_digest_enabled"]),
+        crawl_interval_hours=(
+            int(row["crawl_interval_hours"])
+            if row["crawl_interval_hours"] is not None
+            else None
+        ),
         created_at=_to_iso(row["created_at"]),
         updated_at=_to_iso(row["updated_at"]),
     )
@@ -194,6 +207,19 @@ class SqlAdminRepository:
             return None
         return _tenant_from_mapping(row)
 
+    def list_active_tenants(self) -> list[TenantRecord]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(TENANTS_TABLE)
+                    .where(TENANTS_TABLE.c.is_active.is_(True))
+                    .order_by(TENANTS_TABLE.c.created_at, TENANTS_TABLE.c.id)
+                )
+                .mappings()
+                .all()
+            )
+        return [_tenant_from_mapping(row) for row in rows]
+
     def get_tenant_settings(self, *, tenant_id: str) -> TenantSettingsRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:
@@ -214,6 +240,7 @@ class SqlAdminRepository:
                 locale="th-TH",
                 daily_digest_enabled=True,
                 weekly_digest_enabled=False,
+                crawl_interval_hours=None,
                 created_at=None,
                 updated_at=None,
             )
@@ -229,6 +256,7 @@ class SqlAdminRepository:
         locale: str | None = None,
         daily_digest_enabled: bool | None = None,
         weekly_digest_enabled: bool | None = None,
+        crawl_interval_hours: int | None = None,
     ) -> TenantSettingsRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         now = _now()
@@ -261,6 +289,7 @@ class SqlAdminRepository:
                             if weekly_digest_enabled is None
                             else bool(weekly_digest_enabled)
                         ),
+                        crawl_interval_hours=crawl_interval_hours,
                         created_at=now,
                         updated_at=now,
                     )
@@ -291,6 +320,11 @@ class SqlAdminRepository:
                             existing["weekly_digest_enabled"]
                             if weekly_digest_enabled is None
                             else bool(weekly_digest_enabled)
+                        ),
+                        crawl_interval_hours=(
+                            existing["crawl_interval_hours"]
+                            if crawl_interval_hours is None
+                            else int(crawl_interval_hours)
                         ),
                         updated_at=now,
                     )

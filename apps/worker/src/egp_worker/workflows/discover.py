@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
+from egp_worker.browser_downloads import ingest_downloaded_documents
+from egp_worker.browser_discovery import crawl_live_discovery
 from egp_worker.project_event_sink import (
     ProjectEventSink,
     create_project_event_sink,
@@ -15,6 +18,8 @@ from egp_worker.project_event_sink import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from egp_notifications.dispatcher import NotificationDispatcher
 
 
@@ -22,6 +27,27 @@ if TYPE_CHECKING:
 class DiscoverWorkflowResult:
     run: CrawlRunDetail
     projects: list[ProjectRecord]
+
+
+def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
+    safe_payload = dict(discovered)
+    downloaded_documents = list(discovered.get("downloaded_documents") or [])
+    if downloaded_documents:
+        safe_payload["downloaded_documents"] = [
+            {
+                "file_name": str(document.get("file_name") or ""),
+                "source_label": str(document.get("source_label") or ""),
+                "source_status_text": str(document.get("source_status_text") or ""),
+                "source_page_text": str(document.get("source_page_text") or ""),
+                "project_state": (
+                    str(document["project_state"])
+                    if document.get("project_state") is not None
+                    else None
+                ),
+            }
+            for document in downloaded_documents
+        ]
+    return safe_payload
 
 
 def run_discover_workflow(
@@ -35,6 +61,10 @@ def run_discover_workflow(
     project_repository: SqlProjectRepository | None = None,
     project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
+    live: bool = False,
+    profile: str | None = None,
+    live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
+    artifact_root: Path | str = Path("artifacts"),
 ) -> DiscoverWorkflowResult:
     if run_repository is None:
         if database_url is None:
@@ -54,23 +84,34 @@ def run_discover_workflow(
                 notification_dispatcher=notification_dispatcher,
             )
 
+    resolved_projects = list(discovered_projects)
+    if live_discovery is not None and not resolved_projects:
+        resolved_projects = list(live_discovery(keyword))
+    elif live:
+        resolved_projects = crawl_live_discovery(
+            keyword=keyword,
+            profile=profile,
+            include_documents=True,
+        )
+
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
     run_repository.mark_run_started(run.id)
     persisted_projects: list[ProjectRecord] = []
     error_count = 0
 
-    for discovered in discovered_projects:
+    for discovered in resolved_projects:
+        task_keyword = str(discovered.get("keyword") or keyword)
         task = run_repository.create_task(
             run_id=run.id,
             task_type="discover",
-            keyword=keyword,
-            payload=discovered,
+            keyword=task_keyword,
+            payload=_task_safe_payload(discovered),
         )
         try:
             run_repository.mark_task_started(task.id)
             event = DiscoveredProjectEvent(
                 tenant_id=tenant_id,
-                keyword=keyword,
+                keyword=task_keyword,
                 project_number=discovered.get("project_number"),
                 search_name=discovered.get("search_name"),
                 detail_name=discovered.get("detail_name"),
@@ -85,6 +126,15 @@ def run_discover_workflow(
                 raw_snapshot=discovered,
             )
             project = project_event_sink.record_discovery(event)
+            downloaded_documents = list(discovered.get("downloaded_documents") or [])
+            if downloaded_documents:
+                ingest_downloaded_documents(
+                    artifact_root=artifact_root,
+                    database_url=database_url,
+                    tenant_id=tenant_id,
+                    project_id=project.id,
+                    downloaded_documents=downloaded_documents,
+                )
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )

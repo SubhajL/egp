@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
+from .scheduler import run_scheduled_discovery
 from .workflows.close_check import run_close_check_workflow
 from .workflows.discover import run_discover_workflow
 from .workflows.document_ingest import ingest_document_artifact
@@ -18,15 +20,22 @@ def _parse_optional_datetime(value: object) -> datetime | None:
     return datetime.fromisoformat(str(value))
 
 
+def _run_discovery_job(payload: dict[str, object]) -> dict[str, object]:
+    return run_worker_job(payload)
+
+
 def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     command = str(payload.get("command") or "").strip()
     if command == "discover":
         result = run_discover_workflow(
             database_url=str(payload["database_url"]),
             tenant_id=str(payload["tenant_id"]),
-            keyword=str(payload["keyword"]),
+            keyword=str(payload.get("keyword") or ""),
             discovered_projects=list(payload.get("discovered_projects") or []),
             trigger_type=str(payload.get("trigger_type") or "manual"),
+            live=bool(payload.get("live", False)),
+            profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
+            artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
         )
         return {
             "command": command,
@@ -41,6 +50,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             tenant_id=str(payload["tenant_id"]),
             observations=list(payload.get("observations") or []),
             trigger_type=str(payload.get("trigger_type") or "manual"),
+            live=bool(payload.get("live", False)),
         )
         return {
             "command": command,
@@ -105,6 +115,23 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
                 if transition is not None
                 else None
             ),
+        }
+    if command == "run_scheduled_discovery":
+        database_url = str(payload["database_url"])
+        result = run_scheduled_discovery(
+            database_url=database_url,
+            job_runner=lambda job: _run_discovery_job(
+                {
+                    "command": "discover",
+                    "database_url": database_url,
+                    **job,
+                }
+            ),
+        )
+        return {
+            "command": command,
+            "due_job_count": int(result["due_job_count"]),
+            "executed_job_count": int(result["executed_job_count"]),
         }
     raise ValueError(f"Unsupported worker command: {command}")
 

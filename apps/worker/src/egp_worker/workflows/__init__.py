@@ -1,6 +1,7 @@
-"""Worker workflows."""
+"""Worker workflows package.
 
-from .document_ingest import ingest_document_artifact
-from .timeout_sweep import evaluate_timeout_transition
+Keep package imports side-effect free so helper modules can import individual
+workflow modules without triggering circular imports during test collection.
+"""
 
-__all__ = ["evaluate_timeout_transition", "ingest_document_artifact"]
+__all__ = ["run_discover_workflow", "evaluate_timeout_transition", "ingest_document_artifact"]

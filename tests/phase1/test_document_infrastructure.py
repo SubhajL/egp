@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
+from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.workflows.document_ingest import ingest_document_artifact
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -146,6 +147,42 @@ def test_worker_document_ingest_uses_database_url_override(tmp_path) -> None:
             (result.document.id,),
         ).fetchone()
     assert row == ("tor.pdf", result.document.storage_key)
+
+
+def test_ingest_downloaded_documents_persists_multiple_downloads(tmp_path) -> None:
+    database_path = tmp_path / "downloaded.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    artifact_root = tmp_path / "artifacts"
+
+    results = ingest_downloaded_documents(
+        database_url=database_url,
+        artifact_root=artifact_root,
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        downloaded_documents=[
+            {
+                "file_name": "tor.pdf",
+                "file_bytes": b"tor-v1",
+                "source_label": "ร่างขอบเขตของงาน",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "source_page_text": "ประชาพิจารณ์",
+            },
+            {
+                "file_name": "announcement.pdf",
+                "file_bytes": b"announce-v1",
+                "source_label": "ประกาศเชิญชวน",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "source_page_text": "",
+            },
+        ],
+    )
+
+    assert len(results) == 2
+    assert results[0].created is True
+    assert results[1].created is True
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
+    assert row == (2,)
 
 
 def test_s3_artifact_store_puts_prefixed_key_and_presigns_download_url() -> None:
