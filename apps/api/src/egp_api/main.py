@@ -375,25 +375,30 @@ def create_app(
                 if requested_headers:
                     headers["Access-Control-Allow-Headers"] = requested_headers
             return Response(status_code=200, headers=headers)
-        if request.url.path in {
-            "/health",
-            "/openapi.json",
-            "/docs",
-            "/docs/oauth2-redirect",
-            "/redoc",
-            "/v1/auth/login",
-            "/v1/auth/logout",
-            "/v1/auth/register",
-            "/v1/auth/password/forgot",
-            "/v1/auth/password/reset",
-            "/v1/auth/invite/accept",
-            "/v1/auth/email/verify",
-            "/internal/worker/projects/discover",
-            "/internal/worker/projects/close-check",
-        } or (
-            request.url.path.startswith("/v1/billing/payment-requests/")
-            and request.url.path.endswith("/callbacks")
-        ) or request.url.path == "/v1/billing/providers/opn/webhooks":
+        if (
+            request.url.path
+            in {
+                "/health",
+                "/openapi.json",
+                "/docs",
+                "/docs/oauth2-redirect",
+                "/redoc",
+                "/v1/auth/login",
+                "/v1/auth/logout",
+                "/v1/auth/register",
+                "/v1/auth/password/forgot",
+                "/v1/auth/password/reset",
+                "/v1/auth/invite/accept",
+                "/v1/auth/email/verify",
+                "/internal/worker/projects/discover",
+                "/internal/worker/projects/close-check",
+            }
+            or (
+                request.url.path.startswith("/v1/billing/payment-requests/")
+                and request.url.path.endswith("/callbacks")
+            )
+            or request.url.path == "/v1/billing/providers/opn/webhooks"
+        ):
             request.state.auth_context = None
             return await call_next(request)
 
