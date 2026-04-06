@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
@@ -188,6 +190,7 @@ class TransitionBillingRecordRequest(BaseModel):
 class CreateBillingPaymentRequestRequest(BaseModel):
     tenant_id: str | None = None
     provider: BillingPaymentProvider = BillingPaymentProvider.MOCK_PROMPTPAY
+    payment_method: BillingPaymentMethod = BillingPaymentMethod.PROMPTPAY_QR
     expires_in_minutes: int = Field(default=30, ge=1, le=1440)
 
 
@@ -546,6 +549,7 @@ def create_billing_payment_request(
             tenant_id=resolved_tenant_id,
             billing_record_id=record_id,
             provider=payload.provider,
+            payment_method=payload.payment_method,
             expires_in_minutes=payload.expires_in_minutes,
             actor_subject=_actor_subject_from_request(request),
         )
@@ -582,12 +586,46 @@ def handle_billing_payment_request_callback(
             tenant_id=resolved_tenant_id,
             payment_request_id=request_id,
             payload=payload.model_dump(exclude_none=True),
+            headers={key.lower(): value for key, value in request.headers.items()},
+            raw_body=request.scope.get("_body_text")
+            if isinstance(request.scope.get("_body_text"), str)
+            else None,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="payment request not found") from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="payment request not found for tenant") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_detail(detail)
+
+
+@router.post("/providers/opn/webhooks", response_model=BillingRecordDetailResponse)
+async def handle_opn_provider_webhook(
+    request: Request,
+) -> BillingRecordDetailResponse:
+    service = _service_from_request(request)
+    body_bytes = await request.body()
+    raw_body = body_bytes.decode("utf-8") if body_bytes else ""
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid json payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid json payload")
+    try:
+        detail = service.handle_provider_webhook(
+            provider=BillingPaymentProvider.OPN,
+            payload=payload,
+            headers={key.lower(): value for key, value in request.headers.items()},
+            raw_body=raw_body or None,
+            actor_subject="opn-webhook",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="payment request not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:

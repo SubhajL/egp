@@ -907,6 +907,12 @@ export type FetchSupportSummaryParams = {
   window_days?: number;
 };
 
+export type RegisterInput = {
+  company_name: string;
+  email: string;
+  password: string;
+};
+
 export type LoginInput = {
   tenant_slug: string;
   email: string;
@@ -963,6 +969,7 @@ export type TransitionBillingRecordInput = {
 
 export type CreateBillingPaymentRequestInput = {
   provider?: string;
+  payment_method?: string;
   expires_in_minutes?: number;
 };
 
@@ -1090,6 +1097,16 @@ export async function fetchSupportSummary(
     window_days: params.window_days ?? 30,
   });
   return apiFetch<SupportSummaryResponse>(url);
+}
+
+export async function register(
+  payload: RegisterInput,
+): Promise<CurrentSessionResponse> {
+  const url = buildUrl("/v1/auth/register", {});
+  return apiJsonRequest<CurrentSessionResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function login(
@@ -1248,6 +1265,7 @@ export async function createBillingPaymentRequest(
     method: "POST",
     body: JSON.stringify({
       provider: payload.provider ?? "mock_promptpay",
+      payment_method: payload.payment_method ?? "promptpay_qr",
       expires_in_minutes: payload.expires_in_minutes ?? 30,
     }),
   });

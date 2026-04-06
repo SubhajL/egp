@@ -5,7 +5,7 @@ ALTER TABLE billing_payments DROP CONSTRAINT IF EXISTS billing_payments_method_c
 
 ALTER TABLE billing_payments
     ADD CONSTRAINT billing_payments_method_check CHECK (
-        payment_method IN ('bank_transfer', 'promptpay_qr')
+        payment_method IN ('bank_transfer', 'promptpay_qr', 'card')
     );
 
 ALTER TABLE billing_events DROP CONSTRAINT IF EXISTS billing_events_type_check;
@@ -42,10 +42,10 @@ CREATE TABLE IF NOT EXISTS billing_payment_requests (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT billing_payment_requests_provider_check CHECK (
-        provider IN ('mock_promptpay')
+        provider IN ('mock_promptpay', 'opn')
     ),
     CONSTRAINT billing_payment_requests_method_check CHECK (
-        payment_method IN ('bank_transfer', 'promptpay_qr')
+        payment_method IN ('bank_transfer', 'promptpay_qr', 'card')
     ),
     CONSTRAINT billing_payment_requests_status_check CHECK (
         status IN ('pending', 'settled', 'expired', 'failed', 'cancelled')
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS billing_provider_events (
     payload_json        TEXT NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT billing_provider_events_provider_check CHECK (
-        provider IN ('mock_promptpay')
+        provider IN ('mock_promptpay', 'opn')
     ),
     CONSTRAINT billing_provider_events_provider_event_unique UNIQUE (provider, provider_event_id)
 );

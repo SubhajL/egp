@@ -142,6 +142,22 @@ def get_payment_callback_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_opn_public_key(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_OPN_PUBLIC_KEY", "").strip()
+    return raw or None
+
+
+def get_opn_secret_key(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_OPN_SECRET_KEY", "").strip()
+    return raw or None
+
+
 def get_session_cookie_name(override: str | None = None) -> str:
     if override is not None:
         normalized = override.strip()

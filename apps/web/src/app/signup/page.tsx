@@ -4,25 +4,21 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Bell, FileText, Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, startTransition, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, startTransition, useEffect, useState } from "react";
 
-import { ApiError, login } from "@/lib/api";
+import { ApiError, register } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
-function LoginPageContent() {
+function SignupPageContent() {
   const router = useRouter();
-  const queryClient = useQueryClient();
   const searchParams = useSearchParams();
-  const nextPath = useMemo(
-    () => normalizeNextPath(searchParams.get("next")),
-    [searchParams],
-  );
+  const queryClient = useQueryClient();
   const { data: currentSession, isLoading: sessionLoading } = useMe();
-  const [tenantSlug, setTenantSlug] = useState("");
+  const nextPath = normalizeNextPath(searchParams.get("next"));
+  const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mfaCode, setMfaCode] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -39,13 +35,12 @@ function LoginPageContent() {
     setSubmitting(true);
     setErrorMessage(null);
     try {
-      const currentSession = await login({
-        tenant_slug: tenantSlug.trim(),
+      const session = await register({
+        company_name: companyName.trim(),
         email: email.trim(),
         password,
-        mfa_code: mfaCode.trim() || undefined,
       });
-      queryClient.setQueryData(["me"], currentSession);
+      queryClient.setQueryData(["me"], session);
       startTransition(() => {
         router.replace(nextPath);
       });
@@ -55,7 +50,7 @@ function LoginPageContent() {
       } else if (error instanceof Error) {
         setErrorMessage(error.message);
       } else {
-        setErrorMessage("เข้าสู่ระบบไม่สำเร็จ");
+        setErrorMessage("สมัครใช้งานไม่สำเร็จ");
       }
     } finally {
       setSubmitting(false);
@@ -64,7 +59,7 @@ function LoginPageContent() {
 
   return (
     <div className="flex min-h-screen">
-      <div className="hidden w-3/5 flex-col justify-between bg-gradient-to-br from-[#4F46E5] to-[#3730A3] p-12 lg:flex">
+      <div className="hidden w-3/5 flex-col justify-between bg-gradient-to-br from-[oklch(0.55_0.18_275)] to-[oklch(0.45_0.18_275)] p-12 lg:flex">
         <div>
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl bg-white/20">
@@ -115,17 +110,25 @@ function LoginPageContent() {
           </div>
         </div>
 
-        <p className="text-sm text-white/40">
-          © 2569 e-GP Intelligence Platform สงวนลิขสิทธิ์
-        </p>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
+            <span className="text-sm font-semibold text-white">ทดลองใช้ฟรี 7 วัน</span>
+            <span className="ml-auto text-xs text-white/60">ไม่ต้องใช้บัตรเครดิต</span>
+          </div>
+          <p className="text-sm text-white/40">
+            © 2569 e-GP Intelligence Platform สงวนลิขสิทธิ์
+          </p>
+        </div>
       </div>
 
       <div className="flex w-full items-center justify-center bg-[var(--bg-surface)] px-8 lg:w-2/5">
         <div className="w-full max-w-[420px] space-y-6">
           <div>
-            <h1 className="text-2xl font-bold text-[var(--text-primary)]">เข้าสู่ระบบ</h1>
+            <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+              ทดลองใช้งานฟรี 7 วัน
+            </h1>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
-              ระบุ workspace slug, อีเมล และรหัสผ่านเพื่อเข้าสู่ระบบขององค์กรคุณ
+              สร้างบัญชีใหม่และเริ่มใช้งานได้ทันทีโดยไม่ต้องรอแอดมินสร้างผู้ใช้
             </p>
           </div>
 
@@ -137,15 +140,15 @@ function LoginPageContent() {
 
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-2">
-              <label htmlFor="tenantSlug" className="text-sm font-medium text-[var(--text-primary)]">
-                Workspace slug
+              <label htmlFor="companyName" className="text-sm font-medium text-[var(--text-primary)]">
+                ชื่อบริษัท / องค์กร
               </label>
               <input
-                id="tenantSlug"
-                value={tenantSlug}
-                onChange={(event) => setTenantSlug(event.target.value)}
+                id="companyName"
+                value={companyName}
+                onChange={(event) => setCompanyName(event.target.value)}
                 autoComplete="organization"
-                placeholder="acme-intelligence"
+                placeholder="บริษัท ตัวอย่าง จำกัด"
                 required
                 className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
@@ -176,29 +179,10 @@ function LoginPageContent() {
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 type="password"
-                autoComplete="current-password"
-                placeholder="••••••••••••"
+                autoComplete="new-password"
+                placeholder="อย่างน้อย 12 ตัวอักษร"
+                minLength={12}
                 required
-                className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label htmlFor="mfaCode" className="text-sm font-medium text-[var(--text-primary)]">
-                  MFA code
-                </label>
-                <Link href="/forgot-password" className="text-xs font-semibold text-primary">
-                  ลืมรหัสผ่าน?
-                </Link>
-              </div>
-              <input
-                id="mfaCode"
-                value={mfaCode}
-                onChange={(event) => setMfaCode(event.target.value)}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="กรอกเมื่อเปิดใช้ MFA แล้ว"
                 className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
             </div>
@@ -208,18 +192,21 @@ function LoginPageContent() {
               disabled={submitting || sessionLoading}
               className="h-12 w-full rounded-xl bg-primary text-sm font-bold text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {submitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
+              {submitting ? "กำลังสร้างบัญชี..." : "เริ่มทดลองใช้งานฟรี"}
             </button>
           </form>
 
-          <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 text-xs text-[var(--text-muted)]">
-            หากยังไม่มี workspace ของคุณ สามารถเริ่มทดลองใช้ฟรี 7 วันได้ทันที
-          </div>
+          <p className="text-center text-xs text-[var(--text-muted)]">
+            การสมัครใช้งานถือว่าคุณยอมรับ{" "}
+            <span className="font-medium text-[var(--text-primary)]">ข้อกำหนดการใช้งาน</span>
+            {" "}และ{" "}
+            <span className="font-medium text-[var(--text-primary)]">นโยบายความเป็นส่วนตัว</span>
+          </p>
 
           <p className="text-center text-sm text-[var(--text-muted)]">
-            ยังไม่มีบัญชี?{" "}
-            <Link href="/signup" className="font-semibold text-primary">
-              ทดลองใช้ฟรี 7 วัน
+            มีบัญชีอยู่แล้ว?{" "}
+            <Link href="/login" className="font-semibold text-primary">
+              เข้าสู่ระบบ
             </Link>
           </p>
         </div>
@@ -228,10 +215,10 @@ function LoginPageContent() {
   );
 }
 
-export default function LoginPage() {
+export default function SignupPage() {
   return (
     <Suspense fallback={<div className="min-h-screen bg-[var(--bg-surface)]" />}>
-      <LoginPageContent />
+      <SignupPageContent />
     </Suspense>
   );
 }

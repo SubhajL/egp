@@ -246,6 +246,35 @@ class SqlAuthRepository:
             return None
         return _login_user_from_mapping(row)
 
+    def find_login_user_by_email(self, *, email: str) -> LoginUserRecord | None:
+        """Find any user with this email across all tenants (for duplicate-email guard)."""
+        normalized_email = _normalize_email(email)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        USERS_TABLE,
+                        TENANTS_TABLE.c.name,
+                        TENANTS_TABLE.c.slug,
+                        TENANTS_TABLE.c.plan_code,
+                        TENANTS_TABLE.c.is_active,
+                    )
+                    .select_from(
+                        USERS_TABLE.join(
+                            TENANTS_TABLE,
+                            TENANTS_TABLE.c.id == USERS_TABLE.c.tenant_id,
+                        )
+                    )
+                    .where(func.lower(USERS_TABLE.c.email) == normalized_email)
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return _login_user_from_mapping(row)
+
     def get_user_by_id(self, *, tenant_id: str, user_id: str) -> LoginUserRecord | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_user_id = normalize_uuid_string(user_id)

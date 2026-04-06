@@ -72,6 +72,12 @@ class ActionStatusResponse(BaseModel):
     status: str
 
 
+class RegisterRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=12)
+
+
 class EmailVerificationResponse(BaseModel):
     email_verified: bool
 
@@ -118,6 +124,36 @@ def login(payload: LoginRequest, request: Request, response: Response) -> Curren
         status_code = 403 if "active" in detail else 401
         raise HTTPException(status_code=status_code, detail=detail) from exc
 
+    response.set_cookie(
+        key=request.app.state.session_cookie_name,
+        value=result.session_token,
+        max_age=request.app.state.session_cookie_max_age_seconds,
+        httponly=True,
+        secure=request.app.state.session_cookie_secure,
+        samesite=request.app.state.session_cookie_samesite,
+        path="/",
+    )
+    return _serialize_current(result.current)
+
+
+@router.post("/v1/auth/register", response_model=CurrentSessionResponse, status_code=200)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+) -> CurrentSessionResponse:
+    service = _service_from_request(request)
+    try:
+        result = service.register(
+            company_name=payload.company_name,
+            email=payload.email,
+            password=payload.password,
+        )
+    except ValueError as exc:
+        detail = str(exc) or "registration failed"
+        if "already registered" in detail:
+            raise HTTPException(status_code=409, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
     response.set_cookie(
         key=request.app.state.session_cookie_name,
         value=result.session_token,

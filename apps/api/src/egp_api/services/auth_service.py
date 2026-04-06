@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import struct
 import time
 from dataclasses import dataclass
@@ -19,7 +20,9 @@ from egp_db.repositories.auth_repo import (
     hash_password,
     verify_password,
 )
+from egp_db.repositories.notification_repo import SqlNotificationRepository
 from egp_notifications.service import NotificationService
+from egp_shared_types.enums import UserRole
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,12 +58,16 @@ class AuthService:
         *,
         session_max_age_seconds: int,
         notification_service: NotificationService | None = None,
+        notification_repository: SqlNotificationRepository | None = None,
+        billing_service=None,  # BillingService — avoid circular import
         web_base_url: str = "http://localhost:3000",
     ) -> None:
         self._repository = repository
         self._admin_repository = admin_repository
         self._session_max_age_seconds = max(60, int(session_max_age_seconds))
         self._notification_service = notification_service
+        self._notification_repository = notification_repository
+        self._billing_service = billing_service
         self._web_base_url = web_base_url.rstrip("/")
 
     def login(
@@ -88,6 +95,74 @@ class AuthService:
             user_id=user.user_id,
             expires_in_seconds=self._session_max_age_seconds,
         )
+        return LoginResult(
+            session_token=session_token,
+            current=self._build_current_view(_auth_context_from_user(user)),
+        )
+
+    def register(
+        self,
+        *,
+        company_name: str,
+        email: str,
+        password: str,
+    ) -> LoginResult:
+        """Self-service registration: create tenant + owner user + free trial + session."""
+        if self._notification_repository is None:
+            raise RuntimeError("notification_repository is required for registration")
+        if self._billing_service is None:
+            raise RuntimeError("billing_service is required for registration")
+
+        # Derive and deduplicate tenant slug
+        slug = _slugify(company_name)
+        if not slug:
+            slug = "tenant"
+        base_slug = slug
+        counter = 1
+        while self._admin_repository.get_tenant_by_slug(slug=slug) is not None:
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+
+        # Check if this email is already registered (across any tenant)
+        normalized_email = str(email).strip().lower()
+        if self._repository.find_login_user_by_email(email=normalized_email) is not None:
+            raise ValueError(f"email already registered: {normalized_email}")
+
+        # Create tenant with free_trial plan
+        tenant = self._admin_repository.create_tenant(
+            name=company_name.strip(),
+            slug=slug,
+            plan_code="free_trial",
+        )
+
+        # Create owner user with hashed password and email pre-verified
+        from datetime import UTC, datetime
+
+        now_iso = datetime.now(UTC).isoformat()
+        created = self._notification_repository.create_user(
+            tenant_id=tenant.id,
+            email=normalized_email,
+            role=UserRole.OWNER,
+            status="active",
+            password_hash=hash_password(password),
+            email_verified_at=now_iso,
+        )
+
+        # Activate free trial subscription
+        self._billing_service.start_free_trial(
+            tenant_id=tenant.id,
+            actor_subject="self-registration",
+        )
+
+        # Issue session
+        session_token = self._repository.create_session(
+            tenant_id=tenant.id,
+            user_id=created["id"],
+            expires_in_seconds=self._session_max_age_seconds,
+        )
+        user = self._repository.find_login_user(tenant_slug=slug, email=normalized_email)
+        if user is None:
+            raise RuntimeError("user not found after creation")
         return LoginResult(
             session_token=session_token,
             current=self._build_current_view(_auth_context_from_user(user)),
@@ -400,3 +475,21 @@ def _otpauth_uri(*, email: str, secret: str) -> str:
         f"{quote('e-GP Intelligence')}:{quote(email)}"
         f"?secret={quote(secret)}&issuer={quote('e-GP Intelligence')}"
     )
+
+
+def _slugify(text: str) -> str:
+    """Convert a free-form company name to a lowercase URL-safe slug.
+
+    Non-ASCII characters are stripped (Thai company names will produce a slug
+    derived only from the ASCII parts; if nothing ASCII remains the caller
+    must fall back to a default).
+    """
+    normalized = str(text).strip().lower()
+    # Replace common separators with a hyphen
+    normalized = re.sub(r"[\s_/\\]+", "-", normalized)
+    # Keep only ASCII letters, digits, and hyphens
+    normalized = re.sub(r"[^a-z0-9\-]", "", normalized)
+    # Collapse multiple hyphens
+    normalized = re.sub(r"-{2,}", "-", normalized)
+    # Strip leading/trailing hyphens
+    return normalized.strip("-")

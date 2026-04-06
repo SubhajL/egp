@@ -114,6 +114,7 @@ class BillingRecordStatus(StrEnum):
 class BillingPaymentMethod(StrEnum):
     BANK_TRANSFER = "bank_transfer"
     PROMPTPAY_QR = "promptpay_qr"
+    CARD = "card"
 
 
 class BillingPaymentStatus(StrEnum):
@@ -142,6 +143,7 @@ class BillingSubscriptionStatus(StrEnum):
 
 class BillingPaymentProvider(StrEnum):
     MOCK_PROMPTPAY = "mock_promptpay"
+    OPN = "opn"
 
 
 class BillingPaymentRequestStatus(StrEnum):
