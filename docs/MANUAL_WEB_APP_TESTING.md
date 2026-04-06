@@ -17,7 +17,7 @@
 3. Seed a local tenant and owner user:
    - `./.venv/bin/python scripts/seed_manual_test_user.py`
 4. Start API with required env:
-   - `DATABASE_URL=postgresql://egp:egp_dev@localhost:5432/egp EGP_PAYMENT_CALLBACK_SECRET=top-secret EGP_AUTH_REQUIRED=true EGP_JWT_SECRET=dev-jwt-secret EGP_SESSION_COOKIE_SECURE=false EGP_WEB_ALLOWED_ORIGINS=http://localhost:3000 EGP_WEB_BASE_URL=http://localhost:3000 ./.venv/bin/uvicorn apps.api.src.main:app --reload --port 8000`
+   - `DATABASE_URL=postgresql://egp:egp_dev@localhost:5432/egp EGP_PAYMENT_CALLBACK_SECRET=top-secret EGP_AUTH_REQUIRED=true EGP_JWT_SECRET=dev-jwt-secret EGP_SESSION_COOKIE_SECURE=false EGP_WEB_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3002 EGP_WEB_BASE_URL=http://localhost:3002 ./.venv/bin/uvicorn apps.api.src.main:app --reload --reload-dir apps/api/src --reload-dir packages --port 8000`
 5. Start web app:
    - `cd apps/web && NEXT_PUBLIC_EGP_API_BASE_URL=http://localhost:8000 npm run dev`
 

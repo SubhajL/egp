@@ -312,3 +312,77 @@ LOW
 ### Rollout Notes
 - `EGP_PAYMENT_PROVIDER=opn` requires `EGP_OPN_SECRET_KEY` and likely `EGP_OPN_PUBLIC_KEY` in the target environment.
 - Existing Postgres environments need migration `014_opn_payment_provider.sql` applied before using Opn/card values.
+
+## Session 4 — Dashboard Runtime And Chart Hardening (2026-04-06 20:21 +07)
+
+### Goal
+Fix the local dashboard failure that surfaced as a browser CORS error, remove the Recharts `width(-1) height(-1)` warning, and document the correct local API reload/CORS startup command.
+
+### What Changed
+
+#### `packages/db/src/egp_db/repositories/project_repo.py`
+- Fixed dashboard project-summary queries to compare SQL `date(...)` expressions against Python `date` values instead of ISO strings.
+- This removes the Postgres runtime error on `GET /v1/dashboard/summary` for authenticated tenants.
+
+#### `apps/web/src/components/ui/dashboard-charts.tsx`
+- Added `min-w-0` to both chart cards and explicit `w-full min-w-0` on the chart wrappers so Recharts `ResponsiveContainer` can measure the grid cells reliably.
+- This removes the `width(-1) and height(-1)` warning from the dashboard charts.
+
+#### `docs/MANUAL_WEB_APP_TESTING.md`
+- Updated the local API startup command to include both `http://localhost:3000` and `http://localhost:3002` in `EGP_WEB_ALLOWED_ORIGINS`.
+- Updated the local API startup command to use `--reload-dir apps/api/src --reload-dir packages` so package-level repository changes are picked up during local development.
+
+### TDD Evidence
+- Existing dashboard regression coverage already exercised the summary path:
+  - `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py -q`
+- Live RED reproduction before the repo fix:
+  - authenticated `GET http://127.0.0.1:8000/v1/dashboard/summary` returned `500 Internal Server Error`
+  - traceback showed `operator does not exist: date = character varying` in `packages/db/src/egp_db/repositories/project_repo.py`
+- GREEN after the fix:
+  - `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py -q`
+  - authenticated live `GET http://127.0.0.1:8000/v1/dashboard/summary` returned `200 OK` with `Access-Control-Allow-Origin: http://localhost:3002`
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py -q` → 2 passed
+- `./.venv/bin/ruff check packages/db/src/egp_db/repositories/project_repo.py` → passed
+- `cd apps/web && npm run typecheck` → passed
+- `cd apps/web && npm run build` → passed
+
+### Wiring Verification
+
+| Component | Wiring Verified? | How Verified |
+|---|---|---|
+| Dashboard repository fix | YES | `tests/phase2/test_dashboard_api.py` passed and live authenticated `GET /v1/dashboard/summary` returned `200 OK` |
+| Dashboard browser CORS path | YES | live response included `Access-Control-Allow-Origin: http://localhost:3002` after restarting API with the documented env |
+| Dashboard chart containers | YES | `apps/web/src/app/(app)/dashboard/page.tsx` renders `DailyDiscoveryChart` and `ProjectStateChart`; wrappers in `dashboard-charts.tsx` now provide explicit measurable width |
+| Local dev startup docs | YES | `docs/MANUAL_WEB_APP_TESTING.md` now matches the working API launch command used to verify the fix |
+
+### Behavior Changes and Risks
+- Dashboard summary now works against the local Postgres-backed API path instead of failing with a backend `500`.
+- Dashboard charts now have safer width constraints inside the dashboard grid.
+- Risk: the chart warning fix was validated by code inspection/build and the corrected live dashboard fetch path, but not by an automated browser assertion that explicitly checks the console output.
+
+### Follow-Ups / Known Gaps
+- The Recharts warning path does not currently have browser-console test coverage.
+- The running local API must continue using a startup command that watches both `apps/api/src` and `packages`; otherwise package-level fixes will not hot reload.
+
+## Review (2026-04-06 20:21 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: `working-tree`
+- Commands Run: `git status --short --branch`; targeted `git diff` on `project_repo.py`, `dashboard-charts.tsx`, and `docs/MANUAL_WEB_APP_TESTING.md`; `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py -q`; `./.venv/bin/ruff check packages/db/src/egp_db/repositories/project_repo.py`; `cd apps/web && npm run typecheck`; `cd apps/web && npm run build`
+
+### Findings
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumed this patch should stay narrowly scoped to the dashboard runtime fix, chart sizing warning, and local dev documentation.
+
+### Recommended Tests / Validation
+- Run one manual browser refresh on `/dashboard` against the current local API process to confirm the console warning is gone in the actual rendered layout.
+
+### Rollout Notes
+- Local developers should use the updated API startup command from `docs/MANUAL_WEB_APP_TESTING.md` so both `localhost:3002` CORS and package reload behavior stay correct.

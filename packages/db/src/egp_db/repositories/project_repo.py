@@ -1176,8 +1176,7 @@ class SqlProjectRepository:
                     .where(
                         and_(
                             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
-                            func.date(PROJECTS_TABLE.c.first_seen_at)
-                            == today.isoformat(),
+                            func.date(PROJECTS_TABLE.c.first_seen_at) == today,
                         )
                     )
                 ).scalar_one()
@@ -1212,8 +1211,7 @@ class SqlProjectRepository:
                             PROJECTS_TABLE.c.project_state.in_(
                                 sorted(_DASHBOARD_CLOSED_STATES)
                             ),
-                            func.date(PROJECTS_TABLE.c.last_changed_at)
-                            == today.isoformat(),
+                            func.date(PROJECTS_TABLE.c.last_changed_at) == today,
                         )
                     )
                 ).scalar_one()
@@ -1290,8 +1288,8 @@ class SqlProjectRepository:
                     .where(
                         and_(
                             PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
-                            discovery_date >= discovery_start.isoformat(),
-                            discovery_date <= today.isoformat(),
+                            discovery_date >= discovery_start,
+                            discovery_date <= today,
                         )
                     )
                     .group_by(discovery_date)
