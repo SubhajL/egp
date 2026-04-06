@@ -1,14 +1,26 @@
-"""Read-only rules service for profiles and platform settings."""
+"""Rules service for profiles and platform settings."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import describe_closure_rules
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
 from egp_shared_types.enums import NotificationType
 
-from egp_api.services.entitlement_service import TenantEntitlementService, TenantEntitlementSnapshot
+from egp_api.services.entitlement_service import (
+    EntitlementError,
+    TenantEntitlementService,
+    TenantEntitlementSnapshot,
+)
+
+if TYPE_CHECKING:
+    from egp_db.repositories.admin_repo import SqlAdminRepository
+
+
+DEFAULT_CRAWL_INTERVAL_HOURS = 24
+VALID_PROFILE_TYPES = {"tor", "toe", "lue", "custom"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +62,9 @@ class ScheduleRulesView:
     supported_trigger_types: list[str]
     schedule_execution_supported: bool
     editable_in_product: bool
+    tenant_crawl_interval_hours: int | None
+    default_crawl_interval_hours: int
+    effective_crawl_interval_hours: int
     source: str
 
 
@@ -84,10 +99,57 @@ class RulesService:
         *,
         entitlement_service: TenantEntitlementService | None = None,
         notification_event_wiring_complete: bool = True,
+        admin_repository: SqlAdminRepository | None = None,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
         self._notification_event_wiring_complete = notification_event_wiring_complete
+        self._admin_repository = admin_repository
+
+    def create_profile(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        profile_type: str,
+        is_active: bool,
+        keywords: list[str],
+        max_pages_per_keyword: int = 15,
+        close_consulting_after_days: int = 30,
+        close_stale_after_days: int = 45,
+    ) -> RuleProfile:
+        normalized_name = name.strip()
+        if not normalized_name:
+            raise ValueError("profile name is required")
+        normalized_profile_type = profile_type.strip().casefold()
+        if normalized_profile_type not in VALID_PROFILE_TYPES:
+            raise ValueError("unsupported profile type")
+        normalized_keywords = _normalize_keywords(keywords)
+        if not normalized_keywords:
+            raise ValueError("at least one keyword is required")
+
+        if is_active and self._entitlement_service is not None:
+            existing_details = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
+            existing_keywords = _active_keywords_from_details(existing_details)
+            prospective_keywords = _merge_keywords(existing_keywords, normalized_keywords)
+            snapshot = self._entitlement_service.get_snapshot(tenant_id=tenant_id)
+            if (
+                snapshot.keyword_limit is not None
+                and len(prospective_keywords) > int(snapshot.keyword_limit)
+            ):
+                raise EntitlementError("active keyword configuration exceeds plan limit")
+
+        detail = self._repository.create_profile(
+            tenant_id=tenant_id,
+            name=normalized_name,
+            profile_type=normalized_profile_type,
+            is_active=is_active,
+            max_pages_per_keyword=max_pages_per_keyword,
+            close_consulting_after_days=close_consulting_after_days,
+            close_stale_after_days=close_stale_after_days,
+            keywords=normalized_keywords,
+        )
+        return _map_profile(detail)
 
     def get_rules(self, *, tenant_id: str) -> RulesSnapshot:
         profiles = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
@@ -111,6 +173,17 @@ class RulesService:
                 notifications_allowed=False,
             )
         )
+        tenant_settings = (
+            self._admin_repository.get_tenant_settings(tenant_id=tenant_id)
+            if self._admin_repository is not None
+            else None
+        )
+        tenant_crawl_interval_hours = (
+            tenant_settings.crawl_interval_hours if tenant_settings is not None else None
+        )
+        effective_crawl_interval_hours = (
+            tenant_crawl_interval_hours or DEFAULT_CRAWL_INTERVAL_HOURS
+        )
         return RulesSnapshot(
             profiles=[_map_profile(profile) for profile in profiles],
             entitlements=entitlements,
@@ -133,7 +206,53 @@ class RulesService:
             schedule_rules=ScheduleRulesView(
                 supported_trigger_types=["schedule", "manual", "retry", "backfill"],
                 schedule_execution_supported=True,
-                editable_in_product=False,
-                source="packages/db/src/migrations/001_initial_schema.sql",
+                editable_in_product=True,
+                tenant_crawl_interval_hours=tenant_crawl_interval_hours,
+                default_crawl_interval_hours=DEFAULT_CRAWL_INTERVAL_HOURS,
+                effective_crawl_interval_hours=effective_crawl_interval_hours,
+                source="tenant_settings + default schedule policy",
             ),
         )
+
+
+def _normalize_keywords(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized:
+            continue
+        dedupe_key = normalized.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        ordered.append(normalized)
+    return ordered
+
+
+def _active_keywords_from_details(details: list[CrawlProfileDetail]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for detail in details:
+        if not detail.profile.is_active:
+            continue
+        for keyword in detail.keywords:
+            normalized = keyword.keyword.strip()
+            dedupe_key = normalized.casefold()
+            if not normalized or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            ordered.append(normalized)
+    return ordered
+
+
+def _merge_keywords(existing: list[str], new_values: list[str]) -> list[str]:
+    ordered = list(existing)
+    seen = {value.casefold() for value in existing}
+    for value in new_values:
+        dedupe_key = value.casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        ordered.append(value)
+    return ordered

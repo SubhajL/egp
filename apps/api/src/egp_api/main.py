@@ -345,6 +345,7 @@ def create_app(
         profile_repository,
         entitlement_service=entitlement_service,
         notification_event_wiring_complete=True,
+        admin_repository=admin_repository,
     )
     app.state.export_service = ExportService(
         project_repository,

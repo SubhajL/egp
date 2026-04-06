@@ -258,6 +258,7 @@ class AdminService:
         locale: str | None = None,
         daily_digest_enabled: bool | None = None,
         weekly_digest_enabled: bool | None = None,
+        crawl_interval_hours: int | None = None,
         actor_subject: str | None = None,
     ) -> TenantSettingsRecord:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
@@ -271,6 +272,7 @@ class AdminService:
             locale=locale,
             daily_digest_enabled=daily_digest_enabled,
             weekly_digest_enabled=weekly_digest_enabled,
+            crawl_interval_hours=crawl_interval_hours,
         )
         if self._audit_repository is not None:
             self._audit_repository.record_event(
@@ -289,6 +291,7 @@ class AdminService:
                         "locale": previous.locale,
                         "daily_digest_enabled": previous.daily_digest_enabled,
                         "weekly_digest_enabled": previous.weekly_digest_enabled,
+                        "crawl_interval_hours": previous.crawl_interval_hours,
                     },
                     "after": {
                         "support_email": updated.support_email,
@@ -297,6 +300,7 @@ class AdminService:
                         "locale": updated.locale,
                         "daily_digest_enabled": updated.daily_digest_enabled,
                         "weekly_digest_enabled": updated.weekly_digest_enabled,
+                        "crawl_interval_hours": updated.crawl_interval_hours,
                     },
                 },
             )

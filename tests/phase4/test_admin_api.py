@@ -442,6 +442,7 @@ def test_admin_snapshot_returns_tenant_users_settings_and_billing(tmp_path) -> N
         "locale": "th-TH",
         "daily_digest_enabled": True,
         "weekly_digest_enabled": False,
+        "crawl_interval_hours": None,
         "created_at": None,
         "updated_at": None,
     }
@@ -513,15 +514,18 @@ def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
             "locale": "th-TH",
             "daily_digest_enabled": False,
             "weekly_digest_enabled": True,
+            "crawl_interval_hours": 24,
         },
     )
     assert settings.status_code == 200
     assert settings.json()["support_email"] == "support@example.com"
     assert settings.json()["daily_digest_enabled"] is False
+    assert settings.json()["crawl_interval_hours"] == 24
 
     snapshot = client.get("/v1/admin", params={"tenant_id": TENANT_ID})
     assert snapshot.status_code == 200
     assert snapshot.json()["settings"]["billing_contact_email"] == "billing@example.com"
+    assert snapshot.json()["settings"]["crawl_interval_hours"] == 24
     assert snapshot.json()["users"][0]["notification_preferences"]["run_failed"] is True
 
 

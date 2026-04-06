@@ -206,6 +206,9 @@ export type ScheduleRulesSummary = {
   supported_trigger_types: string[];
   schedule_execution_supported: boolean;
   editable_in_product: boolean;
+  tenant_crawl_interval_hours: number | null;
+  default_crawl_interval_hours: number;
+  effective_crawl_interval_hours: number;
   source: string;
 };
 
@@ -469,6 +472,7 @@ export type AdminTenantSettings = {
   locale: string;
   daily_digest_enabled: boolean;
   weekly_digest_enabled: boolean;
+  crawl_interval_hours: number | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -1002,6 +1006,18 @@ export type UpdateTenantSettingsInput = {
   locale?: string;
   daily_digest_enabled?: boolean;
   weekly_digest_enabled?: boolean;
+  crawl_interval_hours?: number | null;
+};
+
+export type CreateRuleProfileInput = {
+  tenant_id?: string;
+  name: string;
+  profile_type?: string;
+  is_active?: boolean;
+  keywords: string[];
+  max_pages_per_keyword?: number;
+  close_consulting_after_days?: number;
+  close_stale_after_days?: number;
 };
 
 export type CreateWebhookInput = {
@@ -1032,6 +1048,25 @@ export async function fetchDashboardSummary(
 export async function fetchRules(): Promise<RulesResponse> {
   const url = buildUrl("/v1/rules", {});
   return apiFetch<RulesResponse>(url);
+}
+
+export async function createRuleProfile(
+  payload: CreateRuleProfileInput,
+): Promise<RuleProfile> {
+  const url = buildUrl("/v1/rules/profiles", {});
+  return apiJsonRequest<RuleProfile>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      name: payload.name,
+      profile_type: payload.profile_type ?? "custom",
+      is_active: payload.is_active ?? true,
+      keywords: payload.keywords,
+      max_pages_per_keyword: payload.max_pages_per_keyword,
+      close_consulting_after_days: payload.close_consulting_after_days,
+      close_stale_after_days: payload.close_stale_after_days,
+    }),
+  });
 }
 
 export async function fetchBillingRecords(

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -13,7 +14,10 @@ from sqlalchemy import (
     Integer,
     String,
     Table,
+    delete,
+    insert,
     select,
+    update,
 )
 from sqlalchemy.engine import Engine, RowMapping
 
@@ -87,6 +91,10 @@ def _dt_to_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _profile_from_mapping(row: RowMapping) -> CrawlProfileRecord:
@@ -199,6 +207,158 @@ class SqlProfileRepository:
                 seen.add(dedupe_key)
                 ordered.append(normalized)
         return ordered
+
+    def get_profile_detail(self, *, tenant_id: str, profile_id: str) -> CrawlProfileDetail | None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_profile_id = normalize_uuid_string(profile_id)
+        with self._engine.connect() as connection:
+            profile_row = (
+                connection.execute(
+                    select(CRAWL_PROFILES_TABLE)
+                    .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
+                )
+                .mappings()
+                .first()
+            )
+            if profile_row is None:
+                return None
+            keyword_rows = (
+                connection.execute(
+                    select(CRAWL_PROFILE_KEYWORDS_TABLE)
+                    .where(CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == normalized_profile_id)
+                    .order_by(
+                        CRAWL_PROFILE_KEYWORDS_TABLE.c.position,
+                        CRAWL_PROFILE_KEYWORDS_TABLE.c.created_at,
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return CrawlProfileDetail(
+            profile=_profile_from_mapping(profile_row),
+            keywords=[_keyword_from_mapping(row) for row in keyword_rows],
+        )
+
+    def create_profile(
+        self,
+        *,
+        tenant_id: str,
+        name: str,
+        profile_type: str,
+        is_active: bool,
+        max_pages_per_keyword: int,
+        close_consulting_after_days: int,
+        close_stale_after_days: int,
+        keywords: list[str],
+    ) -> CrawlProfileDetail:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        profile_id = str(uuid4())
+        now = _now()
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(CRAWL_PROFILES_TABLE).values(
+                    id=profile_id,
+                    tenant_id=normalized_tenant_id,
+                    name=name,
+                    profile_type=profile_type,
+                    is_active=is_active,
+                    max_pages_per_keyword=max_pages_per_keyword,
+                    close_consulting_after_days=close_consulting_after_days,
+                    close_stale_after_days=close_stale_after_days,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            for position, keyword in enumerate(keywords, start=1):
+                connection.execute(
+                    insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
+                        id=str(uuid4()),
+                        profile_id=profile_id,
+                        keyword=keyword,
+                        position=position,
+                        created_at=now,
+                    )
+                )
+        detail = self.get_profile_detail(tenant_id=normalized_tenant_id, profile_id=profile_id)
+        if detail is None:
+            raise RuntimeError(f"profile {profile_id} not found after creation")
+        return detail
+
+    def update_profile(
+        self,
+        *,
+        tenant_id: str,
+        profile_id: str,
+        name: str | None = None,
+        is_active: bool | None = None,
+        keywords: list[str] | None = None,
+        max_pages_per_keyword: int | None = None,
+        close_consulting_after_days: int | None = None,
+        close_stale_after_days: int | None = None,
+    ) -> CrawlProfileDetail:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_profile_id = normalize_uuid_string(profile_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(CRAWL_PROFILES_TABLE)
+                    .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                raise KeyError(profile_id)
+            connection.execute(
+                update(CRAWL_PROFILES_TABLE)
+                .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
+                .values(
+                    name=existing["name"] if name is None else name,
+                    is_active=existing["is_active"] if is_active is None else is_active,
+                    max_pages_per_keyword=(
+                        existing["max_pages_per_keyword"]
+                        if max_pages_per_keyword is None
+                        else max_pages_per_keyword
+                    ),
+                    close_consulting_after_days=(
+                        existing["close_consulting_after_days"]
+                        if close_consulting_after_days is None
+                        else close_consulting_after_days
+                    ),
+                    close_stale_after_days=(
+                        existing["close_stale_after_days"]
+                        if close_stale_after_days is None
+                        else close_stale_after_days
+                    ),
+                    updated_at=now,
+                )
+            )
+            if keywords is not None:
+                connection.execute(
+                    delete(CRAWL_PROFILE_KEYWORDS_TABLE).where(
+                        CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == normalized_profile_id
+                    )
+                )
+                for position, keyword in enumerate(keywords, start=1):
+                    connection.execute(
+                        insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
+                            id=str(uuid4()),
+                            profile_id=normalized_profile_id,
+                            keyword=keyword,
+                            position=position,
+                            created_at=now,
+                        )
+                    )
+        detail = self.get_profile_detail(
+            tenant_id=normalized_tenant_id,
+            profile_id=normalized_profile_id,
+        )
+        if detail is None:
+            raise RuntimeError(f"profile {profile_id} not found after update")
+        return detail
 
 
 def create_profile_repository(

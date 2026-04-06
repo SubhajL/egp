@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 from egp_crawler_core.closure_rules import check_winner_closure
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
+from egp_shared_types.enums import ProjectState
 from egp_shared_types.project_events import CloseCheckProjectEvent
+from egp_worker.browser_close_check import crawl_live_close_check
 from egp_worker.project_event_sink import (
     ProjectEventSink,
     create_project_event_sink,
@@ -16,6 +18,8 @@ from egp_worker.project_event_sink import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from egp_notifications.dispatcher import NotificationDispatcher
 
 
@@ -35,6 +39,9 @@ def run_close_check_workflow(
     project_repository: SqlProjectRepository | None = None,
     project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
+    live: bool = False,
+    live_projects: list[dict[str, object]] | None = None,
+    live_observation_sweep: Callable[[list[dict[str, object]]], list[dict[str, object]]] | None = None,
 ) -> CloseCheckWorkflowResult:
     if run_repository is None:
         if database_url is None:
@@ -54,12 +61,42 @@ def run_close_check_workflow(
                 notification_dispatcher=notification_dispatcher,
             )
 
+    resolved_live_projects = list(live_projects or [])
+    if live and not resolved_live_projects:
+        if project_repository is None:
+            if database_url is None:
+                raise ValueError("database_url is required when live close-check loads projects")
+            project_repository = SqlProjectRepository(
+                database_url=database_url,
+                bootstrap_schema=False,
+            )
+        resolved_live_projects = [
+            {
+                "project_id": project.id,
+                "project_name": project.project_name,
+                "project_number": project.project_number,
+                "organization_name": project.organization_name,
+                "project_state": project.project_state.value,
+            }
+            for project in project_repository.list_projects(
+                tenant_id=tenant_id,
+                project_states=[ProjectState.OPEN_INVITATION, ProjectState.OPEN_CONSULTING],
+                limit=200,
+            ).items
+        ]
+
+    resolved_observations = list(observations)
+    if not resolved_observations and live and live_observation_sweep is None:
+        resolved_observations = list(crawl_live_close_check(projects=resolved_live_projects))
+    elif live_observation_sweep is not None and not resolved_observations:
+        resolved_observations = list(live_observation_sweep(resolved_live_projects))
+
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
     run_repository.mark_run_started(run.id)
     updated_projects: list[ProjectRecord] = []
     error_count = 0
 
-    for observation in observations:
+    for observation in resolved_observations:
         task = run_repository.create_task(
             run_id=run.id,
             task_type="close_check",

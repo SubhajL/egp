@@ -35,6 +35,7 @@ class AdminTenantSettingsResponse(BaseModel):
     locale: str
     daily_digest_enabled: bool
     weekly_digest_enabled: bool
+    crawl_interval_hours: int | None
     created_at: str | None
     updated_at: str | None
 
@@ -234,6 +235,7 @@ class UpdateTenantSettingsRequest(BaseModel):
     locale: str | None = None
     daily_digest_enabled: bool | None = None
     weekly_digest_enabled: bool | None = None
+    crawl_interval_hours: int | None = Field(default=None, ge=1, le=168)
 
 
 class AdminInviteUserRequest(BaseModel):
@@ -580,6 +582,7 @@ def update_tenant_settings(
             locale=payload.locale,
             daily_digest_enabled=payload.daily_digest_enabled,
             weekly_digest_enabled=payload.weekly_digest_enabled,
+            crawl_interval_hours=payload.crawl_interval_hours,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
