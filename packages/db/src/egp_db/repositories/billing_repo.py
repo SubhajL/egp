@@ -937,8 +937,10 @@ class SqlBillingRepository:
                 connection.execute(
                     select(BILLING_PAYMENT_REQUESTS_TABLE)
                     .where(
-                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider == normalized_provider.value,
-                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider_reference == normalized_reference,
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider
+                        == normalized_provider.value,
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider_reference
+                        == normalized_reference,
                     )
                     .limit(1)
                 )

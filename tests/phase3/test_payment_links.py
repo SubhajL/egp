@@ -4,7 +4,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
-from egp_api.services.payment_provider import CreatedPaymentRequest, OpnProvider, ParsedPaymentCallback
+from egp_api.services.payment_provider import (
+    CreatedPaymentRequest,
+    OpnProvider,
+    ParsedPaymentCallback,
+)
 from egp_shared_types.enums import (
     BillingPaymentMethod,
     BillingPaymentProvider,
@@ -98,7 +102,9 @@ def _create_client(
     )
 
 
-def test_create_app_requires_payment_callback_secret(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_app_requires_payment_callback_secret(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase3-payment-links.sqlite3'}"
     monkeypatch.delenv("EGP_PAYMENT_CALLBACK_SECRET", raising=False)
 
@@ -217,7 +223,10 @@ def test_create_payment_request_supports_opn_promptpay_qr(tmp_path) -> None:
     assert request["provider"] == "opn"
     assert request["payment_method"] == "promptpay_qr"
     assert request["provider_reference"] == "chrg_test_promptpay_001"
-    assert request["payment_url"] == "https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg"
+    assert (
+        request["payment_url"]
+        == "https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg"
+    )
     assert request["qr_payload"] == "0002010102121234"
     assert request["qr_svg"].startswith("<svg")
 
@@ -394,8 +403,13 @@ def test_opn_webhook_settles_promptpay_request_without_shared_secret(tmp_path) -
     assert response.status_code == 200
     settled = response.json()
     assert settled["record"]["status"] == "paid"
-    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
-    assert [payment["payment_method"] for payment in settled["payments"]] == ["promptpay_qr"]
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
+    assert [payment["payment_method"] for payment in settled["payments"]] == [
+        "promptpay_qr"
+    ]
 
 
 def test_opn_webhook_settles_card_request_without_shared_secret(tmp_path) -> None:
@@ -417,7 +431,10 @@ def test_opn_webhook_settles_card_request_without_shared_secret(tmp_path) -> Non
     assert response.status_code == 200
     settled = response.json()
     assert settled["record"]["status"] == "paid"
-    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
     assert [payment["payment_method"] for payment in settled["payments"]] == ["card"]
 
 

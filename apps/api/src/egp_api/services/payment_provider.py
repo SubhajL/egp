@@ -127,7 +127,9 @@ class MockPromptPayProvider:
         )
         return ParsedPaymentCallback(
             provider_event_id=provider_event_id,
-            provider_reference=str(payload.get("provider_reference") or payload.get("reference_code") or "").strip(),
+            provider_reference=str(
+                payload.get("provider_reference") or payload.get("reference_code") or ""
+            ).strip(),
             status=status,
             amount=amount,
             currency=currency,
@@ -212,7 +214,9 @@ class OpnProvider:
         return f"{(Decimal(str(amount or '0')) / Decimal('100')).quantize(Decimal('0.01')):.2f}"
 
     @staticmethod
-    def _normalize_status(status: str, *, event_key: str | None = None) -> BillingPaymentRequestStatus:
+    def _normalize_status(
+        status: str, *, event_key: str | None = None
+    ) -> BillingPaymentRequestStatus:
         normalized = status.strip().lower()
         if normalized in {"successful", "paid"} or event_key == "charge.complete":
             return BillingPaymentRequestStatus.SETTLED
@@ -255,11 +259,11 @@ class OpnProvider:
                     },
                 },
             )
-            source_payload = charge.get("source") if isinstance(charge.get("source"), dict) else source
+            source_payload = (
+                charge.get("source") if isinstance(charge.get("source"), dict) else source
+            )
             scannable_code = (
-                source_payload.get("scannable_code")
-                if isinstance(source_payload, dict)
-                else None
+                source_payload.get("scannable_code") if isinstance(source_payload, dict) else None
             )
             qr_payload = (
                 str(scannable_code.get("value") or "").strip()
@@ -276,12 +280,15 @@ class OpnProvider:
                 payment_method=BillingPaymentMethod.PROMPTPAY_QR,
                 status=self._normalize_status(str(charge.get("status") or "pending")),
                 provider_reference=str(charge.get("id") or "").strip(),
-                payment_url=qr_image or f"{self._api_base_url}/charges/{str(charge.get('id') or '').strip()}",
+                payment_url=qr_image
+                or f"{self._api_base_url}/charges/{str(charge.get('id') or '').strip()}",
                 qr_payload=qr_payload,
                 qr_svg=render_promptpay_qr_svg(qr_payload) if qr_payload else "",
                 amount=request.amount,
                 currency=normalized_currency,
-                expires_at=str(source_payload.get("expires_at") or charge.get("expires_at") or "").strip(),
+                expires_at=str(
+                    source_payload.get("expires_at") or charge.get("expires_at") or ""
+                ).strip(),
             )
 
         if request.payment_method is BillingPaymentMethod.CARD:
@@ -342,13 +349,14 @@ class OpnProvider:
                 provider_reference = str(verified.get("id") or provider_reference).strip()
             reference_code = str(verified.get("id") or "").strip() or None
             amount = self._from_subunits(verified.get("amount"))
-            currency = str(verified.get("currency") or data.get("currency") or "THB").strip().upper()
-            status = self._normalize_status(str(verified.get("status") or data.get("status") or ""), event_key=event_key or None)
+            currency = (
+                str(verified.get("currency") or data.get("currency") or "THB").strip().upper()
+            )
+            status = self._normalize_status(
+                str(verified.get("status") or data.get("status") or ""), event_key=event_key or None
+            )
             occurred_at = str(
-                verified.get("paid_at")
-                or payload.get("created")
-                or data.get("created")
-                or ""
+                verified.get("paid_at") or payload.get("created") or data.get("created") or ""
             ).strip()
         elif object_type == "link":
             verified = self._request(method="GET", path=f"/links/{provider_reference}")
@@ -358,13 +366,14 @@ class OpnProvider:
             if isinstance(first_charge, dict) and first_charge.get("id"):
                 reference_code = str(first_charge.get("id")).strip()
             amount = self._from_subunits(verified.get("amount"))
-            currency = str(verified.get("currency") or data.get("currency") or "THB").strip().upper()
-            status = self._normalize_status(str(verified.get("status") or data.get("status") or ""), event_key=event_key or None)
+            currency = (
+                str(verified.get("currency") or data.get("currency") or "THB").strip().upper()
+            )
+            status = self._normalize_status(
+                str(verified.get("status") or data.get("status") or ""), event_key=event_key or None
+            )
             occurred_at = str(
-                verified.get("paid_at")
-                or payload.get("created")
-                or data.get("created")
-                or ""
+                verified.get("paid_at") or payload.get("created") or data.get("created") or ""
             ).strip()
         else:
             raise ValueError("unsupported opn webhook payload")

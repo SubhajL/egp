@@ -66,6 +66,7 @@ def test_register_slug_derived_from_company_name(tmp_path):
     slug = data["tenant"]["slug"]
     assert slug, "slug must not be empty"
     import re
+
     assert re.fullmatch(r"[a-z0-9][a-z0-9\-]*", slug), f"invalid slug: {slug!r}"
 
 

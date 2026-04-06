@@ -587,7 +587,9 @@ def handle_billing_payment_request_callback(
             payment_request_id=request_id,
             payload=payload.model_dump(exclude_none=True),
             headers={key.lower(): value for key, value in request.headers.items()},
-            raw_body=request.scope.get("_body_text") if isinstance(request.scope.get("_body_text"), str) else None,
+            raw_body=request.scope.get("_body_text")
+            if isinstance(request.scope.get("_body_text"), str)
+            else None,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
