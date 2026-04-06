@@ -102,7 +102,14 @@ class TenantEntitlementService:
         remaining_keyword_slots = None
         if keyword_limit is not None:
             remaining_keyword_slots = max(int(keyword_limit) - active_keyword_count, 0)
-        allowed = has_active_subscription
+        runs_allowed = has_active_subscription
+        exports_allowed = has_active_subscription
+        document_download_allowed = has_active_subscription
+        notifications_allowed = has_active_subscription
+        if has_active_subscription and subscription.plan_code == "free_trial":
+            exports_allowed = False
+            document_download_allowed = False
+            notifications_allowed = False
 
         return TenantEntitlementSnapshot(
             plan_code=subscription.plan_code,
@@ -114,10 +121,10 @@ class TenantEntitlementService:
             remaining_keyword_slots=remaining_keyword_slots,
             active_keywords=active_keywords,
             over_keyword_limit=over_keyword_limit,
-            runs_allowed=allowed,
-            exports_allowed=allowed,
-            document_download_allowed=allowed,
-            notifications_allowed=allowed,
+            runs_allowed=runs_allowed,
+            exports_allowed=exports_allowed,
+            document_download_allowed=document_download_allowed,
+            notifications_allowed=notifications_allowed,
         )
 
     def require_active_subscription(

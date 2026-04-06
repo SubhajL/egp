@@ -630,7 +630,7 @@ export type SupportSummaryResponse = {
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
 
-const DEFAULT_API_BASE_URL = "http://localhost:8000";
+const DEFAULT_API_PORT = "8000";
 
 function readRuntimeEnv(name: string): string | undefined {
   if (typeof globalThis === "undefined") return undefined;
@@ -640,10 +640,11 @@ function readRuntimeEnv(name: string): string | undefined {
 }
 
 export function getApiBaseUrl(): string {
-  if (typeof window === "undefined") return DEFAULT_API_BASE_URL;
-  const configured =
-    readRuntimeEnv("NEXT_PUBLIC_EGP_API_BASE_URL")?.trim() ?? DEFAULT_API_BASE_URL;
-  return configured.replace(/\/+$/, "");
+  if (typeof window === "undefined") return `http://127.0.0.1:${DEFAULT_API_PORT}`;
+  const configured = readRuntimeEnv("NEXT_PUBLIC_EGP_API_BASE_URL")?.trim();
+  const fallback = `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
+  const resolved = configured || fallback;
+  return resolved.replace(/\/+$/, "");
 }
 
 export function getTenantId(): string {
@@ -1249,6 +1250,14 @@ export async function createBillingPaymentRequest(
       provider: payload.provider ?? "mock_promptpay",
       expires_in_minutes: payload.expires_in_minutes ?? 30,
     }),
+  });
+}
+
+export async function startFreeTrial(): Promise<BillingSubscription> {
+  const url = buildUrl("/v1/billing/trial/start", {});
+  return apiJsonRequest<BillingSubscription>(url, {
+    method: "POST",
+    body: JSON.stringify({}),
   });
 }
 
