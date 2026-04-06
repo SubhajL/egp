@@ -214,13 +214,11 @@ def _actor_subject_from_request(request: Request) -> str:
 
 def _require_payment_callback_secret(request: Request) -> None:
     configured_secret = getattr(request.app.state, "payment_callback_secret", None)
-    if configured_secret:
-        header_secret = request.headers.get("x-egp-payment-callback-secret", "").strip()
-        if header_secret != configured_secret:
-            raise HTTPException(status_code=401, detail="invalid payment callback secret")
-        return
-    if getattr(request.app.state, "auth_required", False):
+    if not configured_secret:
         raise HTTPException(status_code=503, detail="payment callback secret not configured")
+    header_secret = request.headers.get("x-egp-payment-callback-secret", "").strip()
+    if header_secret != configured_secret:
+        raise HTTPException(status_code=401, detail="invalid payment callback secret")
 
 
 def _serialize_record(record: BillingRecordRecord) -> BillingRecordResponse:

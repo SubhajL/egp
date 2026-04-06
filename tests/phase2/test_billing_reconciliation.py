@@ -15,6 +15,7 @@ def _create_client(tmp_path) -> TestClient:
             artifact_root=tmp_path,
             database_url=database_url,
             auth_required=False,
+            payment_callback_secret="top-secret",
         )
     )
 
