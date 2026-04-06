@@ -11,6 +11,7 @@ import {
   createAdminUser,
   createWebhook,
   deleteWebhook,
+  inviteAdminUser,
   updateAdminUser,
   updateAdminUserNotificationPreferences,
   updateTenantSettings,
@@ -64,10 +65,12 @@ function SummaryCard({
 function UserRow({
   user,
   onSave,
+  onInvite,
   busy,
 }: {
   user: AdminUser;
   onSave: (userId: string, role: string, status: string, fullName: string) => Promise<void>;
+  onInvite: (userId: string) => Promise<void>;
   busy: boolean;
 }) {
   const [role, setRole] = useState(user.role);
@@ -79,6 +82,14 @@ function UserRow({
       <div>
         <p className="font-semibold text-[var(--text-primary)]">{user.email}</p>
         <p className="text-sm text-[var(--text-muted)]">สร้างเมื่อ {formatThaiDate(user.created_at)}</p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-[var(--badge-gray-bg)] px-3 py-1 font-semibold text-[var(--badge-gray-text)]">
+            {user.email_verified_at ? "ยืนยันอีเมลแล้ว" : "ยังไม่ยืนยันอีเมล"}
+          </span>
+          <span className="rounded-full bg-[var(--badge-blue-bg)] px-3 py-1 font-semibold text-[var(--badge-blue-text)]">
+            {user.mfa_enabled ? "MFA เปิดใช้" : "MFA ยังไม่เปิดใช้"}
+          </span>
+        </div>
       </div>
       <input
         value={fullName}
@@ -106,14 +117,24 @@ function UserRow({
           <option value="deactivated">deactivated</option>
         </select>
       </div>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => onSave(user.id, role, status, fullName)}
-        className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-      >
-        บันทึก
-      </button>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onInvite(user.id)}
+          className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] disabled:opacity-60"
+        >
+          ส่ง Invite
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onSave(user.id, role, status, fullName)}
+          className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+        >
+          บันทึก
+        </button>
+      </div>
     </div>
   );
 }
@@ -238,6 +259,7 @@ export default function AdminPage() {
   } = useSupportSummary(activeTenantId ? { tenant_id: activeTenantId } : null);
   const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("users");
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newFullName, setNewFullName] = useState("");
@@ -291,6 +313,7 @@ export default function AdminPage() {
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await createAdminUser({
@@ -314,6 +337,7 @@ export default function AdminPage() {
 
   async function handleSaveUser(userId: string, role: string, status: string, fullName: string) {
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await updateAdminUser(userId, {
@@ -332,8 +356,25 @@ export default function AdminPage() {
     }
   }
 
+  async function handleInviteUser(userId: string) {
+    setSubmitError(null);
+    setSubmitNotice(null);
+    setBusy(true);
+    try {
+      const invited = await inviteAdminUser(userId, activeTenantId);
+      setSubmitNotice(`ส่งคำเชิญไปยัง ${invited.delivery_email} แล้ว`);
+    } catch (mutationError) {
+      setSubmitError(
+        mutationError instanceof Error ? mutationError.message : "ไม่สามารถส่งคำเชิญได้",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleTogglePreference(user: AdminUser, notificationType: string) {
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await updateAdminUserNotificationPreferences(user.id, {
@@ -357,6 +398,7 @@ export default function AdminPage() {
   async function handleSaveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await updateTenantSettings({
@@ -389,6 +431,7 @@ export default function AdminPage() {
   async function handleCreateWebhook(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await createWebhook({
@@ -414,6 +457,7 @@ export default function AdminPage() {
 
   async function handleDeleteWebhook(webhookId: string) {
     setSubmitError(null);
+    setSubmitNotice(null);
     setBusy(true);
     try {
       await deleteWebhook(webhookId, activeTenantId);
@@ -730,7 +774,13 @@ export default function AdminPage() {
 
           <div className="space-y-3">
             {users.map((user) => (
-              <UserRow key={user.id} user={user} onSave={handleSaveUser} busy={busy} />
+              <UserRow
+                key={user.id}
+                user={user}
+                onSave={handleSaveUser}
+                onInvite={handleInviteUser}
+                busy={busy}
+              />
             ))}
           </div>
         </div>
@@ -1087,6 +1137,12 @@ export default function AdminPage() {
       {submitError ? (
         <div className="mb-4 rounded-2xl border border-[var(--badge-red-bg)] bg-[var(--bg-surface)] p-4 text-sm text-[var(--badge-red-text)]">
           {submitError}
+        </div>
+      ) : null}
+
+      {submitNotice ? (
+        <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+          {submitNotice}
         </div>
       ) : null}
 

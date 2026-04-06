@@ -315,7 +315,9 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
     _seed_active_subscription(client)
     _seed_active_profile_keyword(client, keyword="สุขภาพ")
 
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep "today" fixtures away from UTC midnight so the dashboard date bucket
+    # assertions stay deterministic in CI regardless of execution time.
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
     today_open = _seed_project(
         client,
         project_number="EGP-2026-4001",

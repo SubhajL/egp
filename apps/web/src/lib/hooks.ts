@@ -11,6 +11,7 @@ import {
   fetchProjectDetail,
   fetchProjects,
   fetchDocuments,
+  fetchMe,
   fetchRules,
   fetchRuns,
   fetchSupportSummary,
@@ -76,6 +77,14 @@ export function useRules() {
   return useQuery({
     queryKey: ["rules"],
     queryFn: () => fetchRules(),
+  });
+}
+
+export function useMe() {
+  return useQuery({
+    queryKey: ["me"],
+    queryFn: () => fetchMe(),
+    retry: false,
   });
 }
 

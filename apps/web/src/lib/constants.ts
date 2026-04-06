@@ -80,6 +80,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "การทำงาน", href: "/runs" },
   { label: "กฎและโปรไฟล์", href: "/rules" },
   { label: "บิลและชำระเงิน", href: "/billing" },
+  { label: "ความปลอดภัย", href: "/security" },
   { label: "แอดมิน", href: "/admin" },
 ];
 

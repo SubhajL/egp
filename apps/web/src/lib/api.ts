@@ -48,6 +48,33 @@ export type ProjectDetailResponse = {
   status_events: ProjectStatusEvent[];
 };
 
+export type AuthenticatedUser = {
+  id: string | null;
+  subject: string;
+  email: string | null;
+  full_name: string | null;
+  role: string | null;
+  status: string | null;
+  email_verified: boolean;
+  email_verified_at: string | null;
+  mfa_enabled: boolean;
+};
+
+export type AuthTenant = {
+  id: string;
+  name: string;
+  slug: string;
+  plan_code: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CurrentSessionResponse = {
+  user: AuthenticatedUser;
+  tenant: AuthTenant;
+};
+
 export type ProjectListResponse = {
   projects: ProjectSummary[];
   total: number;
@@ -452,9 +479,33 @@ export type AdminUser = {
   full_name: string | null;
   role: string;
   status: string;
+  email_verified_at: string | null;
+  mfa_enabled: boolean;
   created_at: string;
   updated_at: string;
   notification_preferences: Record<string, boolean>;
+};
+
+export type ActionStatusResponse = {
+  status: string;
+};
+
+export type EmailVerificationResponse = {
+  email_verified: boolean;
+};
+
+export type MfaSetupResponse = {
+  secret: string;
+  otpauth_uri: string;
+};
+
+export type MfaStatusResponse = {
+  mfa_enabled: boolean;
+};
+
+export type AdminInviteUserResponse = {
+  status: string;
+  delivery_email: string;
 };
 
 export type AdminBillingOverview = {
@@ -600,16 +651,9 @@ export function getTenantId(): string {
   return readRuntimeEnv("NEXT_PUBLIC_EGP_TENANT_ID")?.trim() ?? "";
 }
 
-export function getApiBearerToken(): string {
-  if (typeof window === "undefined") return "";
-  return readRuntimeEnv("NEXT_PUBLIC_EGP_API_BEARER_TOKEN")?.trim() ?? "";
-}
-
 function getApiHeaders(accept = "application/json"): HeadersInit {
-  const token = getApiBearerToken();
   return {
     Accept: accept,
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
@@ -621,9 +665,7 @@ type QueryParamValue =
   | undefined;
 
 function buildUrl(path: string, params: Record<string, QueryParamValue>): string {
-  const tenantId = getTenantId();
   const searchParams = new URLSearchParams();
-  if (tenantId) searchParams.set("tenant_id", tenantId);
   for (const [key, value] of Object.entries(params)) {
     if (Array.isArray(value)) {
       for (const entry of value) {
@@ -637,16 +679,42 @@ function buildUrl(path: string, params: Record<string, QueryParamValue>): string
       searchParams.set(key, String(value));
     }
   }
-  return `${getApiBaseUrl()}${path}?${searchParams.toString()}`;
+  const query = searchParams.toString();
+  return query ? `${getApiBaseUrl()}${path}?${query}` : `${getApiBaseUrl()}${path}`;
+}
+
+export class ApiError extends Error {
+  status: number;
+
+  detail: string;
+
+  constructor(status: number, detail: string) {
+    super(detail);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function throwApiError(response: Response): Promise<never> {
+  let detail = `API request failed: ${response.status} ${response.statusText}`;
+  try {
+    const payload = (await response.json()) as { detail?: string };
+    if (typeof payload.detail === "string" && payload.detail.trim()) {
+      detail = payload.detail;
+    }
+  } catch {}
+  throw new ApiError(response.status, detail);
 }
 
 async function apiFetch<T>(url: string): Promise<T> {
   const response = await fetch(url, {
     headers: getApiHeaders(),
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    await throwApiError(response);
   }
   return response.json() as Promise<T>;
 }
@@ -660,9 +728,10 @@ async function apiJsonRequest<T>(url: string, init: RequestInit): Promise<T> {
       ...(init.headers ?? {}),
     },
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    await throwApiError(response);
   }
   return response.json() as Promise<T>;
 }
@@ -675,9 +744,10 @@ async function apiEmptyRequest(url: string, init: RequestInit): Promise<void> {
       ...(init.headers ?? {}),
     },
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    await throwApiError(response);
   }
 }
 
@@ -758,9 +828,10 @@ export async function fetchProjectExport(
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ),
     cache: "no-store",
+    credentials: "include",
   });
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    await throwApiError(response);
   }
   return {
     blob: await response.blob(),
@@ -797,13 +868,11 @@ export async function fetchProjectCrawlEvidence(
 }
 
 export type FetchRunsParams = {
-  tenant_id?: string;
   limit?: number;
   offset?: number;
 };
 
 export type FetchBillingParams = {
-  tenant_id?: string;
   limit?: number;
   offset?: number;
 };
@@ -817,7 +886,6 @@ export type FetchAuditLogParams = {
 };
 
 export type FetchDashboardSummaryParams = {
-  tenant_id?: string;
 };
 
 export type FetchAdminSnapshotParams = {
@@ -838,8 +906,29 @@ export type FetchSupportSummaryParams = {
   window_days?: number;
 };
 
+export type LoginInput = {
+  tenant_slug: string;
+  email: string;
+  password: string;
+  mfa_code?: string;
+};
+
+export type AcceptInviteInput = {
+  token: string;
+  password: string;
+};
+
+export type ForgotPasswordInput = {
+  tenant_slug: string;
+  email: string;
+};
+
+export type ResetPasswordInput = {
+  token: string;
+  password: string;
+};
+
 export type CreateBillingRecordInput = {
-  tenant_id?: string;
   record_number: string;
   plan_code: string;
   status?: string;
@@ -853,7 +942,6 @@ export type CreateBillingRecordInput = {
 };
 
 export type RecordBillingPaymentInput = {
-  tenant_id?: string;
   payment_method?: string;
   amount: string;
   currency?: string;
@@ -863,19 +951,16 @@ export type RecordBillingPaymentInput = {
 };
 
 export type ReconcileBillingPaymentInput = {
-  tenant_id?: string;
   status: string;
   note?: string;
 };
 
 export type TransitionBillingRecordInput = {
-  tenant_id?: string;
   status: string;
   note?: string;
 };
 
 export type CreateBillingPaymentRequestInput = {
-  tenant_id?: string;
   provider?: string;
   expires_in_minutes?: number;
 };
@@ -893,6 +978,7 @@ export type UpdateAdminUserInput = {
   full_name?: string;
   role?: string;
   status?: string;
+  password?: string;
 };
 
 export type UpdateAdminUserNotificationPreferencesInput = {
@@ -922,7 +1008,6 @@ export async function fetchRuns(
   params: FetchRunsParams = {},
 ): Promise<RunListResponse> {
   const url = buildUrl("/v1/runs", {
-    tenant_id: params.tenant_id,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
@@ -932,9 +1017,7 @@ export async function fetchRuns(
 export async function fetchDashboardSummary(
   params: FetchDashboardSummaryParams = {},
 ): Promise<DashboardSummaryResponse> {
-  const url = buildUrl("/v1/dashboard/summary", {
-    tenant_id: params.tenant_id,
-  });
+  const url = buildUrl("/v1/dashboard/summary", {});
   return apiFetch<DashboardSummaryResponse>(url);
 }
 
@@ -947,7 +1030,6 @@ export async function fetchBillingRecords(
   params: FetchBillingParams = {},
 ): Promise<BillingListResponse> {
   const url = buildUrl("/v1/billing/records", {
-    tenant_id: params.tenant_id,
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
   });
@@ -1009,6 +1091,98 @@ export async function fetchSupportSummary(
   return apiFetch<SupportSummaryResponse>(url);
 }
 
+export async function login(
+  payload: LoginInput,
+): Promise<CurrentSessionResponse> {
+  const url = buildUrl("/v1/auth/login", {});
+  return apiJsonRequest<CurrentSessionResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function acceptInvite(
+  payload: AcceptInviteInput,
+): Promise<CurrentSessionResponse> {
+  const url = buildUrl("/v1/auth/invite/accept", {});
+  return apiJsonRequest<CurrentSessionResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function requestPasswordReset(
+  payload: ForgotPasswordInput,
+): Promise<ActionStatusResponse> {
+  const url = buildUrl("/v1/auth/password/forgot", {});
+  return apiJsonRequest<ActionStatusResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resetPassword(
+  payload: ResetPasswordInput,
+): Promise<ActionStatusResponse> {
+  const url = buildUrl("/v1/auth/password/reset", {});
+  return apiJsonRequest<ActionStatusResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendEmailVerification(): Promise<ActionStatusResponse> {
+  const url = buildUrl("/v1/auth/email/verification/send", {});
+  return apiJsonRequest<ActionStatusResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function verifyEmail(
+  token: string,
+): Promise<EmailVerificationResponse> {
+  const url = buildUrl("/v1/auth/email/verify", {});
+  return apiJsonRequest<EmailVerificationResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function setupMfa(): Promise<MfaSetupResponse> {
+  const url = buildUrl("/v1/auth/mfa/setup", {});
+  return apiJsonRequest<MfaSetupResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function enableMfa(code: string): Promise<MfaStatusResponse> {
+  const url = buildUrl("/v1/auth/mfa/enable", {});
+  return apiJsonRequest<MfaStatusResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function disableMfa(code: string): Promise<MfaStatusResponse> {
+  const url = buildUrl("/v1/auth/mfa/disable", {});
+  return apiJsonRequest<MfaStatusResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  const url = buildUrl("/v1/auth/logout", {});
+  return apiEmptyRequest(url, { method: "POST" });
+}
+
+export async function fetchMe(): Promise<CurrentSessionResponse> {
+  const url = buildUrl("/v1/me", {});
+  return apiFetch<CurrentSessionResponse>(url);
+}
+
 export async function createBillingRecord(
   payload: CreateBillingRecordInput,
 ): Promise<BillingRecordDetail> {
@@ -1017,7 +1191,6 @@ export async function createBillingRecord(
     method: "POST",
     body: JSON.stringify({
       ...payload,
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       status: payload.status ?? "awaiting_payment",
       currency: payload.currency ?? "THB",
     }),
@@ -1033,7 +1206,6 @@ export async function recordBillingPayment(
     method: "POST",
     body: JSON.stringify({
       ...payload,
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       payment_method: payload.payment_method ?? "bank_transfer",
       currency: payload.currency ?? "THB",
     }),
@@ -1048,7 +1220,6 @@ export async function reconcileBillingPayment(
   return apiJsonRequest<BillingRecordDetail>(url, {
     method: "POST",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       ...payload,
     }),
   });
@@ -1062,7 +1233,6 @@ export async function transitionBillingRecord(
   return apiJsonRequest<BillingRecordDetail>(url, {
     method: "POST",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       ...payload,
     }),
   });
@@ -1076,7 +1246,6 @@ export async function createBillingPaymentRequest(
   return apiJsonRequest<BillingRecordDetail>(url, {
     method: "POST",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
       provider: payload.provider ?? "mock_promptpay",
       expires_in_minutes: payload.expires_in_minutes ?? 30,
     }),
@@ -1088,12 +1257,29 @@ export async function createAdminUser(payload: CreateAdminUserInput): Promise<Ad
   return apiJsonRequest<AdminUser>(url, {
     method: "POST",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      tenant_id: payload.tenant_id,
       email: payload.email,
       full_name: payload.full_name,
       role: payload.role ?? "viewer",
       status: payload.status ?? "active",
     }),
+  });
+}
+
+export async function inviteAdminUser(
+  userId: string,
+  tenantId?: string,
+): Promise<AdminInviteUserResponse> {
+  const url = buildUrl(`/v1/admin/users/${encodeURIComponent(userId)}/invite`, {});
+  return apiJsonRequest<AdminInviteUserResponse>(url, {
+    method: "POST",
+    body: JSON.stringify(
+      tenantId
+        ? {
+            tenant_id: tenantId,
+          }
+        : {},
+    ),
   });
 }
 
@@ -1105,10 +1291,11 @@ export async function updateAdminUser(
   return apiJsonRequest<AdminUser>(url, {
     method: "PATCH",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      tenant_id: payload.tenant_id,
       full_name: payload.full_name,
       role: payload.role,
       status: payload.status,
+      password: payload.password,
     }),
   });
 }
@@ -1121,7 +1308,7 @@ export async function updateAdminUserNotificationPreferences(
   return apiJsonRequest<AdminUser>(url, {
     method: "PUT",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      tenant_id: payload.tenant_id,
       email_preferences: payload.email_preferences,
     }),
   });
@@ -1134,7 +1321,7 @@ export async function updateTenantSettings(
   return apiJsonRequest<AdminTenantSettings>(url, {
     method: "PATCH",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      tenant_id: payload.tenant_id,
       ...payload,
     }),
   });
@@ -1147,7 +1334,7 @@ export async function createWebhook(
   return apiJsonRequest<WebhookSubscription>(url, {
     method: "POST",
     body: JSON.stringify({
-      tenant_id: payload.tenant_id ?? (getTenantId() || undefined),
+      tenant_id: payload.tenant_id,
       name: payload.name,
       url: payload.url,
       notification_types: payload.notification_types,
@@ -1161,7 +1348,7 @@ export async function deleteWebhook(
   tenantId?: string,
 ): Promise<void> {
   const url = buildUrl(`/v1/webhooks/${encodeURIComponent(webhookId)}`, {
-    tenant_id: tenantId ?? (getTenantId() || undefined),
+    tenant_id: tenantId,
   });
   return apiEmptyRequest(url, { method: "DELETE" });
 }

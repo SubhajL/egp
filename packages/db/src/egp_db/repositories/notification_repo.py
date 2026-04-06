@@ -44,6 +44,10 @@ USERS_TABLE = Table(
     Column("full_name", String, nullable=True),
     Column("role", String, nullable=False),
     Column("status", String, nullable=False),
+    Column("password_hash", String, nullable=True),
+    Column("email_verified_at", DateTime(timezone=True), nullable=True),
+    Column("mfa_secret", String, nullable=True),
+    Column("mfa_enabled", Boolean, nullable=False, default=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("tenant_id", "email", name="users_tenant_email_uq"),
@@ -145,6 +149,8 @@ class UserRecord:
     full_name: str | None
     role: str
     status: str
+    email_verified_at: str | None
+    mfa_enabled: bool
     created_at: str
     updated_at: str
 
@@ -231,6 +237,8 @@ def _from_user_row(row: RowMapping) -> UserRecord:
         full_name=str(row["full_name"]) if row["full_name"] is not None else None,
         role=str(row["role"]),
         status=str(row["status"]),
+        email_verified_at=_to_iso(row["email_verified_at"]),
+        mfa_enabled=bool(row["mfa_enabled"]),
         created_at=_to_iso(row["created_at"]) or "",
         updated_at=_to_iso(row["updated_at"]) or "",
     )
@@ -415,20 +423,31 @@ class SqlNotificationRepository:
         role: UserRole | str = UserRole.VIEWER,
         status: str = "active",
         full_name: str | None = None,
+        password_hash: str | None = None,
+        email_verified_at: str | None = None,
     ) -> dict[str, str]:
         now = _now()
         user_id = str(uuid4())
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_role = role.value if isinstance(role, UserRole) else str(role)
+        normalized_email = str(email).strip().lower()
         with self._engine.begin() as connection:
             connection.execute(
                 insert(USERS_TABLE).values(
                     id=user_id,
                     tenant_id=normalized_tenant_id,
-                    email=str(email).strip(),
+                    email=normalized_email,
                     full_name=full_name,
                     role=normalized_role,
                     status=str(status).strip(),
+                    password_hash=password_hash,
+                    email_verified_at=(
+                        datetime.fromisoformat(email_verified_at)
+                        if email_verified_at is not None
+                        else None
+                    ),
+                    mfa_secret=None,
+                    mfa_enabled=False,
                     created_at=now,
                     updated_at=now,
                 )
@@ -436,7 +455,7 @@ class SqlNotificationRepository:
         return {
             "id": user_id,
             "tenant_id": normalized_tenant_id,
-            "email": str(email).strip(),
+            "email": normalized_email,
         }
 
     def list_users(self, *, tenant_id: str) -> list[UserRecord]:
@@ -481,6 +500,8 @@ class SqlNotificationRepository:
         role: UserRole | str | None = None,
         status: str | None = None,
         full_name: str | None = None,
+        password_hash: str | None = None,
+        email_verified_at: str | None = None,
     ) -> UserRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_user_id = normalize_uuid_string(user_id)
@@ -502,6 +523,16 @@ class SqlNotificationRepository:
         next_full_name = (
             existing.full_name if full_name is None else str(full_name).strip() or None
         )
+        values: dict[str, object] = {
+            "role": normalized_role,
+            "status": normalized_status,
+            "full_name": next_full_name,
+            "updated_at": _now(),
+        }
+        if password_hash is not None:
+            values["password_hash"] = password_hash
+        if email_verified_at is not None:
+            values["email_verified_at"] = datetime.fromisoformat(email_verified_at)
         with self._engine.begin() as connection:
             connection.execute(
                 update(USERS_TABLE)
@@ -511,12 +542,7 @@ class SqlNotificationRepository:
                         USERS_TABLE.c.id == normalized_user_id,
                     )
                 )
-                .values(
-                    role=normalized_role,
-                    status=normalized_status,
-                    full_name=next_full_name,
-                    updated_at=_now(),
-                )
+                .values(**values)
             )
         updated = self.get_user(
             tenant_id=normalized_tenant_id, user_id=normalized_user_id

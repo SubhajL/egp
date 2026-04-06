@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from egp_notifications.service import SmtpConfig
 
@@ -130,3 +131,64 @@ def get_payment_callback_secret(override: str | None = None) -> str | None:
         return value or None
     raw = os.getenv("EGP_PAYMENT_CALLBACK_SECRET", "").strip()
     return raw or None
+
+
+def get_session_cookie_name(override: str | None = None) -> str:
+    if override is not None:
+        normalized = override.strip()
+        return normalized or "egp_session"
+    return os.getenv("EGP_SESSION_COOKIE_NAME", "egp_session").strip() or "egp_session"
+
+
+def get_session_cookie_max_age_seconds(override: int | None = None) -> int:
+    if override is not None:
+        return max(60, int(override))
+    raw = os.getenv("EGP_SESSION_MAX_AGE_SECONDS", "").strip()
+    return max(60, int(raw or "604800"))
+
+
+def get_session_cookie_secure(override: bool | None = None) -> bool:
+    if override is not None:
+        return bool(override)
+    raw = os.getenv("EGP_SESSION_COOKIE_SECURE", "false").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def get_session_cookie_samesite(
+    override: str | None = None,
+) -> Literal["lax", "strict", "none"]:
+    raw = (
+        (override if override is not None else os.getenv("EGP_SESSION_COOKIE_SAMESITE", "lax"))
+        .strip()
+        .lower()
+    )
+    if raw not in {"lax", "strict", "none"}:
+        return "lax"
+    return raw
+
+
+def get_web_allowed_origins(override: list[str] | None = None) -> list[str]:
+    if override is not None:
+        return [origin.strip().rstrip("/") for origin in override if origin.strip()]
+    raw = os.getenv("EGP_WEB_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return ["http://localhost:3000"]
+    return [part.strip().rstrip("/") for part in raw.split(",") if part.strip()]
+
+
+def get_web_base_url(
+    override: str | None = None, *, allowed_origins: list[str] | None = None
+) -> str:
+    if override is not None:
+        normalized = override.strip().rstrip("/")
+        if normalized:
+            return normalized
+    raw = os.getenv("EGP_WEB_BASE_URL", "").strip().rstrip("/")
+    if raw:
+        return raw
+    if allowed_origins:
+        for origin in allowed_origins:
+            normalized = origin.strip().rstrip("/")
+            if normalized:
+                return normalized
+    return "http://localhost:3000"

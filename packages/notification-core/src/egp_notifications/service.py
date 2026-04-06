@@ -241,6 +241,12 @@ class NotificationService:
     ) -> list[Notification]:
         return self._in_app_store.list_for_tenant(tenant_id, limit=limit)
 
+    def send_email_message(self, *, to: str, subject: str, body: str) -> bool:
+        if self._smtp_config is None and self._email_sender is None:
+            return False
+        self._send_email(to=to, subject=subject, body=body)
+        return True
+
     def _send_email(self, *, to: str, subject: str, body: str) -> None:
         if self._email_sender is not None:
             self._email_sender(to=to, subject=subject, body=body)
