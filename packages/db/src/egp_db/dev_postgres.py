@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 import shutil
 import socket
@@ -209,6 +210,85 @@ def run_phase1_postgres_smoke(
                     ),
                 )
                 project_id = str(cursor.fetchone()[0])
+                today = date.today()
+                now = datetime.now(UTC)
+                cursor.execute(
+                    """
+                    INSERT INTO billing_records (
+                        id,
+                        tenant_id,
+                        record_number,
+                        plan_code,
+                        status,
+                        billing_period_start,
+                        billing_period_end,
+                        currency,
+                        amount_due,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        gen_random_uuid(),
+                        %s,
+                        %s,
+                        'monthly_membership',
+                        'paid',
+                        %s,
+                        %s,
+                        'THB',
+                        '1500.00',
+                        %s,
+                        %s
+                    )
+                    RETURNING id
+                    """,
+                    (
+                        tenant_id,
+                        f"INV-SMOKE-{tenant_id[:8]}",
+                        (today - timedelta(days=1)).isoformat(),
+                        (today + timedelta(days=29)).isoformat(),
+                        now,
+                        now,
+                    ),
+                )
+                billing_record_id = str(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    INSERT INTO billing_subscriptions (
+                        id,
+                        tenant_id,
+                        billing_record_id,
+                        plan_code,
+                        status,
+                        billing_period_start,
+                        billing_period_end,
+                        keyword_limit,
+                        activated_at,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        gen_random_uuid(),
+                        %s,
+                        %s,
+                        'monthly_membership',
+                        'active',
+                        %s,
+                        %s,
+                        5,
+                        %s,
+                        %s,
+                        %s
+                    )
+                    """,
+                    (
+                        tenant_id,
+                        billing_record_id,
+                        (today - timedelta(days=1)).isoformat(),
+                        (today + timedelta(days=29)).isoformat(),
+                        now,
+                        now,
+                        now,
+                    ),
+                )
             connection.commit()
 
         client = TestClient(

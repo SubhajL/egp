@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
@@ -33,8 +34,9 @@ def _create_client(
     )
 
 
-def test_create_app_requires_payment_callback_secret(tmp_path) -> None:
+def test_create_app_requires_payment_callback_secret(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase3-payment-links.sqlite3'}"
+    monkeypatch.delenv("EGP_PAYMENT_CALLBACK_SECRET", raising=False)
 
     try:
         create_app(
@@ -43,7 +45,7 @@ def test_create_app_requires_payment_callback_secret(tmp_path) -> None:
             auth_required=False,
             payment_base_url="https://pay.egp.test",
             promptpay_proxy_id="0801234567",
-            payment_callback_secret=None,
+            payment_callback_secret="",
         )
     except RuntimeError as exc:
         assert str(exc) == "payment callback secret is required"
