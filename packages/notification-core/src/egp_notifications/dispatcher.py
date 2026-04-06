@@ -46,11 +46,11 @@ class NotificationDispatcher:
         )
         if self.webhook_delivery_service is None:
             return created
-        delivered = self.webhook_delivery_service.deliver(
+        queued = self.webhook_delivery_service.enqueue(
             notification=created,
             template_vars=template_vars,
         )
-        if not delivered or "webhook" in created.channel.split(","):
+        if not queued or "webhook" in created.channel.split(","):
             return created
         return Notification(
             id=created.id,
