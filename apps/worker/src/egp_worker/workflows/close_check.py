@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import check_winner_closure
-from egp_db.repositories.project_repo import ProjectRecord
+from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import CloseCheckProjectEvent
-from egp_worker.project_event_sink import ProjectEventSink, create_project_event_sink
+from egp_worker.project_event_sink import (
+    ProjectEventSink,
+    create_project_event_sink,
+    create_service_backed_project_event_sink_from_repository,
+)
 
 if TYPE_CHECKING:
     from egp_notifications.dispatcher import NotificationDispatcher
@@ -28,6 +32,7 @@ def run_close_check_workflow(
     trigger_type: str = "manual",
     database_url: str | None = None,
     run_repository: SqlRunRepository | None = None,
+    project_repository: SqlProjectRepository | None = None,
     project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
 ) -> CloseCheckWorkflowResult:
@@ -36,12 +41,18 @@ def run_close_check_workflow(
             raise ValueError("database_url is required when repositories are not provided")
         run_repository = create_run_repository(database_url=database_url)
     if project_event_sink is None:
-        if database_url is None:
+        if project_repository is not None:
+            project_event_sink = create_service_backed_project_event_sink_from_repository(
+                repository=project_repository,
+                notification_dispatcher=notification_dispatcher,
+            )
+        elif database_url is None:
             raise ValueError("database_url is required when project_event_sink is not provided")
-        project_event_sink = create_project_event_sink(
-            database_url=database_url,
-            notification_dispatcher=notification_dispatcher,
-        )
+        else:
+            project_event_sink = create_project_event_sink(
+                database_url=database_url,
+                notification_dispatcher=notification_dispatcher,
+            )
 
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
     run_repository.mark_run_started(run.id)
