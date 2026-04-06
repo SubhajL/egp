@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,16 @@ class AuthContext:
     tenant_id: str
     subject: str
     claims: dict[str, Any]
+    user_id: str | None = None
+    email: str | None = None
+    full_name: str | None = None
+    role: str | None = None
+    status: str | None = None
+    email_verified_at: str | None = None
+    mfa_enabled: bool = False
+    tenant_slug: str | None = None
+    tenant_name: str | None = None
+    tenant_plan_code: str | None = None
 
 
 def _extract_bearer_token(header_value: str | None) -> str:
@@ -43,7 +54,7 @@ def _extract_claim_tenant_id(claims: dict[str, Any]) -> str:
     raise HTTPException(status_code=401, detail="tenant claim missing from token")
 
 
-def authenticate_request(*, authorization_header: str | None, jwt_secret: str) -> AuthContext:
+def authenticate_bearer_request(*, authorization_header: str | None, jwt_secret: str) -> AuthContext:
     token = _extract_bearer_token(authorization_header)
     try:
         claims = jwt.decode(
@@ -63,7 +74,50 @@ def authenticate_request(*, authorization_header: str | None, jwt_secret: str) -
         tenant_id=_extract_claim_tenant_id(claims),
         subject=subject,
         claims=claims,
+        user_id=_normalize_optional_claim(claims.get("user_id")),
+        email=_normalize_optional_claim(claims.get("email")),
+        full_name=_normalize_optional_claim(claims.get("full_name")),
+        role=_normalize_optional_claim(claims.get("role")),
+        email_verified_at=_normalize_optional_claim(claims.get("email_verified_at")),
+        mfa_enabled=_normalize_bool_claim(claims.get("mfa_enabled")),
     )
+
+
+def authenticate_request(
+    *,
+    authorization_header: str | None,
+    session_token: str | None,
+    jwt_secret: str | None,
+    session_authenticator: Callable[[str], AuthContext | None] | None = None,
+) -> AuthContext:
+    if authorization_header is not None:
+        if not jwt_secret:
+            raise HTTPException(status_code=503, detail="server auth not configured")
+        return authenticate_bearer_request(
+            authorization_header=authorization_header,
+            jwt_secret=jwt_secret,
+        )
+    if session_token is not None and session_authenticator is not None:
+        context = session_authenticator(session_token)
+        if context is None:
+            raise HTTPException(status_code=401, detail="invalid session")
+        return context
+    raise HTTPException(status_code=401, detail="missing authentication")
+
+
+def _normalize_optional_claim(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _normalize_bool_claim(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 def resolve_request_tenant_id(

@@ -1,14 +1,39 @@
 "use client";
 
-import { Bell, Search } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Bell, LogOut, Search } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
+import { startTransition, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { NAV_ITEMS } from "@/lib/constants";
+import { getUserDisplayName, getUserInitials } from "@/lib/auth";
+import { logout } from "@/lib/api";
+import { useMe } from "@/lib/hooks";
 
 export function AppHeader() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
   const pathname = usePathname() ?? "";
+  const { data: currentSession } = useMe();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const displayName = currentSession ? getUserDisplayName(currentSession.user) : "กำลังโหลด...";
+  const initials = currentSession ? getUserInitials(currentSession.user) : "?";
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      queryClient.clear();
+      startTransition(() => {
+        router.replace("/login");
+      });
+      setIsLoggingOut(false);
+    }
+  }
 
   return (
     <header
@@ -63,17 +88,28 @@ export function AppHeader() {
             <span className="absolute right-2.5 top-2.5 size-2 rounded-full bg-red-500" />
           </button>
 
-          <button
-            type="button"
-            className="flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--bg-surface)] py-1 pl-1 pr-3"
-          >
+          <div className="flex items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--bg-surface)] py-1 pl-1 pr-2">
             <div className="flex size-8 items-center justify-center rounded-full bg-primary/20 text-xs font-semibold text-primary">
-              ส
+              {initials}
             </div>
-            <span className="text-xs font-semibold text-[var(--text-secondary)]">
-              สมชาย ก.
-            </span>
-          </button>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-[var(--text-secondary)]">
+                {displayName}
+              </p>
+              <p className="truncate text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                {currentSession?.tenant.slug ?? "session"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={isLoggingOut}
+              className="flex size-8 items-center justify-center rounded-full text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-surface-hover)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+              aria-label="ออกจากระบบ"
+            >
+              <LogOut className="size-4" />
+            </button>
+          </div>
         </div>
       </div>
     </header>

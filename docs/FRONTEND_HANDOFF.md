@@ -27,7 +27,6 @@ What exists today:
 - Shared enum values in [`packages/shared-types/src/egp_shared_types/enums.py`](../packages/shared-types/src/egp_shared_types/enums.py)
 
 What does not exist yet:
-- auth/session UX
 - dashboard summary APIs
 - advanced explorer filters beyond `project_state`
 - export endpoints
@@ -38,9 +37,15 @@ What does not exist yet:
 So frontend can start building Phase 2 read-heavy operator pages immediately, but should treat several product areas as placeholders for now.
 
 Important backend auth note:
-- API now enforces bearer JWT auth by default.
-- Tenant context is derived from the JWT claim, not trusted from caller input.
-- Existing `tenant_id` query/body fields remain as compatibility inputs, but the backend validates them against the JWT tenant when present.
+- Web operators now authenticate with `POST /v1/auth/login` using `tenant_slug`, `email`, and `password`.
+- The API issues an HttpOnly session cookie and `GET /v1/me` returns the current user + tenant context.
+- The web app now also exposes:
+  - `/invite` for invite acceptance
+  - `/forgot-password` and `/reset-password` for recovery
+  - `/verify-email` for verification tokens
+  - `/security` for current-user MFA and verification controls
+- Bearer auth still exists for non-browser/API callers as a compatibility path.
+- Tenant context is derived from the authenticated session or bearer token, not trusted from caller input.
 
 ---
 
@@ -88,19 +93,17 @@ Defined in [`apps/web/src/lib/api.ts`](../apps/web/src/lib/api.ts):
 - `NEXT_PUBLIC_EGP_API_BASE_URL`
   - default fallback: `http://localhost:8000`
 - `NEXT_PUBLIC_EGP_TENANT_ID`
-  - still used by the current FE scaffold for compatibility checks
-- `NEXT_PUBLIC_EGP_API_BEARER_TOKEN`
-  - temporary dev-only bridge until real frontend auth/session UX exists
+  - legacy compatibility value still referenced by a few older components; not required for login/session auth
 
 Example:
 
 ```bash
 NEXT_PUBLIC_EGP_API_BASE_URL=http://localhost:8000
 NEXT_PUBLIC_EGP_TENANT_ID=11111111-1111-1111-1111-111111111111
-NEXT_PUBLIC_EGP_API_BEARER_TOKEN=<dev-jwt-with-tenant-claim>
 ```
 
-Current FE fetches still append `tenant_id`, but backend authorization is bearer-token based.
+Current FE browser auth is cookie-session based. Do not reintroduce `NEXT_PUBLIC_EGP_API_BEARER_TOKEN` for user-facing login flows.
+For normal tenant-scoped pages, do not pass `tenant_id` from the frontend; rely on session context. Keep explicit `tenant_id` only for support-mode cross-tenant admin flows.
 
 ---
 

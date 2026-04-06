@@ -494,6 +494,135 @@ def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
     assert snapshot.json()["users"][0]["notification_preferences"]["run_failed"] is True
 
 
+def test_create_user_with_password_can_subsequently_login(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    created = client.post(
+        "/v1/admin/users",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "email": "loginable@example.com",
+            "full_name": "Login Ready",
+            "role": "analyst",
+            "password": "correct horse battery staple",
+        },
+    )
+
+    assert created.status_code == 201
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "loginable@example.com",
+            "password": "correct horse battery staple",
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json()["user"]["email"] == "loginable@example.com"
+
+
+def test_update_user_password_rotates_credentials(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    created = client.post(
+        "/v1/admin/users",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "email": "rotate@example.com",
+            "role": "viewer",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert created.status_code == 201
+    user_id = created.json()["id"]
+
+    rotated = client.patch(
+        f"/v1/admin/users/{user_id}",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "password": "new secure passphrase",
+        },
+    )
+    assert rotated.status_code == 200
+
+    old_login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "rotate@example.com",
+            "password": "correct horse battery staple",
+        },
+    )
+    new_login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "rotate@example.com",
+            "password": "new secure passphrase",
+        },
+    )
+
+    assert old_login.status_code == 401
+    assert new_login.status_code == 200
+
+
+def test_admin_can_issue_invite_for_existing_user(tmp_path) -> None:
+    sent: list[dict[str, str]] = []
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+    )
+    client.app.state.notification_service._email_sender = (
+        lambda *, to, subject, body: sent.append({"to": to, "subject": subject, "body": body})
+    )
+    _seed_tenant(client)
+
+    created = client.post(
+        "/v1/admin/users",
+        headers=_auth_headers(role="owner"),
+        json={
+            "email": "invite-admin@example.com",
+            "role": "viewer",
+        },
+    )
+    assert created.status_code == 201
+    user_id = created.json()["id"]
+
+    invited = client.post(
+        f"/v1/admin/users/{user_id}/invite",
+        headers=_auth_headers(role="owner"),
+        json={},
+    )
+
+    assert invited.status_code == 202
+    assert sent
+    assert sent[-1]["to"] == "invite-admin@example.com"
+
+
+def test_admin_routes_use_session_tenant_when_tenant_id_is_omitted(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    created = client.post(
+        "/v1/admin/users",
+        headers=_auth_headers(role="owner"),
+        json={
+            "email": "implicit-tenant@example.com",
+            "role": "viewer",
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["email"] == "implicit-tenant@example.com"
+
+
 def test_admin_routes_are_tenant_scoped(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
+from egp_db.repositories.auth_repo import hash_password
 from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.admin_repo import (
     SqlAdminRepository,
@@ -27,6 +29,8 @@ class AdminUserView:
     full_name: str | None
     role: str
     status: str
+    email_verified_at: str | None
+    mfa_enabled: bool
     created_at: str
     updated_at: str
     notification_preferences: dict[str, bool]
@@ -54,6 +58,8 @@ def _user_view(user: UserRecord, *, notification_preferences: dict[str, bool]) -
         full_name=user.full_name,
         role=user.role,
         status=user.status,
+        email_verified_at=user.email_verified_at,
+        mfa_enabled=user.mfa_enabled,
         created_at=user.created_at,
         updated_at=user.updated_at,
         notification_preferences=notification_preferences,
@@ -113,6 +119,7 @@ class AdminService:
         full_name: str | None = None,
         role: UserRole | str = UserRole.VIEWER,
         status: str = "active",
+        password: str | None = None,
         actor_subject: str | None = None,
     ) -> AdminUserView:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
@@ -123,6 +130,8 @@ class AdminService:
             full_name=full_name,
             role=role,
             status=status,
+            password_hash=hash_password(password) if password is not None else None,
+            email_verified_at=datetime.now(UTC).isoformat() if password is not None else None,
         )
         user = self._notification_repository.get_user(
             tenant_id=tenant_id,
@@ -161,6 +170,7 @@ class AdminService:
         role: UserRole | str | None = None,
         status: str | None = None,
         full_name: str | None = None,
+        password: str | None = None,
         actor_subject: str | None = None,
     ) -> AdminUserView:
         previous = self._notification_repository.get_user(tenant_id=tenant_id, user_id=user_id)
@@ -172,6 +182,12 @@ class AdminService:
             role=role,
             status=status,
             full_name=full_name,
+            password_hash=hash_password(password) if password is not None else None,
+            email_verified_at=(
+                datetime.now(UTC).isoformat()
+                if password is not None and previous.email_verified_at is None
+                else None
+            ),
         )
         if self._audit_repository is not None:
             self._audit_repository.record_event(

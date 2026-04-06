@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from egp_api.auth import authenticate_request
@@ -20,10 +21,17 @@ from egp_api.config import (
     get_payment_callback_secret,
     get_payment_provider,
     get_promptpay_proxy_id,
+    get_session_cookie_max_age_seconds,
+    get_session_cookie_name,
+    get_session_cookie_samesite,
+    get_session_cookie_secure,
     get_smtp_config,
     get_supabase_service_role_key,
     get_supabase_url,
+    get_web_base_url,
+    get_web_allowed_origins,
 )
+from egp_api.routes.auth import router as auth_router
 from egp_api.routes.admin import router as admin_router
 from egp_api.routes.billing import router as billing_router
 from egp_api.routes.dashboard import router as dashboard_router
@@ -35,8 +43,9 @@ from egp_api.routes.runs import router as runs_router
 from egp_api.routes.webhooks import router as webhooks_router
 from egp_api.services.admin_service import AdminService
 from egp_api.services.audit_service import AuditService
-from egp_api.services.dashboard_service import DashboardService
+from egp_api.services.auth_service import AuthService
 from egp_api.services.billing_service import BillingService
+from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.entitlement_service import (
     EntitlementAwareNotificationDispatcher,
@@ -52,6 +61,7 @@ from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
+from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.document_repo import create_document_repository
 from egp_db.repositories.notification_repo import create_notification_repository
@@ -83,6 +93,7 @@ def create_app(
     payment_base_url: str | None = None,
     promptpay_proxy_id: str | None = None,
     payment_callback_secret: str | None = None,
+    web_allowed_origins: list[str] | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="e-GP Intelligence Platform",
@@ -90,10 +101,24 @@ def create_app(
         description="Thailand public procurement monitoring API",
     )
 
+    resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
+    if resolved_web_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=resolved_web_allowed_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(database_url, artifact_root=resolved_artifact_root)
     resolved_auth_required = get_auth_required(auth_required)
     resolved_jwt_secret = get_jwt_secret(jwt_secret)
+    session_cookie_name = get_session_cookie_name(None)
+    session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
+    session_cookie_secure = get_session_cookie_secure(None)
+    session_cookie_samesite = get_session_cookie_samesite(None)
     shared_engine = create_shared_engine(resolved_database_url)
     repository = create_document_repository(
         database_url=resolved_database_url,
@@ -116,6 +141,10 @@ def create_app(
         engine=shared_engine,
     )
     admin_repository = create_admin_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
+    auth_repository = create_auth_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
@@ -163,9 +192,18 @@ def create_app(
         notification_dispatcher,
         entitlement_service,
     )
+    auth_service = AuthService(
+        auth_repository,
+        admin_repository,
+        session_max_age_seconds=session_cookie_max_age_seconds,
+        notification_service=notification_service,
+        web_base_url=get_web_base_url(None, allowed_origins=resolved_web_allowed_origins),
+    )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository
+    app.state.auth_repository = auth_repository
     app.state.audit_repository = audit_repository
+    app.state.auth_service = auth_service
     app.state.billing_repository = billing_repository
     app.state.audit_service = AuditService(audit_repository)
     app.state.admin_service = AdminService(
@@ -224,6 +262,10 @@ def create_app(
     )
     app.state.auth_required = resolved_auth_required
     app.state.jwt_secret = resolved_jwt_secret
+    app.state.session_cookie_name = session_cookie_name
+    app.state.session_cookie_max_age_seconds = session_cookie_max_age_seconds
+    app.state.session_cookie_secure = session_cookie_secure
+    app.state.session_cookie_samesite = session_cookie_samesite
 
     @app.middleware("http")
     async def auth_middleware(request, call_next):
@@ -233,6 +275,12 @@ def create_app(
             "/docs",
             "/docs/oauth2-redirect",
             "/redoc",
+            "/v1/auth/login",
+            "/v1/auth/logout",
+            "/v1/auth/password/forgot",
+            "/v1/auth/password/reset",
+            "/v1/auth/invite/accept",
+            "/v1/auth/email/verify",
         } or (
             request.url.path.startswith("/v1/billing/payment-requests/")
             and request.url.path.endswith("/callbacks")
@@ -244,13 +292,12 @@ def create_app(
             request.state.auth_context = None
             return await call_next(request)
 
-        if not app.state.jwt_secret:
-            return JSONResponse(status_code=503, content={"detail": "server auth not configured"})
-
         try:
             request.state.auth_context = authenticate_request(
                 authorization_header=request.headers.get("authorization"),
+                session_token=request.cookies.get(app.state.session_cookie_name),
                 jwt_secret=app.state.jwt_secret,
+                session_authenticator=app.state.auth_service.authenticate_session,
             )
         except Exception as exc:
             status_code = getattr(exc, "status_code", 401)
@@ -262,6 +309,7 @@ def create_app(
     def health():
         return {"status": "ok"}
 
+    app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(billing_router)
     app.include_router(dashboard_router)

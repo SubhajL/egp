@@ -45,6 +45,8 @@ class AdminUserResponse(BaseModel):
     full_name: str | None
     role: str
     status: str
+    email_verified_at: str | None
+    mfa_enabled: bool
     created_at: str
     updated_at: str
     notification_preferences: dict[str, bool]
@@ -208,6 +210,7 @@ class CreateAdminUserRequest(BaseModel):
     full_name: str | None = None
     role: UserRole = UserRole.VIEWER
     status: str = Field(default="active", pattern="^(active|suspended|deactivated)$")
+    password: str | None = None
 
 
 class UpdateAdminUserRequest(BaseModel):
@@ -215,6 +218,7 @@ class UpdateAdminUserRequest(BaseModel):
     full_name: str | None = None
     role: UserRole | None = None
     status: str | None = Field(default=None, pattern="^(active|suspended|deactivated)$")
+    password: str | None = None
 
 
 class UpdateUserNotificationPreferencesRequest(BaseModel):
@@ -232,6 +236,15 @@ class UpdateTenantSettingsRequest(BaseModel):
     weekly_digest_enabled: bool | None = None
 
 
+class AdminInviteUserRequest(BaseModel):
+    tenant_id: str | None = None
+
+
+class AdminInviteUserResponse(BaseModel):
+    status: str
+    delivery_email: str
+
+
 def _service_from_request(request: Request) -> AdminService:
     return request.app.state.admin_service
 
@@ -242,6 +255,10 @@ def _audit_service_from_request(request: Request) -> AuditService:
 
 def _support_service_from_request(request: Request) -> SupportService:
     return request.app.state.support_service
+
+
+def _auth_service_from_request(request: Request):
+    return request.app.state.auth_service
 
 
 def _actor_subject_from_request(request: Request) -> str:
@@ -444,10 +461,13 @@ def create_admin_user(request: Request, payload: CreateAdminUserRequest) -> Admi
             full_name=payload.full_name,
             role=payload.role,
             status=payload.status,
+            password=payload.password,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize_user(user)
 
 
@@ -471,11 +491,45 @@ def update_admin_user(
             role=payload.role,
             status=payload.status,
             full_name=payload.full_name,
+            password=payload.password,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:
         raise HTTPException(status_code=403, detail="user does not belong to tenant") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize_user(user)
+
+
+@router.post(
+    "/users/{user_id}/invite",
+    response_model=AdminInviteUserResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def invite_admin_user(
+    user_id: str,
+    request: Request,
+    payload: AdminInviteUserRequest | None = None,
+) -> AdminInviteUserResponse:
+    require_admin_role(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id if payload is not None else None,
+        allow_support_override=True,
+    )
+    service = _auth_service_from_request(request)
+    try:
+        delivery_email = service.issue_user_invite(
+            tenant_id=resolved_tenant_id,
+            user_id=user_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="user not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc) or "account is not active") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return AdminInviteUserResponse(status="sent", delivery_email=delivery_email)
 
 
 @router.put("/users/{user_id}/notification-preferences", response_model=AdminUserResponse)
