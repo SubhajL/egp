@@ -386,3 +386,62 @@ LOW
 
 ### Rollout Notes
 - Local developers should use the updated API startup command from `docs/MANUAL_WEB_APP_TESTING.md` so both `localhost:3002` CORS and package reload behavior stay correct.
+
+## Session 5 — Dashboard Dev Manifest Fix (2026-04-06 20:41 +07)
+
+### Goal
+Fix the local Next.js dev-server stall on `/dashboard` caused by the `SegmentViewNode` client-manifest error.
+
+### What Changed
+
+#### `apps/web/src/app/(app)/dashboard/page.tsx`
+- Removed the `next/dynamic(..., { ssr: false })` wrappers for the dashboard charts.
+- Switched the page to direct imports of `DailyDiscoveryChart` and `ProjectStateChart`.
+- This keeps the page simpler because `/dashboard` is already a client page and avoids the Next 15 dev-manifest path that was crashing the dev server.
+
+### TDD Evidence
+- RED was reproduced live against the local web dev server:
+  - `/dashboard` returned `200`, but the dev server logged `Could not find the module ... segment-explorer-node.js#SegmentViewNode in the React Client Manifest`
+- GREEN after the fix:
+  - restarted local `next dev` on `127.0.0.1:3002`
+  - `GET /dashboard` returned `200`
+  - the dev log showed normal compile/request lines and no `SegmentViewNode` manifest error
+
+### Tests Run
+- `cd apps/web && npm run typecheck` → passed
+- `cd apps/web && npm run build` → passed
+
+### Wiring Verification
+
+| Component | Wiring Verified? | How Verified |
+|---|---|---|
+| Dashboard chart rendering | YES | `apps/web/src/app/(app)/dashboard/page.tsx` now imports `DailyDiscoveryChart` and `ProjectStateChart` directly from `@/components/ui/dashboard-charts` |
+| Local dashboard dev route | YES | restarted `next dev` on `127.0.0.1:3002`, then `GET /dashboard` returned `200` and the dev log showed a clean compile/request path |
+
+### Behavior Changes and Risks
+- `/dashboard` no longer depends on client-only dynamic imports for the chart components in dev.
+- Risk: this change increases the dashboard page bundle slightly because the chart components are now included directly, but the production build remained healthy and the immediate dev-server stability issue is resolved.
+
+### Follow-Ups / Known Gaps
+- If Next upgrades later resolve the devtools manifest bug, the page could be revisited, but there is no current product need for lazy-loading these two chart components.
+
+## Review (2026-04-06 20:41 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: `working-tree`
+- Commands Run: `git status --short --branch`; targeted `git diff` on `apps/web/src/app/(app)/dashboard/page.tsx`; `cd apps/web && npm run typecheck`; `cd apps/web && npm run build`
+
+### Findings
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumed the direct-import version is preferable to further Next-specific dynamic import workarounds because the dashboard page is already client-rendered and the current need is local dev stability.
+
+### Recommended Tests / Validation
+- Keep one manual `/dashboard` dev smoke-check after any future Next.js upgrade, since this issue is tied to framework dev tooling rather than the business logic itself.
+
+### Rollout Notes
+- This change is frontend-only and does not require API or migration rollout steps.
