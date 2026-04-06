@@ -26,6 +26,7 @@ from .enums import (
     ProjectState,
     UserRole,
 )
+from .project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
 
 __all__ = [
     "BillingPlanDefinition",
@@ -47,6 +48,8 @@ __all__ = [
     "NotificationType",
     "ProcurementType",
     "ProjectState",
+    "CloseCheckProjectEvent",
+    "DiscoveredProjectEvent",
     "UserRole",
     "get_billing_plan_definition",
     "list_billing_plan_definitions",
