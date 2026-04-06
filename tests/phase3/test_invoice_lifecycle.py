@@ -32,6 +32,7 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
     assert plans_response.status_code == 200
     plans_body = plans_response.json()
     assert [plan["code"] for plan in plans_body["plans"]] == [
+        "free_trial",
         "one_time_search_pack",
         "monthly_membership",
     ]

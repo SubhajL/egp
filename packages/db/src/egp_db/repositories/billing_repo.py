@@ -1111,12 +1111,16 @@ class SqlBillingRepository:
             raise ValueError("free_trial plan is not configured")
         now = _now()
         period_start = now.date()
-        period_end = period_start + timedelta(days=(plan_definition.duration_days or 1) - 1)
+        period_end = period_start + timedelta(
+            days=(plan_definition.duration_days or 1) - 1
+        )
         with self._engine.begin() as connection:
             existing_rows = (
                 connection.execute(
                     select(BILLING_SUBSCRIPTIONS_TABLE)
-                    .where(BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
                     .order_by(BILLING_SUBSCRIPTIONS_TABLE.c.created_at.desc())
                 )
                 .mappings()
@@ -1190,7 +1194,9 @@ class SqlBillingRepository:
                 to_status=BillingSubscriptionStatus.ACTIVE.value,
             )
 
-        detail = self.require_billing_record_detail(tenant_id=tenant_id, record_id=record_id)
+        detail = self.require_billing_record_detail(
+            tenant_id=tenant_id, record_id=record_id
+        )
         if detail.subscription is None:
             raise RuntimeError("free trial subscription activation failed")
         return detail.subscription
