@@ -211,6 +211,35 @@ def test_login_sets_http_only_session_cookie_and_me_reads_session(tmp_path) -> N
     assert me.json()["user"]["role"] == "owner"
 
 
+def test_me_preflight_returns_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.options(
+        "/v1/me",
+        headers={
+            "Origin": "http://localhost:3002",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3002"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_me_unauthorized_response_includes_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.get(
+        "/v1/me",
+        headers={"Origin": "http://localhost:3002"},
+    )
+
+    assert response.status_code == 401
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3002"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
 def test_logout_revokes_cookie_session(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)

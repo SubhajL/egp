@@ -233,6 +233,37 @@ def _create_billing_record(
     return response.json()
 
 
+def test_owner_can_start_free_trial_once_for_tenant(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    started = client.post(
+        "/v1/billing/trial/start",
+        json={"tenant_id": TENANT_ID},
+        headers=_auth_headers(role="owner"),
+    )
+
+    assert started.status_code == 201
+    body = started.json()
+    assert body["plan_code"] == "free_trial"
+    assert body["subscription_status"] == "active"
+    assert body["keyword_limit"] == 1
+
+    listing = client.get("/v1/billing/records", headers=_auth_headers(role="owner"))
+    assert listing.status_code == 200
+    assert listing.json()["records"][0]["record"]["plan_code"] == "free_trial"
+    assert listing.json()["records"][0]["record"]["amount_due"] == "0.00"
+
+    duplicate = client.post(
+        "/v1/billing/trial/start",
+        json={"tenant_id": TENANT_ID},
+        headers=_auth_headers(role="owner"),
+    )
+
+    assert duplicate.status_code == 400
+    assert duplicate.json()["detail"] == "free trial already used for tenant"
+
+
 def _create_failed_run(client: TestClient, *, tenant_id: str = TENANT_ID) -> str:
     repository = client.app.state.run_repository
     created = repository.create_run(tenant_id=tenant_id, trigger_type="manual")

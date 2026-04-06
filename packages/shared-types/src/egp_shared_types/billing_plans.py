@@ -22,6 +22,16 @@ class BillingPlanDefinition:
 
 _BILLING_PLANS = (
     BillingPlanDefinition(
+        code="free_trial",
+        label="Free Trial",
+        description="Try 1 active keyword for 7 days",
+        currency="THB",
+        amount_due="0.00",
+        billing_interval="trial",
+        keyword_limit=1,
+        duration_days=7,
+    ),
+    BillingPlanDefinition(
         code="one_time_search_pack",
         label="One-Time Search Pack",
         description="1 keyword for 3 days",

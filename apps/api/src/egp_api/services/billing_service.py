@@ -40,6 +40,18 @@ class BillingService:
     def list_plans(self) -> list[BillingPlanDefinition]:
         return list_billing_plan_definitions()
 
+    def start_free_trial(
+        self,
+        *,
+        tenant_id: str,
+        actor_subject: str | None = None,
+    ):
+        return self._repository.activate_free_trial_subscription(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            note="Free trial activation",
+        )
+
     def list_snapshot(self, *, tenant_id: str, limit: int = 50, offset: int = 0) -> BillingPage:
         return self._repository.list_billing_records(
             tenant_id=tenant_id,

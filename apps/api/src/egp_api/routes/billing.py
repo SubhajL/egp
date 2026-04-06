@@ -191,6 +191,10 @@ class CreateBillingPaymentRequestRequest(BaseModel):
     expires_in_minutes: int = Field(default=30, ge=1, le=1440)
 
 
+class StartFreeTrialRequest(BaseModel):
+    tenant_id: str | None = None
+
+
 class PaymentRequestCallbackRequest(BaseModel):
     tenant_id: str | None = None
     provider_event_id: str = Field(min_length=1)
@@ -370,6 +374,42 @@ def list_billing_plans(request: Request) -> BillingPlansResponse:
             )
             for plan in service.list_plans()
         ]
+    )
+
+
+@router.post("/trial/start", response_model=BillingSubscriptionResponse)
+def start_free_trial(
+    payload: StartFreeTrialRequest,
+    request: Request,
+    response: Response,
+) -> BillingSubscriptionResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        subscription = service.start_free_trial(
+            tenant_id=resolved_tenant_id,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response.status_code = status.HTTP_201_CREATED
+    return BillingSubscriptionResponse(
+        id=subscription.id,
+        tenant_id=subscription.tenant_id,
+        billing_record_id=subscription.billing_record_id,
+        plan_code=subscription.plan_code,
+        subscription_status=subscription.subscription_status.value,
+        billing_period_start=subscription.billing_period_start,
+        billing_period_end=subscription.billing_period_end,
+        keyword_limit=subscription.keyword_limit,
+        activated_at=subscription.activated_at,
+        activated_by_payment_id=subscription.activated_by_payment_id,
+        created_at=subscription.created_at,
+        updated_at=subscription.updated_at,
     )
 
 

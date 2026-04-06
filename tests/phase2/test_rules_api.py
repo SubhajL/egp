@@ -249,3 +249,28 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
         "retry",
         "backfill",
     ]
+
+
+def test_billing_plans_include_free_trial(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-plans.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    response = client.get("/v1/billing/plans")
+
+    assert response.status_code == 200
+    plans = {plan["code"]: plan for plan in response.json()["plans"]}
+    assert plans["free_trial"] == {
+        "code": "free_trial",
+        "label": "Free Trial",
+        "description": "Try 1 active keyword for 7 days",
+        "currency": "THB",
+        "amount_due": "0.00",
+        "billing_interval": "trial",
+        "keyword_limit": 1,
+        "duration_days": 7,
+        "duration_months": None,
+    }

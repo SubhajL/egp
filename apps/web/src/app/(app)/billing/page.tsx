@@ -13,6 +13,7 @@ import {
   createBillingPaymentRequest,
   recordBillingPayment,
   reconcileBillingPayment,
+  startFreeTrial,
   transitionBillingRecord,
   type BillingPlan,
   type BillingRecordDetail,
@@ -107,6 +108,14 @@ function deriveBillingPeriodEnd(start: string, plan: BillingPlan | null): string
   }
 
   return "";
+}
+
+function planCapabilityHint(plan: BillingPlan | null): string | null {
+  if (!plan) return null;
+  if (plan.code === "free_trial") {
+    return "ทดลองใช้งาน 7 วัน สำหรับ 1 คำค้น โดยยังไม่รวม export, ดาวน์โหลดเอกสาร, และการแจ้งเตือน";
+  }
+  return null;
 }
 
 export default function BillingPage() {
@@ -306,6 +315,21 @@ export default function BillingPage() {
     }
   }
 
+  async function handleStartFreeTrial() {
+    setSubmitError(null);
+    setActionBusy(true);
+    try {
+      await startFreeTrial();
+      await refreshBilling();
+    } catch (mutationError) {
+      setSubmitError(
+        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเริ่ม Free Trial ได้",
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   const canRecordPayment = selectedRecord
     ? ["issued", "awaiting_payment", "overdue", "payment_detected"].includes(
         selectedRecord.record.status,
@@ -363,7 +387,17 @@ export default function BillingPage() {
                 เริ่มจากร่างใบแจ้งหนี้ แล้วค่อยออกบิลและรอชำระตาม lifecycle จริง
               </p>
             </div>
-            <StatusBadge state="draft" variant="billing" />
+            <div className="flex items-center gap-3">
+              <StatusBadge state="draft" variant="billing" />
+              <button
+                type="button"
+                disabled={actionBusy}
+                onClick={() => void handleStartFreeTrial()}
+                className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                เริ่ม Free Trial
+              </button>
+            </div>
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-4">
@@ -393,9 +427,16 @@ export default function BillingPage() {
                 ))}
               </select>
               {selectedPlan ? (
-                <span className="mt-1 block text-xs text-[var(--text-muted)]">
-                  {selectedPlan.description}
-                </span>
+                <>
+                  <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                    {selectedPlan.description}
+                  </span>
+                  {planCapabilityHint(selectedPlan) ? (
+                    <span className="mt-1 block text-xs text-primary">
+                      {planCapabilityHint(selectedPlan)}
+                    </span>
+                  ) : null}
+                </>
               ) : null}
             </label>
 

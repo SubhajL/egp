@@ -150,6 +150,11 @@ function EntitlementCard({ entitlements }: { entitlements: EntitlementSummary })
           <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
             ตรวจสอบสิทธิ์ใช้งานจริงจาก subscription และคำค้นที่เปิดอยู่ใน tenant นี้ เพื่อให้รู้ทันทีว่าระบบจะอนุญาตให้รันงาน ส่งออกข้อมูล ดาวน์โหลดเอกสาร และส่งแจ้งเตือนได้หรือไม่
           </p>
+          {entitlements.plan_code === "free_trial" ? (
+            <p className="mt-2 max-w-2xl text-sm font-medium text-primary">
+              Free Trial อนุญาตให้ทดลองรันงานจริง 1 คำค้น แต่จะยังไม่เปิด export, ดาวน์โหลดเอกสาร, และการแจ้งเตือน
+            </p>
+          ) : null}
         </div>
         <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-3">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">

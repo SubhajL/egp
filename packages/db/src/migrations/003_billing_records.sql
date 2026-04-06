@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS billing_records (
             'refunded'
         )
     ),
-    CONSTRAINT billing_records_amount_due_check CHECK (amount_due > 0),
+    CONSTRAINT billing_records_amount_due_check CHECK (amount_due >= 0),
     CONSTRAINT billing_records_period_order_check CHECK (billing_period_end >= billing_period_start)
 );
 

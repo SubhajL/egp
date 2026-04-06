@@ -181,8 +181,20 @@ def get_web_allowed_origins(override: list[str] | None = None) -> list[str]:
         return [origin.strip().rstrip("/") for origin in override if origin.strip()]
     raw = os.getenv("EGP_WEB_ALLOWED_ORIGINS", "").strip()
     if not raw:
-        return ["http://localhost:3000"]
+        return []
     return [part.strip().rstrip("/") for part in raw.split(",") if part.strip()]
+
+
+def get_web_allow_origin_regex(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_WEB_ALLOW_ORIGIN_REGEX", "").strip()
+    if raw:
+        return raw
+    if os.getenv("EGP_WEB_ALLOWED_ORIGINS", "").strip():
+        return None
+    return r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
 
 
 def get_web_base_url(

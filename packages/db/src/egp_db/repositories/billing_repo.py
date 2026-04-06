@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
 
@@ -475,8 +475,8 @@ def _normalize_amount(value: Decimal | str | float | int) -> Decimal:
     except (InvalidOperation, ValueError) as exc:
         raise ValueError("invalid billing amount") from exc
     amount = amount.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_UP)
-    if amount <= Decimal("0.00"):
-        raise ValueError("billing amount must be positive")
+    if amount < Decimal("0.00"):
+        raise ValueError("billing amount must not be negative")
     return amount
 
 
@@ -1097,6 +1097,109 @@ class SqlBillingRepository:
                 .all()
             )
         return [_subscription_from_mapping(row) for row in rows]
+
+    def activate_free_trial_subscription(
+        self,
+        *,
+        tenant_id: str,
+        actor_subject: str | None = None,
+        note: str | None = None,
+    ) -> BillingSubscriptionRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        plan_definition = get_billing_plan_definition("free_trial")
+        if plan_definition is None:
+            raise ValueError("free_trial plan is not configured")
+        now = _now()
+        period_start = now.date()
+        period_end = period_start + timedelta(
+            days=(plan_definition.duration_days or 1) - 1
+        )
+        with self._engine.begin() as connection:
+            existing_rows = (
+                connection.execute(
+                    select(BILLING_SUBSCRIPTIONS_TABLE)
+                    .where(
+                        BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
+                    .order_by(BILLING_SUBSCRIPTIONS_TABLE.c.created_at.desc())
+                )
+                .mappings()
+                .all()
+            )
+            for row in existing_rows:
+                subscription = _subscription_from_mapping(row)
+                if subscription.plan_code == "free_trial":
+                    raise ValueError("free trial already used for tenant")
+                if subscription.subscription_status is BillingSubscriptionStatus.ACTIVE:
+                    raise ValueError("tenant already has an active subscription")
+
+            record_id = str(uuid4())
+            subscription_id = str(uuid4())
+            record_number = f"TRIAL-{record_id[:8].upper()}"
+            connection.execute(
+                insert(BILLING_RECORDS_TABLE).values(
+                    id=record_id,
+                    tenant_id=normalized_tenant_id,
+                    record_number=record_number,
+                    plan_code="free_trial",
+                    status=BillingRecordStatus.PAID.value,
+                    billing_period_start=period_start,
+                    billing_period_end=period_end,
+                    currency=plan_definition.currency,
+                    amount_due=Decimal("0.00"),
+                    due_at=None,
+                    issued_at=now,
+                    paid_at=now,
+                    notes=note or "Free trial activation",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            self._append_event(
+                connection,
+                tenant_id=tenant_id,
+                billing_record_id=record_id,
+                payment_id=None,
+                event_type=BillingEventType.BILLING_RECORD_CREATED,
+                actor_subject=actor_subject,
+                note=note or "Free trial activation",
+                from_status=None,
+                to_status=BillingRecordStatus.PAID.value,
+            )
+            connection.execute(
+                insert(BILLING_SUBSCRIPTIONS_TABLE).values(
+                    id=subscription_id,
+                    tenant_id=normalized_tenant_id,
+                    billing_record_id=record_id,
+                    plan_code="free_trial",
+                    status=BillingSubscriptionStatus.ACTIVE.value,
+                    billing_period_start=period_start,
+                    billing_period_end=period_end,
+                    keyword_limit=plan_definition.keyword_limit,
+                    activated_at=now,
+                    activated_by_payment_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            self._append_event(
+                connection,
+                tenant_id=tenant_id,
+                billing_record_id=record_id,
+                payment_id=None,
+                event_type=BillingEventType.SUBSCRIPTION_ACTIVATED,
+                actor_subject=actor_subject,
+                note=note or "Free trial activation",
+                from_status=None,
+                to_status=BillingSubscriptionStatus.ACTIVE.value,
+            )
+
+        detail = self.require_billing_record_detail(
+            tenant_id=tenant_id, record_id=record_id
+        )
+        if detail.subscription is None:
+            raise RuntimeError("free trial subscription activation failed")
+        return detail.subscription
 
     def list_billing_records(
         self, *, tenant_id: str, limit: int = 50, offset: int = 0

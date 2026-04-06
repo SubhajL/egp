@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -31,6 +32,7 @@ from egp_api.config import (
     get_smtp_config,
     get_supabase_service_role_key,
     get_supabase_url,
+    get_web_allow_origin_regex,
     get_web_base_url,
     get_web_allowed_origins,
 )
@@ -151,10 +153,28 @@ def create_app(
     )
 
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
-    if resolved_web_allowed_origins:
+    resolved_web_allow_origin_regex = get_web_allow_origin_regex(None)
+
+    def cors_headers_for_origin(origin: str | None) -> dict[str, str]:
+        normalized_origin = str(origin or "").strip().rstrip("/")
+        if not normalized_origin:
+            return {}
+        if normalized_origin in resolved_web_allowed_origins or (
+            resolved_web_allow_origin_regex
+            and re.fullmatch(resolved_web_allow_origin_regex, normalized_origin)
+        ):
+            return {
+                "Access-Control-Allow-Origin": normalized_origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Vary": "Origin",
+            }
+        return {}
+
+    if resolved_web_allowed_origins or resolved_web_allow_origin_regex:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=resolved_web_allowed_origins,
+            allow_origin_regex=resolved_web_allow_origin_regex,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -330,6 +350,20 @@ def create_app(
 
     @app.middleware("http")
     async def auth_middleware(request, call_next):
+        if request.method == "OPTIONS":
+            request.state.auth_context = None
+            headers = cors_headers_for_origin(request.headers.get("origin"))
+            if headers:
+                headers.update(
+                    {
+                        "Access-Control-Allow-Methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+                        "Access-Control-Max-Age": "600",
+                    }
+                )
+                requested_headers = request.headers.get("access-control-request-headers")
+                if requested_headers:
+                    headers["Access-Control-Allow-Headers"] = requested_headers
+            return Response(status_code=200, headers=headers)
         if request.url.path in {
             "/health",
             "/openapi.json",
@@ -365,7 +399,11 @@ def create_app(
         except Exception as exc:
             status_code = getattr(exc, "status_code", 401)
             detail = getattr(exc, "detail", "invalid bearer token")
-            return JSONResponse(status_code=status_code, content={"detail": detail})
+            return JSONResponse(
+                status_code=status_code,
+                content={"detail": detail},
+                headers=cors_headers_for_origin(request.headers.get("origin")),
+            )
         return await call_next(request)
 
     @app.get("/health")

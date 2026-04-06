@@ -285,6 +285,37 @@ def test_rules_snapshot_includes_subscription_and_keyword_usage(tmp_path) -> Non
     assert body["entitlements"]["notifications_allowed"] is True
 
 
+def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="TOR",
+        is_active=True,
+        keywords=["ระบบข้อมูล"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["plan_code"] == "free_trial"
+    assert body["entitlements"]["plan_label"] == "Free Trial"
+    assert body["entitlements"]["keyword_limit"] == 1
+    assert body["entitlements"]["runs_allowed"] is True
+    assert body["entitlements"]["exports_allowed"] is False
+    assert body["entitlements"]["document_download_allowed"] is False
+    assert body["entitlements"]["notifications_allowed"] is False
+
+
 def test_run_creation_requires_active_subscription(tmp_path) -> None:
     client = _create_client(tmp_path)
 
