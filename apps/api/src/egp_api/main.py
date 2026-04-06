@@ -122,7 +122,9 @@ def create_app(
         poller_task = None
         poller_stop_event = None
         processor = getattr(app.state, "webhook_delivery_processor", None)
-        if processor is not None and getattr(app.state, "webhook_delivery_processor_enabled", False):
+        if processor is not None and getattr(
+            app.state, "webhook_delivery_processor_enabled", False
+        ):
             poller_stop_event = asyncio.Event()
             poller_task = asyncio.create_task(
                 _run_webhook_delivery_loop(

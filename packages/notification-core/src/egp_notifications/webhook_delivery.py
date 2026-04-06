@@ -254,7 +254,9 @@ class WebhookDeliveryProcessor:
             processed_count += 1
         return processed_count
 
-    def process_delivery(self, *, delivery: WebhookDeliveryRecord) -> WebhookDeliveryRecord:
+    def process_delivery(
+        self, *, delivery: WebhookDeliveryRecord
+    ) -> WebhookDeliveryRecord:
         if delivery.delivery_status == "delivered":
             return delivery
         target = self._repository.get_webhook_dispatch_target(

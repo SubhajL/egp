@@ -1046,8 +1046,10 @@ class SqlNotificationRepository:
                 connection.execute(
                     select(WEBHOOK_SUBSCRIPTIONS_TABLE).where(
                         and_(
-                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id == normalized_tenant_id,
-                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.id == normalized_subscription_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.id
+                            == normalized_subscription_id,
                             WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
                         )
                     )
@@ -1101,7 +1103,9 @@ class SqlNotificationRepository:
                             WEBHOOK_DELIVERIES_TABLE.c.delivered_at.is_(None),
                             WEBHOOK_DELIVERIES_TABLE.c.next_attempt_at <= now,
                             or_(
-                                WEBHOOK_DELIVERIES_TABLE.c.processing_started_at.is_(None),
+                                WEBHOOK_DELIVERIES_TABLE.c.processing_started_at.is_(
+                                    None
+                                ),
                                 WEBHOOK_DELIVERIES_TABLE.c.processing_started_at
                                 <= stale_started_at,
                             ),
@@ -1128,7 +1132,11 @@ class SqlNotificationRepository:
         claimed_by_id = {
             str(row["id"]): _from_webhook_delivery_row(row) for row in claimed_rows
         }
-        return [claimed_by_id[delivery_id] for delivery_id in claimed_ids if delivery_id in claimed_by_id]
+        return [
+            claimed_by_id[delivery_id]
+            for delivery_id in claimed_ids
+            if delivery_id in claimed_by_id
+        ]
 
     def _latest_webhook_delivery_by_subscription(
         self,
