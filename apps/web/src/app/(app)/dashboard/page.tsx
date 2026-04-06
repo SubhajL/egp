@@ -1,22 +1,12 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { Archive, AlertTriangle, CheckCircle, XCircle, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
+import { DailyDiscoveryChart, ProjectStateChart } from "@/components/ui/dashboard-charts";
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { DashboardSummaryResponse } from "@/lib/api";
 import { useDashboardSummary } from "@/lib/hooks";
 import { formatBudget, formatRelativeTime } from "@/lib/utils";
-
-const DailyDiscoveryChart = dynamic(
-  () => import("@/components/ui/dashboard-charts").then((m) => m.DailyDiscoveryChart),
-  { ssr: false, loading: () => <div className="flex h-72 items-center justify-center rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)] md:col-span-8"><span className="text-[var(--text-muted)]">กำลังโหลดกราฟ...</span></div> },
-);
-
-const ProjectStateChart = dynamic(
-  () => import("@/components/ui/dashboard-charts").then((m) => m.ProjectStateChart),
-  { ssr: false, loading: () => <div className="flex h-72 items-center justify-center rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)] md:col-span-4"><span className="text-[var(--text-muted)]">กำลังโหลดกราฟ...</span></div> },
-);
 
 const EMPTY_DASHBOARD_SUMMARY: DashboardSummaryResponse = {
   kpis: {
