@@ -55,9 +55,9 @@ export function DailyDiscoveryChart({ points }: DailyDiscoveryChartProps) {
     label: formatChartDate(point.date),
   }));
   return (
-    <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-8">
+    <div className="min-w-0 rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-8">
       <h3 className="text-sm font-semibold text-[var(--text-primary)]">โครงการค้นพบรายวัน</h3>
-      <div className="mt-4 h-72">
+      <div className="mt-4 h-72 min-w-0 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: -20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border-light)" vertical={false} />
@@ -83,9 +83,9 @@ export function ProjectStateChart({ breakdown }: ProjectStateChartProps) {
     color: STATE_BUCKET_STYLE[point.bucket]?.color ?? "#64748B",
   }));
   return (
-    <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-4">
+    <div className="min-w-0 rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-4">
       <h3 className="text-sm font-semibold text-[var(--text-primary)]">สถานะโครงการ</h3>
-      <div className="mt-4 h-72">
+      <div className="mt-4 h-72 min-w-0 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
