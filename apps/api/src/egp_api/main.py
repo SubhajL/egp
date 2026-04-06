@@ -239,6 +239,9 @@ def create_app(
         base_url=get_payment_base_url(payment_base_url),
         promptpay_proxy_id=get_promptpay_proxy_id(promptpay_proxy_id),
     )
+    resolved_payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
+    if resolved_payment_callback_secret is None:
+        raise RuntimeError("payment callback secret is required")
     gated_notification_dispatcher = EntitlementAwareNotificationDispatcher(
         notification_dispatcher,
         entitlement_service,
@@ -281,7 +284,7 @@ def create_app(
         notification_repository,
         audit_repository,
     )
-    app.state.payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
+    app.state.payment_callback_secret = resolved_payment_callback_secret
     app.state.document_ingest_service = DocumentIngestService(
         repository,
         entitlement_service=entitlement_service,
@@ -381,6 +384,3 @@ def create_app(
     app.include_router(runs_router)
     app.include_router(webhooks_router)
     return app
-
-
-app = create_app()

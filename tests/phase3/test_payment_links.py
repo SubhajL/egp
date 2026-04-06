@@ -17,7 +17,7 @@ class FailingPaymentProvider:
 
 
 def _create_client(
-    tmp_path, payment_provider=None, callback_secret: str | None = None
+    tmp_path, payment_provider=None, callback_secret: str | None = "top-secret"
 ) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase3-payment-links.sqlite3'}"
     return TestClient(
@@ -31,6 +31,24 @@ def _create_client(
             payment_callback_secret=callback_secret,
         )
     )
+
+
+def test_create_app_requires_payment_callback_secret(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase3-payment-links.sqlite3'}"
+
+    try:
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            payment_base_url="https://pay.egp.test",
+            promptpay_proxy_id="0801234567",
+            payment_callback_secret=None,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == "payment callback secret is required"
+    else:
+        raise AssertionError("expected create_app to require payment callback secret")
 
 
 def _create_billing_record(
@@ -74,7 +92,7 @@ def _settle_request(
     request_id: str,
     tenant_id: str = TENANT_ID,
     provider_event_id: str = "evt-settled-001",
-    callback_secret: str | None = None,
+    callback_secret: str | None = "top-secret",
 ) -> dict[str, object]:
     response = client.post(
         f"/v1/billing/payment-requests/{request_id}/callbacks",
@@ -190,6 +208,7 @@ def test_payment_request_and_callback_are_tenant_scoped(tmp_path) -> None:
             "currency": "THB",
             "occurred_at": "2026-04-05T05:30:00+00:00",
         },
+        headers={"x-egp-payment-callback-secret": "top-secret"},
     )
     assert foreign_callback.status_code == 403
 
