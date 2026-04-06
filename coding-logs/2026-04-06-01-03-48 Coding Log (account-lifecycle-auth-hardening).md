@@ -581,3 +581,74 @@ LOW
 ### Rollout Notes
 - Fresh developer and CI machines need `npx playwright install chromium` before running the browser suite.
 - The new tests validate page behavior, navigation, and request payloads, but they intentionally stop short of full browser-to-API integration.
+
+## Implementation Summary (2026-04-06 08:31:48 +07)
+
+### Goal
+- Unblock PR `#18` by fixing the two failing GitHub checks: `Python Lint & Format` and `Python Tests`.
+
+### What Changed
+- `tests/phase2/test_dashboard_api.py`
+  - Made the dashboard metrics fixture deterministic by pinning the test reference time to midday UTC. This prevents the `discovered_today` assertion from flaking when CI runs shortly after midnight UTC.
+- `apps/api/src/egp_api/auth.py`
+- `apps/api/src/egp_api/config.py`
+- `apps/api/src/egp_api/routes/auth.py`
+- `apps/api/src/egp_api/services/auth_service.py`
+- `packages/db/src/egp_db/repositories/auth_repo.py`
+  - Applied `ruff format` so the Python formatting check matches CI expectations.
+
+### TDD Evidence
+- Existing failing CI evidence (RED):
+  - `Python Lint & Format` on GitHub run `24014898960` failed because `ruff format --check apps/ packages/` wanted to reformat five Python files.
+  - `Python Tests` on GitHub run `24014898960` failed in `tests/phase2/test_dashboard_api.py::test_dashboard_summary_endpoint_returns_repository_backed_metrics` with `assert body["kpis"]["discovered_today"] == 2` / `E assert 1 == 2`.
+- GREEN commands/results:
+  - `./.venv/bin/ruff check apps/api packages tests/phase2/test_dashboard_api.py tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py` -> `All checks passed!`
+  - `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py::test_dashboard_summary_endpoint_returns_repository_backed_metrics tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py -q` -> `27 passed in 3.20s`
+
+### Tests Run
+- `./.venv/bin/ruff format apps/api/src/egp_api/auth.py apps/api/src/egp_api/config.py apps/api/src/egp_api/routes/auth.py apps/api/src/egp_api/services/auth_service.py packages/db/src/egp_db/repositories/auth_repo.py tests/phase2/test_dashboard_api.py`
+- `./.venv/bin/ruff check apps/api packages tests/phase2/test_dashboard_api.py tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py`
+- `./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py::test_dashboard_summary_endpoint_returns_repository_backed_metrics tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py -q`
+
+### Wiring Verification Evidence
+- The failing dashboard assertion is on the stable route path `/v1/dashboard/summary` and the change only affects the test fixture clock, not runtime service wiring.
+- The formatting changes are no-op behaviorally and only touch the Python files CI reported under `ruff format --check`.
+
+### Behavior Changes and Risks
+- No product behavior change.
+- The dashboard metrics test is now time-of-day independent, which removes CI flakiness around UTC midnight.
+
+### Follow-ups / Known Gaps
+- Re-run or wait for GitHub CI on PR `#18` to confirm the remote checks reflect this follow-up commit.
+
+## Review (2026-04-06 08:32:07 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: feat/account-lifecycle-auth-hardening
+- Scope: working-tree
+- Commit: 6a33930
+- Commands Run: CODEX_ALLOW_LARGE_OUTPUT=1 gh run view 24014898960 --job 70032574047 --log; CODEX_ALLOW_LARGE_OUTPUT=1 gh run view 24014898960 --job 70032574042 --log; ./.venv/bin/ruff format apps/api/src/egp_api/auth.py apps/api/src/egp_api/config.py apps/api/src/egp_api/routes/auth.py apps/api/src/egp_api/services/auth_service.py packages/db/src/egp_db/repositories/auth_repo.py tests/phase2/test_dashboard_api.py; ./.venv/bin/ruff check apps/api packages tests/phase2/test_dashboard_api.py tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py; ./.venv/bin/python -m pytest tests/phase2/test_dashboard_api.py::test_dashboard_summary_endpoint_returns_repository_backed_metrics tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py -q
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumed the CI-only failure in `test_dashboard_summary_endpoint_returns_repository_backed_metrics` is pure test flakiness caused by UTC-midnight timing, not a product regression.
+
+### Recommended Tests / Validation
+- Re-run the GitHub CI checks for PR `#18`.
+- If `Python Tests` still fail remotely after this patch, inspect whether the CI workflow includes any other time-sensitive dashboard tests.
+
+### Rollout Notes
+- This follow-up changes test determinism and Python formatting only; there is no intended runtime behavior change.

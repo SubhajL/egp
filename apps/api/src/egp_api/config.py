@@ -157,7 +157,11 @@ def get_session_cookie_secure(override: bool | None = None) -> bool:
 def get_session_cookie_samesite(
     override: str | None = None,
 ) -> Literal["lax", "strict", "none"]:
-    raw = (override if override is not None else os.getenv("EGP_SESSION_COOKIE_SAMESITE", "lax")).strip().lower()
+    raw = (
+        (override if override is not None else os.getenv("EGP_SESSION_COOKIE_SAMESITE", "lax"))
+        .strip()
+        .lower()
+    )
     if raw not in {"lax", "strict", "none"}:
         return "lax"
     return raw
@@ -172,7 +176,9 @@ def get_web_allowed_origins(override: list[str] | None = None) -> list[str]:
     return [part.strip().rstrip("/") for part in raw.split(",") if part.strip()]
 
 
-def get_web_base_url(override: str | None = None, *, allowed_origins: list[str] | None = None) -> str:
+def get_web_base_url(
+    override: str | None = None, *, allowed_origins: list[str] | None = None
+) -> str:
     if override is not None:
         normalized = override.strip().rstrip("/")
         if normalized:

@@ -155,12 +155,7 @@ class AuthService:
 
     def request_password_reset(self, *, tenant_slug: str, email: str) -> None:
         user = self._repository.find_login_user(tenant_slug=tenant_slug, email=email)
-        if (
-            user is None
-            or not user.tenant_is_active
-            or user.status != "active"
-            or not user.email
-        ):
+        if user is None or not user.tenant_is_active or user.status != "active" or not user.email:
             return
         token = self._repository.create_account_action_token(
             tenant_id=user.tenant_id,
@@ -199,7 +194,9 @@ class AuthService:
         )
 
     def send_email_verification(self, auth_context: AuthContext) -> None:
-        user = self._require_user(auth_context.tenant_id, auth_context.user_id or auth_context.subject)
+        user = self._require_user(
+            auth_context.tenant_id, auth_context.user_id or auth_context.subject
+        )
         if user.email_verified_at is not None:
             return
         token = self._repository.create_account_action_token(
@@ -232,7 +229,9 @@ class AuthService:
         return True
 
     def setup_mfa(self, auth_context: AuthContext) -> tuple[str, str]:
-        user = self._require_user(auth_context.tenant_id, auth_context.user_id or auth_context.subject)
+        user = self._require_user(
+            auth_context.tenant_id, auth_context.user_id or auth_context.subject
+        )
         secret = _generate_totp_secret()
         self._repository.set_mfa_secret(
             tenant_id=user.tenant_id,
@@ -242,7 +241,9 @@ class AuthService:
         return secret, _otpauth_uri(email=user.email, secret=secret)
 
     def enable_mfa(self, auth_context: AuthContext, *, code: str) -> bool:
-        user = self._require_user(auth_context.tenant_id, auth_context.user_id or auth_context.subject)
+        user = self._require_user(
+            auth_context.tenant_id, auth_context.user_id or auth_context.subject
+        )
         if not _verify_totp_code(user.mfa_secret, code):
             raise PermissionError("invalid mfa code")
         self._repository.set_mfa_enabled(
@@ -253,7 +254,9 @@ class AuthService:
         return True
 
     def disable_mfa(self, auth_context: AuthContext, *, code: str) -> bool:
-        user = self._require_user(auth_context.tenant_id, auth_context.user_id or auth_context.subject)
+        user = self._require_user(
+            auth_context.tenant_id, auth_context.user_id or auth_context.subject
+        )
         if not user.mfa_enabled:
             return False
         if not _verify_totp_code(user.mfa_secret, code):
@@ -283,13 +286,14 @@ class AuthService:
                 id=auth_context.user_id,
                 subject=auth_context.subject,
                 email=auth_context.email or _string_claim(auth_context.claims, "email"),
-                full_name=auth_context.full_name
-                or _string_claim(auth_context.claims, "full_name"),
+                full_name=auth_context.full_name or _string_claim(auth_context.claims, "full_name"),
                 role=auth_context.role or _string_claim(auth_context.claims, "role"),
                 status=auth_context.status,
                 email_verified=email_verified_at is not None,
                 email_verified_at=email_verified_at,
-                mfa_enabled=bool(auth_context.mfa_enabled or auth_context.claims.get("mfa_enabled")),
+                mfa_enabled=bool(
+                    auth_context.mfa_enabled or auth_context.claims.get("mfa_enabled")
+                ),
             ),
             tenant=tenant,
         )

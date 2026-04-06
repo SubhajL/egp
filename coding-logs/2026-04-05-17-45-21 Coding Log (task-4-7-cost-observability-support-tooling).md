@@ -541,3 +541,91 @@ LOW
 ### Rollout Notes
 - No migration or backfill is required.
 - Rollout is additive and fail-closed for tenant resolution outside the explicitly opted-in support surfaces.
+
+## Review (2026-04-05 18:37:54 +07) - system
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: entire system
+- Commands Run: `git rev-parse --show-toplevel`; `git branch --show-current`; `git status --porcelain=v1`; `git log -n 20 --oneline --decorate`; doc reads via `sed`; code search via Auggie and `rg`; targeted tests `./.venv/bin/python -m pytest tests/phase1/test_high_risk_architecture.py tests/phase4/test_webhooks_api.py tests/phase3/test_payment_links.py -q`
+- Sources: `AGENTS.md`, `CLAUDE.md`, `docs/PRD.md`, package `AGENTS.md` files, API/worker/doc-processor entrypoints, selected services/repositories/routes, targeted tests
+
+### High-Level Assessment
+- The repo has solid product-shaping work: a coherent FastAPI control plane, shared repository layer, tenant-aware data access, additive migrations, a usable operator UI, and meaningful backend tests.
+- The implementation quality is strongest in the database/repository layer and in the test-backed API slices for projects, documents, billing, webhooks, and audit.
+- The main weakness is architectural drift between the intended boundary model and the current runtime model.
+- The PRD says the API owns state transitions and workers emit events/artifacts, but the worker workflows still write project state directly.
+- The frontend auth story is not production-safe yet; it currently assumes tenant and bearer token values are injected as public runtime env, and the login page is cosmetic.
+- Operationally, the system is less decomposed than the docs suggest: the worker and doc-processor entrypoints are mostly stubs, while important side effects still happen synchronously inside API/worker flows.
+- Net: promising base, but not yet ready to rely on its current boundaries/security model as a production architecture.
+
+### Strengths
+- Strong tenant-scoping discipline is visible across routes, auth helpers, repositories, and tests.
+- Shared DB engine wiring is intentional and tested, reducing per-request connection churn and drift.
+- The repository layer captures domain concepts well: projects, runs, documents, billing, audit, and webhook delivery state all have explicit records and migrations.
+- Tests cover high-risk backend behavior better than many repos at this stage, especially auth/tenant isolation, payment links, and webhook flows.
+- The product model is much healthier than the legacy crawler: explicit project state, document versioning, auditability, and billing/entitlements are all moving in the right direction.
+
+### Key Risks / Gaps (severity ordered)
+CRITICAL
+- Frontend authentication is currently demo-grade and unsafe for real users. The browser client reads `NEXT_PUBLIC_EGP_TENANT_ID` and `NEXT_PUBLIC_EGP_API_BEARER_TOKEN`, then attaches that bearer token to every request (`apps/web/src/lib/api.ts`). Because `NEXT_PUBLIC_*` variables are exposed to the client bundle, this model effectively turns auth into a shared static browser secret instead of per-user/session auth. The login page is only presentational and does not perform authentication or session establishment (`apps/web/src/app/login/page.tsx`). Impact: any real deployment using this pattern would have weak tenant/user isolation at the UI boundary and no trustworthy identity model.
+
+HIGH
+- The implementation violates the intended control-plane/worker-plane boundary. The PRD explicitly says the crawler worker must not own product state and should only emit events/artifacts (`docs/PRD.md`). In reality, `run_discover_workflow()` upserts projects directly and emits notifications from the worker path, and `run_close_check_workflow()` transitions project state directly and emits winner/contract notifications itself (`apps/worker/src/egp_worker/workflows/discover.py`, `apps/worker/src/egp_worker/workflows/close_check.py`). Impact: boundary drift makes retries, idempotency, and future queue-based recovery much harder because state mutation is split across services.
+- External notifications are delivered inline on hot paths with synchronous retry loops. `WebhookDeliveryService.deliver()` performs network I/O and up to 3 attempts per target with a 5-second timeout in-process (`packages/notification-core/src/egp_notifications/webhook_delivery.py`). That delivery path is called directly from domain flows such as run finish, document review approval, exports, and worker workflows (`apps/api/src/egp_api/services/run_service.py`, `apps/api/src/egp_api/services/document_ingest_service.py`, `apps/api/src/egp_api/services/export_service.py`, worker workflow files). Impact: request latency and worker throughput become coupled to downstream email/webhook availability; an unreliable customer webhook can slow or destabilize core product operations.
+- Payment callback protection can disappear under a configuration mistake. The auth middleware explicitly exempts payment callback routes from auth (`apps/api/src/egp_api/main.py`), and `_require_payment_callback_secret()` only enforces a secret when one is configured; otherwise it only fails if `auth_required` is true (`apps/api/src/egp_api/routes/billing.py`). If someone disables auth and forgets the callback secret, callbacks become effectively unauthenticated. Impact: this is a footgun at a money-moving boundary.
+
+MEDIUM
+- Runtime packaging overstates service separation. The worker entrypoint only prints a startup message and keeps references to workflow functions; it does not run a real queue consumer or browser job loop (`apps/worker/src/egp_worker/main.py`). The doc-processor entrypoint is also scaffold-only with a TODO for the processing pipeline, and the processor itself is a thin facade over local classification functions (`apps/doc-processor/src/main.py`, `apps/doc-processor/src/egp_doc_processor/processor.py`). Impact: the docs imply a multi-service system, but actual operability still depends on library-style invocation and manual wiring.
+- The API silently falls back to a local SQLite file when `DATABASE_URL` is absent (`apps/api/src/egp_api/config.py`), even though the repo guidance says PostgreSQL is the source of truth. Impact: local success can mask Postgres/Supabase behavior, and a misconfigured environment can start against the wrong persistence layer instead of failing fast.
+- JWT validation is minimal. Tokens are decoded with HS256 and audience verification disabled, with tenant and role extracted from ad hoc claims (`apps/api/src/egp_api/auth.py`). Impact: this is acceptable for controlled internal use, but weak for a hosted multi-tenant SaaS unless issuer/audience/key-rotation assumptions are formalized.
+
+LOW
+- Frontend test coverage is absent by design today (`apps/web/AGENTS.md`). The UI is growing into admin, billing, and support surfaces, so the lack of any component/integration tests will become a drag quickly.
+- Migration numbering has drifted from the stated sequential convention (for example multiple `002_*.sql` files). The runner sorts by filename, so this works mechanically today, but it makes schema history harder to reason about and easier to mis-order later.
+
+### Nit-Picks / Nitty Gritty
+- `create_app()` is becoming a large manual composition root with many `app.state` assignments; still manageable, but it is the next place where dependency sprawl will accumulate.
+- The frontend currently treats tenant selection as a query-param/env concern more than a first-class user/session concern.
+- The repo has good backend tests, but the operator-facing pages are now complex enough that basic smoke coverage is warranted.
+- The doc-processor service boundary is conceptually ahead of its runtime implementation.
+
+### Tactical Improvements (1–3 days)
+1. Remove `NEXT_PUBLIC_EGP_API_BEARER_TOKEN` as the normal auth path and wire the web app to a real session/token source. Even a temporary server-side session bridge is safer than a public static bearer token.
+2. Fail fast on missing `DATABASE_URL` outside explicit local-dev mode. Make SQLite an opt-in dev setting, not a silent fallback.
+3. Require a payment callback secret unconditionally for callback endpoints, regardless of `auth_required`, and log startup warnings/errors when it is missing.
+4. Move webhook/email dispatch behind a durable queue or at least an outbox table plus background poller, so API and worker paths stop waiting on downstream HTTP.
+5. Add one frontend smoke test path for login shell, dashboard load state, and admin page rendering to catch basic regressions.
+
+### Strategic Improvements (1–6 weeks)
+1. Re-establish the API-as-state-owner boundary. Workers should publish discovery/closure/document events into a durable queue or inbox table; the API/control-plane consumer should perform idempotent state transitions.
+2. Introduce an outbox/inbox pattern for all side effects: notifications, webhooks, audit fan-out, and future integrations. This will improve recoverability, tracing, and retry safety.
+3. Formalize authentication around Supabase Auth or another identity provider with server-issued sessions, tenant membership checks, and support-role impersonation/audit trails.
+4. Decide whether the doc-processor is a real deployable service or just a package for now. If it is not going to be independently scaled soon, keep it as a package and remove the appearance of a separate runtime until the queue/pipeline exists.
+5. Add an environment contract layer that validates required secrets/URLs/storage backends at startup and refuses partial production-ish configurations.
+
+### Big Architectural Changes (only if justified)
+- Proposal: introduce a durable command/event backbone and make the API the only state-transition authority.
+  - Pros:
+  - Aligns implementation with the PRD boundary model.
+  - Makes retries/idempotency tractable for discovery, close checks, document processing, notifications, and billing callbacks.
+  - Decouples customer webhook latency from user-facing/API latency.
+  - Gives you a clean place for observability, dead-letter handling, and replay.
+  - Cons:
+  - Adds operational complexity: queue/outbox workers, retry semantics, and more explicit contracts.
+  - Requires careful migration so current synchronous flows do not break during the cutover.
+  - Migration Plan:
+  - Step 1: add outbox tables and background dispatchers for notifications/webhooks while leaving domain writes unchanged.
+  - Step 2: make worker workflows emit durable discovery/closure events instead of mutating projects directly.
+  - Step 3: add control-plane consumers that apply idempotent project/document transitions from those events.
+  - Step 4: cut worker direct-write paths behind flags, then remove them after replay/testing confidence is established.
+  - Step 5: only then decide whether the doc-processor deserves independent deployment or should remain a package invoked by a worker.
+  - Tests/Rollout:
+  - Add contract tests for event payloads, idempotency tests for replayed events, and failure-injection tests around webhook outages and duplicate callbacks.
+  - Roll out behind per-flow flags: notifications first, then worker discovery, then closure/document events.
+
+### Open Questions / Assumptions
+- I assumed the review target was the entire repo as implemented today, not only the latest PR.
+- I assumed the `NEXT_PUBLIC_*` auth variables are not just a short-lived local-demo hack; if they are strictly local-only, the severity drops but the architecture gap remains.
+- I did not inspect every repository/service file exhaustively; the review focused on the highest-risk boundaries, representative routes/services, and the test-covered flows.

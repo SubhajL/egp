@@ -54,7 +54,9 @@ def _extract_claim_tenant_id(claims: dict[str, Any]) -> str:
     raise HTTPException(status_code=401, detail="tenant claim missing from token")
 
 
-def authenticate_bearer_request(*, authorization_header: str | None, jwt_secret: str) -> AuthContext:
+def authenticate_bearer_request(
+    *, authorization_header: str | None, jwt_secret: str
+) -> AuthContext:
     token = _extract_bearer_token(authorization_header)
     try:
         claims = jwt.decode(

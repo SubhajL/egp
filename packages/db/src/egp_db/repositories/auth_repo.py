@@ -210,7 +210,9 @@ class SqlAuthRepository:
     def _ensure_schema(self) -> None:
         METADATA.create_all(self._engine)
 
-    def find_login_user(self, *, tenant_slug: str, email: str) -> LoginUserRecord | None:
+    def find_login_user(
+        self, *, tenant_slug: str, email: str
+    ) -> LoginUserRecord | None:
         normalized_slug = str(tenant_slug).strip().lower()
         normalized_email = _normalize_email(email)
         with self._engine.connect() as connection:
@@ -294,7 +296,8 @@ class SqlAuthRepository:
                     tenant_id=normalize_uuid_string(tenant_id),
                     user_id=normalize_uuid_string(user_id),
                     session_token_hash=_hash_opaque_token(raw_token),
-                    expires_at=now + timedelta(seconds=max(60, int(expires_in_seconds))),
+                    expires_at=now
+                    + timedelta(seconds=max(60, int(expires_in_seconds))),
                     revoked_at=None,
                     created_at=now,
                     updated_at=now,
@@ -326,7 +329,8 @@ class SqlAuthRepository:
                 update(USER_SESSIONS_TABLE)
                 .where(
                     and_(
-                        USER_SESSIONS_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                        USER_SESSIONS_TABLE.c.tenant_id
+                        == normalize_uuid_string(tenant_id),
                         USER_SESSIONS_TABLE.c.user_id == normalize_uuid_string(user_id),
                         USER_SESSIONS_TABLE.c.revoked_at.is_(None),
                     )
@@ -360,7 +364,8 @@ class SqlAuthRepository:
                     )
                     .where(
                         and_(
-                            USER_SESSIONS_TABLE.c.session_token_hash == session_token_hash,
+                            USER_SESSIONS_TABLE.c.session_token_hash
+                            == session_token_hash,
                             USER_SESSIONS_TABLE.c.revoked_at.is_(None),
                             USER_SESSIONS_TABLE.c.expires_at > now,
                         )
@@ -391,7 +396,9 @@ class SqlAuthRepository:
     ) -> str:
         normalized_purpose = str(purpose).strip()
         if normalized_purpose not in ACCOUNT_ACTION_PURPOSES:
-            raise ValueError(f"unsupported account action token purpose: {normalized_purpose}")
+            raise ValueError(
+                f"unsupported account action token purpose: {normalized_purpose}"
+            )
         now = _now()
         raw_token = token_urlsafe(SESSION_TOKEN_BYTES)
         normalized_tenant_id = normalize_uuid_string(tenant_id)
@@ -402,7 +409,8 @@ class SqlAuthRepository:
                     update(ACCOUNT_ACTION_TOKENS_TABLE)
                     .where(
                         and_(
-                            ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id == normalized_tenant_id,
+                            ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
                             ACCOUNT_ACTION_TOKENS_TABLE.c.user_id == normalized_user_id,
                             ACCOUNT_ACTION_TOKENS_TABLE.c.purpose == normalized_purpose,
                             ACCOUNT_ACTION_TOKENS_TABLE.c.consumed_at.is_(None),
@@ -423,7 +431,8 @@ class SqlAuthRepository:
                         else None
                     ),
                     token_hash=_hash_opaque_token(raw_token),
-                    expires_at=now + timedelta(seconds=max(60, int(expires_in_seconds))),
+                    expires_at=now
+                    + timedelta(seconds=max(60, int(expires_in_seconds))),
                     consumed_at=None,
                     created_at=now,
                     updated_at=now,
@@ -431,10 +440,14 @@ class SqlAuthRepository:
             )
         return raw_token
 
-    def consume_account_action_token(self, *, token: str, purpose: str) -> LoginUserRecord | None:
+    def consume_account_action_token(
+        self, *, token: str, purpose: str
+    ) -> LoginUserRecord | None:
         normalized_purpose = str(purpose).strip()
         if normalized_purpose not in ACCOUNT_ACTION_PURPOSES:
-            raise ValueError(f"unsupported account action token purpose: {normalized_purpose}")
+            raise ValueError(
+                f"unsupported account action token purpose: {normalized_purpose}"
+            )
         now = _now()
         token_hash = _hash_opaque_token(token)
         with self._engine.begin() as connection:
@@ -454,7 +467,8 @@ class SqlAuthRepository:
                             USERS_TABLE.c.id == ACCOUNT_ACTION_TOKENS_TABLE.c.user_id,
                         ).join(
                             TENANTS_TABLE,
-                            TENANTS_TABLE.c.id == ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id,
+                            TENANTS_TABLE.c.id
+                            == ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id,
                         )
                     )
                     .where(
@@ -496,7 +510,9 @@ class SqlAuthRepository:
             raise KeyError(user_id)
         return _to_iso(now) or ""
 
-    def update_password(self, *, tenant_id: str, user_id: str, password_hash: str) -> None:
+    def update_password(
+        self, *, tenant_id: str, user_id: str, password_hash: str
+    ) -> None:
         now = _now()
         with self._engine.begin() as connection:
             result = connection.execute(
@@ -512,7 +528,9 @@ class SqlAuthRepository:
         if not result.rowcount:
             raise KeyError(user_id)
 
-    def set_mfa_secret(self, *, tenant_id: str, user_id: str, secret: str | None) -> None:
+    def set_mfa_secret(
+        self, *, tenant_id: str, user_id: str, secret: str | None
+    ) -> None:
         now = _now()
         with self._engine.begin() as connection:
             result = connection.execute(
@@ -523,7 +541,11 @@ class SqlAuthRepository:
                         USERS_TABLE.c.id == normalize_uuid_string(user_id),
                     )
                 )
-                .values(mfa_secret=_normalize_secret(secret), mfa_enabled=False, updated_at=now)
+                .values(
+                    mfa_secret=_normalize_secret(secret),
+                    mfa_enabled=False,
+                    updated_at=now,
+                )
             )
         if not result.rowcount:
             raise KeyError(user_id)

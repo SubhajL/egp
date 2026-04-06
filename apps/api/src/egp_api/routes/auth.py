@@ -130,7 +130,11 @@ def login(payload: LoginRequest, request: Request, response: Response) -> Curren
     return _serialize_current(result.current)
 
 
-@router.post("/v1/auth/password/forgot", status_code=status.HTTP_202_ACCEPTED, response_model=ActionStatusResponse)
+@router.post(
+    "/v1/auth/password/forgot",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ActionStatusResponse,
+)
 def forgot_password(payload: ForgotPasswordRequest, request: Request) -> ActionStatusResponse:
     service = _service_from_request(request)
     service.request_password_reset(tenant_slug=payload.tenant_slug, email=payload.email)
@@ -170,7 +174,11 @@ def accept_invite(
     return _serialize_current(result.current)
 
 
-@router.post("/v1/auth/email/verification/send", status_code=status.HTTP_202_ACCEPTED, response_model=ActionStatusResponse)
+@router.post(
+    "/v1/auth/email/verification/send",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ActionStatusResponse,
+)
 def send_email_verification(request: Request) -> ActionStatusResponse:
     service = _service_from_request(request)
     try:
