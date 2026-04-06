@@ -3,6 +3,7 @@
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import InAppNotificationStore, NotificationService
 from egp_notifications.webhook_delivery import (
+    WebhookDeliveryProcessor,
     WebhookDeliveryService,
     WebhookTransportResult,
 )
@@ -11,6 +12,7 @@ __all__ = [
     "InAppNotificationStore",
     "NotificationDispatcher",
     "NotificationService",
+    "WebhookDeliveryProcessor",
     "WebhookDeliveryService",
     "WebhookTransportResult",
 ]

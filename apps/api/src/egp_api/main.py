@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -62,6 +64,7 @@ from egp_api.services.run_service import RunService
 from egp_api.services.support_service import SupportService
 from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
+from egp_db.db_utils import is_sqlite_url
 from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
@@ -74,7 +77,21 @@ from egp_db.repositories.run_repo import create_run_repository
 from egp_db.repositories.support_repo import create_support_repository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
-from egp_notifications.webhook_delivery import WebhookDeliveryService
+from egp_notifications.webhook_delivery import WebhookDeliveryProcessor, WebhookDeliveryService
+
+
+async def _run_webhook_delivery_loop(
+    *,
+    processor: WebhookDeliveryProcessor,
+    stop_event: asyncio.Event,
+    poll_interval_seconds: float,
+) -> None:
+    while not stop_event.is_set():
+        processor.process_pending()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
+        except TimeoutError:
+            continue
 
 
 def create_app(
@@ -99,10 +116,38 @@ def create_app(
     web_allowed_origins: list[str] | None = None,
     internal_worker_token: str | None = None,
 ) -> FastAPI:
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        poller_task = None
+        poller_stop_event = None
+        processor = getattr(app.state, "webhook_delivery_processor", None)
+        if processor is not None and getattr(
+            app.state, "webhook_delivery_processor_enabled", False
+        ):
+            poller_stop_event = asyncio.Event()
+            poller_task = asyncio.create_task(
+                _run_webhook_delivery_loop(
+                    processor=processor,
+                    stop_event=poller_stop_event,
+                    poll_interval_seconds=1.0,
+                )
+            )
+        try:
+            yield
+        finally:
+            if poller_stop_event is not None:
+                poller_stop_event.set()
+            if poller_task is not None:
+                poller_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await poller_task
+
     app = FastAPI(
         title="e-GP Intelligence Platform",
         version="0.1.0",
         description="Thailand public procurement monitoring API",
+        lifespan=lifespan,
     )
 
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
@@ -179,6 +224,7 @@ def create_app(
         email_sender=notification_email_sender,
     )
     webhook_delivery_service = WebhookDeliveryService(repository=notification_repository)
+    webhook_delivery_processor = WebhookDeliveryProcessor(repository=notification_repository)
     notification_dispatcher = NotificationDispatcher(
         service=notification_service,
         recipient_resolver=notification_repository,
@@ -227,6 +273,8 @@ def create_app(
     app.state.support_repository = support_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
+    app.state.webhook_delivery_processor = webhook_delivery_processor
+    app.state.webhook_delivery_processor_enabled = not is_sqlite_url(resolved_database_url)
     app.state.support_service = SupportService(support_repository)
     app.state.webhook_service = WebhookService(
         admin_repository,

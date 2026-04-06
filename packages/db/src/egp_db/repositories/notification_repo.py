@@ -17,6 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
     and_,
     desc,
+    or_,
 )
 from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
@@ -132,6 +133,8 @@ WEBHOOK_DELIVERIES_TABLE = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("last_attempted_at", DateTime(timezone=True), nullable=True),
+    Column("next_attempt_at", DateTime(timezone=True), nullable=True),
+    Column("processing_started_at", DateTime(timezone=True), nullable=True),
     Column("delivered_at", DateTime(timezone=True), nullable=True),
     UniqueConstraint(
         "webhook_subscription_id",
@@ -200,6 +203,8 @@ class WebhookDeliveryRecord:
     created_at: str
     updated_at: str
     last_attempted_at: str | None
+    next_attempt_at: str | None
+    processing_started_at: str | None
     delivered_at: str | None
 
 
@@ -337,6 +342,8 @@ def _from_webhook_delivery_row(row: RowMapping) -> WebhookDeliveryRecord:
         created_at=_to_iso(row["created_at"]) or "",
         updated_at=_to_iso(row["updated_at"]) or "",
         last_attempted_at=_to_iso(row["last_attempted_at"]),
+        next_attempt_at=_to_iso(row["next_attempt_at"]),
+        processing_started_at=_to_iso(row["processing_started_at"]),
         delivered_at=_to_iso(row["delivered_at"]),
     )
 
@@ -922,6 +929,8 @@ class SqlNotificationRepository:
                         created_at=_now(),
                         updated_at=_now(),
                         last_attempted_at=None,
+                        next_attempt_at=_now(),
+                        processing_started_at=None,
                         delivered_at=None,
                     )
                 )
@@ -952,6 +961,8 @@ class SqlNotificationRepository:
         response_status_code: int | None = None,
         response_body: str | None = None,
         delivered: bool = False,
+        next_attempt_at: datetime | None = None,
+        processing_started_at: datetime | None = None,
     ) -> WebhookDeliveryRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_delivery_id = normalize_uuid_string(delivery_id)
@@ -984,6 +995,8 @@ class SqlNotificationRepository:
                     ),
                     updated_at=now,
                     last_attempted_at=now,
+                    next_attempt_at=next_attempt_at,
+                    processing_started_at=processing_started_at,
                     delivered_at=now if delivered else existing["delivered_at"],
                 )
             )
@@ -1019,6 +1032,111 @@ class SqlNotificationRepository:
                 .all()
             )
         return [_from_webhook_delivery_row(row) for row in rows]
+
+    def get_webhook_dispatch_target(
+        self,
+        *,
+        tenant_id: str,
+        webhook_subscription_id: str,
+    ) -> WebhookDispatchTarget | None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_subscription_id = normalize_uuid_string(webhook_subscription_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(WEBHOOK_SUBSCRIPTIONS_TABLE).where(
+                        and_(
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.id
+                            == normalized_subscription_id,
+                            WEBHOOK_SUBSCRIPTIONS_TABLE.c.is_active.is_(True),
+                        )
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return _from_webhook_dispatch_row(row)
+
+    def claim_pending_webhook_deliveries(
+        self,
+        *,
+        limit: int = 10,
+        stale_after_seconds: float = 60.0,
+    ) -> list[WebhookDeliveryRecord]:
+        now = _now()
+        stale_cutoff = now.timestamp() - max(1.0, float(stale_after_seconds))
+        stale_started_at = datetime.fromtimestamp(stale_cutoff, UTC)
+        normalized_limit = max(1, int(limit))
+        claimed_ids: list[str] = []
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE)
+                    .where(
+                        and_(
+                            WEBHOOK_DELIVERIES_TABLE.c.delivery_status == "pending",
+                            WEBHOOK_DELIVERIES_TABLE.c.delivered_at.is_(None),
+                            WEBHOOK_DELIVERIES_TABLE.c.next_attempt_at <= now,
+                        )
+                    )
+                    .order_by(WEBHOOK_DELIVERIES_TABLE.c.next_attempt_at)
+                    .limit(normalized_limit)
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                delivery_id = str(row["id"])
+                started_at = row["processing_started_at"]
+                if started_at is not None and started_at > stale_started_at:
+                    continue
+                updated = connection.execute(
+                    update(WEBHOOK_DELIVERIES_TABLE)
+                    .where(
+                        and_(
+                            WEBHOOK_DELIVERIES_TABLE.c.id == delivery_id,
+                            WEBHOOK_DELIVERIES_TABLE.c.delivery_status == "pending",
+                            WEBHOOK_DELIVERIES_TABLE.c.delivered_at.is_(None),
+                            WEBHOOK_DELIVERIES_TABLE.c.next_attempt_at <= now,
+                            or_(
+                                WEBHOOK_DELIVERIES_TABLE.c.processing_started_at.is_(
+                                    None
+                                ),
+                                WEBHOOK_DELIVERIES_TABLE.c.processing_started_at
+                                <= stale_started_at,
+                            ),
+                        )
+                    )
+                    .values(
+                        processing_started_at=now,
+                        updated_at=now,
+                    )
+                )
+                if updated.rowcount:
+                    claimed_ids.append(delivery_id)
+            if not claimed_ids:
+                return []
+            claimed_rows = (
+                connection.execute(
+                    select(WEBHOOK_DELIVERIES_TABLE).where(
+                        WEBHOOK_DELIVERIES_TABLE.c.id.in_(claimed_ids)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        claimed_by_id = {
+            str(row["id"]): _from_webhook_delivery_row(row) for row in claimed_rows
+        }
+        return [
+            claimed_by_id[delivery_id]
+            for delivery_id in claimed_ids
+            if delivery_id in claimed_by_id
+        ]
 
     def _latest_webhook_delivery_by_subscription(
         self,

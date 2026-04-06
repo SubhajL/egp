@@ -6,6 +6,7 @@ from egp_db.repositories.notification_repo import SqlNotificationRepository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import Notification, NotificationService
 from egp_notifications.webhook_delivery import (
+    WebhookDeliveryProcessor,
     WebhookDeliveryService,
     WebhookTransportResult,
 )
@@ -211,26 +212,70 @@ def test_dispatch_delivers_webhook_for_matching_tenant_and_type(tmp_path) -> Non
     )
 
     assert created.channel == "in_app,webhook"
+    assert transport.calls == []
+
+    deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
+    assert len(deliveries) == 1
+    assert deliveries[0].delivery_status == "pending"
+    assert deliveries[0].attempt_count == 0
+    assert deliveries[0].last_response_status_code is None
+
+
+def test_webhook_processor_delivers_queued_webhook(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-retry.sqlite3'}"
+    repository = SqlNotificationRepository(
+        database_url=database_url, bootstrap_schema=True
+    )
+    repository.create_webhook_subscription(
+        tenant_id=TENANT_ID,
+        name="Ops Receiver",
+        url="https://hooks.example.com/egp",
+        notification_types=[NotificationType.RUN_FAILED],
+        signing_secret="super-secret",
+    )
+    transport = FakeWebhookTransport(
+        [WebhookTransportResult(status_code=202, body="accepted")]
+    )
+    dispatcher = NotificationDispatcher(
+        service=NotificationService(in_app_store=repository),
+        recipient_resolver=repository,
+        webhook_delivery_service=WebhookDeliveryService(
+            repository=repository,
+            transport=transport,
+        ),
+    )
+
+    dispatcher.dispatch(
+        tenant_id=TENANT_ID,
+        notification_type=NotificationType.RUN_FAILED,
+        template_vars={"run_id": "run-123", "error_count": "2"},
+    )
+
+    processor = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+    )
+    processed = processor.process_pending()
+
+    assert processed == 1
     assert len(transport.calls) == 1
     call = transport.calls[0]
     payload = json.loads(call["body"])
     assert call["url"] == "https://hooks.example.com/egp"
-    assert call["headers"]["X-EGP-Event-Type"] == "new_project"
+    assert call["headers"]["X-EGP-Event-Type"] == "run_failed"
     assert call["headers"]["X-EGP-Event-ID"]
     assert call["headers"]["X-EGP-Signature-256"].startswith("sha256=")
-    assert payload["event_type"] == "new_project"
+    assert payload["event_type"] == "run_failed"
     assert payload["tenant_id"] == TENANT_ID
-    assert payload["project_id"] == "33333333-3333-3333-3333-333333333333"
-    assert payload["template_vars"]["project_name"] == "โครงการใหม่"
+    assert payload["template_vars"]["run_id"] == "run-123"
 
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
-    assert len(deliveries) == 1
     assert deliveries[0].delivery_status == "delivered"
     assert deliveries[0].attempt_count == 1
     assert deliveries[0].last_response_status_code == 202
 
 
-def test_dispatch_retries_retryable_webhook_failures_with_same_event_id(
+def test_webhook_processor_retries_retryable_webhook_failures_with_same_event_id(
     tmp_path,
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-retry.sqlite3'}"
@@ -266,6 +311,17 @@ def test_dispatch_retries_retryable_webhook_failures_with_same_event_id(
         template_vars={"run_id": "run-123", "error_count": "2"},
     )
 
+    processor = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+        max_attempts=2,
+        retry_delay_seconds=0.0,
+    )
+    first_processed = processor.process_pending()
+    second_processed = processor.process_pending()
+
+    assert first_processed == 1
+    assert second_processed == 1
     assert len(transport.calls) == 2
     assert (
         transport.calls[0]["headers"]["X-EGP-Event-ID"]
@@ -307,6 +363,14 @@ def test_dispatch_does_not_retry_non_retryable_4xx_webhook_failure(tmp_path) -> 
         notification_type=NotificationType.EXPORT_READY,
     )
 
+    processor = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+        max_attempts=3,
+    )
+    processed = processor.process_pending()
+
+    assert processed == 1
     assert len(transport.calls) == 1
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
     assert deliveries[0].delivery_status == "failed"
@@ -359,12 +423,21 @@ def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
         },
     )
 
+    processor = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+        max_attempts=3,
+        retry_delay_seconds=0.0,
+    )
+    processed_runs = [processor.process_pending(), processor.process_pending(), processor.process_pending()]
+
     assert sent == ["owner@example.com"]
-    assert created.channel == "in_app,email"
+    assert created.channel == "in_app,email,webhook"
     assert (
         repository.list_for_tenant(TENANT_ID)[0].notification_type
         is NotificationType.NEW_PROJECT
     )
+    assert processed_runs == [1, 1, 1]
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
     assert deliveries[0].delivery_status == "failed"
     assert deliveries[0].attempt_count == 3
@@ -391,6 +464,10 @@ def test_webhook_delivery_skips_already_delivered_event_id(tmp_path) -> None:
         repository=repository,
         transport=transport,
     )
+    processor = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+    )
     notification = Notification(
         id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         tenant_id=TENANT_ID,
@@ -405,19 +482,21 @@ def test_webhook_delivery_skips_already_delivered_event_id(tmp_path) -> None:
     )
 
     assert (
-        delivery_service.deliver(
+        delivery_service.enqueue(
             notification=notification,
             template_vars={"project_name": "ทดสอบ"},
         )
         is True
     )
+    assert processor.process_pending() == 1
     assert (
-        delivery_service.deliver(
+        delivery_service.enqueue(
             notification=notification,
             template_vars={"project_name": "ทดสอบ"},
         )
         is True
     )
+    assert processor.process_pending() == 0
 
     assert len(transport.calls) == 1
     deliveries = repository.list_webhook_deliveries(tenant_id=TENANT_ID)
