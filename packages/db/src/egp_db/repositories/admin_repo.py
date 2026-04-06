@@ -138,6 +138,46 @@ class SqlAdminRepository:
     def _ensure_schema(self) -> None:
         METADATA.create_all(self._engine)
 
+    def create_tenant(
+        self,
+        *,
+        name: str,
+        slug: str,
+        plan_code: str = "free_trial",
+        is_active: bool = True,
+    ) -> TenantRecord:
+        tenant_id = str(uuid4())
+        now = _now()
+        with self._engine.begin() as connection:
+            connection.execute(
+                insert(TENANTS_TABLE).values(
+                    id=tenant_id,
+                    name=name,
+                    slug=slug,
+                    plan_code=plan_code,
+                    is_active=is_active,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        result = self.get_tenant(tenant_id=tenant_id)
+        if result is None:
+            raise RuntimeError(f"tenant {tenant_id} not found after creation")
+        return result
+
+    def get_tenant_by_slug(self, *, slug: str) -> TenantRecord | None:
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(TENANTS_TABLE).where(TENANTS_TABLE.c.slug == slug)
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return _tenant_from_mapping(row)
+
     def get_tenant(self, *, tenant_id: str) -> TenantRecord | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:

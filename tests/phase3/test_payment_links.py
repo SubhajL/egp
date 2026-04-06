@@ -4,6 +4,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
+from egp_api.services.payment_provider import CreatedPaymentRequest, OpnProvider, ParsedPaymentCallback
+from egp_shared_types.enums import (
+    BillingPaymentMethod,
+    BillingPaymentProvider,
+    BillingPaymentRequestStatus,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
@@ -15,6 +21,64 @@ class FailingPaymentProvider:
 
     def parse_callback(self, **kwargs):
         raise RuntimeError("provider unavailable")
+
+
+class StubOpnProvider:
+    def __init__(self) -> None:
+        self.created_requests: list[object] = []
+
+    def create_payment_request(self, *, request):
+        self.created_requests.append(request)
+        if request.payment_method is BillingPaymentMethod.CARD:
+            return CreatedPaymentRequest(
+                provider=BillingPaymentProvider.OPN,
+                payment_method=BillingPaymentMethod.CARD,
+                status=BillingPaymentRequestStatus.PENDING,
+                provider_reference="link_test_card_001",
+                payment_url="https://link.omise.co/card-001",
+                qr_payload="",
+                qr_svg="",
+                amount=request.amount,
+                currency=request.currency,
+                expires_at="2026-04-05T05:30:00+00:00",
+            )
+        return CreatedPaymentRequest(
+            provider=BillingPaymentProvider.OPN,
+            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            status=BillingPaymentRequestStatus.PENDING,
+            provider_reference="chrg_test_promptpay_001",
+            payment_url="https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg",
+            qr_payload="0002010102121234",
+            qr_svg="<svg></svg>",
+            amount=request.amount,
+            currency=request.currency,
+            expires_at="2026-04-05T05:30:00+00:00",
+        )
+
+    def parse_callback(self, *, payload, headers=None, raw_body=None):
+        del headers, raw_body
+        kind = str(payload.get("kind") or "promptpay").strip()
+        if kind == "card":
+            return ParsedPaymentCallback(
+                provider_event_id="evnt_test_card_001",
+                provider_reference="link_test_card_001",
+                status=BillingPaymentRequestStatus.SETTLED,
+                amount="1500.00",
+                currency="THB",
+                occurred_at="2026-04-05T05:30:00+00:00",
+                reference_code="chrg_test_card_charge_001",
+                payload_json='{"kind":"card"}',
+            )
+        return ParsedPaymentCallback(
+            provider_event_id="evnt_test_promptpay_001",
+            provider_reference="chrg_test_promptpay_001",
+            status=BillingPaymentRequestStatus.SETTLED,
+            amount="1500.00",
+            currency="THB",
+            occurred_at="2026-04-05T05:30:00+00:00",
+            reference_code="chrg_test_promptpay_001",
+            payload_json='{"kind":"promptpay"}',
+        )
 
 
 def _create_client(
@@ -75,12 +139,15 @@ def _create_payment_request(
     *,
     record_id: str,
     tenant_id: str = TENANT_ID,
+    provider: str = "mock_promptpay",
+    payment_method: str = "promptpay_qr",
 ) -> dict[str, object]:
     response = client.post(
         f"/v1/billing/records/{record_id}/payment-requests",
         json={
             "tenant_id": tenant_id,
-            "provider": "mock_promptpay",
+            "provider": provider,
+            "payment_method": payment_method,
             "expires_in_minutes": 30,
         },
     )
@@ -132,6 +199,48 @@ def test_create_payment_request_returns_promptpay_qr_and_payment_link(tmp_path) 
     assert request["qr_payload"]
     assert request["qr_svg"].startswith("<svg")
     assert request["expires_at"] is not None
+
+
+def test_create_payment_request_supports_opn_promptpay_qr(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+
+    detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="promptpay_qr",
+    )
+
+    request = detail["payment_requests"][0]
+    assert request["provider"] == "opn"
+    assert request["payment_method"] == "promptpay_qr"
+    assert request["provider_reference"] == "chrg_test_promptpay_001"
+    assert request["payment_url"] == "https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg"
+    assert request["qr_payload"] == "0002010102121234"
+    assert request["qr_svg"].startswith("<svg")
+
+
+def test_create_payment_request_supports_opn_card_checkout(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+
+    detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="card",
+    )
+
+    request = detail["payment_requests"][0]
+    assert request["provider"] == "opn"
+    assert request["payment_method"] == "card"
+    assert request["provider_reference"] == "link_test_card_001"
+    assert request["payment_url"] == "https://link.omise.co/card-001"
+    assert request["qr_payload"] == ""
+    assert request["qr_svg"] == ""
 
 
 def test_create_payment_request_rejects_terminal_billing_record(tmp_path) -> None:
@@ -264,3 +373,102 @@ def test_callback_requires_configured_secret(tmp_path) -> None:
         callback_secret="top-secret",
     )
     assert settled["record"]["status"] == "paid"
+
+
+def test_opn_webhook_settles_promptpay_request_without_shared_secret(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="promptpay_qr",
+    )
+
+    response = client.post(
+        "/v1/billing/providers/opn/webhooks",
+        json={"kind": "promptpay"},
+    )
+
+    assert response.status_code == 200
+    settled = response.json()
+    assert settled["record"]["status"] == "paid"
+    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert [payment["payment_method"] for payment in settled["payments"]] == ["promptpay_qr"]
+
+
+def test_opn_webhook_settles_card_request_without_shared_secret(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="card",
+    )
+
+    response = client.post(
+        "/v1/billing/providers/opn/webhooks",
+        json={"kind": "card"},
+    )
+
+    assert response.status_code == 200
+    settled = response.json()
+    assert settled["record"]["status"] == "paid"
+    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert [payment["payment_method"] for payment in settled["payments"]] == ["card"]
+
+
+def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
+    provider = OpnProvider(secret_key="skey_test_example")
+
+    def fake_request(*, method: str, path: str, payload=None):
+        assert method == "GET"
+        assert path == "/charges/chrg_test_card_001"
+        assert payload is None
+        return {
+            "id": "chrg_test_card_001",
+            "link": "link_test_card_001",
+            "amount": 150000,
+            "currency": "thb",
+            "status": "successful",
+            "paid_at": "2026-04-05T05:30:00+00:00",
+        }
+
+    provider._request = fake_request  # type: ignore[method-assign]
+
+    parsed = provider.parse_callback(
+        payload={
+            "id": "evt_test_card_001",
+            "key": "charge.complete",
+            "data": {
+                "object": "charge",
+                "id": "chrg_test_card_001",
+            },
+        }
+    )
+
+    assert parsed.provider_event_id == "evt_test_card_001"
+    assert parsed.provider_reference == "link_test_card_001"
+    assert parsed.reference_code == "chrg_test_card_001"
+    assert parsed.status is BillingPaymentRequestStatus.SETTLED
+
+
+def test_opn_request_encoding_flattens_nested_metadata() -> None:
+    payload = OpnProvider._flatten_payload(
+        {
+            "amount": 150000,
+            "metadata": {
+                "billing_record_id": "record-123",
+                "record_number": "INV-123",
+            },
+        }
+    )
+
+    assert payload == [
+        ("amount", "150000"),
+        ("metadata[billing_record_id]", "record-123"),
+        ("metadata[record_number]", "INV-123"),
+    ]

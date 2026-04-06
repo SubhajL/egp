@@ -78,6 +78,7 @@ class BillingPaymentRecord:
 @dataclass(frozen=True, slots=True)
 class BillingPaymentRequestRecord:
     id: str
+    tenant_id: str
     billing_record_id: str
     provider: BillingPaymentProvider
     payment_method: BillingPaymentMethod
@@ -621,6 +622,7 @@ def _payment_from_mapping(row: RowMapping) -> BillingPaymentRecord:
 def _payment_request_from_mapping(row: RowMapping) -> BillingPaymentRequestRecord:
     return BillingPaymentRequestRecord(
         id=str(row["id"]),
+        tenant_id=str(row["tenant_id"]),
         billing_record_id=str(row["billing_record_id"]),
         provider=BillingPaymentProvider(str(row["provider"])),
         payment_method=BillingPaymentMethod(str(row["payment_method"])),
@@ -922,6 +924,29 @@ class SqlBillingRepository:
             )
         return _payment_request_from_mapping(row) if row is not None else None
 
+    def _get_payment_request_by_provider_reference(
+        self,
+        *,
+        provider: BillingPaymentProvider | str,
+        provider_reference: str,
+    ) -> BillingPaymentRequestRecord | None:
+        normalized_provider = _normalize_payment_provider(provider)
+        normalized_reference = str(provider_reference).strip()
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(BILLING_PAYMENT_REQUESTS_TABLE)
+                    .where(
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider == normalized_provider.value,
+                        BILLING_PAYMENT_REQUESTS_TABLE.c.provider_reference == normalized_reference,
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _payment_request_from_mapping(row) if row is not None else None
+
     def _require_record_for_tenant(
         self, *, tenant_id: str, record_id: str
     ) -> _BillingRecordRow:
@@ -1074,6 +1099,17 @@ class SqlBillingRepository:
         return self._require_payment_request_for_tenant(
             tenant_id=tenant_id,
             request_id=request_id,
+        )
+
+    def get_payment_request_by_provider_reference(
+        self,
+        *,
+        provider: BillingPaymentProvider | str,
+        provider_reference: str,
+    ) -> BillingPaymentRequestRecord | None:
+        return self._get_payment_request_by_provider_reference(
+            provider=provider,
+            provider_reference=provider_reference,
         )
 
     def list_subscriptions_for_tenant(

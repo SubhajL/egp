@@ -87,6 +87,7 @@ async function mockApi(
   page: Page,
   options: {
     authenticated?: boolean;
+    onRegister?: (payload: unknown) => void;
     onLogin?: (payload: unknown) => void;
     onForgotPassword?: (payload: unknown) => void;
     onAcceptInvite?: (payload: unknown) => void;
@@ -114,6 +115,11 @@ async function mockApi(
         return;
       case "POST /v1/auth/login":
         options.onLogin?.(request.postDataJSON());
+        authenticated = true;
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "POST /v1/auth/register":
+        options.onRegister?.(request.postDataJSON());
         authenticated = true;
         await fulfillJson(route, 200, CURRENT_SESSION);
         return;
@@ -167,7 +173,7 @@ test("login submits tenant credentials and MFA code", async ({ page }) => {
   });
 
   await page.goto("/login?next=%2Fsecurity");
-  await page.getByLabel("Tenant slug").fill("example-tenant");
+  await page.getByLabel("Workspace slug").fill("example-tenant");
   await page.getByLabel("อีเมล").fill("analyst@example.com");
   await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
   await page.getByLabel("MFA code").fill("123456");
@@ -180,6 +186,29 @@ test("login submits tenant credentials and MFA code", async ({ page }) => {
     email: "analyst@example.com",
     password: "super-secret-password",
     mfa_code: "123456",
+  });
+});
+
+test("signup creates a workspace and continues to the requested page", async ({ page }) => {
+  let registerPayload: unknown;
+  await mockApi(page, {
+    onRegister: (payload) => {
+      registerPayload = payload;
+    },
+  });
+
+  await page.goto("/signup?next=%2Fsecurity");
+  await page.getByLabel("ชื่อบริษัท / องค์กร").fill("Example Company Ltd");
+  await page.getByLabel("อีเมล").fill("owner@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เริ่มทดลองใช้งานฟรี" }).click();
+
+  await expect(page).toHaveURL(/\/security$/);
+  await expect(page.getByRole("heading", { name: "ความปลอดภัยของบัญชี" })).toBeVisible();
+  expect(registerPayload).toEqual({
+    company_name: "Example Company Ltd",
+    email: "owner@example.com",
+    password: "super-secret-password",
   });
 });
 

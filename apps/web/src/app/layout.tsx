@@ -12,6 +12,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://egp.example.com"),
   title: "e-GP Intelligence Platform",
   description: "ระบบติดตามการจัดซื้อจัดจ้างภาครัฐอัจฉริยะ",
 };

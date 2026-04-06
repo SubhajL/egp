@@ -21,6 +21,8 @@ from egp_api.config import (
     get_database_url,
     get_internal_worker_token,
     get_jwt_secret,
+    get_opn_public_key,
+    get_opn_secret_key,
     get_payment_base_url,
     get_payment_callback_secret,
     get_payment_provider,
@@ -114,6 +116,8 @@ def create_app(
     payment_provider: PaymentProvider | None = None,
     payment_base_url: str | None = None,
     promptpay_proxy_id: str | None = None,
+    opn_public_key: str | None = None,
+    opn_secret_key: str | None = None,
     payment_callback_secret: str | None = None,
     web_allowed_origins: list[str] | None = None,
     internal_worker_token: str | None = None,
@@ -258,6 +262,8 @@ def create_app(
         provider_name=get_payment_provider(None),
         base_url=get_payment_base_url(payment_base_url),
         promptpay_proxy_id=get_promptpay_proxy_id(promptpay_proxy_id),
+        opn_public_key=get_opn_public_key(opn_public_key),
+        opn_secret_key=get_opn_secret_key(opn_secret_key),
     )
     resolved_payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     if resolved_payment_callback_secret is None:
@@ -271,6 +277,11 @@ def create_app(
         admin_repository,
         session_max_age_seconds=session_cookie_max_age_seconds,
         notification_service=notification_service,
+        notification_repository=notification_repository,
+        billing_service=BillingService(
+            billing_repository,
+            payment_provider=resolved_payment_provider,
+        ),
         web_base_url=get_web_base_url(None, allowed_origins=resolved_web_allowed_origins),
     )
     app.state.db_engine = shared_engine
@@ -372,6 +383,7 @@ def create_app(
             "/redoc",
             "/v1/auth/login",
             "/v1/auth/logout",
+            "/v1/auth/register",
             "/v1/auth/password/forgot",
             "/v1/auth/password/reset",
             "/v1/auth/invite/accept",
@@ -381,7 +393,7 @@ def create_app(
         } or (
             request.url.path.startswith("/v1/billing/payment-requests/")
             and request.url.path.endswith("/callbacks")
-        ):
+        ) or request.url.path == "/v1/billing/providers/opn/webhooks":
             request.state.auth_context = None
             return await call_next(request)
 

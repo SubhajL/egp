@@ -177,6 +177,7 @@ class BillingService:
         tenant_id: str,
         billing_record_id: str,
         provider: BillingPaymentProvider,
+        payment_method: BillingPaymentMethod,
         expires_in_minutes: int = 30,
         actor_subject: str | None = None,
     ) -> BillingRecordDetail:
@@ -194,11 +195,11 @@ class BillingService:
             raise ValueError("billing record is not payable")
         if Decimal(detail.record.outstanding_balance) <= Decimal("0.00"):
             raise ValueError("billing record has no outstanding balance")
-        if provider is not BillingPaymentProvider.MOCK_PROMPTPAY:
-            raise ValueError("unsupported payment provider")
         try:
             created_request = self._payment_provider.create_payment_request(
                 request=ProviderPaymentRequest(
+                    provider=provider,
+                    payment_method=payment_method,
                     tenant_id=tenant_id,
                     billing_record_id=detail.record.id,
                     record_number=detail.record.record_number,
@@ -225,26 +226,30 @@ class BillingService:
             currency=created_request.currency,
             expires_at=created_request.expires_at,
             actor_subject=actor_subject,
-            note="PromptPay payment request created",
+            note=f"{created_request.provider.value} {created_request.payment_method.value} payment request created",
         )
 
-    def handle_payment_request_callback(
+    def _process_payment_callback(
         self,
         *,
-        tenant_id: str,
         payment_request_id: str,
+        payment_request_tenant_id: str,
         payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+        raw_body: str | None = None,
         actor_subject: str | None = None,
     ) -> BillingRecordDetail:
-        if self._payment_provider is None:
-            raise RuntimeError("payment provider is not configured")
         payment_request = self._repository.require_payment_request_detail(
-            tenant_id=tenant_id,
+            tenant_id=payment_request_tenant_id,
             request_id=payment_request_id,
         )
-        callback = self._payment_provider.parse_callback(payload=payload)
+        callback = self._payment_provider.parse_callback(
+            payload=payload,
+            headers=headers,
+            raw_body=raw_body,
+        )
         inserted = self._repository.record_provider_callback(
-            tenant_id=tenant_id,
+            tenant_id=payment_request_tenant_id,
             payment_request_id=payment_request.id,
             provider=payment_request.provider,
             provider_event_id=callback.provider_event_id,
@@ -253,7 +258,7 @@ class BillingService:
         )
         if not inserted:
             detail = self._repository.get_billing_record_detail(
-                tenant_id=tenant_id,
+                tenant_id=payment_request_tenant_id,
                 record_id=payment_request.billing_record_id,
             )
             if detail is None:
@@ -261,7 +266,7 @@ class BillingService:
             return detail
 
         detail = self._repository.update_payment_request_status(
-            tenant_id=tenant_id,
+            tenant_id=payment_request_tenant_id,
             payment_request_id=payment_request.id,
             status=callback.status,
             settled_at=callback.occurred_at,
@@ -284,9 +289,9 @@ class BillingService:
             raise ValueError("callback amount does not match payment request")
 
         recorded_payment = self._repository.record_payment(
-            tenant_id=tenant_id,
+            tenant_id=payment_request_tenant_id,
             billing_record_id=payment_request.billing_record_id,
-            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            payment_method=payment_request.payment_method,
             amount=callback.amount,
             currency=callback.currency,
             reference_code=callback.reference_code or payment_request.provider_reference,
@@ -295,10 +300,66 @@ class BillingService:
             actor_subject=actor_subject,
         )
         return self._repository.reconcile_payment(
-            tenant_id=tenant_id,
+            tenant_id=payment_request_tenant_id,
             payment_id=recorded_payment.id,
             status=BillingPaymentStatus.RECONCILED,
             note=callback.reference_code,
+            actor_subject=actor_subject,
+        )
+
+    def handle_payment_request_callback(
+        self,
+        *,
+        tenant_id: str,
+        payment_request_id: str,
+        payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+        raw_body: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        if self._payment_provider is None:
+            raise RuntimeError("payment provider is not configured")
+        payment_request = self._repository.require_payment_request_detail(
+            tenant_id=tenant_id,
+            request_id=payment_request_id,
+        )
+        return self._process_payment_callback(
+            payment_request_id=payment_request.id,
+            payment_request_tenant_id=tenant_id,
+            payload=payload,
+            headers=headers,
+            raw_body=raw_body,
+            actor_subject=actor_subject,
+        )
+
+    def handle_provider_webhook(
+        self,
+        *,
+        provider: BillingPaymentProvider,
+        payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+        raw_body: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        if self._payment_provider is None:
+            raise RuntimeError("payment provider is not configured")
+        callback = self._payment_provider.parse_callback(
+            payload=payload,
+            headers=headers,
+            raw_body=raw_body,
+        )
+        payment_request = self._repository.get_payment_request_by_provider_reference(
+            provider=provider,
+            provider_reference=callback.provider_reference,
+        )
+        if payment_request is None:
+            raise KeyError(callback.provider_reference)
+        return self._process_payment_callback(
+            payment_request_id=payment_request.id,
+            payment_request_tenant_id=payment_request.tenant_id,
+            payload=payload,
+            headers=headers,
+            raw_body=raw_body,
             actor_subject=actor_subject,
         )
 

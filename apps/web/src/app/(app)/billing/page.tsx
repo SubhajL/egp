@@ -61,8 +61,8 @@ function EventLabel({ eventType }: { eventType: string }) {
   const labels: Record<string, string> = {
     billing_record_created: "สร้างรายการเรียกเก็บ",
     billing_record_status_changed: "เปลี่ยนสถานะใบแจ้งหนี้",
-    payment_request_created: "สร้าง PromptPay QR",
-    payment_request_settled: "ยืนยันชำระผ่าน PromptPay",
+    payment_request_created: "สร้างคำขอชำระเงิน",
+    payment_request_settled: "ยืนยันการชำระเงิน",
     payment_recorded: "บันทึกยอดโอน",
     payment_reconciled: "กระทบยอดสำเร็จ",
     payment_rejected: "ปฏิเสธรายการโอน",
@@ -134,6 +134,9 @@ export default function BillingPage() {
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentReceivedAt, setPaymentReceivedAt] = useState("2026-04-16T10:30");
   const [paymentNote, setPaymentNote] = useState("");
+  const [paymentRequestMethod, setPaymentRequestMethod] = useState<"promptpay_qr" | "card">(
+    "promptpay_qr",
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [renderedQrSvg, setRenderedQrSvg] = useState("");
@@ -173,10 +176,12 @@ export default function BillingPage() {
   const selectedRecord =
     records.find((item) => item.record.id === selectedRecordId) ?? records[0] ?? null;
   const latestPaymentRequest = selectedRecord?.payment_requests[0] ?? null;
+  const latestRequestIsPromptPay = latestPaymentRequest?.payment_method === "promptpay_qr";
+  const latestRequestIsCard = latestPaymentRequest?.payment_method === "card";
 
   useEffect(() => {
     let cancelled = false;
-    const payload = latestPaymentRequest?.qr_payload;
+    const payload = latestRequestIsPromptPay ? latestPaymentRequest?.qr_payload : "";
     if (!payload) {
       setRenderedQrSvg("");
       return () => {
@@ -205,7 +210,7 @@ export default function BillingPage() {
     return () => {
       cancelled = true;
     };
-  }, [latestPaymentRequest]);
+  }, [latestPaymentRequest, latestRequestIsPromptPay]);
 
   async function refreshBilling() {
     await queryClient.invalidateQueries({ queryKey: ["billing-records"] });
@@ -303,12 +308,19 @@ export default function BillingPage() {
     setPaymentError(null);
     setActionBusy(true);
     try {
-      const detail = await createBillingPaymentRequest(selectedRecord.record.id);
+      const detail = await createBillingPaymentRequest(selectedRecord.record.id, {
+        provider: "opn",
+        payment_method: paymentRequestMethod,
+      });
       await refreshBilling();
       setSelectedRecordId(detail.record.id);
     } catch (mutationError) {
       setPaymentError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถสร้าง PromptPay QR ได้",
+        mutationError instanceof Error
+          ? mutationError.message
+          : paymentRequestMethod === "card"
+            ? "ไม่สามารถสร้างลิงก์ชำระด้วยบัตรได้"
+            : "ไม่สามารถสร้าง PromptPay QR ได้",
       );
     } finally {
       setActionBusy(false);
@@ -647,14 +659,31 @@ export default function BillingPage() {
                       </button>
                     ) : null}
                     {canGeneratePaymentRequest ? (
-                      <button
-                        type="button"
-                        disabled={actionBusy}
-                        onClick={() => void handleCreatePaymentRequest()}
-                        className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        สร้าง PromptPay QR
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={paymentRequestMethod}
+                          onChange={(event) =>
+                            setPaymentRequestMethod(
+                              event.target.value === "card" ? "card" : "promptpay_qr",
+                            )
+                          }
+                          disabled={actionBusy}
+                          className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <option value="promptpay_qr">PromptPay QR</option>
+                          <option value="card">บัตรเครดิต/เดบิต</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={actionBusy}
+                          onClick={() => void handleCreatePaymentRequest()}
+                          className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {paymentRequestMethod === "card"
+                            ? "สร้างลิงก์ชำระด้วยบัตร"
+                            : "สร้าง PromptPay QR"}
+                        </button>
+                      </div>
                     ) : null}
                     {["draft", "issued", "awaiting_payment", "overdue", "failed", "payment_detected"].includes(
                       selectedRecord.record.status,
@@ -718,7 +747,7 @@ export default function BillingPage() {
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-                            PromptPay Request
+                            {latestRequestIsCard ? "Card Checkout" : "PromptPay Request"}
                           </p>
                           <p className="mt-1 font-mono text-sm text-[var(--text-primary)]">
                             {latestPaymentRequest.provider_reference}
@@ -730,37 +759,58 @@ export default function BillingPage() {
                         <StatusBadge state={latestPaymentRequest.status} variant="billing" />
                       </div>
 
-                      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[200px_minmax(0,1fr)]">
-                        <div
-                          className="mx-auto w-[180px] rounded-2xl bg-white p-3 shadow-[var(--shadow-soft)]"
-                          dangerouslySetInnerHTML={{
-                            __html: renderedQrSvg || latestPaymentRequest.qr_svg,
-                          }}
-                        />
-                        <div className="space-y-3">
-                          <div>
-                            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                              Link ชำระเงิน
-                            </p>
-                            <a
-                              href={latestPaymentRequest.payment_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="mt-1 block break-all text-sm font-medium text-primary underline decoration-primary/40 underline-offset-4"
-                            >
-                              {latestPaymentRequest.payment_url}
-                            </a>
-                          </div>
-                          <div>
-                            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                              PromptPay Payload
-                            </p>
-                            <p className="mt-1 break-all rounded-xl bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)]">
-                              {latestPaymentRequest.qr_payload}
-                            </p>
+                      {latestRequestIsPromptPay ? (
+                        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[200px_minmax(0,1fr)]">
+                          <div
+                            className="mx-auto w-[180px] rounded-2xl bg-white p-3 shadow-[var(--shadow-soft)]"
+                            dangerouslySetInnerHTML={{
+                              __html: renderedQrSvg || latestPaymentRequest.qr_svg,
+                            }}
+                          />
+                          <div className="space-y-3">
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                                Link ชำระเงิน
+                              </p>
+                              <a
+                                href={latestPaymentRequest.payment_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="mt-1 block break-all text-sm font-medium text-primary underline decoration-primary/40 underline-offset-4"
+                              >
+                                {latestPaymentRequest.payment_url}
+                              </a>
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                                PromptPay Payload
+                              </p>
+                              <p className="mt-1 break-all rounded-xl bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)]">
+                                {latestPaymentRequest.qr_payload}
+                              </p>
+                            </div>
                           </div>
                         </div>
-                      </div>
+                      ) : null}
+
+                      {latestRequestIsCard ? (
+                        <div className="mt-4 rounded-2xl bg-[var(--bg-surface)] p-4">
+                          <p className="text-sm text-[var(--text-secondary)]">
+                            ส่งลูกค้าไปยังหน้าชำระเงินของ Opn เพื่อกรอกข้อมูลบัตรและยืนยัน 3DS ตามที่ธนาคารร้องขอ
+                          </p>
+                          <a
+                            href={latestPaymentRequest.payment_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-3 inline-flex items-center rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
+                          >
+                            เปิดหน้าชำระเงินด้วยบัตร
+                          </a>
+                          <p className="mt-3 break-all text-xs text-[var(--text-muted)]">
+                            {latestPaymentRequest.payment_url}
+                          </p>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
