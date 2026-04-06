@@ -1,18 +1,14 @@
-"""Repository-backed discover workflow extraction."""
+"""Event-emitting discover workflow extraction."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from egp_db.repositories.project_repo import (
-    ProjectRecord,
-    SqlProjectRepository,
-    build_project_upsert_record,
-    create_project_repository,
-)
+from egp_db.repositories.project_repo import ProjectRecord
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
-from egp_shared_types.enums import NotificationType
+from egp_shared_types.project_events import DiscoveredProjectEvent
+from egp_worker.project_event_sink import ProjectEventSink, create_project_event_sink
 
 if TYPE_CHECKING:
     from egp_notifications.dispatcher import NotificationDispatcher
@@ -31,17 +27,21 @@ def run_discover_workflow(
     discovered_projects: list[dict[str, object]],
     trigger_type: str = "manual",
     database_url: str | None = None,
-    project_repository: SqlProjectRepository | None = None,
     run_repository: SqlRunRepository | None = None,
+    project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
 ) -> DiscoverWorkflowResult:
-    if project_repository is None or run_repository is None:
+    if run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
-        project_repository = project_repository or create_project_repository(
-            database_url=database_url
+        run_repository = create_run_repository(database_url=database_url)
+    if project_event_sink is None:
+        if database_url is None:
+            raise ValueError("database_url is required when project_event_sink is not provided")
+        project_event_sink = create_project_event_sink(
+            database_url=database_url,
+            notification_dispatcher=notification_dispatcher,
         )
-        run_repository = run_repository or create_run_repository(database_url=database_url)
 
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
     run_repository.mark_run_started(run.id)
@@ -57,8 +57,9 @@ def run_discover_workflow(
         )
         try:
             run_repository.mark_task_started(task.id)
-            record = build_project_upsert_record(
+            event = DiscoveredProjectEvent(
                 tenant_id=tenant_id,
+                keyword=keyword,
                 project_number=discovered.get("project_number"),
                 search_name=discovered.get("search_name"),
                 detail_name=discovered.get("detail_name"),
@@ -68,29 +69,13 @@ def run_discover_workflow(
                 budget_amount=discovered.get("budget_amount"),
                 procurement_type=discovered.get("procurement_type"),
                 project_state=discovered.get("project_state", "discovered"),
-            )
-            existing = project_repository.find_existing_project(record)
-            project = project_repository.upsert_project(
-                record,
-                source_status_text=str(discovered.get("source_status_text") or ""),
                 run_id=run.id,
+                source_status_text=str(discovered.get("source_status_text") or ""),
                 raw_snapshot=discovered,
             )
-            if notification_dispatcher is not None and existing is None:
-                notification_dispatcher.dispatch(
-                    tenant_id=tenant_id,
-                    notification_type=NotificationType.NEW_PROJECT,
-                    project_id=project.id,
-                    template_vars={
-                        "project_name": project.project_name,
-                        "organization": project.organization_name,
-                        "budget": project.budget_amount or "",
-                    },
-                )
+            project = project_event_sink.record_discovery(event)
             run_repository.mark_task_finished(
-                task.id,
-                status="succeeded",
-                result_json={"project_id": project.id},
+                task.id, status="succeeded", result_json={"project_id": project.id}
             )
             persisted_projects.append(project)
         except Exception as exc:

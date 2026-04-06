@@ -85,6 +85,14 @@ def get_jwt_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_internal_worker_token(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_INTERNAL_WORKER_TOKEN", "").strip()
+    return raw or None
+
+
 def get_smtp_config(override: SmtpConfig | None = None) -> SmtpConfig | None:
     if override is not None:
         return override

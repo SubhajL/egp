@@ -7,11 +7,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from egp_api.main import create_app
-from egp_shared_types.enums import NotificationType
 from egp_db.repositories.project_repo import build_project_upsert_record
-from egp_shared_types.enums import CrawlRunStatus, ProcurementType, ProjectState
+from egp_shared_types.enums import CrawlRunStatus, NotificationType, ProcurementType, ProjectState
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
+INTERNAL_WORKER_TOKEN = "phase1-internal-worker-token"
+
+
+def _internal_worker_headers() -> dict[str, str]:
+    return {"X-EGP-Worker-Token": INTERNAL_WORKER_TOKEN}
 
 
 def _seed_active_subscription(client: TestClient) -> None:
@@ -310,6 +314,7 @@ def test_finish_run_failed_emits_run_failed_notification(tmp_path) -> None:
             artifact_root=tmp_path,
             database_url=database_url,
             auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
             notification_email_sender=lambda *, to, subject, body: sent.append(to),
         )
     )
@@ -339,3 +344,148 @@ def test_finish_run_failed_emits_run_failed_notification(tmp_path) -> None:
     assert finished.status_code == 200
     assert sent == ["ops@example.com"]
     assert notifications[0].notification_type is NotificationType.RUN_FAILED
+
+
+def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(tmp_path) -> None:
+    sent: list[str] = []
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+            notification_email_sender=lambda *, to, subject, body: sent.append(to),
+        )
+    )
+    _seed_active_subscription(client)
+    client.app.state.notification_repository.create_user(
+        tenant_id=TENANT_ID,
+        email="owner@example.com",
+        role="owner",
+    )
+
+    created = client.post(
+        "/internal/worker/projects/discover",
+        headers=_internal_worker_headers(),
+        json={
+            "tenant_id": TENANT_ID,
+            "run_id": str(uuid4()),
+            "keyword": "โรงพยาบาล",
+            "project_number": "EGP-2026-3101",
+            "search_name": "ระบบข้อมูลกลาง",
+            "detail_name": "โครงการระบบข้อมูลกลาง",
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization_name": "กรมตัวอย่าง",
+            "proposal_submission_date": "2026-05-01",
+            "budget_amount": "1500000.00",
+            "procurement_type": ProcurementType.SERVICES.value,
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "ประกาศเชิญชวน",
+            "raw_snapshot": {"page": 1},
+        },
+    )
+
+    listed = client.get("/v1/projects", params={"tenant_id": TENANT_ID})
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert created.status_code == 201
+    assert created.json()["created"] is True
+    assert created.json()["project"]["canonical_project_id"] == "project-number:EGP-2026-3101"
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 1
+    assert sent == ["owner@example.com"]
+    assert notifications[0].notification_type is NotificationType.NEW_PROJECT
+
+
+def test_project_ingest_close_check_endpoint_transitions_project_state(tmp_path) -> None:
+    sent: list[str] = []
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-close.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+            notification_email_sender=lambda *, to, subject, body: sent.append(to),
+        )
+    )
+    _seed_active_subscription(client)
+    client.app.state.notification_repository.create_user(
+        tenant_id=TENANT_ID,
+        email="owner@example.com",
+        role="owner",
+    )
+    repository = client.app.state.project_repository
+    project = repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-3102",
+            search_name="ประกวดราคาไอที",
+            detail_name="ประกวดราคาไอที",
+            project_name="ประกวดราคาไอที",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-02",
+            budget_amount="2500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    updated = client.post(
+        "/internal/worker/projects/close-check",
+        headers=_internal_worker_headers(),
+        json={
+            "tenant_id": TENANT_ID,
+            "run_id": str(uuid4()),
+            "project_id": project.id,
+            "closed_reason": "winner_announced",
+            "source_status_text": "ประกาศผู้ชนะการเสนอราคา",
+            "raw_snapshot": {"page": 2},
+        },
+    )
+
+    detail = client.get(f"/v1/projects/{project.id}", params={"tenant_id": TENANT_ID})
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert updated.status_code == 200
+    assert updated.json()["project"]["project_state"] == ProjectState.WINNER_ANNOUNCED.value
+    assert detail.status_code == 200
+    assert detail.json()["project"]["closed_reason"] == "winner_announced"
+    assert sent == ["owner@example.com"]
+    assert notifications[0].notification_type is NotificationType.WINNER_ANNOUNCED
+
+
+def test_internal_worker_project_ingest_rejects_missing_worker_token(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest-auth.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+        )
+    )
+
+    response = client.post(
+        "/internal/worker/projects/discover",
+        json={
+            "tenant_id": TENANT_ID,
+            "run_id": str(uuid4()),
+            "keyword": "โรงพยาบาล",
+            "project_number": "EGP-2026-3199",
+            "search_name": "ระบบข้อมูลกลาง",
+            "detail_name": "โครงการระบบข้อมูลกลาง",
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization_name": "กรมตัวอย่าง",
+            "proposal_submission_date": "2026-05-01",
+            "budget_amount": "1500000.00",
+            "procurement_type": ProcurementType.SERVICES.value,
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "missing internal worker token"

@@ -14,7 +14,7 @@ COPY apps/worker/pyproject.toml apps/worker/
 COPY packages/ packages/
 
 RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir playwright psycopg[binary] \
+    pip install --no-cache-dir playwright psycopg[binary] httpx \
     sqlalchemy boto3 supabase openpyxl
 
 RUN playwright install chromium --with-deps

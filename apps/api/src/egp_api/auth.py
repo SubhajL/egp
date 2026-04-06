@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -187,3 +188,14 @@ def require_support_role(request: Request) -> None:
         return
     if not request_has_support_role(request):
         raise HTTPException(status_code=403, detail="support role required")
+
+
+def require_internal_worker_token(request: Request) -> None:
+    configured_token = getattr(request.app.state, "internal_worker_token", None)
+    if not configured_token:
+        raise HTTPException(status_code=503, detail="internal worker auth not configured")
+    provided_token = str(request.headers.get("x-egp-worker-token") or "").strip()
+    if not provided_token:
+        raise HTTPException(status_code=401, detail="missing internal worker token")
+    if not hmac.compare_digest(provided_token, configured_token):
+        raise HTTPException(status_code=403, detail="invalid internal worker token")

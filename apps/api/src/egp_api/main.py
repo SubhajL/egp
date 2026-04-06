@@ -16,6 +16,7 @@ from egp_api.config import (
     get_artifact_root,
     get_artifact_storage_backend,
     get_database_url,
+    get_internal_worker_token,
     get_jwt_secret,
     get_payment_base_url,
     get_payment_callback_secret,
@@ -37,6 +38,7 @@ from egp_api.routes.billing import router as billing_router
 from egp_api.routes.dashboard import router as dashboard_router
 from egp_api.routes.documents import router as documents_router
 from egp_api.routes.exports import router as exports_router
+from egp_api.routes.project_ingest import router as project_ingest_router
 from egp_api.routes.projects import router as projects_router
 from egp_api.routes.rules import router as rules_router
 from egp_api.routes.runs import router as runs_router
@@ -53,6 +55,7 @@ from egp_api.services.entitlement_service import (
 )
 from egp_api.services.export_service import ExportService
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
+from egp_api.services.project_ingest_service import ProjectIngestService
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
@@ -94,6 +97,7 @@ def create_app(
     promptpay_proxy_id: str | None = None,
     payment_callback_secret: str | None = None,
     web_allowed_origins: list[str] | None = None,
+    internal_worker_token: str | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="e-GP Intelligence Platform",
@@ -114,6 +118,7 @@ def create_app(
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(database_url, artifact_root=resolved_artifact_root)
     resolved_auth_required = get_auth_required(auth_required)
+    resolved_internal_worker_token = get_internal_worker_token(internal_worker_token)
     resolved_jwt_secret = get_jwt_secret(jwt_secret)
     session_cookie_name = get_session_cookie_name(None)
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
@@ -236,6 +241,10 @@ def create_app(
         notification_dispatcher=gated_notification_dispatcher,
         audit_repository=audit_repository,
     )
+    app.state.project_ingest_service = ProjectIngestService(
+        project_repository,
+        notification_dispatcher=gated_notification_dispatcher,
+    )
     app.state.project_repository = project_repository
     app.state.project_service = ProjectService(project_repository)
     app.state.profile_repository = profile_repository
@@ -261,6 +270,7 @@ def create_app(
         notification_dispatcher=gated_notification_dispatcher,
     )
     app.state.auth_required = resolved_auth_required
+    app.state.internal_worker_token = resolved_internal_worker_token
     app.state.jwt_secret = resolved_jwt_secret
     app.state.session_cookie_name = session_cookie_name
     app.state.session_cookie_max_age_seconds = session_cookie_max_age_seconds
@@ -281,6 +291,8 @@ def create_app(
             "/v1/auth/password/reset",
             "/v1/auth/invite/accept",
             "/v1/auth/email/verify",
+            "/internal/worker/projects/discover",
+            "/internal/worker/projects/close-check",
         } or (
             request.url.path.startswith("/v1/billing/payment-requests/")
             and request.url.path.endswith("/callbacks")
@@ -315,6 +327,7 @@ def create_app(
     app.include_router(dashboard_router)
     app.include_router(documents_router)
     app.include_router(exports_router)
+    app.include_router(project_ingest_router)
     app.include_router(projects_router)
     app.include_router(rules_router)
     app.include_router(runs_router)

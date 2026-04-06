@@ -1,4 +1,4 @@
-"""Repository-backed close-check workflow extraction."""
+"""Event-emitting close-check workflow extraction."""
 
 from __future__ import annotations
 
@@ -6,22 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import check_winner_closure
-from egp_db.repositories.project_repo import (
-    ProjectRecord,
-    SqlProjectRepository,
-    create_project_repository,
-)
+from egp_db.repositories.project_repo import ProjectRecord
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
-from egp_shared_types.enums import ClosedReason, NotificationType, ProjectState
+from egp_shared_types.project_events import CloseCheckProjectEvent
+from egp_worker.project_event_sink import ProjectEventSink, create_project_event_sink
 
 if TYPE_CHECKING:
     from egp_notifications.dispatcher import NotificationDispatcher
-
-
-_NEXT_STATE_BY_REASON = {
-    ClosedReason.WINNER_ANNOUNCED: ProjectState.WINNER_ANNOUNCED,
-    ClosedReason.CONTRACT_SIGNED: ProjectState.CONTRACT_SIGNED,
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,17 +27,21 @@ def run_close_check_workflow(
     observations: list[dict[str, object]],
     trigger_type: str = "manual",
     database_url: str | None = None,
-    project_repository: SqlProjectRepository | None = None,
     run_repository: SqlRunRepository | None = None,
+    project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
 ) -> CloseCheckWorkflowResult:
-    if project_repository is None or run_repository is None:
+    if run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
-        project_repository = project_repository or create_project_repository(
-            database_url=database_url
+        run_repository = create_run_repository(database_url=database_url)
+    if project_event_sink is None:
+        if database_url is None:
+            raise ValueError("database_url is required when project_event_sink is not provided")
+        project_event_sink = create_project_event_sink(
+            database_url=database_url,
+            notification_dispatcher=notification_dispatcher,
         )
-        run_repository = run_repository or create_run_repository(database_url=database_url)
 
     run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
     run_repository.mark_run_started(run.id)
@@ -68,35 +63,21 @@ def run_close_check_workflow(
                     task.id, status="skipped", result_json={"matched": False}
                 )
                 continue
-            project = project_repository.transition_project(
-                tenant_id=tenant_id,
-                project_id=str(observation["project_id"]),
-                next_state=_NEXT_STATE_BY_REASON[closed_reason],
-                closed_reason=closed_reason,
-                source_status_text=str(observation.get("source_status_text") or ""),
-                run_id=run.id,
-                raw_snapshot=observation,
+            project = project_event_sink.record_close_check(
+                CloseCheckProjectEvent(
+                    tenant_id=tenant_id,
+                    project_id=str(observation["project_id"]),
+                    closed_reason=closed_reason,
+                    source_status_text=str(observation.get("source_status_text") or ""),
+                    run_id=run.id,
+                    raw_snapshot=observation,
+                )
             )
             run_repository.mark_task_finished(
                 task.id,
                 status="succeeded",
                 result_json={"project_id": project.id, "next_state": project.project_state.value},
             )
-            if notification_dispatcher is not None:
-                notification_type = (
-                    NotificationType.WINNER_ANNOUNCED
-                    if project.project_state is ProjectState.WINNER_ANNOUNCED
-                    else NotificationType.CONTRACT_SIGNED
-                )
-                notification_dispatcher.dispatch(
-                    tenant_id=tenant_id,
-                    notification_type=notification_type,
-                    project_id=project.id,
-                    template_vars={
-                        "project_name": project.project_name,
-                        "organization": project.organization_name,
-                    },
-                )
             updated_projects.append(project)
         except Exception as exc:
             error_count += 1
