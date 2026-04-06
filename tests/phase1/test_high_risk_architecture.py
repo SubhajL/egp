@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 
@@ -95,6 +96,17 @@ def test_create_app_shares_one_engine_across_repositories(tmp_path) -> None:
 
     assert app.state.project_repository._engine is app.state.run_repository._engine
     assert app.state.project_repository._engine is app.state.document_repository._engine
+
+
+def test_create_app_requires_database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
+        create_app(
+            artifact_root=tmp_path,
+            database_url="",
+            auth_required=False,
+        )
 
 
 def test_projects_endpoint_requires_auth_and_uses_jwt_tenant(tmp_path) -> None:

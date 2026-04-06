@@ -19,13 +19,14 @@ def get_artifact_root(override: Path | None = None) -> Path:
 
 
 def get_database_url(override: str | None = None, *, artifact_root: Path | None = None) -> str:
-    if override:
-        return override.strip()
+    if override is not None:
+        value = override.strip()
+        if value:
+            return value
     raw = os.getenv("DATABASE_URL", "").strip()
     if raw:
         return raw
-    base = artifact_root if artifact_root is not None else get_artifact_root()
-    return f"sqlite+pysqlite:///{base / 'document_metadata.sqlite3'}"
+    raise RuntimeError("DATABASE_URL is required")
 
 
 def get_artifact_storage_backend(override: str | None = None) -> str:
