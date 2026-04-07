@@ -89,6 +89,7 @@ async function mockApi(
     authenticated?: boolean;
     onRegister?: (payload: unknown) => void;
     onLogin?: (payload: unknown) => void;
+    loginResponses?: Array<{ status: number; body: unknown }>;
     onForgotPassword?: (payload: unknown) => void;
     onAcceptInvite?: (payload: unknown) => void;
     onResetPassword?: (payload: unknown) => void;
@@ -96,6 +97,7 @@ async function mockApi(
   } = {},
 ) {
   let authenticated = options.authenticated ?? false;
+  const loginResponses = [...(options.loginResponses ?? [])];
 
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -115,6 +117,14 @@ async function mockApi(
         return;
       case "POST /v1/auth/login":
         options.onLogin?.(request.postDataJSON());
+        if (loginResponses.length > 0) {
+          const next = loginResponses.shift()!;
+          if (next.status === 200) {
+            authenticated = true;
+          }
+          await fulfillJson(route, next.status, next.body);
+          return;
+        }
         authenticated = true;
         await fulfillJson(route, 200, CURRENT_SESSION);
         return;
@@ -170,23 +180,84 @@ test("login submits tenant credentials and MFA code", async ({ page }) => {
     onLogin: (payload) => {
       loginPayload = payload;
     },
+    loginResponses: [
+      {
+        status: 401,
+        body: { detail: "mfa code required", code: "mfa_code_required" },
+      },
+      {
+        status: 200,
+        body: CURRENT_SESSION,
+      },
+    ],
   });
 
   await page.goto("/login?next=%2Fsecurity");
-  await page.getByLabel("Workspace slug").fill("example-tenant");
   await page.getByLabel("อีเมล").fill("analyst@example.com");
   await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(
+    page.getByText("บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน"),
+  ).toBeVisible();
   await page.getByLabel("MFA code").fill("123456");
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
 
   await expect(page).toHaveURL(/\/security$/);
   await expect(page.getByRole("heading", { name: "ความปลอดภัยของบัญชี" })).toBeVisible();
   expect(loginPayload).toEqual({
-    tenant_slug: "example-tenant",
     email: "analyst@example.com",
     password: "super-secret-password",
     mfa_code: "123456",
   });
+});
+
+test("login reveals workspace field after ambiguous email response and retries", async ({ page }) => {
+  const loginPayloads: unknown[] = [];
+  await mockApi(page, {
+    onLogin: (payload) => {
+      loginPayloads.push(payload);
+    },
+    loginResponses: [
+      {
+        status: 409,
+        body: {
+          detail: "workspace slug required",
+          code: "workspace_slug_required",
+        },
+      },
+      {
+        status: 200,
+        body: CURRENT_SESSION,
+      },
+    ],
+  });
+
+  await page.goto("/login?next=%2Fsecurity");
+  await expect(page.getByLabel("Workspace slug")).toHaveCount(0);
+
+  await page.getByLabel("อีเมล").fill("shared@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page.getByText("อีเมลนี้ถูกใช้ในหลาย workspace กรุณาระบุ Workspace slug เพื่อเข้าสู่ระบบ")).toBeVisible();
+  await expect(page.getByLabel("Workspace slug")).toBeVisible();
+
+  await page.getByLabel("Workspace slug").fill("example-tenant");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page).toHaveURL(/\/security$/);
+  expect(loginPayloads).toEqual([
+    {
+      email: "shared@example.com",
+      password: "super-secret-password",
+    },
+    {
+      tenant_slug: "example-tenant",
+      email: "shared@example.com",
+      password: "super-secret-password",
+    },
+  ]);
 });
 
 test("signup creates a workspace and continues to the requested page", async ({ page }) => {
@@ -210,6 +281,43 @@ test("signup creates a workspace and continues to the requested page", async ({ 
     email: "owner@example.com",
     password: "super-secret-password",
   });
+});
+
+test("signup shows Thai duplicate-account and validation messages from stable codes", async ({ page }) => {
+  let registerAttempt = 0;
+
+  await mockApi(page);
+  await page.route("**/v1/auth/register", async (route) => {
+    registerAttempt += 1;
+    if (registerAttempt === 1) {
+      await fulfillJson(route, 409, {
+        detail: "account already exists for this email; please sign in",
+        code: "account_already_exists",
+      });
+      return;
+    }
+    await fulfillJson(route, 422, {
+      detail: [{ loc: ["body", "password"], msg: "String should have at least 12 characters" }],
+      code: "validation_password_too_short",
+    });
+  });
+
+  await page.goto("/signup");
+  await page.getByLabel("ชื่อบริษัท / องค์กร").fill("Example Company Ltd");
+  await page.getByLabel("อีเมล").fill("owner@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เริ่มทดลองใช้งานฟรี" }).click();
+
+  await expect(page.getByText("อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่")).toBeVisible();
+  await expect(page.getByRole("link", { name: "ไปหน้าเข้าสู่ระบบ" })).toBeVisible();
+
+  await page.getByLabel("รหัสผ่าน").evaluate((element) => {
+    element.removeAttribute("minlength");
+  });
+  await page.getByLabel("รหัสผ่าน").fill("short");
+  await page.getByRole("button", { name: "เริ่มทดลองใช้งานฟรี" }).click();
+
+  await expect(page.getByText("รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร")).toBeVisible();
 });
 
 test("forgot-password page submits a generic reset request", async ({ page }) => {

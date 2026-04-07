@@ -19,12 +19,13 @@ OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 JWT_SECRET = "phase4-auth-secret"
 PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = (
-    "pbkdf2_sha256$390000$testsalt12345678$"
-    "nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
+    "pbkdf2_sha256$390000$testsalt12345678$nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
 )
 
 
-def _create_client(tmp_path, *, auth_required: bool = True, email_sender=None) -> TestClient:
+def _create_client(
+    tmp_path, *, auth_required: bool = True, email_sender=None
+) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase4-auth.sqlite3'}"
     return TestClient(
         create_app(
@@ -87,7 +88,7 @@ def _seed_user(
     role: str = "owner",
     status: str = "active",
     password_hash: str | None = PASSWORD_HASH,
-    ) -> str:
+) -> str:
     now = datetime.now(UTC).isoformat()
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
@@ -155,7 +156,9 @@ def _totp_code(secret: str, *, now: int | None = None) -> str:
     return f"{code % 1_000_000:06d}"
 
 
-def _bearer_headers(*, tenant_id: str = TENANT_ID, role: str = "owner") -> dict[str, str]:
+def _bearer_headers(
+    *, tenant_id: str = TENANT_ID, role: str = "owner"
+) -> dict[str, str]:
     token = jwt.encode(
         {
             "sub": "user-123",
@@ -228,7 +231,9 @@ def test_login_accepts_email_and_password_without_tenant_slug(tmp_path) -> None:
     assert login.json()["user"]["email"] == "owner@acme.example"
 
 
-def test_login_without_tenant_slug_fails_closed_for_duplicate_email_across_tenants(tmp_path) -> None:
+def test_login_without_tenant_slug_requires_workspace_for_duplicate_email_across_tenants(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
     _seed_tenant(
@@ -253,7 +258,188 @@ def test_login_without_tenant_slug_fails_closed_for_duplicate_email_across_tenan
         },
     )
 
+    assert login.status_code == 409
+    assert login.json() == {
+        "detail": "workspace slug required",
+        "code": "workspace_slug_required",
+    }
+
+
+def test_register_duplicate_email_returns_structured_error_code(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    first = client.post(
+        "/v1/auth/register",
+        json={
+            "company_name": "First Company",
+            "email": "duplicate@example.com",
+            "password": PASSWORD,
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/v1/auth/register",
+        json={
+            "company_name": "Second Company",
+            "email": "duplicate@example.com",
+            "password": PASSWORD,
+        },
+    )
+
+    assert second.status_code == 409
+    assert second.json() == {
+        "detail": "account already exists for this email; please sign in",
+        "code": "account_already_exists",
+    }
+
+
+def test_register_short_password_validation_returns_structured_field_code(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/auth/register",
+        json={
+            "company_name": "Short Password Co",
+            "email": "owner@example.com",
+            "password": "short",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "validation_password_too_short"
+    assert isinstance(body["detail"], list)
+
+
+def test_enable_mfa_invalid_code_returns_structured_error_code(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_user(client, email="mfa-invalid@example.com")
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "mfa-invalid@example.com",
+            "password": PASSWORD,
+        },
+    )
+    assert login.status_code == 200
+
+    setup = client.post("/v1/auth/mfa/setup")
+    assert setup.status_code == 200
+
+    response = client.post("/v1/auth/mfa/enable", json={"code": "000000"})
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "invalid mfa code",
+        "code": "invalid_mfa_code",
+    }
+
+
+def test_login_without_tenant_slug_succeeds_when_only_one_duplicate_email_password_matches(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_tenant(
+        client,
+        tenant_id=OTHER_TENANT_ID,
+        name="Other Tenant",
+        slug="other-tenant",
+    )
+    _seed_user(client, email="shared@example.com")
+    _seed_user(
+        client,
+        user_id="44444444-4444-4444-4444-444444444444",
+        tenant_id=OTHER_TENANT_ID,
+        email="shared@example.com",
+        password_hash=(
+            "pbkdf2_sha256$390000$othersalt12345678$"
+            "L3bqR3b5rj5pUsQ4K3xK9mFYJx2n2J6s5w7j2dJ6M6I"
+        ),
+    )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "shared@example.com",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json()["tenant"]["id"] == TENANT_ID
+
+
+def test_login_without_tenant_slug_requires_workspace_when_duplicate_accounts_share_password(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_tenant(
+        client,
+        tenant_id=OTHER_TENANT_ID,
+        name="Other Tenant",
+        slug="other-tenant",
+    )
+    _seed_user(client, email="shared@example.com")
+    _seed_user(
+        client,
+        user_id="44444444-4444-4444-4444-444444444444",
+        tenant_id=OTHER_TENANT_ID,
+        email="shared@example.com",
+    )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "shared@example.com",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 409
+    assert login.json() == {
+        "detail": "workspace slug required",
+        "code": "workspace_slug_required",
+    }
+
+
+def test_login_with_duplicate_email_and_wrong_password_stays_generic(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_tenant(
+        client,
+        tenant_id=OTHER_TENANT_ID,
+        name="Other Tenant",
+        slug="other-tenant",
+    )
+    _seed_user(client, email="shared@example.com")
+    _seed_user(
+        client,
+        user_id="44444444-4444-4444-4444-444444444444",
+        tenant_id=OTHER_TENANT_ID,
+        email="shared@example.com",
+    )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "shared@example.com",
+            "password": "wrong-password",
+        },
+    )
+
     assert login.status_code == 401
+    assert login.json() == {
+        "detail": "invalid credentials",
+        "code": "invalid_credentials",
+    }
 
 
 def test_me_preflight_returns_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
@@ -272,7 +458,9 @@ def test_me_preflight_returns_cors_headers_for_localhost_dev_origin(tmp_path) ->
     assert response.headers["access-control-allow-credentials"] == "true"
 
 
-def test_me_unauthorized_response_includes_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+def test_me_unauthorized_response_includes_cors_headers_for_localhost_dev_origin(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     response = client.get(
@@ -348,7 +536,9 @@ def test_passwordless_or_suspended_user_cannot_login(tmp_path) -> None:
     assert suspended.status_code in {401, 403}
 
 
-def test_accept_invite_sets_password_marks_email_verified_and_creates_session(tmp_path) -> None:
+def test_accept_invite_sets_password_marks_email_verified_and_creates_session(
+    tmp_path,
+) -> None:
     sent: list[dict[str, str]] = []
     client = _create_client(
         tmp_path,

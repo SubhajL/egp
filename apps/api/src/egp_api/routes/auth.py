@@ -5,12 +5,29 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from egp_api.services.auth_service import AuthService, CurrentSessionView
+from egp_api.services.auth_service import (
+    AuthService,
+    CurrentSessionView,
+    WorkspaceSlugRequiredError,
+)
 
 
 router = APIRouter(tags=["auth"])
+
+
+AUTH_ERROR_CODES = {
+    "invalid credentials": "invalid_credentials",
+    "account is not active": "account_not_active",
+    "mfa code required": "mfa_code_required",
+    "invalid mfa code": "invalid_mfa_code",
+    "invalid or expired invite token": "invalid_invite_token",
+    "invalid or expired password reset token": "invalid_password_reset_token",
+    "invalid or expired email verification token": "invalid_email_verification_token",
+    "email delivery is not configured": "email_delivery_not_configured",
+}
 
 
 class LoginRequest(BaseModel):
@@ -95,6 +112,13 @@ def _service_from_request(request: Request) -> AuthService:
     return request.app.state.auth_service
 
 
+def _json_error(*, status_code: int, detail: str, code: str | None = None) -> JSONResponse:
+    content: dict[str, str] = {"detail": detail}
+    if code:
+        content["code"] = code
+    return JSONResponse(status_code=status_code, content=content)
+
+
 def _serialize_current(view: CurrentSessionView) -> CurrentSessionResponse:
     return CurrentSessionResponse(
         user=AuthenticatedUserResponse(**asdict(view.user)),
@@ -119,10 +143,20 @@ def login(payload: LoginRequest, request: Request, response: Response) -> Curren
             password=payload.password,
             mfa_code=payload.mfa_code,
         )
+    except WorkspaceSlugRequiredError:
+        return _json_error(
+            status_code=409,
+            detail="workspace slug required",
+            code="workspace_slug_required",
+        )
     except PermissionError as exc:
         detail = str(exc) or "invalid credentials"
         status_code = 403 if "active" in detail else 401
-        raise HTTPException(status_code=status_code, detail=detail) from exc
+        return _json_error(
+            status_code=status_code,
+            detail=detail,
+            code=AUTH_ERROR_CODES.get(detail),
+        )
 
     response.set_cookie(
         key=request.app.state.session_cookie_name,
@@ -152,11 +186,12 @@ def register(
     except ValueError as exc:
         detail = str(exc) or "registration failed"
         if "already registered" in detail:
-            raise HTTPException(
+            return _json_error(
                 status_code=409,
                 detail="account already exists for this email; please sign in",
-            ) from exc
-        raise HTTPException(status_code=400, detail=detail) from exc
+                code="account_already_exists",
+            )
+        return _json_error(status_code=400, detail=detail, code="registration_failed")
     response.set_cookie(
         key=request.app.state.session_cookie_name,
         value=result.session_token,
@@ -186,7 +221,8 @@ def reset_password(payload: ResetPasswordRequest, request: Request) -> ActionSta
     try:
         service.reset_password(token=payload.token, password=payload.password)
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "invalid token") from exc
+        detail = str(exc) or "invalid token"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return ActionStatusResponse(status="password_reset")
 
 
@@ -200,7 +236,8 @@ def accept_invite(
     try:
         result = service.accept_invite(token=payload.token, password=payload.password)
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "invalid invite token") from exc
+        detail = str(exc) or "invalid invite token"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     response.set_cookie(
         key=request.app.state.session_cookie_name,
         value=result.session_token,
@@ -223,7 +260,8 @@ def send_email_verification(request: Request) -> ActionStatusResponse:
     try:
         service.send_email_verification(_require_auth_context(request))
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        detail = str(exc) or "email delivery is not configured"
+        return _json_error(status_code=503, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return ActionStatusResponse(status="accepted")
 
 
@@ -233,7 +271,8 @@ def verify_email(payload: TokenRequest, request: Request) -> EmailVerificationRe
     try:
         email_verified = service.verify_email(token=payload.token)
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "invalid token") from exc
+        detail = str(exc) or "invalid token"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return EmailVerificationResponse(email_verified=email_verified)
 
 
@@ -250,7 +289,8 @@ def enable_mfa(payload: MfaCodeRequest, request: Request) -> MfaStatusResponse:
     try:
         enabled = service.enable_mfa(_require_auth_context(request), code=payload.code)
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "invalid mfa code") from exc
+        detail = str(exc) or "invalid mfa code"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return MfaStatusResponse(mfa_enabled=enabled)
 
 
@@ -260,7 +300,8 @@ def disable_mfa(payload: MfaCodeRequest, request: Request) -> MfaStatusResponse:
     try:
         enabled = service.disable_mfa(_require_auth_context(request), code=payload.code)
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "invalid mfa code") from exc
+        detail = str(exc) or "invalid mfa code"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return MfaStatusResponse(mfa_enabled=enabled)
 
 

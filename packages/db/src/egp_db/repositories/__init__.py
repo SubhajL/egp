@@ -18,6 +18,11 @@ from .billing_repo import (
     BillingSummary,
     create_billing_repository,
 )
+from .discovery_job_repo import (
+    DiscoveryJobRecord,
+    SqlDiscoveryJobRepository,
+    create_discovery_job_repository,
+)
 from .document_repo import (
     DocumentDiffRecord,
     DocumentRecord,
@@ -40,11 +45,13 @@ __all__ = [
     "BillingRecordRecord",
     "BillingSubscriptionRecord",
     "BillingSummary",
+    "DiscoveryJobRecord",
     "DocumentDiffRecord",
     "DocumentRecord",
     "FilesystemDocumentRepository",
     "ProjectUpsertRecord",
     "SqlAuthRepository",
+    "SqlDiscoveryJobRepository",
     "SqlDocumentRepository",
     "StoreDocumentResult",
     "build_document_record",
@@ -52,6 +59,7 @@ __all__ = [
     "create_audit_repository",
     "create_auth_repository",
     "create_billing_repository",
+    "create_discovery_job_repository",
     "create_document_repository",
     "hash_password",
     "verify_password",

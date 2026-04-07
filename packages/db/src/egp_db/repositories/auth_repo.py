@@ -246,8 +246,7 @@ class SqlAuthRepository:
             return None
         return _login_user_from_mapping(row)
 
-    def find_login_user_by_email(self, *, email: str) -> LoginUserRecord | None:
-        """Find a unique user with this email across all tenants, else fail closed."""
+    def list_login_users_by_email(self, *, email: str) -> list[LoginUserRecord]:
         normalized_email = _normalize_email(email)
         with self._engine.connect() as connection:
             rows = (
@@ -266,13 +265,19 @@ class SqlAuthRepository:
                         )
                     )
                     .where(func.lower(USERS_TABLE.c.email) == normalized_email)
+                    .order_by(TENANTS_TABLE.c.slug, USERS_TABLE.c.id)
                 )
                 .mappings()
                 .all()
             )
+        return [_login_user_from_mapping(row) for row in rows]
+
+    def find_login_user_by_email(self, *, email: str) -> LoginUserRecord | None:
+        """Find a unique user with this email across all tenants, else fail closed."""
+        rows = self.list_login_users_by_email(email=email)
         if len(rows) != 1:
             return None
-        return _login_user_from_mapping(rows[0])
+        return rows[0]
 
     def get_user_by_id(self, *, tenant_id: str, user_id: str) -> LoginUserRecord | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)

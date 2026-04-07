@@ -50,6 +50,10 @@ class LoginResult:
     current: CurrentSessionView
 
 
+class WorkspaceSlugRequiredError(PermissionError):
+    """Raised when valid credentials map to multiple workspaces."""
+
+
 class AuthService:
     def __init__(
         self,
@@ -82,9 +86,22 @@ class AuthService:
         if normalized_tenant_slug:
             user = self._repository.find_login_user(tenant_slug=normalized_tenant_slug, email=email)
         else:
-            user = self._repository.find_login_user_by_email(email=email)
-            if user is None:
+            candidates = self._repository.list_login_users_by_email(email=email)
+            if not candidates:
                 raise PermissionError("invalid credentials")
+            if len(candidates) == 1:
+                user = candidates[0]
+            else:
+                matching_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if verify_password(password, candidate.password_hash)
+                ]
+                if not matching_candidates:
+                    raise PermissionError("invalid credentials")
+                if len(matching_candidates) > 1:
+                    raise WorkspaceSlugRequiredError("workspace slug required")
+                user = matching_candidates[0]
         if user is None:
             raise PermissionError("invalid credentials")
         if not user.tenant_is_active or user.status != "active":

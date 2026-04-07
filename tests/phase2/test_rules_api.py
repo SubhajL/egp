@@ -209,12 +209,13 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
     assert body["schedule_rules"]["default_crawl_interval_hours"] == 24
     assert body["schedule_rules"]["effective_crawl_interval_hours"] == 24
     assert (
-        body["schedule_rules"]["source"]
-        == "tenant_settings + default schedule policy"
+        body["schedule_rules"]["source"] == "tenant_settings + default schedule policy"
     )
 
 
-def test_rules_endpoint_includes_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+def test_rules_endpoint_includes_cors_headers_for_localhost_dev_origin(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-cors.sqlite3'}"
     client = TestClient(
         create_app(
@@ -379,7 +380,10 @@ def test_admin_can_create_custom_profile_from_rules_api(tmp_path) -> None:
 
     listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
     assert listing.status_code == 200
-    assert listing.json()["profiles"][0]["keywords"] == ["analytics", "cloud procurement"]
+    assert listing.json()["profiles"][0]["keywords"] == [
+        "analytics",
+        "cloud procurement",
+    ]
 
 
 def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
@@ -490,4 +494,35 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "active keyword configuration exceeds plan limit"
+    assert (
+        response.json()["detail"] == "active keyword configuration exceeds plan limit"
+    )
+    assert response.json()["code"] == "active_keyword_limit_exceeded"
+
+
+def test_profile_creation_with_blank_name_returns_structured_validation_code(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-validation.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "   ",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "profile name is required",
+        "code": "profile_name_required",
+    }

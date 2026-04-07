@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
+import subprocess
+import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -54,6 +60,7 @@ from egp_api.services.audit_service import AuditService
 from egp_api.services.auth_service import AuthService
 from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
+from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.entitlement_service import (
     EntitlementAwareNotificationDispatcher,
@@ -74,6 +81,7 @@ from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.document_repo import create_document_repository
+from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
@@ -96,6 +104,153 @@ async def _run_webhook_delivery_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
         except TimeoutError:
             continue
+
+
+async def _run_discovery_dispatch_loop(
+    *,
+    processor: DiscoveryDispatchProcessor,
+    stop_event: asyncio.Event,
+    poll_interval_seconds: float,
+) -> None:
+    while not stop_event.is_set():
+        processor.process_pending()
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
+        except TimeoutError:
+            continue
+
+
+_logger = logging.getLogger(__name__)
+
+
+VALIDATION_CODE_OVERRIDES: dict[tuple[str, str, str], str] = {
+    ("/v1/auth/register", "password", "string_too_short"): "validation_password_too_short",
+    ("/v1/auth/register", "email", "missing"): "validation_email_required",
+    ("/v1/auth/register", "password", "missing"): "validation_password_required",
+    ("/v1/auth/register", "company_name", "missing"): "validation_company_name_required",
+    ("/v1/rules/profiles", "name", "missing"): "validation_profile_name_required",
+    ("/v1/rules/profiles", "keywords", "missing"): "validation_keywords_required",
+}
+
+
+def _validation_error_code(exc: RequestValidationError, *, path: str) -> str | None:
+    for error in exc.errors():
+        loc = error.get("loc")
+        if not isinstance(loc, (list, tuple)) or len(loc) < 2:
+            continue
+        if loc[0] != "body":
+            continue
+        field = str(loc[-1])
+        code = VALIDATION_CODE_OVERRIDES.get((path, field, str(error.get("type") or "")))
+        if code is not None:
+            return code
+    return None
+
+
+def _make_discover_spawner(
+    database_url: str,
+) -> Callable[..., None]:
+    """Return a function that spawns a worker subprocess for a single keyword.
+
+    The spawner is fire-and-forget: it starts the worker, writes the JSON
+    payload to stdin, and waits for it to finish (inside a BackgroundTask
+    thread so the API response is not blocked).
+    """
+
+    def _stderr_preview(stderr: bytes | str | None, *, limit: int = 500) -> str | None:
+        if stderr is None:
+            return None
+        if isinstance(stderr, bytes):
+            text = stderr.decode("utf-8", errors="replace")
+        else:
+            text = str(stderr)
+        normalized = text.strip()
+        if not normalized:
+            return None
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit].rstrip()}..."
+
+    def spawn_discover(
+        *,
+        tenant_id: str,
+        profile_id: str,
+        profile_type: str,
+        keyword: str,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "command": "discover",
+                "database_url": database_url,
+                "tenant_id": tenant_id,
+                "keyword": keyword,
+                "profile": profile_type,
+                "trigger_type": "profile_created",
+                "live": True,
+            },
+            ensure_ascii=False,
+        ).encode()
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "egp_worker.main"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = proc.communicate(input=payload, timeout=600)
+            if proc.returncode not in {0, None}:
+                preview = _stderr_preview(stderr)
+                _logger.warning(
+                    "Discover worker exited non-zero for keyword %r (tenant_id=%s profile_id=%s returncode=%s stderr=%r)",
+                    keyword,
+                    tenant_id,
+                    profile_id,
+                    proc.returncode,
+                    preview,
+                )
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            _, stderr = proc.communicate()
+            preview = _stderr_preview(stderr or exc.stderr)
+            _logger.warning(
+                "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
+                keyword,
+                tenant_id,
+                profile_id,
+                exc.timeout,
+                preview,
+            )
+        except Exception:
+            _logger.warning(
+                "Failed to spawn discover for keyword %r (tenant_id=%s profile_id=%s)",
+                keyword,
+                tenant_id,
+                profile_id,
+                exc_info=True,
+            )
+
+    return spawn_discover
+
+
+def _make_discovery_dispatcher(app: FastAPI) -> Callable[..., None]:
+    def dispatch(
+        *,
+        tenant_id: str,
+        profile_id: str,
+        profile_type: str,
+        keyword: str,
+    ) -> None:
+        spawner = getattr(app.state, "discover_spawner", None)
+        if spawner is None:
+            return
+        spawner(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            profile_type=profile_type,
+            keyword=keyword,
+        )
+
+    return dispatch
 
 
 def create_app(
@@ -127,7 +282,10 @@ def create_app(
     async def lifespan(app: FastAPI):
         poller_task = None
         poller_stop_event = None
+        discovery_task = None
+        discovery_stop_event = None
         processor = getattr(app.state, "webhook_delivery_processor", None)
+        discovery_processor = getattr(app.state, "discovery_dispatch_processor", None)
         if processor is not None and getattr(
             app.state, "webhook_delivery_processor_enabled", False
         ):
@@ -136,6 +294,15 @@ def create_app(
                 _run_webhook_delivery_loop(
                     processor=processor,
                     stop_event=poller_stop_event,
+                    poll_interval_seconds=1.0,
+                )
+            )
+        if discovery_processor is not None:
+            discovery_stop_event = asyncio.Event()
+            discovery_task = asyncio.create_task(
+                _run_discovery_dispatch_loop(
+                    processor=discovery_processor,
+                    stop_event=discovery_stop_event,
                     poll_interval_seconds=1.0,
                 )
             )
@@ -148,6 +315,12 @@ def create_app(
                 poller_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await poller_task
+            if discovery_stop_event is not None:
+                discovery_stop_event.set()
+            if discovery_task is not None:
+                discovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await discovery_task
 
     app = FastAPI(
         title="e-GP Intelligence Platform",
@@ -155,6 +328,14 @@ def create_app(
         description="Thailand public procurement monitoring API",
         lifespan=lifespan,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request, exc: RequestValidationError):
+        content: dict[str, object] = {"detail": exc.errors()}
+        code = _validation_error_code(exc, path=request.url.path)
+        if code is not None:
+            content["code"] = code
+        return JSONResponse(status_code=422, content=content)
 
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
     resolved_web_allow_origin_regex = get_web_allow_origin_regex(None)
@@ -238,6 +419,10 @@ def create_app(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
+    discovery_job_repository = create_discovery_job_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
     support_repository = create_support_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
@@ -304,6 +489,7 @@ def create_app(
     app.state.entitlement_service = entitlement_service
     app.state.document_repository = repository
     app.state.notification_repository = notification_repository
+    app.state.discovery_job_repository = discovery_job_repository
     app.state.support_repository = support_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
@@ -359,6 +545,14 @@ def create_app(
     app.state.session_cookie_max_age_seconds = session_cookie_max_age_seconds
     app.state.session_cookie_secure = session_cookie_secure
     app.state.session_cookie_samesite = session_cookie_samesite
+
+    # Discover spawner: launches a worker subprocess per keyword after profile
+    # creation.  Injected via app.state so tests can substitute a recorder.
+    app.state.discover_spawner = _make_discover_spawner(resolved_database_url)
+    app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
+        repository=discovery_job_repository,
+        dispatcher=_make_discovery_dispatcher(app),
+    )
 
     @app.middleware("http")
     async def auth_middleware(request, call_next):
