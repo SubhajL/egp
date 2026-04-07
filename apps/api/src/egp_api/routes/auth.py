@@ -14,7 +14,7 @@ router = APIRouter(tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    tenant_slug: str = Field(min_length=1)
+    tenant_slug: str | None = None
     email: str = Field(min_length=1)
     password: str = Field(min_length=1)
     mfa_code: str | None = None
@@ -152,7 +152,10 @@ def register(
     except ValueError as exc:
         detail = str(exc) or "registration failed"
         if "already registered" in detail:
-            raise HTTPException(status_code=409, detail=detail) from exc
+            raise HTTPException(
+                status_code=409,
+                detail="account already exists for this email; please sign in",
+            ) from exc
         raise HTTPException(status_code=400, detail=detail) from exc
     response.set_cookie(
         key=request.app.state.session_cookie_name,

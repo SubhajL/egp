@@ -636,6 +636,10 @@ export type SupportSummaryResponse = {
 
 const DEFAULT_API_PORT = "8000";
 
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
 function readRuntimeEnv(name: string): string | undefined {
   if (typeof globalThis === "undefined") return undefined;
   const envSource = (globalThis as { process?: { env?: Record<string, string | undefined> } })
@@ -648,7 +652,16 @@ export function getApiBaseUrl(): string {
   const configured = readRuntimeEnv("NEXT_PUBLIC_EGP_API_BASE_URL")?.trim();
   const fallback = `${window.location.protocol}//${window.location.hostname}:${DEFAULT_API_PORT}`;
   const resolved = configured || fallback;
-  return resolved.replace(/\/+$/, "");
+
+  try {
+    const url = new URL(resolved, window.location.origin);
+    if (isLoopbackHostname(window.location.hostname) && isLoopbackHostname(url.hostname)) {
+      url.hostname = window.location.hostname;
+    }
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return resolved.replace(/\/+$/, "");
+  }
 }
 
 export function getTenantId(): string {
@@ -918,7 +931,7 @@ export type RegisterInput = {
 };
 
 export type LoginInput = {
-  tenant_slug: string;
+  tenant_slug?: string;
   email: string;
   password: string;
   mfa_code?: string;

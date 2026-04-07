@@ -211,6 +211,51 @@ def test_login_sets_http_only_session_cookie_and_me_reads_session(tmp_path) -> N
     assert me.json()["user"]["role"] == "owner"
 
 
+def test_login_accepts_email_and_password_without_tenant_slug(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_user(client)
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "owner@acme.example",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json()["user"]["email"] == "owner@acme.example"
+
+
+def test_login_without_tenant_slug_fails_closed_for_duplicate_email_across_tenants(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_tenant(
+        client,
+        tenant_id=OTHER_TENANT_ID,
+        name="Other Tenant",
+        slug="other-tenant",
+    )
+    _seed_user(client, email="shared@example.com")
+    _seed_user(
+        client,
+        user_id="44444444-4444-4444-4444-444444444444",
+        tenant_id=OTHER_TENANT_ID,
+        email="shared@example.com",
+    )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "shared@example.com",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 401
+
+
 def test_me_preflight_returns_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
     client = _create_client(tmp_path)
 

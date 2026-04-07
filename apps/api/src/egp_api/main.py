@@ -422,7 +422,11 @@ def create_app(
                 content={"detail": detail},
                 headers=cors_headers_for_origin(request.headers.get("origin")),
             )
-        return await call_next(request)
+        response = await call_next(request)
+        cors_headers = cors_headers_for_origin(request.headers.get("origin"))
+        for key, value in cors_headers.items():
+            response.headers.setdefault(key, value)
+        return response
 
     @app.get("/health")
     def health():

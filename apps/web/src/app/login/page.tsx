@@ -10,6 +10,19 @@ import { ApiError, login } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
+function normalizeLoginErrorMessage(error: ApiError): string {
+  if (error.detail === "mfa code required") {
+    return "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน";
+  }
+  if (error.detail === "invalid mfa code") {
+    return "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง";
+  }
+  if (error.detail === "invalid credentials") {
+    return "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
+  }
+  return error.detail;
+}
+
 function LoginPageContent() {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -19,12 +32,17 @@ function LoginPageContent() {
     [searchParams],
   );
   const { data: currentSession, isLoading: sessionLoading } = useMe();
-  const [tenantSlug, setTenantSlug] = useState("");
-  const [email, setEmail] = useState("");
+  const prefilledEmail = searchParams.get("email")?.trim() ?? "";
+  const [email, setEmail] = useState(prefilledEmail);
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
+  const [requiresMfa, setRequiresMfa] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setEmail(prefilledEmail);
+  }, [prefilledEmail]);
 
   useEffect(() => {
     if (currentSession) {
@@ -40,10 +58,9 @@ function LoginPageContent() {
     setErrorMessage(null);
     try {
       const currentSession = await login({
-        tenant_slug: tenantSlug.trim(),
         email: email.trim(),
         password,
-        mfa_code: mfaCode.trim() || undefined,
+        mfa_code: requiresMfa ? mfaCode.trim() || undefined : undefined,
       });
       queryClient.setQueryData(["me"], currentSession);
       startTransition(() => {
@@ -51,7 +68,10 @@ function LoginPageContent() {
       });
     } catch (error) {
       if (error instanceof ApiError) {
-        setErrorMessage(error.detail);
+        if (error.detail === "mfa code required") {
+          setRequiresMfa(true);
+        }
+        setErrorMessage(normalizeLoginErrorMessage(error));
       } else if (error instanceof Error) {
         setErrorMessage(error.message);
       } else {
@@ -125,7 +145,7 @@ function LoginPageContent() {
           <div>
             <h1 className="text-2xl font-bold text-[var(--text-primary)]">เข้าสู่ระบบ</h1>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
-              ระบุ workspace slug, อีเมล และรหัสผ่านเพื่อเข้าสู่ระบบขององค์กรคุณ
+              ระบุอีเมลและรหัสผ่านเพื่อเข้าสู่ระบบบัญชีของคุณ
             </p>
           </div>
 
@@ -136,21 +156,6 @@ function LoginPageContent() {
           ) : null}
 
           <form className="space-y-4" onSubmit={handleSubmit}>
-            <div className="space-y-2">
-              <label htmlFor="tenantSlug" className="text-sm font-medium text-[var(--text-primary)]">
-                Workspace slug
-              </label>
-              <input
-                id="tenantSlug"
-                value={tenantSlug}
-                onChange={(event) => setTenantSlug(event.target.value)}
-                autoComplete="organization"
-                placeholder="acme-intelligence"
-                required
-                className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-            </div>
-
             <div className="space-y-2">
               <label htmlFor="email" className="text-sm font-medium text-[var(--text-primary)]">
                 อีเมล
@@ -183,25 +188,34 @@ function LoginPageContent() {
               />
             </div>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label htmlFor="mfaCode" className="text-sm font-medium text-[var(--text-primary)]">
-                  MFA code
-                </label>
+            {requiresMfa ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="mfaCode" className="text-sm font-medium text-[var(--text-primary)]">
+                    MFA code
+                  </label>
+                  <Link href="/forgot-password" className="text-xs font-semibold text-primary">
+                    ลืมรหัสผ่าน?
+                  </Link>
+                </div>
+                <input
+                  id="mfaCode"
+                  value={mfaCode}
+                  onChange={(event) => setMfaCode(event.target.value)}
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="กรอกรหัส 6 หลักจากแอปยืนยันตัวตน"
+                  required
+                  className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+            ) : (
+              <div className="flex justify-end">
                 <Link href="/forgot-password" className="text-xs font-semibold text-primary">
                   ลืมรหัสผ่าน?
                 </Link>
               </div>
-              <input
-                id="mfaCode"
-                value={mfaCode}
-                onChange={(event) => setMfaCode(event.target.value)}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="กรอกเมื่อเปิดใช้ MFA แล้ว"
-                className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-            </div>
+            )}
 
             <button
               type="submit"

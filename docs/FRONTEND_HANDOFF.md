@@ -91,14 +91,14 @@ npm run dev
 Defined in [`apps/web/src/lib/api.ts`](../apps/web/src/lib/api.ts):
 
 - `NEXT_PUBLIC_EGP_API_BASE_URL`
-  - default fallback: `http://localhost:8000`
+  - default fallback: `http://127.0.0.1:8000`
 - `NEXT_PUBLIC_EGP_TENANT_ID`
   - legacy compatibility value still referenced by a few older components; not required for login/session auth
 
 Example:
 
 ```bash
-NEXT_PUBLIC_EGP_API_BASE_URL=http://localhost:8000
+NEXT_PUBLIC_EGP_API_BASE_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_EGP_TENANT_ID=11111111-1111-1111-1111-111111111111
 ```
 

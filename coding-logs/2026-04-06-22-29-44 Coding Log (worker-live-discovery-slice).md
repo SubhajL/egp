@@ -4,6 +4,41 @@
 
 Implement the first real migration slice from the legacy `egp_crawler.py` into `apps/worker`: browser-driven discovery. This slice moves Chrome/CDP startup, Cloudflare wait, keyword search, result paging, and project detail extraction into worker-owned modules while keeping persistence on the existing run/task/project ingest path.
 
+## Review (2026-04-07 07:29 local) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: `working-tree`
+- Commands Run: `git status --porcelain=v1`, `git diff -- apps/api/src/egp_api/main.py apps/api/src/egp_api/routes/auth.py apps/api/src/egp_api/services/auth_service.py tests/phase4/test_auth_api.py tests/phase4/test_registration.py`, `git diff -- apps/web/src/app/login/page.tsx apps/web/src/app/signup/page.tsx apps/web/src/lib/api.ts apps/web/package.json apps/web/playwright.config.ts apps/web/next.config.mjs apps/web/tsconfig.json apps/web/next-env.d.ts apps/web/scripts/dev.sh apps/web/scripts/dev-web.sh docs/FRONTEND_HANDOFF.md docs/MANUAL_WEB_APP_TESTING.md tests/phase2/test_rules_api.py`, `./.venv/bin/python -m pytest tests/phase4/test_auth_api.py tests/phase4/test_registration.py tests/phase2/test_rules_api.py -q`, `./.venv/bin/ruff check apps/api packages tests/phase4/test_auth_api.py tests/phase4/test_registration.py tests/phase2/test_rules_api.py`, `(cd apps/web && npm run typecheck && npm run build)`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- Resolved during review: email-only login originally selected the first matching user across tenants, which could have logged a shared email into the wrong workspace. The repository now fails closed unless the email maps to exactly one tenant, and coverage was added in `tests/phase4/test_auth_api.py`.
+
+MEDIUM
+- No findings.
+
+LOW
+- `apps/web/next-env.d.ts` now points at `.next-dev/types/routes.d.ts`, which is acceptable for local dev but remains a generated-file deviation from Next defaults. Residual risk is low because `apps/web/tsconfig.json` now includes both `.next/types/**/*.ts` and `.next-dev/types/**/*.ts`, and production `npm run build` passed.
+
+### Open Questions / Assumptions
+- Assumed the intended product rule is global duplicate-email prevention across tenants, so failing closed on ambiguous email-only login is safer than guessing a tenant.
+- Assumed local Postgres-backed `npm run dev` should prefer convenience and auto-run pending migrations before boot.
+
+### Recommended Tests / Validation
+- `./.venv/bin/python -m pytest tests/phase4/test_auth_api.py tests/phase4/test_registration.py tests/phase2/test_rules_api.py -q`
+- `./.venv/bin/ruff check apps/api packages tests/phase4/test_auth_api.py tests/phase4/test_registration.py tests/phase2/test_rules_api.py`
+- `cd apps/web && npm run typecheck && npm run build`
+- Manual smoke on `localhost:3002` for signup, login, dashboard, and rules page with a Postgres-backed dev stack.
+
+### Rollout Notes
+- Postgres-backed local dev now depends on the migration runner being available in `../../.venv/bin/python`; if the venv is missing, `apps/web/scripts/dev.sh` will fail early instead of silently booting stale schema.
+- Existing long-running dev servers need a restart to pick up the `.next-dev` isolation and loopback host-alignment fixes.
+
 ## Scope
 
 - In scope:

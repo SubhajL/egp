@@ -247,10 +247,10 @@ class SqlAuthRepository:
         return _login_user_from_mapping(row)
 
     def find_login_user_by_email(self, *, email: str) -> LoginUserRecord | None:
-        """Find any user with this email across all tenants (for duplicate-email guard)."""
+        """Find a unique user with this email across all tenants, else fail closed."""
         normalized_email = _normalize_email(email)
         with self._engine.connect() as connection:
-            row = (
+            rows = (
                 connection.execute(
                     select(
                         USERS_TABLE,
@@ -266,14 +266,13 @@ class SqlAuthRepository:
                         )
                     )
                     .where(func.lower(USERS_TABLE.c.email) == normalized_email)
-                    .limit(1)
                 )
                 .mappings()
-                .first()
+                .all()
             )
-        if row is None:
+        if len(rows) != 1:
             return None
-        return _login_user_from_mapping(row)
+        return _login_user_from_mapping(rows[0])
 
     def get_user_by_id(self, *, tenant_id: str, user_id: str) -> LoginUserRecord | None:
         normalized_tenant_id = normalize_uuid_string(tenant_id)

@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "./scripts/dev.sh",
+    "dev:web": "./scripts/dev-web.sh",
+    "build": "rm -rf .next && next build",
+    "start": "node .next/standalone/server.js",
     "lint": "next lint",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "playwright test",

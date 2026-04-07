@@ -214,6 +214,27 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
     )
 
 
+def test_rules_endpoint_includes_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-cors.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+
+    response = client.get(
+        "/v1/rules",
+        params={"tenant_id": TENANT_ID},
+        headers={"Origin": "http://localhost:3002"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3002"
+    assert response.headers["access-control-allow-credentials"] == "true"
+
+
 def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-empty.sqlite3'}"
     client = TestClient(

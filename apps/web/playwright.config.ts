@@ -15,7 +15,7 @@ export default defineConfig({
     ...devices["Desktop Chrome"],
   },
   webServer: {
-    command: `npm run dev -- --hostname 127.0.0.1 --port ${PORT}`,
+    command: `npm run dev:web -- --hostname 127.0.0.1 --port ${PORT}`,
     port: PORT,
     reuseExistingServer: !process.env.CI,
     env: {
