@@ -52,7 +52,9 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
     )
     dispatched: list[dict[str, str]] = []
 
-    def dispatcher(*, tenant_id: str, profile_id: str, profile_type: str, keyword: str) -> None:
+    def dispatcher(
+        *, tenant_id: str, profile_id: str, profile_type: str, keyword: str
+    ) -> None:
         dispatched.append(
             {
                 "tenant_id": tenant_id,
@@ -93,7 +95,9 @@ def test_discovery_dispatch_processor_retries_and_then_fails(tmp_path) -> None:
     )
     attempts: list[str] = []
 
-    def dispatcher(*, tenant_id: str, profile_id: str, profile_type: str, keyword: str) -> None:
+    def dispatcher(
+        *, tenant_id: str, profile_id: str, profile_type: str, keyword: str
+    ) -> None:
         attempts.append(keyword)
         raise RuntimeError("spawn failed")
 

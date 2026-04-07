@@ -81,7 +81,9 @@ def test_profile_creation_triggers_discover_per_keyword(tmp_path):
     assert spawned[1]["keyword"] == "cloud procurement"
 
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert count == 2
 
 
@@ -133,7 +135,9 @@ def test_profile_creation_succeeds_when_spawner_is_none(tmp_path):
     assert response.json()["keywords"] == ["testing"]
 
 
-def test_profile_creation_persists_jobs_and_background_processor_dispatches_them(tmp_path):
+def test_profile_creation_persists_jobs_and_background_processor_dispatches_them(
+    tmp_path,
+):
     dispatched: list[str] = []
 
     def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
@@ -156,16 +160,28 @@ def test_profile_creation_persists_jobs_and_background_processor_dispatches_them
     assert dispatched == ["analytics", "cloud procurement"]
 
     with client.app.state.db_engine.connect() as connection:
-        rows = connection.execute(
-            text("SELECT keyword, job_status, attempt_count FROM discovery_jobs ORDER BY keyword")
-        ).mappings().all()
+        rows = (
+            connection.execute(
+                text(
+                    "SELECT keyword, job_status, attempt_count FROM discovery_jobs ORDER BY keyword"
+                )
+            )
+            .mappings()
+            .all()
+        )
     assert rows == [
         {"keyword": "analytics", "job_status": "dispatched", "attempt_count": 1},
-        {"keyword": "cloud procurement", "job_status": "dispatched", "attempt_count": 1},
+        {
+            "keyword": "cloud procurement",
+            "job_status": "dispatched",
+            "attempt_count": 1,
+        },
     ]
 
 
-def test_make_discover_spawner_logs_spawn_failure_with_keyword_context(tmp_path, monkeypatch, caplog):
+def test_make_discover_spawner_logs_spawn_failure_with_keyword_context(
+    tmp_path, monkeypatch, caplog
+):
     def fake_popen(*args, **kwargs):
         raise RuntimeError("worker exited early")
 
@@ -212,7 +228,9 @@ def test_make_discover_spawner_logs_non_zero_exit_with_stderr_preview(
     assert any("keyword 'analytics'" in message for message in caplog.messages)
 
 
-def test_make_discover_spawner_logs_timeout_with_keyword_context(tmp_path, monkeypatch, caplog):
+def test_make_discover_spawner_logs_timeout_with_keyword_context(
+    tmp_path, monkeypatch, caplog
+):
     class FakeProcess:
         def __init__(self):
             self.returncode = None

@@ -19,12 +19,13 @@ OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 JWT_SECRET = "phase4-auth-secret"
 PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = (
-    "pbkdf2_sha256$390000$testsalt12345678$"
-    "nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
+    "pbkdf2_sha256$390000$testsalt12345678$nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
 )
 
 
-def _create_client(tmp_path, *, auth_required: bool = True, email_sender=None) -> TestClient:
+def _create_client(
+    tmp_path, *, auth_required: bool = True, email_sender=None
+) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase4-auth.sqlite3'}"
     return TestClient(
         create_app(
@@ -87,7 +88,7 @@ def _seed_user(
     role: str = "owner",
     status: str = "active",
     password_hash: str | None = PASSWORD_HASH,
-    ) -> str:
+) -> str:
     now = datetime.now(UTC).isoformat()
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
@@ -155,7 +156,9 @@ def _totp_code(secret: str, *, now: int | None = None) -> str:
     return f"{code % 1_000_000:06d}"
 
 
-def _bearer_headers(*, tenant_id: str = TENANT_ID, role: str = "owner") -> dict[str, str]:
+def _bearer_headers(
+    *, tenant_id: str = TENANT_ID, role: str = "owner"
+) -> dict[str, str]:
     token = jwt.encode(
         {
             "sub": "user-123",
@@ -291,7 +294,9 @@ def test_register_duplicate_email_returns_structured_error_code(tmp_path) -> Non
     }
 
 
-def test_register_short_password_validation_returns_structured_field_code(tmp_path) -> None:
+def test_register_short_password_validation_returns_structured_field_code(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     response = client.post(
@@ -453,7 +458,9 @@ def test_me_preflight_returns_cors_headers_for_localhost_dev_origin(tmp_path) ->
     assert response.headers["access-control-allow-credentials"] == "true"
 
 
-def test_me_unauthorized_response_includes_cors_headers_for_localhost_dev_origin(tmp_path) -> None:
+def test_me_unauthorized_response_includes_cors_headers_for_localhost_dev_origin(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     response = client.get(
@@ -529,7 +536,9 @@ def test_passwordless_or_suspended_user_cannot_login(tmp_path) -> None:
     assert suspended.status_code in {401, 403}
 
 
-def test_accept_invite_sets_password_marks_email_verified_and_creates_session(tmp_path) -> None:
+def test_accept_invite_sets_password_marks_email_verified_and_creates_session(
+    tmp_path,
+) -> None:
     sent: list[dict[str, str]] = []
     client = _create_client(
         tmp_path,

@@ -6,7 +6,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Table, and_, insert, or_, select, update
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Table,
+    and_,
+    insert,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
@@ -195,7 +209,9 @@ class SqlDiscoveryJobRepository:
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE)
                     .where(DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id)
-                    .order_by(DISCOVERY_JOBS_TABLE.c.created_at, DISCOVERY_JOBS_TABLE.c.id)
+                    .order_by(
+                        DISCOVERY_JOBS_TABLE.c.created_at, DISCOVERY_JOBS_TABLE.c.id
+                    )
                 )
                 .mappings()
                 .all()
@@ -224,7 +240,10 @@ class SqlDiscoveryJobRepository:
                             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
                         )
                     )
-                    .order_by(DISCOVERY_JOBS_TABLE.c.next_attempt_at, DISCOVERY_JOBS_TABLE.c.created_at)
+                    .order_by(
+                        DISCOVERY_JOBS_TABLE.c.next_attempt_at,
+                        DISCOVERY_JOBS_TABLE.c.created_at,
+                    )
                     .limit(normalized_limit)
                 )
                 .mappings()
@@ -244,7 +263,8 @@ class SqlDiscoveryJobRepository:
                             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
                             or_(
                                 DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
-                                DISCOVERY_JOBS_TABLE.c.processing_started_at <= stale_started_at,
+                                DISCOVERY_JOBS_TABLE.c.processing_started_at
+                                <= stale_started_at,
                             ),
                         )
                     )
@@ -256,13 +276,17 @@ class SqlDiscoveryJobRepository:
                 return []
             claimed_rows = (
                 connection.execute(
-                    select(DISCOVERY_JOBS_TABLE).where(DISCOVERY_JOBS_TABLE.c.id.in_(claimed_ids))
+                    select(DISCOVERY_JOBS_TABLE).where(
+                        DISCOVERY_JOBS_TABLE.c.id.in_(claimed_ids)
+                    )
                 )
                 .mappings()
                 .all()
             )
         claimed_by_id = {str(row["id"]): _job_from_mapping(row) for row in claimed_rows}
-        return [claimed_by_id[job_id] for job_id in claimed_ids if job_id in claimed_by_id]
+        return [
+            claimed_by_id[job_id] for job_id in claimed_ids if job_id in claimed_by_id
+        ]
 
     def record_discovery_job_attempt(
         self,
@@ -308,7 +332,9 @@ class SqlDiscoveryJobRepository:
             )
             updated_row = (
                 connection.execute(
-                    select(DISCOVERY_JOBS_TABLE).where(DISCOVERY_JOBS_TABLE.c.id == normalized_job_id)
+                    select(DISCOVERY_JOBS_TABLE).where(
+                        DISCOVERY_JOBS_TABLE.c.id == normalized_job_id
+                    )
                 )
                 .mappings()
                 .first()
