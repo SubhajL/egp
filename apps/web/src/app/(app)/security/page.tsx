@@ -5,7 +5,7 @@ import { FormEvent, type ReactNode, useState } from "react";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
-import { ApiError, disableMfa, enableMfa, sendEmailVerification, setupMfa } from "@/lib/api";
+import { ApiError, disableMfa, enableMfa, localizeApiError, sendEmailVerification, setupMfa } from "@/lib/api";
 import { useMe } from "@/lib/hooks";
 
 function SecurityCard({
@@ -51,7 +51,7 @@ export default function SecurityPage() {
       setStatusMessage("ส่งลิงก์ยืนยันอีเมลแล้ว กรุณาตรวจสอบกล่องจดหมายของคุณ");
     } catch (mutationError) {
       setErrorMessage(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถส่งลิงก์ยืนยันอีเมลได้",
+        localizeApiError(mutationError, "ไม่สามารถส่งลิงก์ยืนยันอีเมลได้"),
       );
     } finally {
       setBusy(false);
@@ -69,7 +69,7 @@ export default function SecurityPage() {
       setStatusMessage("สแกนหรือคัดลอก secret ไปยังแอป authenticator แล้วกรอกรหัส 6 หลักเพื่อเปิดใช้");
     } catch (mutationError) {
       setErrorMessage(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเริ่มตั้งค่า MFA ได้",
+        localizeApiError(mutationError, "ไม่สามารถเริ่มตั้งค่า MFA ได้"),
       );
     } finally {
       setBusy(false);
@@ -90,7 +90,7 @@ export default function SecurityPage() {
       setStatusMessage("เปิดใช้ MFA เรียบร้อยแล้ว");
     } catch (mutationError) {
       setErrorMessage(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเปิดใช้ MFA ได้",
+        localizeApiError(mutationError, "ไม่สามารถเปิดใช้ MFA ได้"),
       );
     } finally {
       setBusy(false);
@@ -109,7 +109,7 @@ export default function SecurityPage() {
       setStatusMessage("ปิดใช้ MFA เรียบร้อยแล้ว");
     } catch (mutationError) {
       setErrorMessage(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถปิดใช้ MFA ได้",
+        localizeApiError(mutationError, "ไม่สามารถปิดใช้ MFA ได้"),
       );
     } finally {
       setBusy(false);

@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useEffect, useState } from "react";
 
-import { ApiError, register } from "@/lib/api";
+import { ApiError, localizeApiError, register } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
@@ -25,9 +25,9 @@ function normalizeSignupErrorMessage(error: ApiError): string {
     if (detail.includes("company_name")) {
       return "กรุณาระบุชื่อบริษัท / องค์กร";
     }
-    return "กรุณาตรวจสอบข้อมูลที่กรอก: " + error.detail;
+    return "กรุณาตรวจสอบข้อมูลที่กรอก";
   }
-  return error.detail;
+  return localizeApiError(error, "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
 }
 
 function SignupPageContent() {
@@ -68,10 +68,8 @@ function SignupPageContent() {
     } catch (error) {
       if (error instanceof ApiError) {
         setErrorMessage(normalizeSignupErrorMessage(error));
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message);
       } else {
-        setErrorMessage("สมัครใช้งานไม่สำเร็จ");
+        setErrorMessage(localizeApiError(error, "สมัครใช้งานไม่สำเร็จ"));
       }
     } finally {
       setSubmitting(false);

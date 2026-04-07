@@ -9,7 +9,7 @@ import { QueryState } from "@/components/ui/query-state";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
 import { useProjects } from "@/lib/hooks";
 import { formatBudget, formatRelativeTime } from "@/lib/utils";
-import { fetchProjectExport } from "@/lib/api";
+import { fetchProjectExport, localizeApiError } from "@/lib/api";
 import type { ExportProjectsParams, FetchProjectsParams, ProjectSummary } from "@/lib/api";
 
 type StatusFilter = {
@@ -231,7 +231,7 @@ export default function ProjectsPage() {
       URL.revokeObjectURL(downloadUrl);
     } catch (error) {
       setExportError(
-        error instanceof Error ? error.message : "ไม่สามารถส่งออกไฟล์ Excel ได้",
+        localizeApiError(error, "ไม่สามารถส่งออกไฟล์ Excel ได้"),
       );
     } finally {
       setIsExporting(false);

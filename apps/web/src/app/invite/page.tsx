@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useMemo, useState } from "react";
 
-import { ApiError, acceptInvite } from "@/lib/api";
+import { localizeApiError, acceptInvite } from "@/lib/api";
 import { normalizeToken } from "@/lib/auth";
 
 function InvitePageContent() {
@@ -31,13 +31,7 @@ function InvitePageContent() {
         router.replace("/dashboard");
       });
     } catch (error) {
-      if (error instanceof ApiError) {
-        setErrorMessage(error.detail);
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message);
-      } else {
-        setErrorMessage("ไม่สามารถรับคำเชิญได้");
-      }
+      setErrorMessage(localizeApiError(error, "ไม่สามารถรับคำเชิญได้"));
     } finally {
       setBusy(false);
     }

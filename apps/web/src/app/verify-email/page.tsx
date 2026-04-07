@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
-import { ApiError, verifyEmail } from "@/lib/api";
+import { localizeApiError, verifyEmail } from "@/lib/api";
 import { normalizeToken } from "@/lib/auth";
 
 function VerifyEmailPageContent() {
@@ -32,13 +32,7 @@ function VerifyEmailPageContent() {
       } catch (error) {
         if (!active) return;
         setStatusMessage("");
-        if (error instanceof ApiError) {
-          setErrorMessage(error.detail);
-        } else if (error instanceof Error) {
-          setErrorMessage(error.message);
-        } else {
-          setErrorMessage("ไม่สามารถยืนยันอีเมลได้");
-        }
+        setErrorMessage(localizeApiError(error, "ไม่สามารถยืนยันอีเมลได้"));
       }
     }
     void run();

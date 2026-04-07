@@ -14,7 +14,7 @@ import {
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { useRules } from "@/lib/hooks";
-import { createRuleProfile, updateTenantSettings } from "@/lib/api";
+import { createRuleProfile, localizeApiError, updateTenantSettings } from "@/lib/api";
 import type {
   EntitlementSummary,
   NotificationRulesSummary,
@@ -605,7 +605,7 @@ export default function RulesPage() {
       await refreshRules();
     } catch (mutationError) {
       setProfileError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถบันทึกคำค้นได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกคำค้นได้"),
       );
     } finally {
       setProfileBusy(false);
@@ -625,9 +625,7 @@ export default function RulesPage() {
       await refreshRules();
     } catch (mutationError) {
       setScheduleError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : "ไม่สามารถบันทึกความถี่การติดตามได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกความถี่การติดตามได้"),
       );
     } finally {
       setScheduleBusy(false);

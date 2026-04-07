@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { localizeApiError } from "@/lib/api";
+
 type QueryStateProps = {
   isLoading: boolean;
   isError: boolean;
@@ -35,7 +37,7 @@ export function QueryState({
           ไม่สามารถเชื่อมต่อ API ได้
         </h3>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          {error?.message ?? "เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง"}
+          {localizeApiError(error, "เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง")}
         </p>
       </div>
     );
