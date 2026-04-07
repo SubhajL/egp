@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 
-import { requestPasswordReset } from "@/lib/api";
+import { localizeApiError, requestPasswordReset } from "@/lib/api";
 
 export default function ForgotPasswordPage() {
   const [tenantSlug, setTenantSlug] = useState("");
@@ -24,7 +24,7 @@ export default function ForgotPasswordPage() {
       });
       setStatusMessage("หากบัญชีนี้มีอยู่ในระบบ เราได้ส่งลิงก์รีเซ็ตรหัสผ่านให้แล้ว");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "ไม่สามารถส่งคำขอรีเซ็ตรหัสผ่านได้");
+      setErrorMessage(localizeApiError(error, "ไม่สามารถส่งคำขอรีเซ็ตรหัสผ่านได้"));
     } finally {
       setBusy(false);
     }

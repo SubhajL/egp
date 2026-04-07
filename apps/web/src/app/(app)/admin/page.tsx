@@ -12,6 +12,7 @@ import {
   createWebhook,
   deleteWebhook,
   inviteAdminUser,
+  localizeApiError,
   updateAdminUser,
   updateAdminUserNotificationPreferences,
   updateTenantSettings,
@@ -328,7 +329,7 @@ export default function AdminPage() {
       await refreshSnapshot();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถสร้างผู้ใช้ได้",
+        localizeApiError(mutationError, "ไม่สามารถสร้างผู้ใช้ได้"),
       );
     } finally {
       setBusy(false);
@@ -349,7 +350,7 @@ export default function AdminPage() {
       await refreshSnapshot();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถอัปเดตผู้ใช้ได้",
+        localizeApiError(mutationError, "ไม่สามารถอัปเดตผู้ใช้ได้"),
       );
     } finally {
       setBusy(false);
@@ -365,7 +366,7 @@ export default function AdminPage() {
       setSubmitNotice(`ส่งคำเชิญไปยัง ${invited.delivery_email} แล้ว`);
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถส่งคำเชิญได้",
+        localizeApiError(mutationError, "ไม่สามารถส่งคำเชิญได้"),
       );
     } finally {
       setBusy(false);
@@ -386,9 +387,7 @@ export default function AdminPage() {
       await refreshSnapshot();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : "ไม่สามารถอัปเดตการแจ้งเตือนได้",
+        localizeApiError(mutationError, "ไม่สามารถอัปเดตการแจ้งเตือนได้"),
       );
     } finally {
       setBusy(false);
@@ -413,7 +412,7 @@ export default function AdminPage() {
       await refreshSnapshot();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถบันทึกการตั้งค่าได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกการตั้งค่าได้"),
       );
     } finally {
       setBusy(false);
@@ -448,7 +447,7 @@ export default function AdminPage() {
       await refreshWebhooks();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถสร้าง webhook ได้",
+        localizeApiError(mutationError, "ไม่สามารถสร้าง webhook ได้"),
       );
     } finally {
       setBusy(false);
@@ -464,7 +463,7 @@ export default function AdminPage() {
       await refreshWebhooks();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถลบ webhook ได้",
+        localizeApiError(mutationError, "ไม่สามารถลบ webhook ได้"),
       );
     } finally {
       setBusy(false);

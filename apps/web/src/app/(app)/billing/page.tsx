@@ -11,6 +11,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import {
   createBillingRecord,
   createBillingPaymentRequest,
+  localizeApiError,
   recordBillingPayment,
   reconcileBillingPayment,
   startFreeTrial,
@@ -238,7 +239,7 @@ export default function BillingPage() {
       setPaymentAmount(created.record.outstanding_balance);
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถสร้างรายการเรียกเก็บได้",
+        localizeApiError(mutationError, "ไม่สามารถสร้างรายการเรียกเก็บได้"),
       );
     } finally {
       setActionBusy(false);
@@ -262,7 +263,7 @@ export default function BillingPage() {
       await refreshBilling();
     } catch (mutationError) {
       setPaymentError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถบันทึกรายการโอนได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกรายการโอนได้"),
       );
     } finally {
       setActionBusy(false);
@@ -279,7 +280,7 @@ export default function BillingPage() {
       setPaymentAmount(detail.record.outstanding_balance);
     } catch (mutationError) {
       setPaymentError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถกระทบยอดได้",
+        localizeApiError(mutationError, "ไม่สามารถกระทบยอดได้"),
       );
     } finally {
       setActionBusy(false);
@@ -296,7 +297,7 @@ export default function BillingPage() {
       setSelectedRecordId(detail.record.id);
     } catch (mutationError) {
       setPaymentError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเปลี่ยนสถานะบิลได้",
+        localizeApiError(mutationError, "ไม่สามารถเปลี่ยนสถานะบิลได้"),
       );
     } finally {
       setActionBusy(false);
@@ -316,11 +317,12 @@ export default function BillingPage() {
       setSelectedRecordId(detail.record.id);
     } catch (mutationError) {
       setPaymentError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : paymentRequestMethod === "card"
+        localizeApiError(
+          mutationError,
+          paymentRequestMethod === "card"
             ? "ไม่สามารถสร้างลิงก์ชำระด้วยบัตรได้"
             : "ไม่สามารถสร้าง PromptPay QR ได้",
+        ),
       );
     } finally {
       setActionBusy(false);
@@ -335,7 +337,7 @@ export default function BillingPage() {
       await refreshBilling();
     } catch (mutationError) {
       setSubmitError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถเริ่ม Free Trial ได้",
+        localizeApiError(mutationError, "ไม่สามารถเริ่ม Free Trial ได้"),
       );
     } finally {
       setActionBusy(false);

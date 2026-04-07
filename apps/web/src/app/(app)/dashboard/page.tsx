@@ -4,7 +4,7 @@ import { Archive, AlertTriangle, CheckCircle, XCircle, TrendingUp } from "lucide
 import { PageHeader } from "@/components/layout/page-header";
 import { DailyDiscoveryChart, ProjectStateChart } from "@/components/ui/dashboard-charts";
 import { StatusBadge } from "@/components/ui/status-badge";
-import type { DashboardSummaryResponse } from "@/lib/api";
+import { localizeApiError, type DashboardSummaryResponse } from "@/lib/api";
 import { useDashboardSummary } from "@/lib/hooks";
 import { formatBudget, formatRelativeTime } from "@/lib/utils";
 
@@ -133,7 +133,7 @@ export default function DashboardPage() {
       />
       {error ? (
         <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          โหลดข้อมูลแดชบอร์ดไม่สำเร็จ: {error instanceof Error ? error.message : "unknown error"}
+          {localizeApiError(error, "โหลดข้อมูลแดชบอร์ดไม่สำเร็จ")}
         </div>
       ) : null}
 

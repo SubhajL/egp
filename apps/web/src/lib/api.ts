@@ -714,12 +714,116 @@ export class ApiError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// English API error detail → Thai user-facing message translation
+// ---------------------------------------------------------------------------
+
+const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
+  // Auth
+  { pattern: "authentication required", thai: "กรุณาเข้าสู่ระบบก่อนใช้งาน" },
+  { pattern: "invalid credentials", thai: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" },
+  { pattern: "account already exists", thai: "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบ" },
+  { pattern: "registration failed", thai: "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
+  { pattern: "invalid token", thai: "ลิงก์ไม่ถูกต้องหรือหมดอายุแล้ว" },
+  { pattern: "invalid invite token", thai: "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว" },
+  { pattern: "invalid or expired invite token", thai: "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว" },
+  { pattern: "invalid or expired password reset token", thai: "ลิงก์รีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว" },
+  { pattern: "invalid or expired email verification token", thai: "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว" },
+  { pattern: "mfa code required", thai: "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน" },
+  { pattern: "invalid mfa code", thai: "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง" },
+  { pattern: "account is not active", thai: "บัญชีถูกระงับ กรุณาติดต่อผู้ดูแลระบบ" },
+  { pattern: "missing bearer token", thai: "กรุณาเข้าสู่ระบบก่อนใช้งาน" },
+  { pattern: "invalid bearer token", thai: "เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง" },
+  { pattern: "invalid session", thai: "เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง" },
+  { pattern: "missing authentication", thai: "กรุณาเข้าสู่ระบบก่อนใช้งาน" },
+  { pattern: "admin role required", thai: "คุณไม่มีสิทธิ์เข้าถึงส่วนนี้ (ต้องเป็นแอดมิน)" },
+  { pattern: "support role required", thai: "คุณไม่มีสิทธิ์เข้าถึงส่วนนี้ (ต้องเป็น support)" },
+  { pattern: "tenant mismatch", thai: "ไม่สามารถเข้าถึงข้อมูลขององค์กรอื่นได้" },
+  { pattern: "email delivery is not configured", thai: "ระบบส่งอีเมลยังไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบ" },
+  { pattern: "user not found", thai: "ไม่พบผู้ใช้นี้ในระบบ" },
+  { pattern: "user does not belong to tenant", thai: "ผู้ใช้นี้ไม่ได้อยู่ในองค์กรนี้" },
+
+  // Billing
+  { pattern: "billing record not found", thai: "ไม่พบรายการเรียกเก็บนี้" },
+  { pattern: "billing payment not found", thai: "ไม่พบรายการชำระเงินนี้" },
+  { pattern: "payment request not found", thai: "ไม่พบคำขอชำระเงินนี้" },
+  { pattern: "invalid json payload", thai: "ข้อมูลที่ส่งมาไม่ถูกต้อง กรุณาลองใหม่" },
+  { pattern: "manual payment endpoint only accepts bank_transfer", thai: "การบันทึกยอดโอนรองรับเฉพาะการโอนผ่านธนาคารเท่านั้น" },
+  { pattern: "payment provider is not configured", thai: "ระบบชำระเงินยังไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบ" },
+  { pattern: "billing record is not payable", thai: "ใบแจ้งหนี้นี้ยังไม่อยู่ในสถานะที่ชำระได้" },
+  { pattern: "billing record has no outstanding balance", thai: "ใบแจ้งหนี้นี้ไม่มียอดคงค้าง" },
+  { pattern: "payment provider request failed", thai: "ไม่สามารถเชื่อมต่อระบบชำระเงินได้ กรุณาลองใหม่อีกครั้ง" },
+  { pattern: "invalid billing date", thai: "วันที่เรียกเก็บไม่ถูกต้อง" },
+  { pattern: "callback currency does not match", thai: "สกุลเงินไม่ตรงกับคำขอชำระเงิน" },
+  { pattern: "callback amount does not match", thai: "จำนวนเงินไม่ตรงกับคำขอชำระเงิน" },
+  { pattern: "payment callback secret not configured", thai: "ระบบยังไม่ได้ตั้งค่า callback สำหรับชำระเงิน" },
+  { pattern: "invalid payment callback secret", thai: "การยืนยันจากระบบชำระเงินไม่ถูกต้อง" },
+
+  // Projects / Documents
+  { pattern: "project not found", thai: "ไม่พบโครงการนี้" },
+  { pattern: "document not found", thai: "ไม่พบเอกสารนี้" },
+  { pattern: "document diff not found", thai: "ไม่พบผลเปรียบเทียบเอกสารนี้" },
+  { pattern: "document review not found", thai: "ไม่พบรายการตรวจสอบเอกสารนี้" },
+
+  // Tenant / Webhooks
+  { pattern: "tenant not found", thai: "ไม่พบองค์กรนี้ในระบบ" },
+  { pattern: "webhook not found", thai: "ไม่พบ webhook นี้" },
+
+  // Rules / Entitlements
+  { pattern: "profile name is required", thai: "กรุณาระบุชื่อโปรไฟล์" },
+  { pattern: "unsupported profile type", thai: "ประเภทโปรไฟล์ไม่รองรับ" },
+  { pattern: "at least one keyword is required", thai: "กรุณาใส่อย่างน้อย 1 คำค้น" },
+  { pattern: "active keyword configuration exceeds plan limit", thai: "จำนวนคำค้นเกินสิทธิ์ของแพ็กเกจปัจจุบัน" },
+  { pattern: "active subscription required", thai: "ต้องมีแพ็กเกจที่เปิดใช้งานอยู่จึงจะใช้ฟีเจอร์นี้ได้" },
+  { pattern: "discover keyword is not entitled", thai: "แพ็กเกจปัจจุบันไม่รองรับคำค้นแบบ discover" },
+
+  // Generic API errors
+  { pattern: "api request failed", thai: "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
+];
+
+/**
+ * Translate an API error into a Thai user-facing message.
+ *
+ * Checks the error's `detail` (for `ApiError`) or `message` (for plain `Error`)
+ * against known English API error strings and returns the Thai translation.
+ * If no match is found, returns the provided `fallback` string instead of
+ * exposing raw English technical details to Thai-speaking users.
+ */
+export function localizeApiError(error: unknown, fallback: string): string {
+  let detail = "";
+  if (error instanceof ApiError) {
+    detail = error.detail;
+  } else if (error instanceof Error) {
+    detail = error.message;
+  }
+  if (!detail) return fallback;
+
+  const lower = detail.toLowerCase();
+  for (const entry of API_ERROR_TRANSLATIONS) {
+    if (lower.includes(entry.pattern)) {
+      return entry.thai;
+    }
+  }
+  return fallback;
+}
+
 async function throwApiError(response: Response): Promise<never> {
   let detail = `API request failed: ${response.status} ${response.statusText}`;
   try {
-    const payload = (await response.json()) as { detail?: string };
+    const payload = (await response.json()) as {
+      detail?: string | Array<{ loc?: Array<string | number>; msg?: string }>;
+    };
     if (typeof payload.detail === "string" && payload.detail.trim()) {
       detail = payload.detail;
+    } else if (Array.isArray(payload.detail) && payload.detail.length > 0) {
+      // Pydantic 422 validation errors — extract human-readable messages
+      detail = payload.detail
+        .map((err) => {
+          const field = err.loc?.filter((s) => s !== "body").join(".") ?? "";
+          const msg = err.msg ?? "invalid";
+          return field ? `${field}: ${msg}` : msg;
+        })
+        .join("; ");
     }
   } catch {}
   throw new ApiError(response.status, detail);

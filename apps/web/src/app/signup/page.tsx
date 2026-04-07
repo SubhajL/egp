@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useEffect, useState } from "react";
 
-import { ApiError, register } from "@/lib/api";
+import { ApiError, localizeApiError, register } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
@@ -14,7 +14,20 @@ function normalizeSignupErrorMessage(error: ApiError): string {
   if (error.status === 409 && error.detail.toLowerCase().includes("please sign in")) {
     return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
   }
-  return error.detail;
+  if (error.status === 422) {
+    const detail = error.detail.toLowerCase();
+    if (detail.includes("password") && detail.includes("short")) {
+      return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
+    }
+    if (detail.includes("email")) {
+      return "กรุณาตรวจสอบรูปแบบอีเมล";
+    }
+    if (detail.includes("company_name")) {
+      return "กรุณาระบุชื่อบริษัท / องค์กร";
+    }
+    return "กรุณาตรวจสอบข้อมูลที่กรอก";
+  }
+  return localizeApiError(error, "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
 }
 
 function SignupPageContent() {
@@ -55,10 +68,8 @@ function SignupPageContent() {
     } catch (error) {
       if (error instanceof ApiError) {
         setErrorMessage(normalizeSignupErrorMessage(error));
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message);
       } else {
-        setErrorMessage("สมัครใช้งานไม่สำเร็จ");
+        setErrorMessage(localizeApiError(error, "สมัครใช้งานไม่สำเร็จ"));
       }
     } finally {
       setSubmitting(false);

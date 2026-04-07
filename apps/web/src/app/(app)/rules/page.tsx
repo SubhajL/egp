@@ -14,7 +14,7 @@ import {
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { useRules } from "@/lib/hooks";
-import { createRuleProfile, updateTenantSettings } from "@/lib/api";
+import { createRuleProfile, localizeApiError, updateTenantSettings } from "@/lib/api";
 import type {
   EntitlementSummary,
   NotificationRulesSummary,
@@ -605,7 +605,7 @@ export default function RulesPage() {
       await refreshRules();
     } catch (mutationError) {
       setProfileError(
-        mutationError instanceof Error ? mutationError.message : "ไม่สามารถบันทึกคำค้นได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกคำค้นได้"),
       );
     } finally {
       setProfileBusy(false);
@@ -625,9 +625,7 @@ export default function RulesPage() {
       await refreshRules();
     } catch (mutationError) {
       setScheduleError(
-        mutationError instanceof Error
-          ? mutationError.message
-          : "ไม่สามารถบันทึกความถี่การติดตามได้",
+        localizeApiError(mutationError, "ไม่สามารถบันทึกความถี่การติดตามได้"),
       );
     } finally {
       setScheduleBusy(false);
@@ -816,8 +814,8 @@ export default function RulesPage() {
     <>
       <PageHeader title={headerTitle} subtitle={headerSubtitle} />
 
-      {/* Plan summary is always visible above tabs, on the entitlements tab it shows the full card */}
-      {data && activeTab !== "entitlements" ? (
+      {/* Plan summary — always visible above tabs */}
+      {data ? (
         <div className="mb-6 flex items-center gap-3">
           <span
             className={`rounded-full px-3 py-1 text-xs font-bold ${PLAN_DISPLAY[tier].color}`}
@@ -836,23 +834,25 @@ export default function RulesPage() {
         </div>
       ) : null}
 
-      {/* Tab bar */}
-      <div className="mb-6 flex gap-1 rounded-xl bg-[var(--bg-surface-secondary)] p-1">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setActiveTab(tab.key)}
-            className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              activeTab === tab.key
-                ? "bg-[var(--bg-surface)] text-primary shadow-sm"
-                : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-            }`}
-          >
-            {tab.icon}
-            {tab.label}
-          </button>
-        ))}
+      {/* Tab bar — underline style, same visual weight as page title */}
+      <div className="mb-8 border-b border-[var(--border-default)]">
+        <nav className="-mb-px flex gap-6" aria-label="Tabs">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={`inline-flex items-center gap-2 border-b-2 pb-3 text-base font-semibold transition-colors ${
+                activeTab === tab.key
+                  ? "border-primary text-primary"
+                  : "border-transparent text-[var(--text-muted)] hover:border-[var(--border-default)] hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
+        </nav>
       </div>
 
       <QueryState isLoading={isLoading} isError={isError} error={error}>

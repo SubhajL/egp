@@ -6,7 +6,7 @@ import { ChevronRight, Download, FileText } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { STATE_BADGE_CONFIG, PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { fetchDocumentDownloadUrl, type ProjectCrawlEvidence } from "@/lib/api";
+import { fetchDocumentDownloadUrl, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
 import { useProjectDetail, useDocuments, useProjectCrawlEvidence } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
@@ -165,10 +165,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       link.rel = "noreferrer";
       link.click();
     } catch (downloadException) {
-      const message =
-        downloadException instanceof Error
-          ? downloadException.message
-          : "ไม่สามารถดาวน์โหลดเอกสารได้";
+      const message = localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้");
       setDownloadError(message);
     } finally {
       setDownloadingDocumentId(null);
@@ -349,9 +346,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               ) : null}
               {isDocumentsError ? (
                 <p className="text-sm text-[var(--badge-red-text)]">
-                  {documentsError instanceof Error
-                    ? documentsError.message
-                    : "ไม่สามารถโหลดรายการเอกสารได้"}
+                  {localizeApiError(documentsError, "ไม่สามารถโหลดรายการเอกสารได้")}
                 </p>
               ) : documents.length === 0 ? (
                 <p className="text-sm text-[var(--text-muted)]">ยังไม่มีเอกสารสำหรับโครงการนี้</p>
@@ -409,9 +404,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               <p className="text-sm text-[var(--text-muted)]">กำลังโหลดประวัติการ crawl...</p>
             ) : isEvidenceError ? (
               <p className="text-sm text-[var(--badge-red-text)]">
-                {evidenceError instanceof Error
-                  ? evidenceError.message
-                  : "ไม่สามารถโหลดหลักฐานการ crawl ได้"}
+                {localizeApiError(evidenceError, "ไม่สามารถโหลดหลักฐานการ crawl ได้")}
               </p>
             ) : crawlEvidence.length === 0 ? (
               <p className="text-sm text-[var(--text-muted)]">

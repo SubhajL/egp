@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useEffect, useMemo, useState } from "react";
 
-import { ApiError, login } from "@/lib/api";
+import { ApiError, localizeApiError, login } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
@@ -20,7 +20,7 @@ function normalizeLoginErrorMessage(error: ApiError): string {
   if (error.detail === "invalid credentials") {
     return "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
   }
-  return error.detail;
+  return localizeApiError(error, "เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
 }
 
 function LoginPageContent() {
@@ -72,10 +72,8 @@ function LoginPageContent() {
           setRequiresMfa(true);
         }
         setErrorMessage(normalizeLoginErrorMessage(error));
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message);
       } else {
-        setErrorMessage("เข้าสู่ระบบไม่สำเร็จ");
+        setErrorMessage(localizeApiError(error, "เข้าสู่ระบบไม่สำเร็จ"));
       }
     } finally {
       setSubmitting(false);

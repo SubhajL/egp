@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useMemo, useState } from "react";
 
-import { ApiError, resetPassword } from "@/lib/api";
+import { localizeApiError, resetPassword } from "@/lib/api";
 import { normalizeToken } from "@/lib/auth";
 
 function ResetPasswordPageContent() {
@@ -32,13 +32,7 @@ function ResetPasswordPageContent() {
         router.replace("/login");
       });
     } catch (error) {
-      if (error instanceof ApiError) {
-        setErrorMessage(error.detail);
-      } else if (error instanceof Error) {
-        setErrorMessage(error.message);
-      } else {
-        setErrorMessage("ไม่สามารถรีเซ็ตรหัสผ่านได้");
-      }
+      setErrorMessage(localizeApiError(error, "ไม่สามารถรีเซ็ตรหัสผ่านได้"));
     } finally {
       setBusy(false);
     }

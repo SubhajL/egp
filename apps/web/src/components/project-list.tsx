@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import { useEffect, useState } from "react";
 
-import { fetchProjects, getApiBaseUrl, getTenantId, type ProjectSummary } from "@/lib/api";
+import { fetchProjects, getApiBaseUrl, getTenantId, localizeApiError, type ProjectSummary } from "@/lib/api";
 
 // Legacy Phase 1 component — kept for backwards compatibility
 
@@ -148,7 +148,7 @@ export function ProjectList() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : "Unknown API error");
+          setError(localizeApiError(loadError, "ไม่สามารถโหลดรายการโครงการได้"));
         }
       } finally {
         if (!cancelled) {
@@ -189,9 +189,9 @@ export function ProjectList() {
 
         {!tenantId ? (
           <section style={{ ...cardStyle, padding: "26px 28px" }}>
-            <h2 style={{ marginTop: 0 }}>Tenant configuration required</h2>
+            <h2 style={{ marginTop: 0 }}>ต้องตั้งค่า Tenant ก่อนใช้งาน</h2>
             <p style={{ marginBottom: 0, color: "var(--muted)" }}>
-              Add <code>NEXT_PUBLIC_EGP_TENANT_ID</code> before trying to load the project list.
+              กรุณาเพิ่ม <code>NEXT_PUBLIC_EGP_TENANT_ID</code> ก่อนโหลดรายการโครงการ
             </p>
           </section>
         ) : null}
@@ -207,17 +207,16 @@ export function ProjectList() {
 
         {!isLoading && error ? (
           <section style={{ ...cardStyle, padding: "26px 28px", borderColor: "rgba(138, 47, 47, 0.25)" }}>
-            <h2 style={{ marginTop: 0, color: "var(--danger)" }}>Project list failed</h2>
+            <h2 style={{ marginTop: 0, color: "var(--danger)" }}>โหลดรายการโครงการไม่สำเร็จ</h2>
             <p style={{ marginBottom: 0, color: "var(--muted)" }}>{error}</p>
           </section>
         ) : null}
 
         {!isLoading && !error && tenantId && projects.length === 0 ? (
           <section style={{ ...cardStyle, padding: "26px 28px" }}>
-            <h2 style={{ marginTop: 0 }}>No projects yet</h2>
+            <h2 style={{ marginTop: 0 }}>ยังไม่มีโครงการ</h2>
             <p style={{ marginBottom: 0, color: "var(--muted)" }}>
-              The API responded successfully, but this tenant does not have any canonical project
-              records yet.
+              ระบบเชื่อมต่อ API สำเร็จ แต่ tenant นี้ยังไม่มีข้อมูลโครงการ
             </p>
           </section>
         ) : null}
