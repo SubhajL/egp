@@ -91,13 +91,13 @@ def test_register_can_then_login(tmp_path):
     login = client.post(
         "/v1/auth/login",
         json={
-            "tenant_slug": slug,
             "email": "user@logintest.example",
             "password": "secure password 123",
         },
     )
     assert login.status_code == 200, login.text
     assert login.json()["user"]["email"] == "user@logintest.example"
+    assert login.json()["tenant"]["slug"] == slug
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +125,7 @@ def test_register_duplicate_email_rejected(tmp_path):
         },
     )
     assert second.status_code == 409, second.text
+    assert second.json()["detail"] == "account already exists for this email; please sign in"
 
 
 # ---------------------------------------------------------------------------

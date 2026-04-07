@@ -10,6 +10,13 @@ import { ApiError, register } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
+function normalizeSignupErrorMessage(error: ApiError): string {
+  if (error.status === 409 && error.detail.toLowerCase().includes("please sign in")) {
+    return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
+  }
+  return error.detail;
+}
+
 function SignupPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -21,6 +28,7 @@ function SignupPageContent() {
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const loginHref = `/login?email=${encodeURIComponent(email.trim())}`;
 
   useEffect(() => {
     if (currentSession) {
@@ -46,7 +54,7 @@ function SignupPageContent() {
       });
     } catch (error) {
       if (error instanceof ApiError) {
-        setErrorMessage(error.detail);
+        setErrorMessage(normalizeSignupErrorMessage(error));
       } else if (error instanceof Error) {
         setErrorMessage(error.message);
       } else {
@@ -134,7 +142,12 @@ function SignupPageContent() {
 
           {errorMessage ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {errorMessage}
+              <p>{errorMessage}</p>
+              {errorMessage.includes("เข้าสู่ระบบ") ? (
+                <Link href={loginHref} className="mt-2 inline-flex font-semibold text-primary underline">
+                  ไปหน้าเข้าสู่ระบบ
+                </Link>
+              ) : null}
             </div>
           ) : null}
 

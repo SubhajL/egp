@@ -73,12 +73,18 @@ class AuthService:
     def login(
         self,
         *,
-        tenant_slug: str,
+        tenant_slug: str | None,
         email: str,
         password: str,
         mfa_code: str | None = None,
     ) -> LoginResult:
-        user = self._repository.find_login_user(tenant_slug=tenant_slug, email=email)
+        normalized_tenant_slug = str(tenant_slug or "").strip()
+        if normalized_tenant_slug:
+            user = self._repository.find_login_user(tenant_slug=normalized_tenant_slug, email=email)
+        else:
+            user = self._repository.find_login_user_by_email(email=email)
+            if user is None:
+                raise PermissionError("invalid credentials")
         if user is None:
             raise PermissionError("invalid credentials")
         if not user.tenant_is_active or user.status != "active":
