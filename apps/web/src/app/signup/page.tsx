@@ -11,20 +11,19 @@ import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
 function normalizeSignupErrorMessage(error: ApiError): string {
-  if (error.status === 409 && error.detail.toLowerCase().includes("please sign in")) {
+  if (error.code === "account_already_exists") {
     return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
   }
+  if (error.code === "validation_password_too_short") {
+    return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
+  }
+  if (error.code === "validation_company_name_required") {
+    return "กรุณาระบุชื่อบริษัท / องค์กร";
+  }
+  if (error.code === "validation_email_required") {
+    return "กรุณาระบุอีเมล";
+  }
   if (error.status === 422) {
-    const detail = error.detail.toLowerCase();
-    if (detail.includes("password") && detail.includes("short")) {
-      return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
-    }
-    if (detail.includes("email")) {
-      return "กรุณาตรวจสอบรูปแบบอีเมล";
-    }
-    if (detail.includes("company_name")) {
-      return "กรุณาระบุชื่อบริษัท / องค์กร";
-    }
     return "กรุณาตรวจสอบข้อมูลที่กรอก";
   }
   return localizeApiError(error, "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
@@ -62,9 +61,7 @@ function SignupPageContent() {
         password,
       });
       queryClient.setQueryData(["me"], session);
-      startTransition(() => {
-        router.replace(nextPath);
-      });
+      window.location.assign(nextPath);
     } catch (error) {
       if (error instanceof ApiError) {
         setErrorMessage(normalizeSignupErrorMessage(error));

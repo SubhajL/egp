@@ -11,13 +11,16 @@ import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
 
 function normalizeLoginErrorMessage(error: ApiError): string {
-  if (error.detail === "mfa code required") {
+  if (error.code === "workspace_slug_required") {
+    return "อีเมลนี้ถูกใช้ในหลาย workspace กรุณาระบุ Workspace slug เพื่อเข้าสู่ระบบ";
+  }
+  if (error.code === "mfa_code_required") {
     return "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน";
   }
-  if (error.detail === "invalid mfa code") {
+  if (error.code === "invalid_mfa_code") {
     return "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง";
   }
-  if (error.detail === "invalid credentials") {
+  if (error.code === "invalid_credentials") {
     return "อีเมลหรือรหัสผ่านไม่ถูกต้อง";
   }
   return localizeApiError(error, "เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
@@ -35,8 +38,10 @@ function LoginPageContent() {
   const prefilledEmail = searchParams.get("email")?.trim() ?? "";
   const [email, setEmail] = useState(prefilledEmail);
   const [password, setPassword] = useState("");
+  const [tenantSlug, setTenantSlug] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const [requiresMfa, setRequiresMfa] = useState(false);
+  const [requiresWorkspaceSlug, setRequiresWorkspaceSlug] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -58,17 +63,19 @@ function LoginPageContent() {
     setErrorMessage(null);
     try {
       const currentSession = await login({
+        tenant_slug: requiresWorkspaceSlug ? tenantSlug.trim() || undefined : undefined,
         email: email.trim(),
         password,
         mfa_code: requiresMfa ? mfaCode.trim() || undefined : undefined,
       });
       queryClient.setQueryData(["me"], currentSession);
-      startTransition(() => {
-        router.replace(nextPath);
-      });
+      window.location.assign(nextPath);
     } catch (error) {
       if (error instanceof ApiError) {
-        if (error.detail === "mfa code required") {
+        if (error.code === "workspace_slug_required") {
+          setRequiresWorkspaceSlug(true);
+        }
+        if (error.code === "mfa_code_required") {
           setRequiresMfa(true);
         }
         setErrorMessage(normalizeLoginErrorMessage(error));
@@ -169,6 +176,23 @@ function LoginPageContent() {
                 className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
             </div>
+
+            {requiresWorkspaceSlug ? (
+              <div className="space-y-2">
+                <label htmlFor="tenantSlug" className="text-sm font-medium text-[var(--text-primary)]">
+                  Workspace slug
+                </label>
+                <input
+                  id="tenantSlug"
+                  value={tenantSlug}
+                  onChange={(event) => setTenantSlug(event.target.value)}
+                  autoComplete="organization"
+                  placeholder="example-tenant"
+                  required
+                  className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+            ) : null}
 
             <div className="space-y-2">
               <label htmlFor="password" className="text-sm font-medium text-[var(--text-primary)]">

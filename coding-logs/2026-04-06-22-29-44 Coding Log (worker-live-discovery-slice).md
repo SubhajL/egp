@@ -636,4 +636,157 @@ LOW
 - No new dependencies.
 - Feature is automatically active when `DATABASE_URL` is set (spawner is always wired).
 - Spawner failures are swallowed — profile creation succeeds regardless. This is the correct behavior for a best-effort enhancement.
+
+## Review (2026-04-07 14:05 local) - system
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `feat/immediate-discover-on-profile-create`
+- Scope: PRs `#29`, `#30`, `#31`, `#32`
+- Commands Run: `gh pr view 29/30/31/32 --json ...`, Auggie semantic review for auth/rules/immediate-discovery paths, targeted reads of `apps/api/src/egp_api/{main.py,routes/auth.py,services/auth_service.py,routes/rules.py}`, `packages/db/src/egp_db/repositories/auth_repo.py`, `apps/web/src/app/{login,signup}/page.tsx`, `apps/web/src/app/(app)/rules/page.tsx`, `apps/web/src/lib/{api.ts,hooks.ts}`, targeted `grep` for `localizeApiError` and frontend test coverage
+- Sources: root `AGENTS.md`, `apps/api/AGENTS.md`, `apps/web/AGENTS.md`, PR metadata and current runtime wiring
+
+### High-Level Assessment
+- The direction is strong. These PRs materially improved product coherence: auth is more self-serve, the rules page is much more customer-facing, Thai localization is centralized instead of scattered, and PR32 closes a real product gap by making the backend honor the UI promise of immediate crawl start.
+- The system is also still in a “fast-moving monolith” phase. The main weakness is not code quality in the small; it is that several user-facing behaviors are encoded as stringly-typed conventions across layers: plan tiers in the frontend, English error text translated in the client, and immediate crawl dispatch piggybacked on an API process background task.
+- Net: good product progress, good pragmatism, but the next step should be contract-hardening and operational hardening rather than more UI churn.
+
+### As-Is Pipeline Summary
+- Auth:
+  - Web login/signup pages call `apps/web/src/lib/api.ts` helpers.
+  - `POST /v1/auth/login` accepts optional `tenant_slug`, but `apps/web/src/app/login/page.tsx` currently submits only `email`, `password`, and optional `mfa_code`.
+  - `AuthService.login()` falls back to cross-tenant lookup when `tenant_slug` is absent.
+  - `auth_repo.find_login_user_by_email()` returns a user only when the email maps to exactly one tenant; otherwise it returns `None`.
+- Rules UI:
+  - `apps/web/src/app/(app)/rules/page.tsx` fetches a single rules snapshot via `useRules()`.
+  - The page derives tab visibility, plan badges, quota copy, upgrade messaging, and schedule editability from `entitlements.plan_code` plus local helper logic.
+  - Mutations call `createRuleProfile()` and `updateTenantSettings()`, then re-fetch the whole rules query.
+- Immediate discovery:
+  - `POST /v1/rules/profiles` creates the profile, then schedules one `BackgroundTasks` job per keyword.
+  - `app.state.discover_spawner` in `apps/api/src/egp_api/main.py` launches `python -m egp_worker.main`, writes a JSON `discover` payload to stdin, and waits for completion.
+  - The worker runs `run_discover_workflow(..., live=True, trigger_type="profile_created")`.
+
+### Strengths
+- Good product-loop closure: PR32 makes the backend align with the UI promise instead of leaving “immediate crawl” as copy only.
+- Good UX prioritization: PR29/30/31 reduced internal jargon and made the product feel more customer-facing.
+- Good fail-closed auth change: duplicate email across tenants no longer logs the user into an arbitrary workspace.
+- Good pragmatic centralization: `localizeApiError()` is better than duplicating raw `error.message` handling in many pages.
+- Good incremental strategy: the changes stayed within current architecture rather than forcing premature infrastructure.
+
+### Key Risks / Gaps
+CRITICAL
+- No findings.
+
+HIGH
+- **Shared-email users can now be locked out from the web login flow.**
+  - Evidence: `apps/web/src/app/login/page.tsx` submits `login({ email, password, mfa_code })` with no `tenant_slug`, while `packages/db/src/egp_db/repositories/auth_repo.py` returns `None` when an email exists in more than one tenant and `AuthService.login()` converts that to `invalid credentials`.
+  - Observable symptom: a valid user with the same email in two workspaces cannot log in from the current web UI, and the error message implies the password is wrong.
+  - Boundary that fails: UI capability no longer matches backend auth contract.
+  - Fix direction: bring back an advanced/fallback workspace field on the login page, or return a structured `ambiguous_email_requires_workspace` error and reveal the field only when needed.
+
+- **Immediate discovery dispatch is non-durable and can be lost after a 201 response.**
+  - Evidence: `apps/api/src/egp_api/routes/rules.py` uses `BackgroundTasks.add_task(...)`; `apps/api/src/egp_api/main.py` spawns the worker from inside the API process with no persisted job/outbox.
+  - Observable symptom: profile creation succeeds, but if the API process is recycled, crashes, or the task never runs after the response is sent, the “start immediately” promise is silently missed until the next scheduled crawl.
+  - Boundary that fails: request/response success is not coupled to dispatch durability.
+  - Fix direction: introduce a durable job table/outbox for discovery requests before moving to a separate queueing system.
+
+MEDIUM
+- **Frontend localization is brittle because it is keyed off English backend text, not stable error codes.**
+  - Evidence: `apps/web/src/lib/api.ts` uses substring matching in `API_ERROR_TRANSLATIONS`; `apps/web/src/app/signup/page.tsx` also special-cases 422 messages by inspecting English fragments like `password` and `short`.
+  - Impact: harmless backend wording changes can silently regress Thai UX across many pages.
+  - Fix direction: move to structured API error codes plus optional localized display strings.
+
+- **Plan and capability logic is hardcoded in one large page component, creating contract drift risk.**
+  - Evidence: `apps/web/src/app/(app)/rules/page.tsx` defines `resolvePlanTier()`, `tabsForPlan()`, `PLAN_DISPLAY`, schedule rules, upgrade copy, and tab rendering in one client page.
+  - Impact: the frontend is effectively re-implementing entitlement semantics locally. If plans evolve, the page can drift from backend truth.
+  - Fix direction: have the API return a normalized capability model for the rules screen, or at least move plan/tier derivation into a typed shared module.
+
+- **Observability on immediate crawl failures is weak.**
+  - Evidence: `_make_discover_spawner()` sends both `stdout` and `stderr` to `DEVNULL`, and only logs when `Popen` or `communicate()` itself raises.
+  - Impact: worker-internal failures are difficult to diagnose from the API side.
+  - Fix direction: capture non-zero exit codes and stderr summary, or emit a run/event record before handoff.
+
+- **Frontend coverage does not appear to match the importance of the UX changes.**
+  - Evidence: I found backend tests for auth and rules APIs, and Playwright is configured in `apps/web/package.json`, but I did not find dedicated coverage for the new rules-plan tabs, Thai error localization behavior, or the ambiguous-email login fallback.
+  - Impact: regressions here are likely to be caught late by manual QA.
+
+LOW
+- **Rules page is carrying too much responsibility in one file.**
+  - `apps/web/src/app/(app)/rules/page.tsx` is doing layout, product logic, mutation orchestration, copy, and rendering branches in one place.
+
+- **Defaulting unknown plans to `free_trial` is safe but potentially misleading.**
+  - `resolvePlanTier()` treats unknown/null as `free_trial`. That avoids crashes but can hide config/contract drift.
+
+- **Current mutation flow always re-fetches the whole rules snapshot.**
+  - This is simple and correct, but eventually the page will benefit from React Query mutations and targeted cache updates.
+
+### Nit-Picks / Nitty Gritty
+- `profile_id` is passed through the route-side spawner call but not forwarded in the worker JSON payload. Not wrong, just slightly confusing.
+- `localizeApiError()` is a solid step, but it now acts like a mini translation engine inside the API client; that deserves tests of its own.
+- `signup/page.tsx` contains business-specific 422 parsing that probably belongs next to the shared API error normalization rather than in one page.
+- `getApiBaseUrl()` loopback normalization is pragmatic and helpful for local dev, but it is doing environment-policy work in the client. Keep it documented and narrow.
+
+### Drift Matrix
+- Intended: email-only login should simplify auth without losing access for valid users in multi-tenant setups.
+  - Implemented: duplicate emails fail closed, but the login page no longer appears to provide a workspace disambiguation path.
+  - Impact: some legitimate users are blocked.
+  - Fix direction: conditional workspace fallback.
+
+- Intended: the rules page should reflect entitlements and plan differences clearly.
+  - Implemented: the frontend derives most plan semantics itself from `plan_code`.
+  - Impact: fast to ship, but contract drift risk grows with pricing/product complexity.
+  - Fix direction: server-provided rules-screen capabilities.
+
+- Intended: immediate crawl should start right away when a watchlist is created.
+  - Implemented: API-process background task starts a subprocess best-effort.
+  - Impact: good user-perceived latency when it works; no durable guarantee when the API process is interrupted.
+  - Fix direction: durable dispatch record before async execution.
+
+### Tactical Improvements (1-3 days)
+1. Add ambiguous-email recovery to login.
+   - Done when: a user can enter email/password first, then if the API returns an ambiguity code, the UI reveals a workspace field and retries successfully.
+2. Add 3-5 Playwright scenarios for the changed UX.
+   - Cover: signup duplicate-email path, login with MFA, rules page tabs by plan tier, Thai localization on a representative API error, immediate-crawl success notice.
+3. Split `apps/web/src/app/(app)/rules/page.tsx` into smaller components.
+   - Minimum split: `RulesTabs`, `KeywordsTab`, `ScheduleTabView`, `EntitlementsView`, and a `rules-view-model.ts` helper.
+4. Improve immediate-discovery logging.
+   - Log keyword, tenant_id, subprocess exit status, and a short stderr tail on failure.
+5. Move signup/login normalization rules into shared API error helpers.
+   - Done when: page components stop doing English-fragment parsing directly.
+
+### Strategic Improvements (1-6 weeks)
+1. Introduce structured API error codes.
+   - Why now: localization and auth flows are getting richer; string matching will get more brittle with every feature.
+   - Safe migration: keep `detail` for humans, add `code` for machines, and migrate pages gradually.
+2. Add a server-driven capability contract for the rules screen.
+   - Example: `rules_ui = { tabs: [...], can_edit_schedule: true, upgrade_cta: "..." }`.
+   - Why now: plan-aware UI is already complex enough that frontend-only derivation is becoming product logic duplication.
+3. Introduce a durable discovery dispatch table/outbox.
+   - Why now: PR32 is the first user-triggered async action with product promises attached.
+   - Safe migration: keep the same worker command payload, but write `pending` jobs to Postgres and have the scheduler/worker claim them.
+
+### Big Architectural Changes (only if justified)
+- Proposal: move from API-spawned subprocesses to a DB-backed job/outbox model for async discovery.
+  - Pros:
+    - durable handoff
+    - retries/backoff
+    - better observability
+    - easier concurrency control and dedupe
+  - Cons:
+    - more infrastructure logic
+    - requires job lifecycle schema and worker claim protocol
+  - Migration plan:
+    1. Add a `discovery_jobs` table with `pending/running/succeeded/failed`.
+    2. On profile creation, write jobs transactionally with the profile.
+    3. Keep the current subprocess path as a temporary “wake-up” mechanism if needed.
+    4. Add a worker command to claim and execute pending jobs.
+    5. Once stable, remove direct API subprocess spawning.
+  - Why now / why not:
+    - Do it soon if immediate discovery is core to customer retention or volume is increasing.
+    - Do not do it immediately if current traffic is tiny and the team needs to keep shipping product-facing features this week.
+
+### Open Questions / Assumptions
+- I assume duplicate emails across tenants are a real supported scenario, because the backend explicitly handles them.
+- I assume the worker and run repositories are already reasonably idempotent at the project level; otherwise duplicate immediate crawls become more serious.
+- I did not run the Playwright suite in this review; the frontend testing comments are based on code search and current visible coverage.
 - Pre-commit hooks pass (ruff). All 9 tests pass (2 new + 7 existing rules API tests).

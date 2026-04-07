@@ -706,13 +706,39 @@ export class ApiError extends Error {
 
   detail: string;
 
-  constructor(status: number, detail: string) {
+  code?: string;
+
+  constructor(status: number, detail: string, code?: string) {
     super(detail);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.code = code;
   }
 }
+
+const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
+  account_already_exists: "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบ",
+  account_not_active: "บัญชีถูกระงับ กรุณาติดต่อผู้ดูแลระบบ",
+  active_keyword_limit_exceeded: "จำนวนคำค้นเกินสิทธิ์ของแพ็กเกจปัจจุบัน",
+  authentication_required: "กรุณาเข้าสู่ระบบก่อนใช้งาน",
+  invalid_credentials: "อีเมลหรือรหัสผ่านไม่ถูกต้อง",
+  invalid_email_verification_token: "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว",
+  invalid_invite_token: "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว",
+  invalid_mfa_code: "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง",
+  invalid_password_reset_token: "ลิงก์รีเซ็ตรหัสผ่านไม่ถูกต้องหรือหมดอายุแล้ว",
+  keywords_required: "กรุณาใส่อย่างน้อย 1 คำค้น",
+  mfa_code_required: "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน",
+  profile_name_required: "กรุณาระบุชื่อโปรไฟล์",
+  unsupported_profile_type: "ประเภทโปรไฟล์ไม่รองรับ",
+  validation_company_name_required: "กรุณาระบุชื่อบริษัท / องค์กร",
+  validation_email_required: "กรุณาระบุอีเมล",
+  validation_keywords_required: "กรุณาใส่อย่างน้อย 1 คำค้น",
+  validation_password_required: "กรุณาระบุรหัสผ่าน",
+  validation_password_too_short: "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร",
+  workspace_slug_required:
+    "อีเมลนี้ถูกใช้ในหลาย workspace กรุณาระบุ Workspace slug เพื่อเข้าสู่ระบบ",
+};
 
 // ---------------------------------------------------------------------------
 // English API error detail → Thai user-facing message translation
@@ -731,6 +757,7 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "invalid or expired email verification token", thai: "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว" },
   { pattern: "mfa code required", thai: "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน" },
   { pattern: "invalid mfa code", thai: "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง" },
+  { pattern: "workspace slug required", thai: "อีเมลนี้ถูกใช้ในหลาย workspace กรุณาระบุ Workspace slug เพื่อเข้าสู่ระบบ" },
   { pattern: "account is not active", thai: "บัญชีถูกระงับ กรุณาติดต่อผู้ดูแลระบบ" },
   { pattern: "missing bearer token", thai: "กรุณาเข้าสู่ระบบก่อนใช้งาน" },
   { pattern: "invalid bearer token", thai: "เซสชันหมดอายุ กรุณาเข้าสู่ระบบอีกครั้ง" },
@@ -791,11 +818,21 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
  */
 export function localizeApiError(error: unknown, fallback: string): string {
   let detail = "";
+  let code = "";
   if (error instanceof ApiError) {
     detail = error.detail;
+    code = error.code?.trim().toLowerCase() ?? "";
   } else if (error instanceof Error) {
     detail = error.message;
   }
+
+  if (code) {
+    const thai = API_ERROR_CODE_TRANSLATIONS[code];
+    if (thai) {
+      return thai;
+    }
+  }
+
   if (!detail) return fallback;
 
   const lower = detail.toLowerCase();
@@ -809,10 +846,15 @@ export function localizeApiError(error: unknown, fallback: string): string {
 
 async function throwApiError(response: Response): Promise<never> {
   let detail = `API request failed: ${response.status} ${response.statusText}`;
+  let code: string | undefined;
   try {
     const payload = (await response.json()) as {
+      code?: string;
       detail?: string | Array<{ loc?: Array<string | number>; msg?: string }>;
     };
+    if (typeof payload.code === "string" && payload.code.trim()) {
+      code = payload.code.trim();
+    }
     if (typeof payload.detail === "string" && payload.detail.trim()) {
       detail = payload.detail;
     } else if (Array.isArray(payload.detail) && payload.detail.length > 0) {
@@ -826,7 +868,7 @@ async function throwApiError(response: Response): Promise<never> {
         .join("; ");
     }
   } catch {}
-  throw new ApiError(response.status, detail);
+  throw new ApiError(response.status, detail, code);
 }
 
 async function apiFetch<T>(url: string): Promise<T> {

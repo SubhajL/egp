@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
@@ -16,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/v1/rules", tags=["rules"])
+
+
+RULES_ERROR_CODES = {
+    "profile name is required": "profile_name_required",
+    "unsupported profile type": "unsupported_profile_type",
+    "at least one keyword is required": "keywords_required",
+    "active keyword configuration exceeds plan limit": "active_keyword_limit_exceeded",
+}
+
+
+def _json_error(*, status_code: int, detail: str, code: str | None = None) -> JSONResponse:
+    content: dict[str, str] = {"detail": detail}
+    if code:
+        content["code"] = code
+    return JSONResponse(status_code=status_code, content=content)
 
 
 class RuleProfileResponse(BaseModel):
@@ -139,26 +155,21 @@ def create_rule_profile(
             close_stale_after_days=payload.close_stale_after_days,
         )
     except EntitlementError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+        detail = str(exc)
+        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        detail = str(exc)
+        return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
     # Best-effort: spawn a discover worker for each new keyword.
-    spawner = getattr(request.app.state, "discover_spawner", None)
-    if spawner is not None and profile.keywords:
-        for kw in profile.keywords:
-            background_tasks.add_task(
-                spawner,
-                tenant_id=resolved_tenant_id,
-                profile_id=profile.id,
-                profile_type=profile.profile_type,
-                keyword=kw,
-            )
+    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
+    if processor is not None and profile.keywords:
         logger.info(
             "Scheduled %d immediate discover jobs for profile %s",
             len(profile.keywords),
             profile.id,
         )
+        background_tasks.add_task(processor.process_pending)
 
     response.status_code = status.HTTP_201_CREATED
     return RuleProfileResponse(**asdict(profile))

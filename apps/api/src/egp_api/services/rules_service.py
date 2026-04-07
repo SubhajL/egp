@@ -147,6 +147,7 @@ class RulesService:
             close_consulting_after_days=close_consulting_after_days,
             close_stale_after_days=close_stale_after_days,
             keywords=normalized_keywords,
+            enqueue_discovery_jobs=True,
         )
         return _map_profile(detail)
 

@@ -491,3 +491,30 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"] == "active keyword configuration exceeds plan limit"
+    assert response.json()["code"] == "active_keyword_limit_exceeded"
+
+
+def test_profile_creation_with_blank_name_returns_structured_validation_code(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-validation.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "   ",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "profile name is required",
+        "code": "profile_name_required",
+    }
