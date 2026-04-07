@@ -41,19 +41,21 @@ function tabsForPlan(tier: PlanTier): TabDef[] {
     case "free_trial":
       return [
         { key: "keywords", label: "คำค้นของฉัน", icon: <Search className="size-4" /> },
+        { key: "schedule", label: "ความถี่การติดตาม", icon: <Clock3 className="size-4" /> },
         { key: "entitlements", label: "สิทธิ์แพ็กเกจ", icon: <Package className="size-4" /> },
       ];
     case "one_time_search_pack":
       return [
         { key: "keywords", label: "คำค้นของฉัน", icon: <Search className="size-4" /> },
+        { key: "schedule", label: "ความถี่การติดตาม", icon: <Clock3 className="size-4" /> },
         { key: "entitlements", label: "ผลลัพธ์และสิทธิ์", icon: <Package className="size-4" /> },
         { key: "notifications", label: "การแจ้งเตือน", icon: <Mail className="size-4" /> },
       ];
     case "monthly_membership":
       return [
         { key: "keywords", label: "คำค้นของฉัน", icon: <Search className="size-4" /> },
-        { key: "notifications", label: "การแจ้งเตือน", icon: <Mail className="size-4" /> },
         { key: "schedule", label: "ความถี่การติดตาม", icon: <Clock3 className="size-4" /> },
+        { key: "notifications", label: "การแจ้งเตือน", icon: <Mail className="size-4" /> },
         { key: "entitlements", label: "สิทธิ์และการใช้งาน", icon: <Package className="size-4" /> },
       ];
   }
@@ -377,6 +379,10 @@ function KeywordComposer({
           <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
             ใส่คำค้นที่ต้องการให้ระบบติดตามจาก e-GP โดยอัตโนมัติ ระบบจะตรวจสอบโควต้าตามแพ็กเกจปัจจุบัน
           </p>
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-primary">
+            <Clock3 className="size-3.5" />
+            ระบบจะเริ่มค้นหาทันทีเมื่อเพิ่มคำค้นใหม่ หลังจากนั้นจะค้นหาซ้ำตามความถี่ที่ตั้งไว้
+          </p>
         </div>
         <div className="rounded-2xl bg-[var(--bg-surface-secondary)] px-4 py-3 text-sm text-[var(--text-secondary)]">
           เหลือโควต้าเพิ่มได้อีก {slotsLeft ?? "ไม่จำกัด"} คำค้น
@@ -676,61 +682,114 @@ export default function RulesPage() {
     }
 
     if (activeTab === "schedule") {
+      // Monthly membership: full editable schedule controls
+      if (tier === "monthly_membership") {
+        return (
+          <div className="space-y-6">
+            <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-[var(--text-primary)]">
+                    ตั้งค่าความถี่การติดตาม
+                  </h3>
+                  <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
+                    กำหนดว่าระบบจะค้นหาข้อมูลใหม่จาก e-GP บ่อยแค่ไหน ค่าแนะนำคือวันละครั้ง
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-[var(--bg-surface-secondary)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                  ใช้งานจริง: {formatCrawlInterval(data.schedule_rules.effective_crawl_interval_hours)}
+                </div>
+              </div>
+
+              <form
+                className="mt-5 flex flex-col gap-3 md:flex-row md:items-end"
+                onSubmit={handleSaveSchedule}
+              >
+                <label className="flex min-w-[280px] flex-col gap-2 text-sm text-[var(--text-secondary)]">
+                  ความถี่การติดตาม
+                  <select
+                    value={scheduleChoice}
+                    onChange={(event) => setScheduleChoice(event.target.value)}
+                    className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-primary"
+                  >
+                    {CRAWL_INTERVAL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="submit"
+                  disabled={scheduleBusy}
+                  className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {scheduleBusy ? "กำลังบันทึก..." : "บันทึก"}
+                </button>
+              </form>
+
+              {scheduleError ? (
+                <p className="mt-3 text-sm font-medium text-[var(--badge-red-text)]">
+                  {scheduleError}
+                </p>
+              ) : null}
+              {scheduleNotice ? (
+                <p className="mt-3 text-sm font-medium text-primary">{scheduleNotice}</p>
+              ) : null}
+            </div>
+
+            <ScheduleTab rules={data.schedule_rules} />
+          </div>
+        );
+      }
+
+      // Free trial & one-time: read-only schedule info
       return (
         <div className="space-y-6">
           <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-[var(--text-primary)]">
-                  ตั้งค่าความถี่การติดตาม
-                </h3>
-                <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
-                  กำหนดว่าระบบจะค้นหาข้อมูลใหม่จาก e-GP บ่อยแค่ไหน ค่าแนะนำคือวันละครั้ง
+            <div className="flex items-center gap-3 mb-3">
+              <Clock3 className="size-5 text-primary" />
+              <h3 className="text-lg font-bold text-[var(--text-primary)]">
+                ความถี่การติดตาม
+              </h3>
+            </div>
+            <p className="max-w-2xl text-sm text-[var(--text-muted)]">
+              ระบบจะเริ่มค้นหาจาก e-GP ทันทีเมื่อคุณเพิ่มคำค้นใหม่ หลังจากนั้นจะค้นหาซ้ำอัตโนมัติตามความถี่ด้านล่าง
+            </p>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-4 py-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  ความถี่ที่ใช้กับบัญชีของคุณ
+                </p>
+                <p className="mt-1 text-2xl font-bold text-primary">
+                  {formatCrawlInterval(data.schedule_rules.effective_crawl_interval_hours)}
                 </p>
               </div>
-              <div className="rounded-2xl bg-[var(--bg-surface-secondary)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-                ใช้งานจริง: {formatCrawlInterval(data.schedule_rules.effective_crawl_interval_hours)}
+              <div className="rounded-xl bg-[var(--bg-surface-secondary)] px-4 py-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  การค้นหาครั้งแรก
+                </p>
+                <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
+                  ทันที
+                </p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  เมื่อเพิ่มคำค้นใหม่
+                </p>
               </div>
             </div>
 
-            <form
-              className="mt-5 flex flex-col gap-3 md:flex-row md:items-end"
-              onSubmit={handleSaveSchedule}
-            >
-              <label className="flex min-w-[280px] flex-col gap-2 text-sm text-[var(--text-secondary)]">
-                ความถี่การติดตาม
-                <select
-                  value={scheduleChoice}
-                  onChange={(event) => setScheduleChoice(event.target.value)}
-                  className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-primary"
-                >
-                  {CRAWL_INTERVAL_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="submit"
-                disabled={scheduleBusy}
-                className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {scheduleBusy ? "กำลังบันทึก..." : "บันทึก"}
-              </button>
-            </form>
-
-            {scheduleError ? (
-              <p className="mt-3 text-sm font-medium text-[var(--badge-red-text)]">
-                {scheduleError}
-              </p>
-            ) : null}
-            {scheduleNotice ? (
-              <p className="mt-3 text-sm font-medium text-primary">{scheduleNotice}</p>
+            {tier === "free_trial" ? (
+              <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm text-amber-900">
+                  <Sparkles className="size-4" />
+                  <span className="font-semibold">
+                    อัปเกรดเป็นสมาชิกรายเดือนเพื่อปรับความถี่การติดตามได้เอง
+                  </span>
+                </div>
+              </div>
             ) : null}
           </div>
-
-          <ScheduleTab rules={data.schedule_rules} />
         </div>
       );
     }
@@ -753,7 +812,7 @@ export default function RulesPage() {
 
   const headerSubtitle =
     tier === "free_trial"
-      ? "จัดการคำค้นที่ต้องการติดตามจาก e-GP ตามสิทธิ์แพ็กเกจทดลองใช้ฟรี"
+      ? "จัดการคำค้นที่ต้องการติดตามจาก e-GP และดูความถี่การค้นหาตามสิทธิ์แพ็กเกจทดลองใช้ฟรี"
       : tier === "one_time_search_pack"
         ? "จัดการคำค้นและตรวจสอบสิทธิ์ตามแพ็กเกจค้นหาครั้งเดียว"
         : "จัดการคำค้น ตั้งค่าการแจ้งเตือน และกำหนดความถี่การติดตามสำหรับสมาชิกรายเดือน";
