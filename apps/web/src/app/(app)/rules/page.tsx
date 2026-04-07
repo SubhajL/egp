@@ -802,13 +802,8 @@ export default function RulesPage() {
     return null;
   }
 
-  /* Page-level header text adapts to plan tier */
-  const headerTitle =
-    tier === "free_trial"
-      ? "คำค้นติดตาม"
-      : tier === "one_time_search_pack"
-        ? "คำค้นติดตาม"
-        : "คำค้นติดตาม";
+  /* Page-level header text */
+  const headerTitle = "คำค้นติดตาม";
 
   const headerSubtitle =
     tier === "free_trial"
