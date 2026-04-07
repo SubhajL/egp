@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/v1/rules", tags=["rules"])
@@ -119,6 +122,7 @@ def create_rule_profile(
     payload: CreateRuleProfileRequest,
     request: Request,
     response: Response,
+    background_tasks: BackgroundTasks,
 ) -> RuleProfileResponse:
     require_admin_role(request)
     service = _service_from_request(request)
@@ -138,5 +142,23 @@ def create_rule_profile(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Best-effort: spawn a discover worker for each new keyword.
+    spawner = getattr(request.app.state, "discover_spawner", None)
+    if spawner is not None and profile.keywords:
+        for kw in profile.keywords:
+            background_tasks.add_task(
+                spawner,
+                tenant_id=resolved_tenant_id,
+                profile_id=profile.id,
+                profile_type=profile.profile_type,
+                keyword=kw,
+            )
+        logger.info(
+            "Scheduled %d immediate discover jobs for profile %s",
+            len(profile.keywords),
+            profile.id,
+        )
+
     response.status_code = status.HTTP_201_CREATED
     return RuleProfileResponse(**asdict(profile))

@@ -489,3 +489,151 @@ LOW
 - This is a purely frontend change — no API, database, or worker modifications.
 - Build size for `/rules` is stable at 7.16 kB.
 - All gates pass: typecheck, build, lint.
+
+## Review (2026-04-07 09:45) - PR #30 full diff (2 commits)
+
+### Reviewed
+- Repo: egp
+- Branch: feat/rules-page-plan-aware-redesign
+- Scope: pr-diff (PR #30, commits bc4f857..f35447f vs main)
+- Commands Run: `gh pr view 30`, `gh pr checks 30`, `git diff main...feat/rules-page-plan-aware-redesign`, typecheck, build
+
+### Findings
+
+CRITICAL
+- (none)
+
+HIGH
+- (none)
+
+MEDIUM
+1. **headerTitle ternary is a no-op** (line 807-811): All three branches return the same string `"คำค้นติดตาม"`. This works but is dead code — either simplify to a constant or differentiate the titles per tier.
+2. **Unused import: `ShieldCheck`** — still imported (line 10) and used in `NotificationsTab`, but the closure tab that was the primary consumer was removed. The remaining usage is fine but worth noting the icon semantics shifted. No build error.
+
+LOW
+1. **`WatchlistCard` shows per-profile quota line** (line 217-221) counting `profile.keywords.length / entitlements.keyword_limit` — this can be confusing when a tenant has multiple profiles since the quota is tenant-wide, not per-profile. Cosmetic issue, not a correctness bug.
+2. **Tab bar renders before `QueryState` resolves** — tabs are visible while data is loading, but tab content shows the loading state. Acceptable UX but could flash the wrong tab count momentarily if the tier changes after data loads (handled by the `useEffect` on line 573-577).
+3. **Missing `key` stability for tab icons** — `tabsForPlan` creates new JSX elements (`<Search />`, `<Clock3 />`, etc.) on every call. Since `tabs` is memoized by `tier` this is fine in practice, but the icon elements inside the memoized array are new references each time `tier` changes (which is rare).
+
+### Open Questions / Assumptions
+- The `ClosureRulesSummary` type is still imported and present in the API response but no longer consumed by the UI. Assumed this is intentional — the backend still returns it, the frontend ignores it.
+- `Sparkles` icon (upgrade CTA) appears in both the entitlements card and the read-only schedule tab for free_trial. Assumed this intentional redundancy is acceptable for two different upgrade messages.
+- CI checks were pending at review time; local gates all pass.
+
+### Recommended Tests / Validation
+- Manual test: switch between plan tiers and verify schedule tab shows read-only for free_trial/one_time, editable for monthly.
+- Verify the immediate-crawl info line renders correctly in the keyword composer across all tiers.
+- Confirm the upgrade CTA in the schedule tab only appears for free_trial (not one_time_search_pack).
+
+### Rollout Notes
+- Frontend-only change, no backend modifications.
+- Build size for `/rules` grew slightly: 7.16 kB → 7.45 kB (expected from added schedule read-only UI).
+- All local gates pass: typecheck, build, lint.
+- CI checks pending on GitHub at time of review.
+
+## Review (2026-04-07 local) - PR #31
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `fix/rules-page-nav-label-and-tab-style`
+- Scope: pr-diff (PR #31, 4 commits, 17 files changed, +198 -108)
+- Commands Run: `gh pr view 31`, `gh pr checks 31`, `git diff main...HEAD -- <paths>`, `npm run typecheck`, `npm run build`, `npm run lint`
+
+### PR Summary
+4 commits across 17 files:
+1. Nav label rename ("กฎและโปรไฟล์" → "คำค้นติดตาม") + tab bar redesign (pill → underline)
+2. Show plan summary line on all tabs (was hidden on entitlements tab)
+3. Parse Pydantic 422 validation errors; Thai signup error normalization
+4. Centralised `localizeApiError()` helper; updated all 16 catch blocks to never expose English API details
+
+### Findings
+
+CRITICAL — None
+
+HIGH — None
+
+MEDIUM
+1. **Translation map ordering may cause wrong match** — `localizeApiError` uses `.includes()` substring matching and returns the first match. If a future API error contains a substring of an earlier pattern (e.g. "invalid token" inside "invalid or expired password reset token"), the shorter pattern wins and returns a less specific Thai message. Current entries happen to be ordered correctly (specific-first for tokens), but this is fragile.
+   - File: `apps/web/src/lib/api.ts` (API_ERROR_TRANSLATIONS array)
+   - Fix direction: Order longer/more-specific patterns before shorter ones, or switch to exact equality for known full strings and reserve `.includes()` only for genuine substring patterns.
+   - Test: Unit test with overlapping substrings to verify correct precedence.
+
+2. **`localizeApiError` silently swallows unknown errors** — When an error doesn't match any pattern, the fallback is returned and the original English detail is lost entirely. This is the intended UX behaviour (never show English), but makes debugging harder since the original detail is neither logged nor available in dev tools.
+   - Fix direction: Consider `console.warn` in development mode when falling back, so devs can see the unmapped English string in the browser console.
+   - Risk: Low — only affects developer experience, not end users.
+
+LOW
+3. **No unit tests for `localizeApiError`** — The function has ~50 translation entries and substring-matching logic but no test coverage. A regression in pattern ordering or matching logic would silently degrade UX.
+   - Fix direction: Add a small test file (e.g. `apps/web/src/__tests__/localizeApiError.test.ts`) with cases for exact matches, substring matches, no-match fallback, and `null`/`undefined` inputs.
+
+4. **`project-list.tsx` still references `NEXT_PUBLIC_EGP_TENANT_ID` in Thai message** — The tenant config message now reads "กรุณาเพิ่ม `NEXT_PUBLIC_EGP_TENANT_ID`..." which mixes Thai with an env var name. This is fine for developer-facing legacy code but could confuse non-technical users if exposed.
+   - File: `apps/web/src/components/project-list.tsx`
+   - Risk: Very low — this component is a legacy Phase 1 component unlikely to be shown to end users.
+
+5. **Unused `ApiError` import in `invite/page.tsx`** — The old code used `ApiError` for `instanceof` checks, but the new `localizeApiError` call handles that internally. The import was updated to remove `ApiError` — correct.
+
+### Open Questions / Assumptions
+- Assumption: All known API error strings from the Python backend are covered by the 50-entry map. New endpoints or error messages added to the backend will need corresponding entries.
+- The PR title says "align nav label and redesign rules page tab bar" but the scope grew significantly to include error localization. Consider updating the PR description.
+
+### Recommended Tests / Validation
+- Unit test for `localizeApiError()` covering: exact match, substring match, overlapping patterns, no-match fallback, non-Error input, null/undefined.
+- Manual verification that login, signup, billing, and rules pages show Thai errors when API returns 4xx/5xx.
+- Verify 422 Pydantic errors on signup show field-specific Thai messages (password too short, invalid email, missing company name).
+
+### Rollout Notes
+- Frontend-only changes, no backend modifications needed.
+- All local quality gates pass: typecheck, build (21 routes), lint.
+- CI checks pending on GitHub at time of review (Python lint passed, other checks running).
+- Build size for `/rules` changed: 7.45 kB → 7.92 kB (tab bar redesign + localizeApiError import).
+- No breaking changes to API contracts.
+
+## Review (2026-04-07 13:30 local) - last-commit
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `feat/immediate-discover-on-profile-create`
+- Scope: `last-commit` (8db5bed)
+- Commands Run: `git show --name-status --stat HEAD`, `git show HEAD -- <each file>`, Auggie codebase-retrieval for worker stdin protocol and discover workflow signature, `pytest tests/phase2/test_immediate_discover.py -v`, `pytest tests/phase2/test_rules_api.py -v`, `ruff check`, `compileall`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+1. **stderr silenced in production spawner** — `stderr=subprocess.DEVNULL` in `_make_discover_spawner()` means worker tracebacks are permanently lost. The `_logger.warning` only fires on subprocess-level failures (e.g., `Popen` itself fails or `communicate()` times out), not on worker-internal errors.
+   - *Why it matters*: If a keyword discover workflow crashes inside the worker, there's no log trail in the API process. Operators would need to independently find the worker's own log output.
+   - *Fix direction*: Consider `stderr=subprocess.PIPE` and logging `proc.stderr` on non-zero exit codes, or at minimum `stderr=subprocess.STDOUT` piped to a log file. Alternatively, accept this as intentional since the worker is a separate process with its own logging — but document the tradeoff.
+   - *Verdict*: Acceptable for now since worker processes have their own stdout/stderr and the spawner is best-effort. Flag for future observability improvements.
+
+2. **No deduplication guard** — If a user rapidly creates profiles with overlapping keywords, multiple concurrent discover workers will run for the same keyword. The discover workflow will create duplicate runs and potentially duplicate project records.
+   - *Why it matters*: Could cause data duplication in `crawl_runs` and `projects` tables.
+   - *Fix direction*: The worker's `record_discovery()` path should be idempotent (upsert by project number), so project-level duplication is likely safe. Run-level duplication (multiple crawl_runs for the same keyword in the same minute) is cosmetic. Acceptable for MVP.
+
+LOW
+1. **10-minute timeout per keyword** — `proc.communicate(timeout=600)` is generous. If a user creates a profile with 20 keywords, that's up to 20 concurrent subprocesses, each potentially holding for 10 minutes. Resource consumption could spike.
+   - *Fix direction*: Consider a lower timeout (120s) or limiting concurrent spawns. Not urgent for current usage patterns.
+
+2. **`profile_id` passed but unused by worker** — The spawner sends `profile_id` as a kwarg in the route, but the actual `Popen` payload in `_make_discover_spawner` does not include `profile_id` in the JSON dict. It's accepted as a parameter but discarded.
+   - *Impact*: No bug — the worker doesn't need `profile_id` currently. The parameter exists for future traceability. Harmless but slightly confusing.
+
+### Open Questions / Assumptions
+- The worker's `run_discover_workflow` is idempotent at the project level (upsert by project_number), so concurrent duplicate spawns won't cause corrupt data — just redundant crawl runs.
+- BackgroundTasks run sync callables in a threadpool, so `proc.communicate()` does not block the event loop. Verified correct per Starlette docs.
+- Starlette TestClient executes BackgroundTasks synchronously before returning the response, so recorder-based tests are deterministic. Verified correct.
+
+### Recommended Tests / Validation
+- Current coverage is adequate for the feature scope:
+  - `test_profile_creation_triggers_discover_per_keyword` — verifies spawner called once per keyword with correct args
+  - `test_profile_creation_succeeds_when_spawner_is_none` — verifies graceful degradation
+- Optional future test: verify that a spawner that raises an exception doesn't break profile creation (currently implied by the try/except in the spawner, but not directly tested in the route layer).
+
+### Rollout Notes
+- No database migrations required.
+- No new dependencies.
+- Feature is automatically active when `DATABASE_URL` is set (spawner is always wired).
+- Spawner failures are swallowed — profile creation succeeds regardless. This is the correct behavior for a best-effort enhancement.
+- Pre-commit hooks pass (ruff). All 9 tests pass (2 new + 7 existing rules API tests).

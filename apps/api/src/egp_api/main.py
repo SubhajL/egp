@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import re
+import subprocess
+import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
@@ -96,6 +101,56 @@ async def _run_webhook_delivery_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
         except TimeoutError:
             continue
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _make_discover_spawner(
+    database_url: str,
+) -> Callable[..., None]:
+    """Return a function that spawns a worker subprocess for a single keyword.
+
+    The spawner is fire-and-forget: it starts the worker, writes the JSON
+    payload to stdin, and waits for it to finish (inside a BackgroundTask
+    thread so the API response is not blocked).
+    """
+
+    def spawn_discover(
+        *,
+        tenant_id: str,
+        profile_id: str,
+        profile_type: str,
+        keyword: str,
+    ) -> None:
+        payload = json.dumps(
+            {
+                "command": "discover",
+                "database_url": database_url,
+                "tenant_id": tenant_id,
+                "keyword": keyword,
+                "profile": profile_type,
+                "trigger_type": "profile_created",
+                "live": True,
+            },
+            ensure_ascii=False,
+        ).encode()
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "egp_worker.main"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            proc.communicate(input=payload, timeout=600)
+        except Exception:
+            _logger.warning(
+                "Failed to spawn discover for keyword %r",
+                keyword,
+                exc_info=True,
+            )
+
+    return spawn_discover
 
 
 def create_app(
@@ -359,6 +414,10 @@ def create_app(
     app.state.session_cookie_max_age_seconds = session_cookie_max_age_seconds
     app.state.session_cookie_secure = session_cookie_secure
     app.state.session_cookie_samesite = session_cookie_samesite
+
+    # Discover spawner: launches a worker subprocess per keyword after profile
+    # creation.  Injected via app.state so tests can substitute a recorder.
+    app.state.discover_spawner = _make_discover_spawner(resolved_database_url)
 
     @app.middleware("http")
     async def auth_middleware(request, call_next):
