@@ -717,9 +717,20 @@ export class ApiError extends Error {
 async function throwApiError(response: Response): Promise<never> {
   let detail = `API request failed: ${response.status} ${response.statusText}`;
   try {
-    const payload = (await response.json()) as { detail?: string };
+    const payload = (await response.json()) as {
+      detail?: string | Array<{ loc?: Array<string | number>; msg?: string }>;
+    };
     if (typeof payload.detail === "string" && payload.detail.trim()) {
       detail = payload.detail;
+    } else if (Array.isArray(payload.detail) && payload.detail.length > 0) {
+      // Pydantic 422 validation errors — extract human-readable messages
+      detail = payload.detail
+        .map((err) => {
+          const field = err.loc?.filter((s) => s !== "body").join(".") ?? "";
+          const msg = err.msg ?? "invalid";
+          return field ? `${field}: ${msg}` : msg;
+        })
+        .join("; ");
     }
   } catch {}
   throw new ApiError(response.status, detail);

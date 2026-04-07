@@ -14,6 +14,19 @@ function normalizeSignupErrorMessage(error: ApiError): string {
   if (error.status === 409 && error.detail.toLowerCase().includes("please sign in")) {
     return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
   }
+  if (error.status === 422) {
+    const detail = error.detail.toLowerCase();
+    if (detail.includes("password") && detail.includes("short")) {
+      return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
+    }
+    if (detail.includes("email")) {
+      return "กรุณาตรวจสอบรูปแบบอีเมล";
+    }
+    if (detail.includes("company_name")) {
+      return "กรุณาระบุชื่อบริษัท / องค์กร";
+    }
+    return "กรุณาตรวจสอบข้อมูลที่กรอก: " + error.detail;
+  }
   return error.detail;
 }
 
