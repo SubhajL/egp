@@ -816,8 +816,8 @@ export default function RulesPage() {
     <>
       <PageHeader title={headerTitle} subtitle={headerSubtitle} />
 
-      {/* Plan summary is always visible above tabs, on the entitlements tab it shows the full card */}
-      {data && activeTab !== "entitlements" ? (
+      {/* Plan summary — always visible above tabs */}
+      {data ? (
         <div className="mb-6 flex items-center gap-3">
           <span
             className={`rounded-full px-3 py-1 text-xs font-bold ${PLAN_DISPLAY[tier].color}`}
