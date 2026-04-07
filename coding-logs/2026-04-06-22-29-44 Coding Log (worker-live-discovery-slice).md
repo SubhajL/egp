@@ -451,3 +451,41 @@ HIGH
 
 ### Rollout Notes
 - No findings remain after the two high-severity issues above were fixed and the relevant tests/build checks were rerun successfully.
+
+## Review (2026-04-07 13:45 local) - working-tree (rules page redesign)
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `feat/rules-page-plan-aware-redesign`
+- Scope: `working-tree`
+- Commands Run: `git status --porcelain=v1`, `git diff -- apps/web/src/app/(app)/rules/page.tsx`, `npm run typecheck`, `npm run build`, `npm run lint`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- Three unused imports (`ArrowUpRight`, `Crown`, `RulesResponse`) were caught and removed before commit. The imports were speculative placeholders from the initial rewrite and had no runtime impact but would have been noise.
+
+LOW
+- The `headerTitle` variable computes the same value ("คำค้นติดตาม") for all three plan tiers. This is intentional for now (single page title) but the ternary structure is unnecessary — could be simplified to a constant. Left as-is since it documents intent for future per-tier differentiation.
+- The `RuleProfile` type still carries `max_pages_per_keyword`, `close_consulting_after_days`, `close_stale_after_days` fields in the API response, but the UI no longer displays them. This is correct by design — the fields remain in the API contract for backend use, the UI simply stops exposing them to customers.
+
+### Open Questions / Assumptions
+- Assumed that the `ClosureRulesSummary` import and `ClosureTab` component are safe to remove entirely from the rules page, since closure rules are system behavior described in docs, not a customer-facing control.
+- Assumed `entitlements.plan_code` is always populated by the API when a subscription exists — the `resolvePlanTier()` fallback to `free_trial` handles the null/unknown case safely.
+- Assumed that the notification tab showing "กำลังเตรียมระบบ" for `event_wiring_complete === false` is acceptable since the feature is still being built.
+
+### Recommended Tests / Validation
+- Manual test with each plan tier (free_trial, one_time_search_pack, monthly_membership) to verify correct tabs appear.
+- Manual test with no active subscription (null plan_code) to verify free_trial fallback.
+- Verify keyword creation still works end-to-end after the form language changes.
+- Verify schedule save still works for monthly_membership tier.
+
+### Rollout Notes
+- This is a purely frontend change — no API, database, or worker modifications.
+- Build size for `/rules` is stable at 7.16 kB.
+- All gates pass: typecheck, build, lint.
