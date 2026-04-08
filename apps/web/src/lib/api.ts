@@ -717,6 +717,29 @@ export class ApiError extends Error {
   }
 }
 
+export function normalizeSignupApiError(error: ApiError): string {
+  if (error.code === "account_already_exists") {
+    return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
+  }
+  if (error.code === "validation_password_too_short") {
+    return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
+  }
+  if (error.code === "validation_company_name_required") {
+    return "กรุณาระบุชื่อบริษัท / องค์กร";
+  }
+  if (error.code === "validation_email_required") {
+    return "กรุณาระบุอีเมล";
+  }
+  if (error.status === 422) {
+    return "กรุณาตรวจสอบข้อมูลที่กรอก";
+  }
+  return localizeApiError(error, "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+}
+
+export function shouldShowSignupLoginLink(error: ApiError): boolean {
+  return error.code === "account_already_exists";
+}
+
 const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
   account_already_exists: "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบ",
   account_not_active: "บัญชีถูกระงับ กรุณาติดต่อผู้ดูแลระบบ",

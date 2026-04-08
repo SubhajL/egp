@@ -27,40 +27,12 @@ import {
   tabsForPlan,
   type PlanTier,
 } from "./view-model";
-
-/* ------------------------------------------------------------------ */
-/*  Shared helpers                                                     */
-/* ------------------------------------------------------------------ */
-
-const CRAWL_INTERVAL_OPTIONS = [
-  { value: "default", label: "ใช้ค่าเริ่มต้นของระบบ (วันละครั้ง)" },
-  { value: "1", label: "ทุก 1 ชั่วโมง" },
-  { value: "6", label: "ทุก 6 ชั่วโมง" },
-  { value: "12", label: "ทุก 12 ชั่วโมง" },
-  { value: "24", label: "ทุก 24 ชั่วโมง" },
-] as const;
-
-function parseKeywordDraft(value: string): string[] {
-  const chunks = value
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const ordered: string[] = [];
-  const seen = new Set<string>();
-  for (const chunk of chunks) {
-    const key = chunk.toLocaleLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    ordered.push(chunk);
-  }
-  return ordered;
-}
-
-function formatCrawlInterval(hours: number): string {
-  if (hours === 24) return "วันละครั้ง";
-  if (hours % 24 === 0) return `ทุก ${hours / 24} วัน`;
-  return `ทุก ${hours} ชั่วโมง`;
-}
+import {
+  CRAWL_INTERVAL_OPTIONS,
+  ensureActiveTab,
+  formatCrawlInterval,
+  parseKeywordDraft,
+} from "./page-helpers";
 
 function StatusChip({
   active,
@@ -520,8 +492,9 @@ export default function RulesPage() {
 
   // Ensure active tab is valid for the current plan tier
   useEffect(() => {
-    if (tabs.length > 0 && !tabs.some((t) => t.key === activeTab)) {
-      setActiveTab(tabs[0].key);
+    const nextActiveTab = ensureActiveTab(activeTab, tabs);
+    if (nextActiveTab !== activeTab) {
+      setActiveTab(nextActiveTab);
     }
   }, [tabs, activeTab]);
 

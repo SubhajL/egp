@@ -37,13 +37,16 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
         )
-        return {
+        response = {
             "command": command,
             "run_id": result.run.run.id,
             "run_status": result.run.run.status,
             "project_count": len(result.projects),
             "project_ids": [project.id for project in result.projects],
         }
+        if payload.get("profile_id") is not None:
+            response["profile_id"] = str(payload["profile_id"])
+        return response
     if command == "close_check":
         result = run_close_check_workflow(
             database_url=str(payload["database_url"]),

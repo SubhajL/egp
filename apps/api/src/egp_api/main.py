@@ -183,6 +183,7 @@ def _make_discover_spawner(
                 "command": "discover",
                 "database_url": database_url,
                 "tenant_id": tenant_id,
+                "profile_id": profile_id,
                 "keyword": keyword,
                 "profile": profile_type,
                 "trigger_type": "profile_created",

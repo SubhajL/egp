@@ -267,3 +267,31 @@ def test_make_discover_spawner_logs_timeout_with_keyword_context(
     assert any("timed out" in message for message in caplog.messages)
     assert any("worker hung after startup" in message for message in caplog.messages)
     assert any("keyword 'analytics'" in message for message in caplog.messages)
+
+
+def test_make_discover_spawner_forwards_profile_id_in_worker_payload(
+    tmp_path, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, *, input=None, timeout=None):
+            captured["payload"] = input
+            captured["timeout"] = timeout
+            return (None, b"")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+
+    spawner(
+        tenant_id=TENANT_ID,
+        profile_id="profile-123",
+        profile_type="custom",
+        keyword="analytics",
+    )
+
+    assert captured["timeout"] == 600
+    payload = captured["payload"].decode()
+    assert '"profile_id": "profile-123"' in payload
