@@ -178,6 +178,28 @@ function getUpgradeOptions(
   return [];
 }
 
+function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
+  title: string;
+  primary: string;
+  secondary: string;
+} {
+  if (record.upgrade_mode === "replace_on_activation") {
+    return {
+      title: "รอเริ่มใช้งานตามรอบใหม่",
+      primary: "ชำระเงินสำเร็จแล้ว ระบบจะเปิดแพ็กเกจใหม่ตามวันเริ่มรอบที่กำหนดไว้",
+      secondary: "แพ็กเกจปัจจุบันยังใช้งานได้ต่อจนกว่าจะถึงวันเริ่มของแพ็กเกจใหม่",
+    };
+  }
+  return {
+    title: "สิ่งที่จะเปลี่ยนทันทีหลังชำระสำเร็จ",
+    primary:
+      record.plan_code === "monthly_membership"
+        ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+        : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
+    secondary: "แพ็กเกจเดิมจะถูกแทนที่เมื่อการชำระเงินสำเร็จ",
+  };
+}
+
 function UpgradeCallout({
   entitlements,
   billingPlans,
@@ -910,16 +932,13 @@ export default function BillingPage() {
                   {selectedRecord.record.upgrade_from_subscription_id ? (
                     <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
                       <p className="text-xs font-semibold uppercase tracking-wider text-amber-900">
-                        สิ่งที่จะเปลี่ยนทันทีหลังชำระสำเร็จ
+                        {describeUpgradeSettlement(selectedRecord.record).title}
                       </p>
                       <p className="mt-2 text-sm text-amber-800">
-                        {upgradeCopy ??
-                          (selectedRecord.record.plan_code === "monthly_membership"
-                            ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
-                            : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ")}
+                        {upgradeCopy ?? describeUpgradeSettlement(selectedRecord.record).primary}
                       </p>
                       <p className="mt-2 text-sm text-amber-700">
-                        แพ็กเกจเดิมจะถูกแทนที่เมื่อการชำระเงินสำเร็จ
+                        {describeUpgradeSettlement(selectedRecord.record).secondary}
                       </p>
                     </div>
                   ) : null}

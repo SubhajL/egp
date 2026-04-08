@@ -158,7 +158,8 @@ def _billing_audit_select() -> Select:
         BILLING_EVENTS_TABLE.c.actor_subject.label("actor_subject"),
         BILLING_EVENTS_TABLE.c.event_type.label("event_type"),
         func.coalesce(
-            BILLING_EVENTS_TABLE.c.note, BILLING_EVENTS_TABLE.c.event_type
+            BILLING_EVENTS_TABLE.c.note,
+            func.replace(BILLING_EVENTS_TABLE.c.event_type, "_", "."),
         ).label("summary"),
         literal(None).label("metadata_json"),
         BILLING_EVENTS_TABLE.c.created_at.label("occurred_at"),

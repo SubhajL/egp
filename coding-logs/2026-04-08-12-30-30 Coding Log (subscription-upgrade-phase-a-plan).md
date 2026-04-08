@@ -556,3 +556,112 @@ LOW
 ### Rollout Notes
 - The new web flow is fully wired to the existing backend upgrade and payment-request APIs and is green on frontend typecheck, lint, build, targeted browser tests, and the full web Playwright suite.
 - One earlier failed rerun was infrastructure-only (`EADDRINUSE` from concurrent Playwright web servers on port `3100`), not a product defect; sequential reruns passed.
+
+## Implementation (2026-04-08 18:24:17 +0700) - phase-c polish
+
+### Goal
+- Implement Phase C polish for subscription upgrades:
+  - nicer messaging around pending activation
+  - optional future-start upgrade behavior
+  - admin/audit visibility for upgrade chains
+
+### What Changed
+- `packages/db/src/egp_db/repositories/billing_repo.py`
+  - future-start upgrades now persist `upgrade_mode="replace_on_activation"`
+  - settlement of future-start upgrades creates `pending_activation` subscriptions without cancelling the current active subscription
+  - added repository helper for upcoming subscription selection
+- `apps/api/src/egp_api/services/admin_service.py`
+  - admin snapshot now uses repository effective-subscription logic and also exposes upcoming subscription state
+- `apps/api/src/egp_api/routes/admin.py`
+  - admin billing response now includes `upcoming_subscription`
+  - admin billing records now include `upgrade_from_subscription_id` and `upgrade_mode`
+- `apps/api/src/egp_api/services/billing_service.py`
+  - upgrade requests now default their note to an explicit upgrade summary when none is provided
+- `packages/db/src/egp_db/repositories/audit_repo.py`
+  - billing audit summaries now fall back to a more readable dot-form event label instead of raw underscore event names
+- `apps/web/src/lib/api.ts`
+  - admin billing overview now includes `upcoming_subscription`
+- `apps/web/src/app/(app)/billing/page.tsx`
+  - added distinct copy for `replace_on_activation` records so paid future-start upgrades read as pending activation instead of immediate replacement
+- `apps/web/src/app/(app)/admin/page.tsx`
+  - billing tab now shows both current and upcoming subscriptions plus per-record upgrade-chain metadata
+- `tests/phase3/test_invoice_lifecycle.py`
+  - added future-start upgrade creation and settlement coverage
+- `tests/phase4/test_admin_api.py`
+  - added admin snapshot coverage for upgrade-chain and upcoming-subscription visibility
+- `apps/web/tests/e2e/billing-page.spec.ts`
+  - added pending-activation billing messaging coverage
+- `apps/web/tests/e2e/admin-page.spec.ts`
+  - added admin billing-tab browser coverage for upgrade-chain visibility
+
+### TDD Evidence
+- RED run:
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase4/test_admin_api.py -q`
+  - failed because future-start upgrades were still rejected and admin snapshot still surfaced the pending future subscription as current
+- GREEN run:
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase4/test_admin_api.py -q`
+  - `27 passed`
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase4/test_admin_api.py -q`
+- `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts tests/e2e/admin-page.spec.ts`
+- `cd apps/web && npm run typecheck`
+- `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py tests/phase4/test_entitlements.py tests/phase4/test_admin_api.py -q`
+- `./.venv/bin/ruff check apps/api packages tests`
+- `./.venv/bin/python -m compileall apps/api/src packages`
+- `cd apps/web && npm run lint`
+- `cd apps/web && npm run build`
+- `cd apps/web && npm test`
+- `./.venv/bin/ruff check apps/api packages tests`
+- `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py tests/phase4/test_entitlements.py tests/phase4/test_admin_api.py -q`
+
+### Wiring Verification
+| Component | Wiring Verified? | How Verified |
+|-----------|------------------|--------------|
+| future-start upgrade persistence | YES | `billing_repo.py::create_upgrade_billing_record()` now sets `replace_on_activation` for future start dates |
+| settlement preserving active entitlement | YES | `billing_repo.py::reconcile_payment()` only cancels replaced subscriptions for `replace_now`; focused tests confirm current subscription stays active |
+| admin current/upcoming snapshot | YES | `admin_service.py::get_snapshot()` uses `get_effective_subscription_for_tenant()` and `get_upcoming_subscription_for_tenant()`; serialized in `routes/admin.py` |
+| billing pending-activation messaging | YES | `billing/page.tsx::describeUpgradeSettlement()` drives `replace_on_activation` copy |
+| admin upgrade-chain UI | YES | `admin/page.tsx` reads `upcoming_subscription` and record upgrade metadata from `useAdminSnapshot()` |
+| browser coverage | YES | `billing-page.spec.ts` and `admin-page.spec.ts` verify the new Phase C copy and visibility |
+
+### Behavior Changes And Risks
+- Paid future-start upgrades are now accepted and settle into `pending_activation` without immediately removing the tenant's current active entitlement.
+- Admin now sees both current and upcoming subscription state, which reduces ambiguity during upgrade transitions.
+- Billing audit summaries are slightly more readable but still rely primarily on billing-event notes where present.
+
+### Follow-ups And Known Gaps
+- Full automatic handoff from current active subscription to pending replacement at the exact future start boundary still depends on runtime reads deriving status from dates; there is no separate scheduled mutation step yet.
+- If we later want richer audit details, billing events may need explicit metadata beyond the current unified feed projection.
+
+## Review (2026-04-08 18:24:17 +0700) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: feat/subscription-upgrade-phase-a
+- Scope: working-tree (Phase C upgrade polish across backend, admin API, and web)
+- Commands Run: targeted file inspection on billing repository/service/admin route/admin service/web pages/tests; `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase4/test_admin_api.py -q`; `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py tests/phase4/test_entitlements.py tests/phase4/test_admin_api.py -q`; `./.venv/bin/ruff check apps/api packages tests`; `./.venv/bin/python -m compileall apps/api/src packages`; `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts tests/e2e/admin-page.spec.ts`; `cd apps/web && npm run typecheck`; `cd apps/web && npm run lint`; `cd apps/web && npm run build`; `cd apps/web && npm test`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assume `replace_on_activation` is intentionally represented as an upcoming subscription plus an upgrade-linked paid billing record, without a separate background job mutating the old subscription at the period boundary.
+- Assume admin visibility for the upgrade chain is sufficient in the billing tab for now; no separate dedicated upgrade history view is required yet.
+
+### Recommended Tests / Validation
+- If automatic boundary-time cancellation becomes explicit later, add a repository/unit test that advances the clock across the future start date and verifies the old subscription no longer wins admin snapshot selection.
+- If billing audit log summaries become customer-facing, add direct tests on the exact summary wording rather than relying on indirect route coverage.
+
+### Rollout Notes
+- Phase C is additive and green across focused backend tests, full relevant backend suites, backend lint/compile, focused browser tests, full Playwright suite, frontend typecheck/lint/build, and prior Phase A/B flows.

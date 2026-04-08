@@ -160,6 +160,192 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
         )
 
 
+def _seed_future_upgrade_chain(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
+    source_record_id = str(uuid4())
+    source_subscription_id = str(uuid4())
+    upgrade_record_id = str(uuid4())
+    upgrade_subscription_id = str(uuid4())
+    today = date.today()
+    future_start = today + timedelta(days=5)
+    future_end = future_start + timedelta(days=29)
+    now = datetime.now(UTC).isoformat()
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    upgrade_from_subscription_id,
+                    upgrade_mode,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    'one_time_search_pack',
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '300.00',
+                    NULL,
+                    'none',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": source_record_id,
+                "tenant_id": tenant_id,
+                "record_number": "INV-CHAIN-0001",
+                "billing_period_start": today.isoformat(),
+                "billing_period_end": (today + timedelta(days=2)).isoformat(),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    'one_time_search_pack',
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    1,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": source_subscription_id,
+                "tenant_id": tenant_id,
+                "billing_record_id": source_record_id,
+                "billing_period_start": today.isoformat(),
+                "billing_period_end": (today + timedelta(days=2)).isoformat(),
+                "activated_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    paid_at,
+                    upgrade_from_subscription_id,
+                    upgrade_mode,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    'monthly_membership',
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '1500.00',
+                    :paid_at,
+                    :upgrade_from_subscription_id,
+                    'replace_on_activation',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": upgrade_record_id,
+                "tenant_id": tenant_id,
+                "record_number": "UPG-MONTHLY-CHAIN",
+                "billing_period_start": future_start.isoformat(),
+                "billing_period_end": future_end.isoformat(),
+                "paid_at": now,
+                "upgrade_from_subscription_id": source_subscription_id,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    'monthly_membership',
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    5,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": upgrade_subscription_id,
+                "tenant_id": tenant_id,
+                "billing_record_id": upgrade_record_id,
+                "billing_period_start": future_start.isoformat(),
+                "billing_period_end": future_end.isoformat(),
+                "activated_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+
 def _seed_project(
     client: TestClient,
     *,
@@ -457,6 +643,26 @@ def test_admin_snapshot_returns_tenant_users_settings_and_billing(tmp_path) -> N
     assert body["billing"]["summary"]["collected_amount"] == "0.00"
     assert body["billing"]["current_subscription"]["plan_code"] == "monthly_membership"
     assert body["billing"]["records"][0]["record_number"].startswith("INV-")
+
+
+def test_admin_snapshot_exposes_upgrade_chain_and_upcoming_subscription(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_future_upgrade_chain(client)
+
+    response = client.get("/v1/admin", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["billing"]["current_subscription"]["plan_code"] == "one_time_search_pack"
+    assert body["billing"]["current_subscription"]["subscription_status"] == "active"
+    assert body["billing"]["upcoming_subscription"]["plan_code"] == "monthly_membership"
+    assert body["billing"]["upcoming_subscription"]["subscription_status"] == "pending_activation"
+    upgrade_record = next(
+        record for record in body["billing"]["records"] if record["record_number"] == "UPG-MONTHLY-CHAIN"
+    )
+    assert upgrade_record["upgrade_mode"] == "replace_on_activation"
+    assert upgrade_record["upgrade_from_subscription_id"] is not None
 
 
 def test_admin_routes_can_create_users_update_preferences_and_patch_settings(

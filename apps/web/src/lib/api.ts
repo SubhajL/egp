@@ -517,6 +517,7 @@ export type AdminInviteUserResponse = {
 export type AdminBillingOverview = {
   summary: BillingSummary;
   current_subscription: BillingSubscription | null;
+  upcoming_subscription: BillingSubscription | null;
   records: BillingRecord[];
 };
 

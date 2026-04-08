@@ -409,10 +409,10 @@ def test_duplicate_in_flight_upgrade_is_rejected(tmp_path) -> None:
     assert second_response.json()["detail"] == "upgrade already in progress for subscription"
 
 
-def test_future_start_upgrade_is_rejected_in_phase_a(tmp_path) -> None:
+def test_future_start_upgrade_creates_replace_on_activation_record(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = date.today()
-    _seed_subscription(
+    source_subscription_id = _seed_subscription(
         client,
         plan_code="one_time_search_pack",
         billing_period_start=today,
@@ -429,8 +429,73 @@ def test_future_start_upgrade_is_rejected_in_phase_a(tmp_path) -> None:
         },
     )
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "future-start upgrades are not supported"
+    assert response.status_code == 201
+    detail = response.json()
+    assert detail["record"]["upgrade_from_subscription_id"] == source_subscription_id
+    assert detail["record"]["upgrade_mode"] == "replace_on_activation"
+
+
+def test_future_start_upgrade_settlement_preserves_current_active_subscription(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    source_subscription_id = _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=2),
+        keyword_limit=1,
+    )
+    future_start = today + timedelta(days=5)
+
+    upgrade_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "monthly_membership",
+            "billing_period_start": future_start.isoformat(),
+        },
+    )
+    assert upgrade_response.status_code == 201
+    upgrade_detail = upgrade_response.json()
+
+    payment_response = client.post(
+        f"/v1/billing/records/{upgrade_detail['record']['id']}/payments",
+        json={
+            "tenant_id": TENANT_ID,
+            "payment_method": "bank_transfer",
+            "amount": "1500.00",
+            "currency": "THB",
+            "reference_code": "KBANK-UPG-FUTURE-001",
+            "received_at": f"{today.isoformat()}T03:30:00+00:00",
+            "note": "Customer transfer",
+        },
+    )
+    assert payment_response.status_code == 201
+    payment = payment_response.json()
+
+    reconciled_response = client.post(
+        f"/v1/billing/payments/{payment['id']}/reconcile",
+        json={
+            "tenant_id": TENANT_ID,
+            "status": "reconciled",
+            "note": "Matched against statement",
+        },
+    )
+    assert reconciled_response.status_code == 200
+    reconciled = reconciled_response.json()
+    assert reconciled["record"]["status"] == "paid"
+    assert reconciled["record"]["upgrade_mode"] == "replace_on_activation"
+    assert reconciled["subscription"]["subscription_status"] == "pending_activation"
+    assert reconciled["subscription"]["plan_code"] == "monthly_membership"
+
+    listed = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
+    assert listed.status_code == 200
+    source_record = next(
+        detail
+        for detail in listed.json()["records"]
+        if detail["subscription"] is not None and detail["subscription"]["id"] == source_subscription_id
+    )
+    assert source_record["subscription"]["subscription_status"] == "active"
 
 
 def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(tmp_path) -> None:

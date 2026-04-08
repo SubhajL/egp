@@ -40,6 +40,7 @@ class AdminUserView:
 class AdminBillingView:
     summary: BillingSummary
     current_subscription: BillingSubscriptionRecord | None
+    upcoming_subscription: BillingSubscriptionRecord | None
     records: list[BillingRecordRecord]
 
 
@@ -90,7 +91,6 @@ class AdminService:
             limit=5,
             offset=0,
         )
-        subscriptions = self._billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
         return AdminSnapshot(
             tenant=tenant,
             settings=settings,
@@ -106,7 +106,12 @@ class AdminService:
             ],
             billing=AdminBillingView(
                 summary=billing_page.summary,
-                current_subscription=subscriptions[0] if subscriptions else None,
+                current_subscription=self._billing_repository.get_effective_subscription_for_tenant(
+                    tenant_id=tenant_id
+                ),
+                upcoming_subscription=self._billing_repository.get_upcoming_subscription_for_tenant(
+                    tenant_id=tenant_id
+                ),
                 records=[detail.record for detail in billing_page.items],
             ),
         )

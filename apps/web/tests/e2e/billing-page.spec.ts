@@ -407,3 +407,80 @@ test("billing page hides upgrade CTA for monthly membership", async ({ page }) =
   await expect(page.getByText("อัปเกรดจาก One-Time Search Pack", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toHaveCount(0);
 });
+
+test("billing page shows pending activation copy for future-start upgrades", async ({ page }) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/dashboard/summary":
+        await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, buildPlansResponse());
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, buildRulesResponse("one_time_search_pack"));
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, {
+          records: [
+            {
+              ...buildUpgradeWithQrResponse(),
+              record: {
+                ...buildUpgradeWithQrResponse().record,
+                upgrade_mode: "replace_on_activation",
+                billing_period_start: "2026-04-15",
+                billing_period_end: "2026-05-14",
+              },
+              subscription: {
+                id: "sub-upcoming-1",
+                tenant_id: "tenant-1",
+                billing_record_id: "record-upgrade-1",
+                plan_code: "monthly_membership",
+                subscription_status: "pending_activation",
+                billing_period_start: "2026-04-15",
+                billing_period_end: "2026-05-14",
+                keyword_limit: 5,
+                activated_at: "2026-04-08T00:00:00Z",
+                activated_by_payment_id: "payment-1",
+                created_at: "2026-04-08T00:00:00Z",
+                updated_at: "2026-04-08T00:00:00Z",
+              },
+            },
+          ],
+          total: 1,
+          limit: 50,
+          offset: 0,
+          summary: {
+            open_records: 0,
+            awaiting_reconciliation: 0,
+            outstanding_amount: "0.00",
+            collected_amount: "1500.00",
+          },
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/billing");
+
+  await expect(page.getByText("รอเริ่มใช้งานตามรอบใหม่", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("ชำระเงินสำเร็จแล้ว ระบบจะเปิดแพ็กเกจใหม่ตามวันเริ่มรอบที่กำหนดไว้", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("แพ็กเกจปัจจุบันยังใช้งานได้ต่อจนกว่าจะถึงวันเริ่มของแพ็กเกจใหม่", {
+      exact: true,
+    }),
+  ).toBeVisible();
+});

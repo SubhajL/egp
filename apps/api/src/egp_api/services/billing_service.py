@@ -144,12 +144,17 @@ class BillingService:
             resolved_record_number = (
                 f"UPG-{normalized_target_plan_code.upper()}-{normalized_start.replace('-', '')}"
             )
+        resolved_notes = notes
+        if resolved_notes is None:
+            resolved_notes = (
+                f"Upgrade to {normalized_target_plan_code} starting {normalized_start}"
+            )
         return self._repository.create_upgrade_billing_record(
             tenant_id=tenant_id,
             target_plan_code=normalized_target_plan_code,
             billing_period_start=normalized_start,
             record_number=resolved_record_number,
-            notes=notes,
+            notes=resolved_notes,
             actor_subject=actor_subject,
         )
 

@@ -628,8 +628,29 @@ def _select_effective_subscription(
         subscriptions,
         key=lambda subscription: (
             _subscription_priority(subscription.subscription_status),
+            0 if subscription.subscription_status is BillingSubscriptionStatus.ACTIVE else 1,
             -date.fromisoformat(subscription.billing_period_end).toordinal(),
             -date.fromisoformat(subscription.billing_period_start).toordinal(),
+            subscription.created_at,
+        ),
+    )
+
+
+def _select_upcoming_subscription(
+    subscriptions: list[BillingSubscriptionRecord],
+) -> BillingSubscriptionRecord | None:
+    pending = [
+        subscription
+        for subscription in subscriptions
+        if subscription.subscription_status is BillingSubscriptionStatus.PENDING_ACTIVATION
+    ]
+    if not pending:
+        return None
+    return min(
+        pending,
+        key=lambda subscription: (
+            date.fromisoformat(subscription.billing_period_start).toordinal(),
+            -date.fromisoformat(subscription.billing_period_end).toordinal(),
             subscription.created_at,
         ),
     )
@@ -1652,8 +1673,9 @@ class SqlBillingRepository:
             raise ValueError("unsupported subscription upgrade")
 
         period_start = _normalize_date(billing_period_start)
-        if period_start > _now().date():
-            raise ValueError("future-start upgrades are not supported")
+        upgrade_mode = (
+            "replace_on_activation" if period_start > _now().date() else "replace_now"
+        )
 
         if (
             self._get_open_upgrade_record_id(
@@ -1680,7 +1702,7 @@ class SqlBillingRepository:
             due_at=None,
             issued_at=_now().isoformat(),
             upgrade_from_subscription_id=current_subscription.id,
-            upgrade_mode="replace_now",
+            upgrade_mode=upgrade_mode,
             notes=notes,
             actor_subject=actor_subject,
         )
@@ -2123,6 +2145,13 @@ class SqlBillingRepository:
         if detail is None:
             raise KeyError(record_before.id)
         return detail
+
+    def get_upcoming_subscription_for_tenant(
+        self, *, tenant_id: str
+    ) -> BillingSubscriptionRecord | None:
+        return _select_upcoming_subscription(
+            self.list_subscriptions_for_tenant(tenant_id=tenant_id)
+        )
 
 
 def create_billing_repository(
