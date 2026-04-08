@@ -127,6 +127,32 @@ class BillingService:
             actor_subject=actor_subject,
         )
 
+    def create_upgrade_record(
+        self,
+        *,
+        tenant_id: str,
+        target_plan_code: str,
+        billing_period_start: str,
+        record_number: str | None = None,
+        notes: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        normalized_target_plan_code = str(target_plan_code).strip()
+        normalized_start = str(billing_period_start).strip()
+        resolved_record_number = (record_number or "").strip()
+        if not resolved_record_number:
+            resolved_record_number = (
+                f"UPG-{normalized_target_plan_code.upper()}-{normalized_start.replace('-', '')}"
+            )
+        return self._repository.create_upgrade_billing_record(
+            tenant_id=tenant_id,
+            target_plan_code=normalized_target_plan_code,
+            billing_period_start=normalized_start,
+            record_number=resolved_record_number,
+            notes=notes,
+            actor_subject=actor_subject,
+        )
+
     def transition_record(
         self,
         *,

@@ -532,6 +532,62 @@ def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_p
     assert settled["subscription"]["keyword_limit"] == 1
 
 
+def test_opn_webhook_settles_upgrade_record_and_supersedes_trial(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    today = date.today()
+
+    trial_response = client.post(
+        "/v1/billing/trial/start",
+        json={"tenant_id": TENANT_ID},
+    )
+    assert trial_response.status_code == 201
+    trial_subscription_id = trial_response.json()["id"]
+
+    upgrade_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "monthly_membership",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+    assert upgrade_response.status_code == 201
+    upgrade = upgrade_response.json()
+
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(upgrade["record"]["id"]),
+        provider="opn",
+        payment_method="promptpay_qr",
+    )
+
+    raw_body = '{"kind":"promptpay"}'
+    response = client.post(
+        "/v1/billing/providers/opn/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "x-opn-signature": _opn_signature("skey_test_opn", raw_body),
+        },
+    )
+
+    assert response.status_code == 200
+    settled = response.json()
+    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert settled["subscription"]["plan_code"] == "monthly_membership"
+    assert settled["subscription"]["keyword_limit"] == 5
+
+    listed = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
+    assert listed.status_code == 200
+    trial_record = next(
+        detail
+        for detail in listed.json()["records"]
+        if detail["subscription"] is not None and detail["subscription"]["id"] == trial_subscription_id
+    )
+    assert trial_record["subscription"]["subscription_status"] == "cancelled"
+
+
 def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
     provider = OpnProvider(secret_key="skey_test_example")
 

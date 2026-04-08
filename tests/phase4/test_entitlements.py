@@ -316,6 +316,34 @@ def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path
     assert body["entitlements"]["notifications_allowed"] is False
 
 
+def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=2),
+        status="cancelled",
+    )
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=29),
+        status="active",
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["plan_code"] == "monthly_membership"
+    assert body["entitlements"]["keyword_limit"] == 5
+
+
 def test_run_creation_requires_active_subscription(tmp_path) -> None:
     client = _create_client(tmp_path)
 
