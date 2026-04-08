@@ -464,3 +464,95 @@ LOW
 ### Rollout Notes
 - The reviewed Phase A backend slice is additive and currently green on focused tests, lint, and compile checks.
 - Local work remains uncommitted on `main`, so none of this review corresponds to a commit or PR yet.
+
+## Implementation (2026-04-08 17:40:18 +0700) - phase-b web upgrade channel
+
+### Goal
+- Implement Phase B on the web billing page:
+  - add upgrade CTAs
+  - call the explicit upgrade API
+  - create PromptPay QR automatically
+  - explain what changes immediately after payment succeeds
+
+### What Changed
+- `apps/web/src/lib/api.ts`
+  - added upgrade metadata to `BillingRecord`
+  - added `CreateBillingUpgradeInput` and `createBillingUpgrade(...)`
+  - added Thai localizations for upgrade-specific API errors
+- `apps/web/src/app/(app)/billing/page.tsx`
+  - reads `useRules()` to determine the current entitled plan for CTA selection
+  - added contextual upgrade CTA card for `free_trial` and `one_time_search_pack`
+  - creates an upgrade record and immediately creates an `opn` PromptPay QR request
+  - invalidates both `billing-records` and `rules` queries after billing-changing actions
+  - added clear upgrade settlement copy on selected upgrade records
+- `apps/web/tests/e2e/billing-page.spec.ts`
+  - added browser coverage for free-trial and one-time upgrade CTAs and the automatic PromptPay QR flow
+
+### TDD Evidence
+- RED run:
+  - `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`
+  - failed because the billing page did not render any upgrade CTA (`getByText('อัปเกรดจาก Free Trial')` / `getByText('อัปเกรดจาก One-Time Search Pack')` not found)
+- GREEN run:
+  - `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`
+  - `3 passed`
+
+### Tests Run
+- `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`
+- `cd apps/web && npm run typecheck`
+- `cd apps/web && npm run lint`
+- `cd apps/web && npm run build`
+- `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`
+- `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`
+- `cd apps/web && npm test`
+
+### Wiring Verification
+| Component | Wiring Verified? | How Verified |
+|-----------|------------------|--------------|
+| billing page upgrade CTA | YES | `apps/web/src/app/(app)/billing/page.tsx` renders `UpgradeCallout` from `rulesData?.entitlements` |
+| explicit upgrade API call | YES | `apps/web/src/lib/api.ts::createBillingUpgrade()` posts to `/v1/billing/upgrades`; `billing/page.tsx::handleCreateUpgrade()` calls it |
+| automatic QR request | YES | `billing/page.tsx::handleCreateUpgrade()` calls `createPromptPayRequestForRecord()` immediately after upgrade creation |
+| clear post-payment copy | YES | `billing/page.tsx` renders upgrade-specific copy when `selectedRecord.record.upgrade_from_subscription_id` is present |
+| browser coverage | YES | `apps/web/tests/e2e/billing-page.spec.ts` verifies CTA visibility, API payloads, QR creation, and copy |
+
+### Behavior Changes And Risks
+- `/billing` now exposes upgrade purchase actions based on the current entitlement snapshot rather than manual operator-only billing actions alone.
+- Upgrade actions currently always start on today's date, matching Phase A's backend restriction against future-start upgrades.
+- `refreshBilling()` now also invalidates `rules`, which keeps CTA state aligned after free-trial start and future upgrade settlement paths.
+- Playwright flake note: one validation attempt failed only because multiple browser runs were launched in parallel against the same configured port (`127.0.0.1:3100`); sequential reruns passed.
+
+### Follow-ups And Known Gaps
+- Phase C can improve the selected-record messaging further for `pending_activation` and upgrade-chain audit visibility.
+- The billing page still contains operator/manual billing controls alongside self-serve upgrade CTAs; that is acceptable for now but may want stronger visual separation later.
+
+## Review (2026-04-08 17:41:40 +0700) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: feat/subscription-upgrade-phase-a
+- Scope: working-tree (Phase B web upgrade channel)
+- Commands Run: targeted file inspection on `apps/web/src/app/(app)/billing/page.tsx`, `apps/web/src/lib/api.ts`, `apps/web/tests/e2e/billing-page.spec.ts`; Auggie code retrieval; `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`; `cd apps/web && npm run typecheck`; `cd apps/web && npm run lint`; `cd apps/web && npm run build`; sequential reruns of `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`; `cd apps/web && npm test`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assume Phase B intentionally uses the current date for upgrade requests, matching the backend Phase A rejection of future-start upgrades.
+- Assume the billing page may continue to serve both operator/manual billing flows and customer-facing self-serve upgrade flows for now.
+
+### Recommended Tests / Validation
+- When Phase C adds `pending_activation` polish, add a billing-page browser test that verifies the copy for a settled future-start upgrade once backend support exists.
+- If the upgrade CTA is later shown outside `/billing`, extract the CTA logic into a shared component and port the current browser coverage with it.
+
+### Rollout Notes
+- The new web flow is fully wired to the existing backend upgrade and payment-request APIs and is green on frontend typecheck, lint, build, targeted browser tests, and the full web Playwright suite.
+- One earlier failed rerun was infrastructure-only (`EADDRINUSE` from concurrent Playwright web servers on port `3100`), not a product defect; sequential reruns passed.
