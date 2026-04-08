@@ -665,3 +665,34 @@ LOW
 
 ### Rollout Notes
 - Phase C is additive and green across focused backend tests, full relevant backend suites, backend lint/compile, focused browser tests, full Playwright suite, frontend typecheck/lint/build, and prior Phase A/B flows.
+
+## Review (2026-04-08 19:30:20 +0700) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working-tree (billing upgrade pre-payment messaging follow-up)
+- Commands Run: `git status --porcelain=v1`; targeted `git diff -- apps/web/src/app/(app)/billing/page.tsx apps/web/tests/e2e/billing-page.spec.ts`; `cd apps/web && npm test -- tests/e2e/billing-page.spec.ts`; `cd apps/web && npm run typecheck`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assume the intended product behavior remains immediate replacement after successful payment for both `free_trial` and `one_time_search_pack` upgrades in the self-serve flow.
+- Assume a duplicated Free Trial wait-warning across both available upgrade cards is acceptable because the warning is attached per option, not as a shared section-level disclaimer.
+
+### Recommended Tests / Validation
+- If the upgrade CTA card later gets refactored into a shared component, keep one browser assertion for the immediate-effect warning and one for the wait-instead warning so the product promise remains explicit.
+
+### Rollout Notes
+- This follow-up is copy-only in the billing upgrade CTA path and is green on focused browser coverage plus frontend typecheck.

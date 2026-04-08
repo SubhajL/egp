@@ -126,6 +126,8 @@ type UpgradeOption = {
   title: string;
   description: string;
   immediateChangeCopy: string;
+  beforePaymentCopy: string;
+  waitInsteadCopy: string;
 };
 
 function todayIsoDate(): string {
@@ -156,6 +158,14 @@ function getUpgradeOptions(
             targetPlanCode === "one_time_search_pack"
               ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
               : "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที",
+          beforePaymentCopy:
+            targetPlanCode === "one_time_search_pack"
+              ? "เมื่อชำระสำเร็จ ระบบจะปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีในรอบแพ็กเกจนี้"
+              : "เมื่อชำระสำเร็จ ระบบจะเพิ่มสิทธิ์เป็นแพ็กเกจรายเดือนและปลดล็อกทุกช่องทางทันที",
+          waitInsteadCopy:
+            targetPlanCode === "one_time_search_pack"
+              ? "หากต้องการใช้ Free Trial ต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด"
+              : "หากต้องการใช้ Free Trial ต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด",
         };
       })
       .filter((option): option is UpgradeOption => option !== null);
@@ -172,6 +182,10 @@ function getUpgradeOptions(
         description:
           "เพิ่มโควต้าเป็น 5 คำค้น และเปลี่ยนเป็นรอบสมาชิกรายเดือนหลังการชำระสำเร็จ",
         immediateChangeCopy: "โควต้าคำค้นจะเพิ่มเป็น 5 และเปิดสิทธิ์รายเดือนทันที",
+        beforePaymentCopy:
+          "เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และโควต้าคำค้นจะเพิ่มเป็น 5",
+        waitInsteadCopy:
+          "หากต้องการใช้แพ็กเกจ one-shot ปัจจุบันต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด",
       },
     ];
   }
@@ -241,6 +255,8 @@ function UpgradeCallout({
               <div>
                 <p className="font-semibold text-[var(--text-primary)]">{option.title}</p>
                 <p className="mt-1 text-sm text-[var(--text-muted)]">{option.description}</p>
+                <p className="mt-2 text-sm font-medium text-primary">{option.beforePaymentCopy}</p>
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">{option.waitInsteadCopy}</p>
               </div>
               <button
                 type="button"
