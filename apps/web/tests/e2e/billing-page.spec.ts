@@ -369,6 +369,16 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
 
   await expect(page.getByText("อัปเกรดจาก Free Trial", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
+  await expect(
+    page.getByText("เมื่อชำระสำเร็จ ระบบจะเพิ่มสิทธิ์เป็นแพ็กเกจรายเดือนและปลดล็อกทุกช่องทางทันที", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("หากต้องการใช้ Free Trial ต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด", {
+      exact: true,
+    }),
+  ).toHaveCount(2);
 
   await page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" }).click();
 
@@ -395,6 +405,16 @@ test("billing page shows one-time upgrade CTA only for monthly membership", asyn
 
   await expect(page.getByText("อัปเกรดจาก One-Time Search Pack", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
+  await expect(
+    page.getByText("เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และโควต้าคำค้นจะเพิ่มเป็น 5", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("หากต้องการใช้แพ็กเกจ one-shot ปัจจุบันต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น One-Time Search Pack" })).toHaveCount(0);
 });
 
