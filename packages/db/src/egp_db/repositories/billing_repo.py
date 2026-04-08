@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Table,
     desc,
+    text,
 )
 from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
@@ -25,7 +26,10 @@ from sqlalchemy.exc import IntegrityError
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
-from egp_shared_types.billing_plans import get_billing_plan_definition
+from egp_shared_types.billing_plans import (
+    derive_plan_period_end,
+    get_billing_plan_definition,
+)
 from egp_shared_types.enums import (
     BillingEventType,
     BillingPaymentProvider,
@@ -53,6 +57,8 @@ class BillingRecordRecord:
     amount_due: str
     reconciled_total: str
     outstanding_balance: str
+    upgrade_from_subscription_id: str | None
+    upgrade_mode: str
     notes: str | None
     created_at: str
     updated_at: str
@@ -157,6 +163,10 @@ _TERMINAL_BILLING_STATUSES = {
     BillingRecordStatus.CANCELLED,
     BillingRecordStatus.REFUNDED,
 }
+_OPEN_UPGRADE_RECORDS_WHERE = text(
+    "upgrade_from_subscription_id IS NOT NULL "
+    "AND status NOT IN ('paid', 'cancelled', 'refunded')"
+)
 
 
 def _enum_values(enum_type: type) -> str:
@@ -178,12 +188,24 @@ BILLING_RECORDS_TABLE = Table(
     Column("paid_at", DateTime(timezone=True), nullable=True),
     Column("currency", String, nullable=False, default="THB"),
     Column("amount_due", Numeric(18, 2), nullable=False),
+    Column("upgrade_from_subscription_id", UUID_SQL_TYPE, nullable=True),
+    Column(
+        "upgrade_mode",
+        String,
+        nullable=False,
+        default="none",
+        server_default=text("'none'"),
+    ),
     Column("notes", String, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     CheckConstraint(
         f"status IN ({_enum_values(BillingRecordStatus)})",
         name="billing_records_status_check",
+    ),
+    CheckConstraint(
+        "upgrade_mode IN ('none', 'replace_now', 'replace_on_activation')",
+        name="billing_records_upgrade_mode_check",
     ),
 )
 
@@ -357,6 +379,18 @@ Index(
     BILLING_RECORDS_TABLE.c.due_at,
 )
 Index(
+    "idx_billing_records_upgrade_from_subscription",
+    BILLING_RECORDS_TABLE.c.upgrade_from_subscription_id,
+)
+Index(
+    "uq_billing_records_open_upgrade_per_subscription",
+    BILLING_RECORDS_TABLE.c.tenant_id,
+    BILLING_RECORDS_TABLE.c.upgrade_from_subscription_id,
+    unique=True,
+    sqlite_where=_OPEN_UPGRADE_RECORDS_WHERE,
+    postgresql_where=_OPEN_UPGRADE_RECORDS_WHERE,
+)
+Index(
     "idx_billing_payments_tenant_recorded",
     BILLING_PAYMENTS_TABLE.c.tenant_id,
     BILLING_PAYMENTS_TABLE.c.recorded_at,
@@ -419,6 +453,8 @@ class _BillingRecordRow:
     paid_at: str | None
     currency: str
     amount_due: Decimal
+    upgrade_from_subscription_id: str | None
+    upgrade_mode: str
     notes: str | None
     created_at: str
     updated_at: str
@@ -575,6 +611,63 @@ def _normalize_payment_status(
         raise ValueError("invalid billing payment status") from exc
 
 
+def _normalize_upgrade_mode(value: str | None) -> str:
+    normalized = str(value or "none").strip() or "none"
+    if normalized not in {"none", "replace_now", "replace_on_activation"}:
+        raise ValueError("invalid upgrade mode")
+    return normalized
+
+
+def _subscription_priority(status: BillingSubscriptionStatus) -> int:
+    priorities = {
+        BillingSubscriptionStatus.ACTIVE: 0,
+        BillingSubscriptionStatus.PENDING_ACTIVATION: 1,
+        BillingSubscriptionStatus.EXPIRED: 2,
+        BillingSubscriptionStatus.CANCELLED: 3,
+    }
+    return priorities.get(status, 99)
+
+
+def _select_effective_subscription(
+    subscriptions: list[BillingSubscriptionRecord],
+) -> BillingSubscriptionRecord | None:
+    if not subscriptions:
+        return None
+    return min(
+        subscriptions,
+        key=lambda subscription: (
+            _subscription_priority(subscription.subscription_status),
+            0
+            if subscription.subscription_status is BillingSubscriptionStatus.ACTIVE
+            else 1,
+            -date.fromisoformat(subscription.billing_period_end).toordinal(),
+            -date.fromisoformat(subscription.billing_period_start).toordinal(),
+            subscription.created_at,
+        ),
+    )
+
+
+def _select_upcoming_subscription(
+    subscriptions: list[BillingSubscriptionRecord],
+) -> BillingSubscriptionRecord | None:
+    pending = [
+        subscription
+        for subscription in subscriptions
+        if subscription.subscription_status
+        is BillingSubscriptionStatus.PENDING_ACTIVATION
+    ]
+    if not pending:
+        return None
+    return min(
+        pending,
+        key=lambda subscription: (
+            date.fromisoformat(subscription.billing_period_start).toordinal(),
+            -date.fromisoformat(subscription.billing_period_end).toordinal(),
+            subscription.created_at,
+        ),
+    )
+
+
 def _billing_record_from_mapping(row: RowMapping) -> _BillingRecordRow:
     return _BillingRecordRow(
         id=str(row["id"]),
@@ -591,6 +684,12 @@ def _billing_record_from_mapping(row: RowMapping) -> _BillingRecordRow:
         amount_due=Decimal(str(row["amount_due"])).quantize(
             _MONEY_QUANTUM, rounding=ROUND_HALF_UP
         ),
+        upgrade_from_subscription_id=(
+            str(row["upgrade_from_subscription_id"])
+            if row["upgrade_from_subscription_id"] is not None
+            else None
+        ),
+        upgrade_mode=_normalize_upgrade_mode(row.get("upgrade_mode")),
         notes=str(row["notes"]) if row["notes"] is not None else None,
         created_at=_dt_to_iso(row["created_at"]) or "",
         updated_at=_dt_to_iso(row["updated_at"]) or "",
@@ -758,6 +857,8 @@ def _detail_from_row(
         amount_due=_decimal_to_str(row.amount_due),
         reconciled_total=_decimal_to_str(reconciled_total),
         outstanding_balance=_decimal_to_str(outstanding),
+        upgrade_from_subscription_id=row.upgrade_from_subscription_id,
+        upgrade_mode=row.upgrade_mode,
         notes=row.notes,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -1136,6 +1237,42 @@ class SqlBillingRepository:
             )
         return [_subscription_from_mapping(row) for row in rows]
 
+    def get_effective_subscription_for_tenant(
+        self, *, tenant_id: str
+    ) -> BillingSubscriptionRecord | None:
+        return _select_effective_subscription(
+            self.list_subscriptions_for_tenant(tenant_id=tenant_id)
+        )
+
+    def _get_open_upgrade_record_id(
+        self,
+        *,
+        tenant_id: str,
+        subscription_id: str,
+    ) -> str | None:
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(BILLING_RECORDS_TABLE.c.id)
+                    .where(
+                        BILLING_RECORDS_TABLE.c.tenant_id
+                        == normalize_uuid_string(tenant_id),
+                        BILLING_RECORDS_TABLE.c.upgrade_from_subscription_id
+                        == normalize_uuid_string(subscription_id),
+                        BILLING_RECORDS_TABLE.c.status.not_in(
+                            [status.value for status in _TERMINAL_BILLING_STATUSES]
+                        ),
+                    )
+                    .order_by(BILLING_RECORDS_TABLE.c.created_at.desc())
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        return str(row["id"])
+
     def activate_free_trial_subscription(
         self,
         *,
@@ -1418,6 +1555,8 @@ class SqlBillingRepository:
         currency: str = "THB",
         due_at: str | None = None,
         issued_at: str | None = None,
+        upgrade_from_subscription_id: str | None = None,
+        upgrade_mode: str = "none",
         notes: str | None = None,
         actor_subject: str | None = None,
     ) -> BillingRecordDetail:
@@ -1429,6 +1568,22 @@ class SqlBillingRepository:
         normalized_amount = _normalize_amount(amount_due)
         normalized_due_at = _normalize_datetime(due_at)
         normalized_issued_at = _normalize_datetime(issued_at)
+        normalized_upgrade_from_subscription_id = (
+            normalize_uuid_string(upgrade_from_subscription_id)
+            if upgrade_from_subscription_id is not None
+            else None
+        )
+        normalized_upgrade_mode = _normalize_upgrade_mode(upgrade_mode)
+        if (
+            normalized_upgrade_mode == "none"
+            and normalized_upgrade_from_subscription_id is not None
+        ):
+            raise ValueError("upgrade mode is required when upgrade source is provided")
+        if (
+            normalized_upgrade_mode != "none"
+            and normalized_upgrade_from_subscription_id is None
+        ):
+            raise ValueError("upgrade source subscription is required")
         if (
             normalized_status
             in {
@@ -1441,37 +1596,54 @@ class SqlBillingRepository:
         now = _now()
         record_id = str(uuid4())
 
-        with self._engine.begin() as connection:
-            connection.execute(
-                insert(BILLING_RECORDS_TABLE).values(
-                    id=record_id,
-                    tenant_id=normalize_uuid_string(tenant_id),
-                    record_number=str(record_number).strip(),
-                    plan_code=str(plan_code).strip(),
-                    status=normalized_status.value,
-                    billing_period_start=normalized_start,
-                    billing_period_end=normalized_end,
-                    due_at=normalized_due_at,
-                    issued_at=normalized_issued_at,
-                    paid_at=None,
-                    currency=str(currency).strip() or "THB",
-                    amount_due=normalized_amount,
-                    notes=str(notes).strip() if notes else None,
-                    created_at=now,
-                    updated_at=now,
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(
+                    insert(BILLING_RECORDS_TABLE).values(
+                        id=record_id,
+                        tenant_id=normalize_uuid_string(tenant_id),
+                        record_number=str(record_number).strip(),
+                        plan_code=str(plan_code).strip(),
+                        status=normalized_status.value,
+                        billing_period_start=normalized_start,
+                        billing_period_end=normalized_end,
+                        due_at=normalized_due_at,
+                        issued_at=normalized_issued_at,
+                        paid_at=None,
+                        currency=str(currency).strip() or "THB",
+                        amount_due=normalized_amount,
+                        upgrade_from_subscription_id=normalized_upgrade_from_subscription_id,
+                        upgrade_mode=normalized_upgrade_mode,
+                        notes=str(notes).strip() if notes else None,
+                        created_at=now,
+                        updated_at=now,
+                    )
                 )
-            )
-            self._append_event(
-                connection,
-                tenant_id=tenant_id,
-                billing_record_id=record_id,
-                payment_id=None,
-                event_type=BillingEventType.BILLING_RECORD_CREATED,
-                actor_subject=actor_subject,
-                note=notes,
-                from_status=None,
-                to_status=normalized_status.value,
-            )
+                self._append_event(
+                    connection,
+                    tenant_id=tenant_id,
+                    billing_record_id=record_id,
+                    payment_id=None,
+                    event_type=BillingEventType.BILLING_RECORD_CREATED,
+                    actor_subject=actor_subject,
+                    note=notes,
+                    from_status=None,
+                    to_status=normalized_status.value,
+                )
+        except IntegrityError as exc:
+            if (
+                normalized_upgrade_from_subscription_id is not None
+                and normalized_status not in _TERMINAL_BILLING_STATUSES
+                and self._get_open_upgrade_record_id(
+                    tenant_id=tenant_id,
+                    subscription_id=normalized_upgrade_from_subscription_id,
+                )
+                is not None
+            ):
+                raise ValueError(
+                    "upgrade already in progress for subscription"
+                ) from exc
+            raise
 
         detail = self.get_billing_record_detail(
             tenant_id=tenant_id, record_id=record_id
@@ -1479,6 +1651,80 @@ class SqlBillingRepository:
         if detail is None:
             raise KeyError(record_id)
         return detail
+
+    def create_upgrade_billing_record(
+        self,
+        *,
+        tenant_id: str,
+        target_plan_code: str,
+        billing_period_start: str,
+        record_number: str,
+        notes: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        current_subscription = self.get_effective_subscription_for_tenant(
+            tenant_id=tenant_id
+        )
+        if current_subscription is None:
+            raise ValueError("active or pending subscription required for upgrade")
+        if current_subscription.subscription_status not in {
+            BillingSubscriptionStatus.ACTIVE,
+            BillingSubscriptionStatus.PENDING_ACTIVATION,
+        }:
+            raise ValueError("active or pending subscription required for upgrade")
+
+        normalized_target_plan_code = str(target_plan_code).strip()
+        allowed_transitions = {
+            ("free_trial", "one_time_search_pack"),
+            ("free_trial", "monthly_membership"),
+            ("one_time_search_pack", "monthly_membership"),
+        }
+        if (
+            current_subscription.plan_code,
+            normalized_target_plan_code,
+        ) not in allowed_transitions:
+            raise ValueError("unsupported subscription upgrade")
+
+        target_plan_definition = get_billing_plan_definition(
+            normalized_target_plan_code
+        )
+        if target_plan_definition is None:
+            raise ValueError("unsupported subscription upgrade")
+
+        period_start = _normalize_date(billing_period_start)
+        upgrade_mode = (
+            "replace_on_activation" if period_start > _now().date() else "replace_now"
+        )
+
+        if (
+            self._get_open_upgrade_record_id(
+                tenant_id=tenant_id,
+                subscription_id=current_subscription.id,
+            )
+            is not None
+        ):
+            raise ValueError("upgrade already in progress for subscription")
+
+        period_end = derive_plan_period_end(
+            target_plan_definition,
+            billing_period_start=period_start,
+        )
+        return self.create_billing_record(
+            tenant_id=tenant_id,
+            record_number=record_number,
+            plan_code=target_plan_definition.code,
+            status=BillingRecordStatus.AWAITING_PAYMENT,
+            billing_period_start=period_start.isoformat(),
+            billing_period_end=period_end.isoformat(),
+            amount_due=target_plan_definition.amount_due,
+            currency=target_plan_definition.currency,
+            due_at=None,
+            issued_at=_now().isoformat(),
+            upgrade_from_subscription_id=current_subscription.id,
+            upgrade_mode=upgrade_mode,
+            notes=notes,
+            actor_subject=actor_subject,
+        )
 
     def transition_billing_record_status(
         self,
@@ -1892,6 +2138,25 @@ class SqlBillingRepository:
                         from_status=None,
                         to_status=subscription_status.value,
                     )
+                    if (
+                        record_before.upgrade_mode == "replace_now"
+                        and record_before.upgrade_from_subscription_id is not None
+                    ):
+                        connection.execute(
+                            update(BILLING_SUBSCRIPTIONS_TABLE)
+                            .where(
+                                BILLING_SUBSCRIPTIONS_TABLE.c.id
+                                == normalize_uuid_string(
+                                    record_before.upgrade_from_subscription_id
+                                ),
+                                BILLING_SUBSCRIPTIONS_TABLE.c.tenant_id
+                                == normalize_uuid_string(tenant_id),
+                            )
+                            .values(
+                                status=BillingSubscriptionStatus.CANCELLED.value,
+                                updated_at=now,
+                            )
+                        )
 
         detail = self.get_billing_record_detail(
             tenant_id=tenant_id, record_id=record_before.id
@@ -1899,6 +2164,13 @@ class SqlBillingRepository:
         if detail is None:
             raise KeyError(record_before.id)
         return detail
+
+    def get_upcoming_subscription_for_tenant(
+        self, *, tenant_id: str
+    ) -> BillingSubscriptionRecord | None:
+        return _select_upcoming_subscription(
+            self.list_subscriptions_for_tenant(tenant_id=tenant_id)
+        )
 
 
 def create_billing_repository(

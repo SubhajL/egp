@@ -350,6 +350,8 @@ export type BillingRecord = {
   amount_due: string;
   reconciled_total: string;
   outstanding_balance: string;
+  upgrade_from_subscription_id: string | null;
+  upgrade_mode: string;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -515,6 +517,7 @@ export type AdminInviteUserResponse = {
 export type AdminBillingOverview = {
   summary: BillingSummary;
   current_subscription: BillingSubscription | null;
+  upcoming_subscription: BillingSubscription | null;
   records: BillingRecord[];
 };
 
@@ -804,6 +807,9 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "billing record has no outstanding balance", thai: "ใบแจ้งหนี้นี้ไม่มียอดคงค้าง" },
   { pattern: "payment provider request failed", thai: "ไม่สามารถเชื่อมต่อระบบชำระเงินได้ กรุณาลองใหม่อีกครั้ง" },
   { pattern: "invalid billing date", thai: "วันที่เรียกเก็บไม่ถูกต้อง" },
+  { pattern: "unsupported subscription upgrade", thai: "แพ็กเกจปัจจุบันยังอัปเกรดไปตัวเลือกนี้ไม่ได้" },
+  { pattern: "upgrade already in progress for subscription", thai: "มีคำขออัปเกรดที่กำลังรอชำระอยู่แล้ว" },
+  { pattern: "future-start upgrades are not supported", thai: "การอัปเกรดแบบเริ่มใช้ภายหลังยังไม่รองรับ" },
   { pattern: "callback currency does not match", thai: "สกุลเงินไม่ตรงกับคำขอชำระเงิน" },
   { pattern: "callback amount does not match", thai: "จำนวนเงินไม่ตรงกับคำขอชำระเงิน" },
   { pattern: "payment callback secret not configured", thai: "ระบบยังไม่ได้ตั้งค่า callback สำหรับชำระเงิน" },
@@ -1134,6 +1140,13 @@ export type CreateBillingRecordInput = {
   notes?: string;
 };
 
+export type CreateBillingUpgradeInput = {
+  target_plan_code: string;
+  billing_period_start: string;
+  record_number?: string;
+  notes?: string;
+};
+
 export type RecordBillingPaymentInput = {
   payment_method?: string;
   amount: string;
@@ -1429,6 +1442,16 @@ export async function createBillingRecord(
       status: payload.status ?? "awaiting_payment",
       currency: payload.currency ?? "THB",
     }),
+  });
+}
+
+export async function createBillingUpgrade(
+  payload: CreateBillingUpgradeInput,
+): Promise<BillingRecordDetail> {
+  const url = buildUrl("/v1/billing/upgrades", {});
+  return apiJsonRequest<BillingRecordDetail>(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

@@ -50,16 +50,21 @@ def _select_current_subscription(
 ) -> BillingSubscriptionRecord | None:
     if not subscriptions:
         return None
-    for status in (
-        BillingSubscriptionStatus.ACTIVE,
-        BillingSubscriptionStatus.PENDING_ACTIVATION,
-        BillingSubscriptionStatus.EXPIRED,
-        BillingSubscriptionStatus.CANCELLED,
-    ):
-        for subscription in subscriptions:
-            if subscription.subscription_status is status:
-                return subscription
-    return subscriptions[0]
+    priorities = {
+        BillingSubscriptionStatus.ACTIVE: 0,
+        BillingSubscriptionStatus.PENDING_ACTIVATION: 1,
+        BillingSubscriptionStatus.EXPIRED: 2,
+        BillingSubscriptionStatus.CANCELLED: 3,
+    }
+    return min(
+        subscriptions,
+        key=lambda subscription: (
+            priorities.get(subscription.subscription_status, 99),
+            -int(subscription.billing_period_end.replace("-", "")),
+            -int(subscription.billing_period_start.replace("-", "")),
+            subscription.created_at,
+        ),
+    )
 
 
 def _normalize_keyword(value: str) -> str:

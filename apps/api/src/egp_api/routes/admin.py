@@ -68,6 +68,8 @@ class AdminBillingRecordResponse(BaseModel):
     amount_due: str
     reconciled_total: str
     outstanding_balance: str
+    upgrade_from_subscription_id: str | None
+    upgrade_mode: str
     notes: str | None
     created_at: str
     updated_at: str
@@ -98,6 +100,7 @@ class AdminSubscriptionResponse(BaseModel):
 class AdminBillingResponse(BaseModel):
     summary: AdminBillingSummaryResponse
     current_subscription: AdminSubscriptionResponse | None
+    upcoming_subscription: AdminSubscriptionResponse | None
     records: list[AdminBillingRecordResponse]
 
 
@@ -280,6 +283,7 @@ def _serialize_settings(settings: TenantSettingsRecord) -> AdminTenantSettingsRe
 
 def _serialize_snapshot(snapshot: AdminSnapshot) -> AdminSnapshotResponse:
     current_subscription = snapshot.billing.current_subscription
+    upcoming_subscription = snapshot.billing.upcoming_subscription
     return AdminSnapshotResponse(
         tenant=AdminTenantResponse(**asdict(snapshot.tenant)),
         settings=_serialize_settings(snapshot.settings),
@@ -304,6 +308,24 @@ def _serialize_snapshot(snapshot: AdminSnapshot) -> AdminSnapshotResponse:
                 if current_subscription is not None
                 else None
             ),
+            upcoming_subscription=(
+                AdminSubscriptionResponse(
+                    id=upcoming_subscription.id,
+                    tenant_id=upcoming_subscription.tenant_id,
+                    billing_record_id=upcoming_subscription.billing_record_id,
+                    plan_code=upcoming_subscription.plan_code,
+                    subscription_status=upcoming_subscription.subscription_status.value,
+                    billing_period_start=upcoming_subscription.billing_period_start,
+                    billing_period_end=upcoming_subscription.billing_period_end,
+                    keyword_limit=upcoming_subscription.keyword_limit,
+                    activated_at=upcoming_subscription.activated_at,
+                    activated_by_payment_id=upcoming_subscription.activated_by_payment_id,
+                    created_at=upcoming_subscription.created_at,
+                    updated_at=upcoming_subscription.updated_at,
+                )
+                if upcoming_subscription is not None
+                else None
+            ),
             records=[
                 AdminBillingRecordResponse(
                     id=record.id,
@@ -320,6 +342,8 @@ def _serialize_snapshot(snapshot: AdminSnapshot) -> AdminSnapshotResponse:
                     amount_due=record.amount_due,
                     reconciled_total=record.reconciled_total,
                     outstanding_balance=record.outstanding_balance,
+                    upgrade_from_subscription_id=record.upgrade_from_subscription_id,
+                    upgrade_mode=record.upgrade_mode,
                     notes=record.notes,
                     created_at=record.created_at,
                     updated_at=record.updated_at,

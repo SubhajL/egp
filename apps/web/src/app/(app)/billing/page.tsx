@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
+  createBillingUpgrade,
   createBillingRecord,
   createBillingPaymentRequest,
   localizeApiError,
@@ -18,8 +19,9 @@ import {
   transitionBillingRecord,
   type BillingPlan,
   type BillingRecordDetail,
+  type EntitlementSummary,
 } from "@/lib/api";
-import { useBillingPlans, useBillingRecords } from "@/lib/hooks";
+import { useBillingPlans, useBillingRecords, useRules } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const EMPTY_RECORDS: BillingRecordDetail[] = [];
@@ -119,10 +121,148 @@ function planCapabilityHint(plan: BillingPlan | null): string | null {
   return null;
 }
 
+type UpgradeOption = {
+  targetPlanCode: string;
+  title: string;
+  description: string;
+  immediateChangeCopy: string;
+};
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getUpgradeOptions(
+  entitlements: EntitlementSummary | undefined,
+  billingPlans: BillingPlan[],
+): UpgradeOption[] {
+  const planMap = new Map(billingPlans.map((plan) => [plan.code, plan]));
+  const currentPlanCode = entitlements?.plan_code;
+  if (currentPlanCode === "free_trial") {
+    return ["one_time_search_pack", "monthly_membership"]
+      .map((targetPlanCode) => {
+        const plan = planMap.get(targetPlanCode);
+        if (!plan) {
+          return null;
+        }
+        return {
+          targetPlanCode,
+          title: `อัปเกรดเป็น ${plan.label}`,
+          description:
+            targetPlanCode === "one_time_search_pack"
+              ? "ชำระครั้งเดียวเพื่อปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนสำหรับรอบแพ็กเกจนี้"
+              : "เปลี่ยนเป็นแพ็กเกจรายเดือนเพื่อเพิ่มโควต้าเป็น 5 คำค้นและปลดล็อกทุกช่องทางการใช้งานทันทีหลังชำระสำเร็จ",
+          immediateChangeCopy:
+            targetPlanCode === "one_time_search_pack"
+              ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+              : "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที",
+        };
+      })
+      .filter((option): option is UpgradeOption => option !== null);
+  }
+  if (currentPlanCode === "one_time_search_pack") {
+    const monthlyPlan = planMap.get("monthly_membership");
+    if (!monthlyPlan) {
+      return [];
+    }
+    return [
+      {
+        targetPlanCode: monthlyPlan.code,
+        title: `อัปเกรดเป็น ${monthlyPlan.label}`,
+        description:
+          "เพิ่มโควต้าเป็น 5 คำค้น และเปลี่ยนเป็นรอบสมาชิกรายเดือนหลังการชำระสำเร็จ",
+        immediateChangeCopy: "โควต้าคำค้นจะเพิ่มเป็น 5 และเปิดสิทธิ์รายเดือนทันที",
+      },
+    ];
+  }
+  return [];
+}
+
+function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
+  title: string;
+  primary: string;
+  secondary: string;
+} {
+  if (record.upgrade_mode === "replace_on_activation") {
+    return {
+      title: "รอเริ่มใช้งานตามรอบใหม่",
+      primary: "ชำระเงินสำเร็จแล้ว ระบบจะเปิดแพ็กเกจใหม่ตามวันเริ่มรอบที่กำหนดไว้",
+      secondary: "แพ็กเกจปัจจุบันยังใช้งานได้ต่อจนกว่าจะถึงวันเริ่มของแพ็กเกจใหม่",
+    };
+  }
+  return {
+    title: "สิ่งที่จะเปลี่ยนทันทีหลังชำระสำเร็จ",
+    primary:
+      record.plan_code === "monthly_membership"
+        ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+        : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
+    secondary: "แพ็กเกจเดิมจะถูกแทนที่เมื่อการชำระเงินสำเร็จ",
+  };
+}
+
+function UpgradeCallout({
+  entitlements,
+  billingPlans,
+  busy,
+  onUpgrade,
+}: {
+  entitlements: EntitlementSummary | undefined;
+  billingPlans: BillingPlan[];
+  busy: boolean;
+  onUpgrade: (targetPlanCode: string) => Promise<void>;
+}) {
+  const options = getUpgradeOptions(entitlements, billingPlans);
+  if (options.length === 0) {
+    return null;
+  }
+  const title =
+    entitlements?.plan_code === "free_trial"
+      ? "อัปเกรดจาก Free Trial"
+      : "อัปเกรดจาก One-Time Search Pack";
+  return (
+    <div className="rounded-2xl border border-primary/15 bg-[linear-gradient(135deg,rgba(22,163,74,0.08),rgba(14,116,144,0.08))] p-5 shadow-[var(--shadow-soft)]">
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wider text-primary">
+          Upgrade Channel
+        </p>
+        <h2 className="text-lg font-bold text-[var(--text-primary)]">{title}</h2>
+        <p className="text-sm text-[var(--text-muted)]">
+          ระบบจะสร้างใบเรียกเก็บสำหรับการอัปเกรดและเปิด PromptPay QR ให้ทันที เพื่อให้ลูกค้าชำระและเปลี่ยนสิทธิ์ได้ใน flow เดียว
+        </p>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        {options.map((option) => (
+          <div
+            key={option.targetPlanCode}
+            className="rounded-2xl border border-primary/15 bg-white/70 p-4"
+          >
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <p className="font-semibold text-[var(--text-primary)]">{option.title}</p>
+                <p className="mt-1 text-sm text-[var(--text-muted)]">{option.description}</p>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onUpgrade(option.targetPlanCode)}
+                className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {option.title}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function BillingPage() {
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useBillingRecords();
   const { data: plansData } = useBillingPlans();
+  const { data: rulesData } = useRules();
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordNumber, setRecordNumber] = useState("");
   const [planCode, setPlanCode] = useState("monthly_membership");
@@ -142,6 +282,7 @@ export default function BillingPage() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [renderedQrSvg, setRenderedQrSvg] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+  const [upgradeCopy, setUpgradeCopy] = useState<string | null>(null);
 
   const records = data?.records ?? EMPTY_RECORDS;
   const billingPlans = plansData?.plans ?? [];
@@ -215,6 +356,15 @@ export default function BillingPage() {
 
   async function refreshBilling() {
     await queryClient.invalidateQueries({ queryKey: ["billing-records"] });
+    await queryClient.invalidateQueries({ queryKey: ["rules"] });
+  }
+
+  async function createPromptPayRequestForRecord(recordId: string) {
+    return createBillingPaymentRequest(recordId, {
+      provider: "opn",
+      payment_method: "promptpay_qr",
+      expires_in_minutes: 30,
+    });
   }
 
   async function handleCreateRecord(event: FormEvent<HTMLFormElement>) {
@@ -329,6 +479,32 @@ export default function BillingPage() {
     }
   }
 
+  async function handleCreateUpgrade(targetPlanCode: string) {
+    setSubmitError(null);
+    setPaymentError(null);
+    setUpgradeCopy(null);
+    setActionBusy(true);
+    try {
+      const upgrade = await createBillingUpgrade({
+        target_plan_code: targetPlanCode,
+        billing_period_start: todayIsoDate(),
+      });
+      const detail = await createPromptPayRequestForRecord(upgrade.record.id);
+      await refreshBilling();
+      setSelectedRecordId(detail.record.id);
+      setPaymentAmount(detail.record.outstanding_balance);
+      setUpgradeCopy(
+        targetPlanCode === "monthly_membership"
+          ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+          : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
+      );
+    } catch (mutationError) {
+      setSubmitError(localizeApiError(mutationError, "ไม่สามารถเริ่มคำขออัปเกรดได้"));
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
   async function handleStartFreeTrial() {
     setSubmitError(null);
     setActionBusy(true);
@@ -390,142 +566,151 @@ export default function BillingPage() {
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
-        <form
-          onSubmit={(event) => void handleCreateRecord(event)}
-          className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]"
-        >
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-bold text-[var(--text-primary)]">สร้างรายการเรียกเก็บ</h2>
-              <p className="mt-1 text-sm text-[var(--text-muted)]">
-                เริ่มจากร่างใบแจ้งหนี้ แล้วค่อยออกบิลและรอชำระตาม lifecycle จริง
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <StatusBadge state="draft" variant="billing" />
-              <button
-                type="button"
-                disabled={actionBusy}
-                onClick={() => void handleStartFreeTrial()}
-                className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                เริ่ม Free Trial
-              </button>
-            </div>
-          </div>
+        <div className="space-y-6">
+          <UpgradeCallout
+            entitlements={rulesData?.entitlements}
+            billingPlans={billingPlans}
+            busy={actionBusy}
+            onUpgrade={handleCreateUpgrade}
+          />
 
-          <div className="mt-5 grid grid-cols-1 gap-4">
-            <label className="text-sm text-[var(--text-secondary)]">
-              เลขที่บิล
-              <input
-                value={recordNumber}
-                onChange={(event) => setRecordNumber(event.target.value)}
-                placeholder="INV-2026-0002"
-                className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                required
-              />
-            </label>
-
-            <label className="text-sm text-[var(--text-secondary)]">
-              แผนราคา
-              <select
-                value={planCode}
-                onChange={(event) => setPlanCode(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                required
-              >
-                {billingPlans.map((plan) => (
-                  <option key={plan.code} value={plan.code}>
-                    {plan.label}
-                  </option>
-                ))}
-              </select>
-              {selectedPlan ? (
-                <>
-                  <span className="mt-1 block text-xs text-[var(--text-muted)]">
-                    {selectedPlan.description}
-                  </span>
-                  {planCapabilityHint(selectedPlan) ? (
-                    <span className="mt-1 block text-xs text-primary">
-                      {planCapabilityHint(selectedPlan)}
-                    </span>
-                  ) : null}
-                </>
-              ) : null}
-            </label>
-
-            <div className="grid grid-cols-2 gap-4">
-              <label className="text-sm text-[var(--text-secondary)]">
-                รอบบิลเริ่ม
-                <input
-                  type="date"
-                  value={periodStart}
-                  onChange={(event) => setPeriodStart(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                  required
-                />
-              </label>
-              <label className="text-sm text-[var(--text-secondary)]">
-                รอบบิลสิ้นสุด
-                <input
-                  type="date"
-                  value={periodEnd}
-                  onChange={(event) => setPeriodEnd(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                  required
-                  readOnly={!!selectedPlan}
-                />
-              </label>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <label className="text-sm text-[var(--text-secondary)]">
-                กำหนดชำระ
-                <input
-                  type="datetime-local"
-                  value={dueAt}
-                  onChange={(event) => setDueAt(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                />
-              </label>
-              <label className="text-sm text-[var(--text-secondary)]">
-                ยอดเรียกเก็บ
-                <input
-                  value={amountDue}
-                  onChange={(event) => setAmountDue(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                  required
-                  readOnly={!!selectedPlan}
-                />
-              </label>
-            </div>
-
-            <label className="text-sm text-[var(--text-secondary)]">
-              หมายเหตุ
-              <textarea
-                value={recordNotes}
-                onChange={(event) => setRecordNotes(event.target.value)}
-                rows={3}
-                className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
-                placeholder="เช่น รอบใช้งานเดือนเมษายน / internal beta"
-              />
-            </label>
-          </div>
-
-          {submitError ? (
-            <div className="mt-4 rounded-xl border border-[var(--badge-red-bg)] bg-red-50 px-3 py-2 text-sm text-[var(--badge-red-text)]">
-              {submitError}
-            </div>
-          ) : null}
-
-          <button
-            type="submit"
-            disabled={actionBusy}
-            className="mt-5 w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+          <form
+            onSubmit={(event) => void handleCreateRecord(event)}
+            className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]"
           >
-            {actionBusy ? "กำลังบันทึก..." : "สร้างร่างใบแจ้งหนี้"}
-          </button>
-        </form>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-[var(--text-primary)]">สร้างรายการเรียกเก็บ</h2>
+                <p className="mt-1 text-sm text-[var(--text-muted)]">
+                  เริ่มจากร่างใบแจ้งหนี้ แล้วค่อยออกบิลและรอชำระตาม lifecycle จริง
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <StatusBadge state="draft" variant="billing" />
+                <button
+                  type="button"
+                  disabled={actionBusy}
+                  onClick={() => void handleStartFreeTrial()}
+                  className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  เริ่ม Free Trial
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-4">
+              <label className="text-sm text-[var(--text-secondary)]">
+                เลขที่บิล
+                <input
+                  value={recordNumber}
+                  onChange={(event) => setRecordNumber(event.target.value)}
+                  placeholder="INV-2026-0002"
+                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                  required
+                />
+              </label>
+
+              <label className="text-sm text-[var(--text-secondary)]">
+                แผนราคา
+                <select
+                  value={planCode}
+                  onChange={(event) => setPlanCode(event.target.value)}
+                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                  required
+                >
+                  {billingPlans.map((plan) => (
+                    <option key={plan.code} value={plan.code}>
+                      {plan.label}
+                    </option>
+                  ))}
+                </select>
+                {selectedPlan ? (
+                  <>
+                    <span className="mt-1 block text-xs text-[var(--text-muted)]">
+                      {selectedPlan.description}
+                    </span>
+                    {planCapabilityHint(selectedPlan) ? (
+                      <span className="mt-1 block text-xs text-primary">
+                        {planCapabilityHint(selectedPlan)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : null}
+              </label>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="text-sm text-[var(--text-secondary)]">
+                  รอบบิลเริ่ม
+                  <input
+                    type="date"
+                    value={periodStart}
+                    onChange={(event) => setPeriodStart(event.target.value)}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                    required
+                  />
+                </label>
+                <label className="text-sm text-[var(--text-secondary)]">
+                  รอบบิลสิ้นสุด
+                  <input
+                    type="date"
+                    value={periodEnd}
+                    onChange={(event) => setPeriodEnd(event.target.value)}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                    required
+                    readOnly={!!selectedPlan}
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <label className="text-sm text-[var(--text-secondary)]">
+                  กำหนดชำระ
+                  <input
+                    type="datetime-local"
+                    value={dueAt}
+                    onChange={(event) => setDueAt(event.target.value)}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                  />
+                </label>
+                <label className="text-sm text-[var(--text-secondary)]">
+                  ยอดเรียกเก็บ
+                  <input
+                    value={amountDue}
+                    onChange={(event) => setAmountDue(event.target.value)}
+                    className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                    required
+                    readOnly={!!selectedPlan}
+                  />
+                </label>
+              </div>
+
+              <label className="text-sm text-[var(--text-secondary)]">
+                หมายเหตุ
+                <textarea
+                  value={recordNotes}
+                  onChange={(event) => setRecordNotes(event.target.value)}
+                  rows={3}
+                  className="mt-1 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none"
+                  placeholder="เช่น รอบใช้งานเดือนเมษายน / internal beta"
+                />
+              </label>
+            </div>
+
+            {submitError ? (
+              <div className="mt-4 rounded-xl border border-[var(--badge-red-bg)] bg-red-50 px-3 py-2 text-sm text-[var(--badge-red-text)]">
+                {submitError}
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={actionBusy}
+              className="mt-5 w-full rounded-xl bg-primary px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {actionBusy ? "กำลังบันทึก..." : "สร้างร่างใบแจ้งหนี้"}
+            </button>
+          </form>
+        </div>
 
         <QueryState
           isLoading={isLoading}
@@ -740,6 +925,20 @@ export default function BillingPage() {
                       <p className="mt-3 text-sm text-[var(--text-secondary)]">
                         สิทธิ์คีย์เวิร์ดสูงสุด{" "}
                         {selectedRecord.subscription.keyword_limit ?? "ไม่กำหนด"} รายการ
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {selectedRecord.record.upgrade_from_subscription_id ? (
+                    <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-amber-900">
+                        {describeUpgradeSettlement(selectedRecord.record).title}
+                      </p>
+                      <p className="mt-2 text-sm text-amber-800">
+                        {upgradeCopy ?? describeUpgradeSettlement(selectedRecord.record).primary}
+                      </p>
+                      <p className="mt-2 text-sm text-amber-700">
+                        {describeUpgradeSettlement(selectedRecord.record).secondary}
                       </p>
                     </div>
                   ) : null}

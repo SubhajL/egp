@@ -284,6 +284,7 @@ export default function AdminPage() {
   const auditItems = auditData?.items ?? [];
   const supportResults = supportTenantData?.tenants ?? [];
   const currentSubscription = data?.billing.current_subscription ?? null;
+  const upcomingSubscription = data?.billing.upcoming_subscription ?? null;
   const summary = data?.billing.summary ?? {
     open_records: 0,
     awaiting_reconciliation: 0,
@@ -1012,6 +1013,26 @@ export default function AdminPage() {
             </div>
           </div>
 
+          {upcomingSubscription ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-[var(--shadow-soft)]">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">สิทธิ์ที่กำลังรอเริ่มใช้งาน</p>
+                  <p className="mt-1 text-sm text-amber-800">
+                    {upcomingSubscription.plan_code} เริ่ม {formatThaiDate(upcomingSubscription.billing_period_start)}
+                  </p>
+                  <p className="mt-1 text-sm text-amber-700">
+                    ใช้งานจริงถึง {formatThaiDate(upcomingSubscription.billing_period_end)}
+                  </p>
+                </div>
+                <StatusBadge
+                  state={upcomingSubscription.subscription_status}
+                  variant="subscription"
+                />
+              </div>
+            </div>
+          ) : null}
+
           <div className="overflow-hidden rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)]">
             <table className="min-w-full divide-y divide-[var(--border-default)] text-sm">
               <thead className="bg-[var(--bg-surface-secondary)]">
@@ -1019,6 +1040,7 @@ export default function AdminPage() {
                   <th className="px-4 py-3 text-left">เลขที่บิล</th>
                   <th className="px-4 py-3 text-left">แผน</th>
                   <th className="px-4 py-3 text-left">สถานะ</th>
+                  <th className="px-4 py-3 text-left">Upgrade Chain</th>
                   <th className="px-4 py-3 text-left">จำนวนเงิน</th>
                 </tr>
               </thead>
@@ -1031,6 +1053,18 @@ export default function AdminPage() {
                     <td className="px-4 py-3 text-[var(--text-secondary)]">{record.plan_code}</td>
                     <td className="px-4 py-3">
                       <StatusBadge state={record.status} variant="billing" />
+                    </td>
+                    <td className="px-4 py-3 text-[var(--text-secondary)]">
+                      {record.upgrade_from_subscription_id ? (
+                        <div className="space-y-1">
+                          <p>{record.upgrade_mode}</p>
+                          <p className="font-mono text-xs text-[var(--text-muted)]">
+                            from {record.upgrade_from_subscription_id.slice(0, 8)}
+                          </p>
+                        </div>
+                      ) : (
+                        <span className="text-[var(--text-muted)]">-</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-[var(--text-secondary)]">
                       {formatBudget(record.amount_due)}
