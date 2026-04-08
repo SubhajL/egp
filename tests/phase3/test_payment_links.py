@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
@@ -30,9 +34,11 @@ class FailingPaymentProvider:
 class StubOpnProvider:
     def __init__(self) -> None:
         self.created_requests: list[object] = []
+        self.last_amount = "1500.00"
 
     def create_payment_request(self, *, request):
         self.created_requests.append(request)
+        self.last_amount = str(request.amount)
         if request.payment_method is BillingPaymentMethod.CARD:
             return CreatedPaymentRequest(
                 provider=BillingPaymentProvider.OPN,
@@ -60,14 +66,19 @@ class StubOpnProvider:
         )
 
     def parse_callback(self, *, payload, headers=None, raw_body=None):
-        del headers, raw_body
+        signature = str((headers or {}).get("x-opn-signature") or "").strip()
+        if not signature or raw_body is None:
+            raise ValueError("invalid opn webhook signature")
+        expected = _opn_signature("skey_test_opn", raw_body)
+        if signature != expected:
+            raise ValueError("invalid opn webhook signature")
         kind = str(payload.get("kind") or "promptpay").strip()
         if kind == "card":
             return ParsedPaymentCallback(
                 provider_event_id="evnt_test_card_001",
                 provider_reference="link_test_card_001",
                 status=BillingPaymentRequestStatus.SETTLED,
-                amount="1500.00",
+                amount=self.last_amount,
                 currency="THB",
                 occurred_at="2026-04-05T05:30:00+00:00",
                 reference_code="chrg_test_card_charge_001",
@@ -77,7 +88,7 @@ class StubOpnProvider:
             provider_event_id="evnt_test_promptpay_001",
             provider_reference="chrg_test_promptpay_001",
             status=BillingPaymentRequestStatus.SETTLED,
-            amount="1500.00",
+            amount=self.last_amount,
             currency="THB",
             occurred_at="2026-04-05T05:30:00+00:00",
             reference_code="chrg_test_promptpay_001",
@@ -98,8 +109,18 @@ def _create_client(
             payment_base_url="https://pay.egp.test",
             promptpay_proxy_id="0801234567",
             payment_callback_secret=callback_secret,
+            opn_secret_key="skey_test_opn",
         )
     )
+
+
+def _opn_signature(secret: str, raw_body: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        raw_body.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.b64encode(digest).decode("ascii")
 
 
 def test_create_app_requires_payment_callback_secret(
@@ -395,9 +416,14 @@ def test_opn_webhook_settles_promptpay_request_without_shared_secret(tmp_path) -
         payment_method="promptpay_qr",
     )
 
+    raw_body = '{"kind":"promptpay"}'
     response = client.post(
         "/v1/billing/providers/opn/webhooks",
-        json={"kind": "promptpay"},
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "x-opn-signature": _opn_signature("skey_test_opn", raw_body),
+        },
     )
 
     assert response.status_code == 200
@@ -423,9 +449,14 @@ def test_opn_webhook_settles_card_request_without_shared_secret(tmp_path) -> Non
         payment_method="card",
     )
 
+    raw_body = '{"kind":"card"}'
     response = client.post(
         "/v1/billing/providers/opn/webhooks",
-        json={"kind": "card"},
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "x-opn-signature": _opn_signature("skey_test_opn", raw_body),
+        },
     )
 
     assert response.status_code == 200
@@ -436,6 +467,69 @@ def test_opn_webhook_settles_card_request_without_shared_secret(tmp_path) -> Non
         == request_detail["payment_requests"][0]["id"]
     )
     assert [payment["payment_method"] for payment in settled["payments"]] == ["card"]
+
+
+def test_opn_webhook_rejects_missing_signature(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="promptpay_qr",
+    )
+
+    response = client.post(
+        "/v1/billing/providers/opn/webhooks",
+        json={"kind": "promptpay"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid opn webhook signature"
+
+
+def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_path) -> None:
+    provider = StubOpnProvider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    future_start = date.today() + timedelta(days=1)
+    created_response = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-2026-3002",
+            "plan_code": "one_time_search_pack",
+            "status": "awaiting_payment",
+            "billing_period_start": future_start.isoformat(),
+        },
+    )
+    assert created_response.status_code == 201
+    created = created_response.json()
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="opn",
+        payment_method="promptpay_qr",
+    )
+
+    raw_body = '{"kind":"promptpay"}'
+    response = client.post(
+        "/v1/billing/providers/opn/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "x-opn-signature": _opn_signature("skey_test_opn", raw_body),
+        },
+    )
+
+    assert response.status_code == 200
+    settled = response.json()
+    assert settled["record"]["id"] == created["record"]["id"]
+    assert settled["record"]["status"] == "paid"
+    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert settled["subscription"]["plan_code"] == "one_time_search_pack"
+    assert settled["subscription"]["subscription_status"] == "pending_activation"
+    assert settled["subscription"]["keyword_limit"] == 1
 
 
 def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
@@ -457,6 +551,8 @@ def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
     provider._request = fake_request  # type: ignore[method-assign]
 
     parsed = provider.parse_callback(
+        headers={"x-opn-signature": _opn_signature("skey_test_example", '{"id":"evt_test_card_001","key":"charge.complete","data":{"object":"charge","id":"chrg_test_card_001"}}')},
+        raw_body='{"id":"evt_test_card_001","key":"charge.complete","data":{"object":"charge","id":"chrg_test_card_001"}}',
         payload={
             "id": "evt_test_card_001",
             "key": "charge.complete",

@@ -1154,7 +1154,7 @@ export type TransitionBillingRecordInput = {
 };
 
 export type CreateBillingPaymentRequestInput = {
-  provider?: string;
+  provider: string;
   payment_method?: string;
   expires_in_minutes?: number;
 };
@@ -1475,13 +1475,13 @@ export async function transitionBillingRecord(
 
 export async function createBillingPaymentRequest(
   recordId: string,
-  payload: CreateBillingPaymentRequestInput = {},
+  payload: CreateBillingPaymentRequestInput,
 ): Promise<BillingRecordDetail> {
   const url = buildUrl(`/v1/billing/records/${encodeURIComponent(recordId)}/payment-requests`, {});
   return apiJsonRequest<BillingRecordDetail>(url, {
     method: "POST",
     body: JSON.stringify({
-      provider: payload.provider ?? "mock_promptpay",
+      provider: payload.provider,
       payment_method: payload.payment_method ?? "promptpay_qr",
       expires_in_minutes: payload.expires_in_minutes ?? 30,
     }),
