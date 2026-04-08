@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from egp_crawler_core.discovery_authorization import (
+    DiscoveryAuthorizationSnapshot,
+    normalize_keyword as _normalize_discovery_keyword,
+    require_discovery_authorization,
+)
 from egp_shared_types.billing_plans import get_billing_plan_definition
 from egp_shared_types.enums import BillingSubscriptionStatus
 
@@ -58,7 +63,7 @@ def _select_current_subscription(
 
 
 def _normalize_keyword(value: str) -> str:
-    return str(value).strip()
+    return _normalize_discovery_keyword(value)
 
 
 class TenantEntitlementService:
@@ -139,12 +144,17 @@ class TenantEntitlementService:
         self, *, tenant_id: str, keyword: str
     ) -> TenantEntitlementSnapshot:
         snapshot = self.require_active_subscription(tenant_id=tenant_id, capability="runs")
-        if snapshot.over_keyword_limit:
-            raise EntitlementError("active keyword configuration exceeds plan limit")
-        normalized_keyword = _normalize_keyword(keyword)
-        entitled_keywords = {value.casefold() for value in snapshot.active_keywords}
-        if not normalized_keyword or normalized_keyword.casefold() not in entitled_keywords:
-            raise EntitlementError("discover keyword is not entitled for tenant")
+        try:
+            require_discovery_authorization(
+                snapshot=DiscoveryAuthorizationSnapshot(
+                    has_active_subscription=snapshot.has_active_subscription,
+                    over_keyword_limit=snapshot.over_keyword_limit,
+                    active_keywords=snapshot.active_keywords,
+                ),
+                keyword=keyword,
+            )
+        except PermissionError as exc:
+            raise EntitlementError(str(exc)) from exc
         return snapshot
 
     def notifications_allowed(self, *, tenant_id: str) -> bool:

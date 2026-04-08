@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from types import SimpleNamespace
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.notification_repo import SqlNotificationRepository
@@ -25,6 +28,156 @@ from egp_worker.workflows.discover import run_discover_workflow
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 INTERNAL_WORKER_TOKEN = "phase1-internal-worker-token"
+
+
+def _seed_subscription(
+    *,
+    database_url: str,
+    plan_code: str,
+    keyword_limit: int,
+    billing_period_start: date,
+    billing_period_end: date,
+) -> None:
+    repository = SqlRunRepository(database_url=database_url, bootstrap_schema=True)
+    with repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :tenant_id,
+                    'INV-WORKFLOW',
+                    :plan_code,
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '0.00',
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "now": "2026-04-08T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                    :tenant_id,
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :plan_code,
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    :keyword_limit,
+                    :now,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "keyword_limit": keyword_limit,
+                "now": "2026-04-08T00:00:00+00:00",
+            },
+        )
+
+
+def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
+    project_repository = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
+    with project_repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profiles (
+                    id,
+                    tenant_id,
+                    name,
+                    profile_type,
+                    is_active,
+                    max_pages_per_keyword,
+                    close_consulting_after_days,
+                    close_stale_after_days,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                    :tenant_id,
+                    'Watchlist',
+                    'custom',
+                    1,
+                    15,
+                    30,
+                    45,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {"tenant_id": TENANT_ID, "now": "2026-04-08T00:00:00+00:00"},
+        )
+        for index, keyword in enumerate(keywords, start=1):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO crawl_profile_keywords (
+                        id,
+                        profile_id,
+                        keyword,
+                        position,
+                        created_at
+                    ) VALUES (
+                        :id,
+                        'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                        :keyword,
+                        :position,
+                        :created_at
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "keyword": keyword,
+                    "position": index,
+                    "created_at": "2026-04-08T00:00:00+00:00",
+                },
+            )
 
 
 def _notification_dispatcher(
@@ -69,6 +222,15 @@ class FakeProjectEventSink:
 def test_discover_workflow_emits_project_events_and_records_run_tasks(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     sink = FakeProjectEventSink()
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["โรงพยาบาล"])
 
     result = run_discover_workflow(
         database_url=database_url,
@@ -189,6 +351,15 @@ def test_close_check_workflow_skips_non_matching_status_without_sink_call(
 def test_discover_workflow_uses_service_backed_sink_for_notifications(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     repository, dispatcher = _notification_dispatcher(database_url)
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["โรงพยาบาล"])
 
     run_discover_workflow(
         database_url=database_url,
@@ -394,6 +565,15 @@ def test_api_project_event_sink_posts_close_check_to_auth_enabled_api(tmp_path) 
 
 def test_run_worker_job_dispatches_discover_workflow(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-dispatch.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["โรงพยาบาล"])
 
     result = run_worker_job(
         {
@@ -425,6 +605,15 @@ def test_run_worker_job_dispatches_discover_workflow(tmp_path) -> None:
 
 def test_run_worker_job_preserves_profile_id_in_discover_result(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-profile.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["โรงพยาบาล"])
 
     result = run_worker_job(
         {

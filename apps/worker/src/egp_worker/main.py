@@ -145,4 +145,16 @@ def main(stdin_text: str | None = None) -> None:
     if payload.get("command") == "noop":
         print(json.dumps({"service": "worker", "status": "idle"}, sort_keys=True))
         return
-    print(json.dumps(run_worker_job(payload), ensure_ascii=False, sort_keys=True))
+    try:
+        result = run_worker_job(payload)
+    except PermissionError as exc:
+        print(
+            json.dumps(
+                {"error_type": "entitlement_denied", "detail": str(exc)},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
