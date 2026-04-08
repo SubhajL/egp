@@ -26,7 +26,10 @@ from sqlalchemy.exc import IntegrityError
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
-from egp_shared_types.billing_plans import derive_plan_period_end, get_billing_plan_definition
+from egp_shared_types.billing_plans import (
+    derive_plan_period_end,
+    get_billing_plan_definition,
+)
 from egp_shared_types.enums import (
     BillingEventType,
     BillingPaymentProvider,
@@ -186,7 +189,13 @@ BILLING_RECORDS_TABLE = Table(
     Column("currency", String, nullable=False, default="THB"),
     Column("amount_due", Numeric(18, 2), nullable=False),
     Column("upgrade_from_subscription_id", UUID_SQL_TYPE, nullable=True),
-    Column("upgrade_mode", String, nullable=False, default="none", server_default=text("'none'")),
+    Column(
+        "upgrade_mode",
+        String,
+        nullable=False,
+        default="none",
+        server_default=text("'none'"),
+    ),
     Column("notes", String, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -628,7 +637,9 @@ def _select_effective_subscription(
         subscriptions,
         key=lambda subscription: (
             _subscription_priority(subscription.subscription_status),
-            0 if subscription.subscription_status is BillingSubscriptionStatus.ACTIVE else 1,
+            0
+            if subscription.subscription_status is BillingSubscriptionStatus.ACTIVE
+            else 1,
             -date.fromisoformat(subscription.billing_period_end).toordinal(),
             -date.fromisoformat(subscription.billing_period_start).toordinal(),
             subscription.created_at,
@@ -642,7 +653,8 @@ def _select_upcoming_subscription(
     pending = [
         subscription
         for subscription in subscriptions
-        if subscription.subscription_status is BillingSubscriptionStatus.PENDING_ACTIVATION
+        if subscription.subscription_status
+        is BillingSubscriptionStatus.PENDING_ACTIVATION
     ]
     if not pending:
         return None
@@ -1628,7 +1640,9 @@ class SqlBillingRepository:
                 )
                 is not None
             ):
-                raise ValueError("upgrade already in progress for subscription") from exc
+                raise ValueError(
+                    "upgrade already in progress for subscription"
+                ) from exc
             raise
 
         detail = self.get_billing_record_detail(
@@ -1665,10 +1679,15 @@ class SqlBillingRepository:
             ("free_trial", "monthly_membership"),
             ("one_time_search_pack", "monthly_membership"),
         }
-        if (current_subscription.plan_code, normalized_target_plan_code) not in allowed_transitions:
+        if (
+            current_subscription.plan_code,
+            normalized_target_plan_code,
+        ) not in allowed_transitions:
             raise ValueError("unsupported subscription upgrade")
 
-        target_plan_definition = get_billing_plan_definition(normalized_target_plan_code)
+        target_plan_definition = get_billing_plan_definition(
+            normalized_target_plan_code
+        )
         if target_plan_definition is None:
             raise ValueError("unsupported subscription upgrade")
 

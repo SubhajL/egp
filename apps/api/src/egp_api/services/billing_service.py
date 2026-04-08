@@ -146,9 +146,7 @@ class BillingService:
             )
         resolved_notes = notes
         if resolved_notes is None:
-            resolved_notes = (
-                f"Upgrade to {normalized_target_plan_code} starting {normalized_start}"
-            )
+            resolved_notes = f"Upgrade to {normalized_target_plan_code} starting {normalized_start}"
         return self._repository.create_upgrade_billing_record(
             tenant_id=tenant_id,
             target_plan_code=normalized_target_plan_code,

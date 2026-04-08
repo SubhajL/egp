@@ -406,7 +406,10 @@ def test_duplicate_in_flight_upgrade_is_rejected(tmp_path) -> None:
     )
 
     assert second_response.status_code == 400
-    assert second_response.json()["detail"] == "upgrade already in progress for subscription"
+    assert (
+        second_response.json()["detail"]
+        == "upgrade already in progress for subscription"
+    )
 
 
 def test_future_start_upgrade_creates_replace_on_activation_record(tmp_path) -> None:
@@ -435,7 +438,9 @@ def test_future_start_upgrade_creates_replace_on_activation_record(tmp_path) -> 
     assert detail["record"]["upgrade_mode"] == "replace_on_activation"
 
 
-def test_future_start_upgrade_settlement_preserves_current_active_subscription(tmp_path) -> None:
+def test_future_start_upgrade_settlement_preserves_current_active_subscription(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     source_subscription_id = _seed_subscription(
@@ -493,12 +498,15 @@ def test_future_start_upgrade_settlement_preserves_current_active_subscription(t
     source_record = next(
         detail
         for detail in listed.json()["records"]
-        if detail["subscription"] is not None and detail["subscription"]["id"] == source_subscription_id
+        if detail["subscription"] is not None
+        and detail["subscription"]["id"] == source_subscription_id
     )
     assert source_record["subscription"]["subscription_status"] == "active"
 
 
-def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(tmp_path) -> None:
+def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     source_subscription_id = _seed_subscription(

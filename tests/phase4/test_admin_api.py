@@ -160,7 +160,9 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
         )
 
 
-def _seed_future_upgrade_chain(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
+def _seed_future_upgrade_chain(
+    client: TestClient, *, tenant_id: str = TENANT_ID
+) -> None:
     source_record_id = str(uuid4())
     source_subscription_id = str(uuid4())
     upgrade_record_id = str(uuid4())
@@ -645,7 +647,9 @@ def test_admin_snapshot_returns_tenant_users_settings_and_billing(tmp_path) -> N
     assert body["billing"]["records"][0]["record_number"].startswith("INV-")
 
 
-def test_admin_snapshot_exposes_upgrade_chain_and_upcoming_subscription(tmp_path) -> None:
+def test_admin_snapshot_exposes_upgrade_chain_and_upcoming_subscription(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
     _seed_future_upgrade_chain(client)
@@ -654,12 +658,19 @@ def test_admin_snapshot_exposes_upgrade_chain_and_upcoming_subscription(tmp_path
 
     assert response.status_code == 200
     body = response.json()
-    assert body["billing"]["current_subscription"]["plan_code"] == "one_time_search_pack"
+    assert (
+        body["billing"]["current_subscription"]["plan_code"] == "one_time_search_pack"
+    )
     assert body["billing"]["current_subscription"]["subscription_status"] == "active"
     assert body["billing"]["upcoming_subscription"]["plan_code"] == "monthly_membership"
-    assert body["billing"]["upcoming_subscription"]["subscription_status"] == "pending_activation"
+    assert (
+        body["billing"]["upcoming_subscription"]["subscription_status"]
+        == "pending_activation"
+    )
     upgrade_record = next(
-        record for record in body["billing"]["records"] if record["record_number"] == "UPG-MONTHLY-CHAIN"
+        record
+        for record in body["billing"]["records"]
+        if record["record_number"] == "UPG-MONTHLY-CHAIN"
     )
     assert upgrade_record["upgrade_mode"] == "replace_on_activation"
     assert upgrade_record["upgrade_from_subscription_id"] is not None
@@ -820,8 +831,8 @@ def test_admin_can_issue_invite_for_existing_user(tmp_path) -> None:
         tmp_path,
         auth_required=True,
     )
-    client.app.state.notification_service._email_sender = (
-        lambda *, to, subject, body: sent.append({"to": to, "subject": subject, "body": body})
+    client.app.state.notification_service._email_sender = lambda *, to, subject, body: (
+        sent.append({"to": to, "subject": subject, "body": body})
     )
     _seed_tenant(client)
 
