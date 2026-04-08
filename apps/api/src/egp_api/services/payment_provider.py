@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -150,6 +152,25 @@ class OpnProvider:
     ) -> None:
         self._secret_key = secret_key.strip()
         self._public_key = public_key.strip() if public_key else None
+
+    def _verify_webhook_signature(
+        self,
+        *,
+        headers: dict[str, str] | None,
+        raw_body: str | None,
+    ) -> None:
+        signature = str((headers or {}).get("x-opn-signature") or "").strip()
+        if not signature or raw_body is None:
+            raise ValueError("invalid opn webhook signature")
+        expected = base64.b64encode(
+            hmac.new(
+                self._secret_key.encode("utf-8"),
+                raw_body.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).decode("ascii")
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid opn webhook signature")
 
     @staticmethod
     def _flatten_payload(
@@ -329,7 +350,7 @@ class OpnProvider:
         headers: dict[str, str] | None = None,
         raw_body: str | None = None,
     ) -> ParsedPaymentCallback:
-        del headers, raw_body
+        self._verify_webhook_signature(headers=headers, raw_body=raw_body)
         event_id = str(payload.get("id") or "").strip()
         event_key = str(payload.get("key") or "").strip()
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
