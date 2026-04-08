@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from egp_crawler_core.discovery_authorization import (
+    build_discovery_authorization_snapshot,
+    require_discovery_authorization,
+)
+from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
@@ -27,6 +33,26 @@ if TYPE_CHECKING:
 class DiscoverWorkflowResult:
     run: CrawlRunDetail
     projects: list[ProjectRecord]
+
+
+def _authorize_discovery(*, database_url: str, tenant_id: str, keyword: str) -> None:
+    billing_repository = create_billing_repository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    profile_repository = create_profile_repository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    subscriptions = billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
+    active_keywords = profile_repository.list_active_keywords(tenant_id=tenant_id)
+    require_discovery_authorization(
+        snapshot=build_discovery_authorization_snapshot(
+            subscriptions=subscriptions,
+            active_keywords=active_keywords,
+        ),
+        keyword=keyword,
+    )
 
 
 def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
@@ -66,6 +92,8 @@ def run_discover_workflow(
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
     artifact_root: Path | str = Path("artifacts"),
 ) -> DiscoverWorkflowResult:
+    if database_url is not None:
+        _authorize_discovery(database_url=database_url, tenant_id=tenant_id, keyword=keyword)
     if run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
@@ -101,6 +129,12 @@ def run_discover_workflow(
 
     for discovered in resolved_projects:
         task_keyword = str(discovered.get("keyword") or keyword)
+        if database_url is not None:
+            _authorize_discovery(
+                database_url=database_url,
+                tenant_id=tenant_id,
+                keyword=task_keyword,
+            )
         task = run_repository.create_task(
             run_id=run.id,
             task_type="discover",

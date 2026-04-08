@@ -413,6 +413,72 @@ def test_over_limit_profiles_block_new_discover_tasks(tmp_path) -> None:
     )
 
 
+def test_active_profile_creation_requires_active_subscription(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Keyword Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active subscription required for runs"
+
+
+def test_inactive_profile_creation_is_allowed_without_subscription(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Draft Watchlist",
+            "profile_type": "custom",
+            "is_active": False,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["is_active"] is False
+    assert response.json()["keywords"] == ["analytics"]
+
+
+def test_active_profile_creation_with_pending_activation_subscription_is_denied(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    future_start = date.today() + timedelta(days=3)
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=future_start,
+        billing_period_end=future_start + timedelta(days=2),
+        status="active",
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Future Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active subscription required for runs"
+
+
 def test_export_requires_active_subscription(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_project(client)

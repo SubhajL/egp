@@ -61,6 +61,7 @@ from egp_api.services.auth_service import AuthService
 from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
+from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.entitlement_service import (
     EntitlementAwareNotificationDispatcher,
@@ -171,6 +172,32 @@ def _make_discover_spawner(
             return normalized
         return f"{normalized[:limit].rstrip()}..."
 
+    def _parse_non_retriable_error(
+        stderr: bytes | str | None,
+    ) -> NonRetriableDiscoveryDispatchError | None:
+        if stderr is None:
+            return None
+        if isinstance(stderr, bytes):
+            text = stderr.decode("utf-8", errors="replace")
+        else:
+            text = str(stderr)
+        for raw_line in reversed(text.splitlines()):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("error_type") != "entitlement_denied":
+                continue
+            detail = str(payload.get("detail") or "discover entitlement denied").strip()
+            return NonRetriableDiscoveryDispatchError(detail)
+        return None
+
+    class _DiscoverSpawnError(RuntimeError):
+        pass
+
     def spawn_discover(
         *,
         tenant_id: str,
@@ -209,6 +236,12 @@ def _make_discover_spawner(
                     proc.returncode,
                     preview,
                 )
+                non_retriable = _parse_non_retriable_error(stderr)
+                if non_retriable is not None:
+                    raise non_retriable
+                raise _DiscoverSpawnError(
+                    f"discover worker exited non-zero for keyword {keyword!r}"
+                )
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             _, stderr = proc.communicate()
@@ -221,6 +254,9 @@ def _make_discover_spawner(
                 exc.timeout,
                 preview,
             )
+            raise _DiscoverSpawnError(f"discover worker timed out for keyword {keyword!r}") from exc
+        except _DiscoverSpawnError:
+            raise
         except Exception:
             _logger.warning(
                 "Failed to spawn discover for keyword %r (tenant_id=%s profile_id=%s)",
@@ -229,6 +265,7 @@ def _make_discover_spawner(
                 profile_id,
                 exc_info=True,
             )
+            raise
 
     return spawn_discover
 

@@ -361,6 +361,81 @@ def test_admin_can_create_custom_profile_from_rules_api(tmp_path) -> None:
         )
     )
 
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'aaaaaaaa-2222-2222-2222-222222222222',
+                    :tenant_id,
+                    'INV-CREATE',
+                    'monthly_membership',
+                    'paid',
+                    '2026-04-05',
+                    '2026-05-04',
+                    'THB',
+                    '1500.00',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-05T00:00:00+00:00",
+                "updated_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'bbbbbbbb-2222-2222-2222-222222222222',
+                    :tenant_id,
+                    'aaaaaaaa-2222-2222-2222-222222222222',
+                    'monthly_membership',
+                    'active',
+                    '2026-04-05',
+                    '2026-05-04',
+                    5,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "activated_at": "2026-04-05T00:00:00+00:00",
+                "created_at": "2026-04-05T00:00:00+00:00",
+                "updated_at": "2026-04-05T00:00:00+00:00",
+            },
+        )
+
     response = client.post(
         "/v1/rules/profiles",
         json={

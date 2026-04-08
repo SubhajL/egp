@@ -9,6 +9,10 @@ from typing import Protocol
 from egp_db.repositories.discovery_job_repo import DiscoveryJobRecord
 
 
+class NonRetriableDiscoveryDispatchError(RuntimeError):
+    """Raised when a discovery dispatch failure should not be retried."""
+
+
 class DiscoveryJobStore(Protocol):
     def claim_pending_discovery_jobs(
         self,
@@ -69,6 +73,15 @@ class DiscoveryDispatchProcessor:
                 profile_type=job.profile_type,
                 keyword=job.keyword,
             )
+        except NonRetriableDiscoveryDispatchError as exc:
+            self.repository.record_discovery_job_attempt(
+                tenant_id=job.tenant_id,
+                job_id=job.id,
+                job_status="failed",
+                last_error=str(exc),
+                processing_started_at=None,
+            )
+            return
         except Exception as exc:
             next_attempt = job.attempt_count + 1
             if next_attempt >= self.max_attempts:

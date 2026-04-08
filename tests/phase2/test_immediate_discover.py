@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from datetime import date, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from egp_api.main import _logger, _make_discover_spawner, create_app
+from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
@@ -57,6 +60,14 @@ def test_profile_creation_triggers_discover_per_keyword(tmp_path):
         )
 
     client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
 
     response = client.post(
         "/v1/rules/profiles",
@@ -94,6 +105,14 @@ def test_profile_creation_uses_overridden_spawner_for_queue_dispatch(tmp_path):
         dispatched.append(keyword)
 
     client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
 
     response = client.post(
         "/v1/rules/profiles",
@@ -120,6 +139,14 @@ def test_profile_creation_succeeds_when_spawner_is_none(tmp_path):
     app.state.discover_spawner = None
 
     client = TestClient(app)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
     response = client.post(
         "/v1/rules/profiles",
         json={
@@ -144,6 +171,14 @@ def test_profile_creation_persists_jobs_and_background_processor_dispatches_them
         dispatched.append(keyword)
 
     client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
 
     response = client.post(
         "/v1/rules/profiles",
@@ -179,6 +214,165 @@ def test_profile_creation_persists_jobs_and_background_processor_dispatches_them
     ]
 
 
+def _seed_subscription(
+    client: TestClient,
+    *,
+    plan_code: str,
+    keyword_limit: int,
+    billing_period_start: date,
+    billing_period_end: date,
+) -> None:
+    now = "2026-04-08T00:00:00+00:00"
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :tenant_id,
+                    'INV-DISCOVER',
+                    :plan_code,
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '0.00',
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "now": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                    :tenant_id,
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :plan_code,
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    :keyword_limit,
+                    :now,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "keyword_limit": keyword_limit,
+                "now": now,
+            },
+        )
+
+
+def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispatch(tmp_path):
+    spawned: list[dict] = []
+
+    def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
+        spawned.append(
+            {
+                "tenant_id": tenant_id,
+                "profile_id": profile_id,
+                "profile_type": profile_type,
+                "keyword": keyword,
+            }
+        )
+
+    client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Denied Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "active subscription required for runs"
+    assert spawned == []
+
+    with client.app.state.db_engine.connect() as connection:
+        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+    assert count == 0
+
+
+def test_active_free_trial_profile_creation_still_enqueues_and_dispatches(tmp_path):
+    spawned: list[str] = []
+
+    def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
+        spawned.append(keyword)
+
+    client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Trial Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert spawned == ["analytics"]
+
+    with client.app.state.db_engine.connect() as connection:
+        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+    assert count == 1
+
+
 def test_make_discover_spawner_logs_spawn_failure_with_keyword_context(
     tmp_path, monkeypatch, caplog
 ):
@@ -189,13 +383,13 @@ def test_make_discover_spawner_logs_spawn_failure_with_keyword_context(
     caplog.set_level(logging.WARNING, logger=_logger.name)
     spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
 
-    spawner(
-        tenant_id=TENANT_ID,
-        profile_id="profile-1",
-        profile_type="custom",
-        keyword="analytics",
-    )
-
+    with pytest.raises(RuntimeError, match="worker exited early"):
+        spawner(
+            tenant_id=TENANT_ID,
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="analytics",
+        )
     assert any(
         "Failed to spawn discover for keyword 'analytics'" in message
         for message in caplog.messages
@@ -216,12 +410,13 @@ def test_make_discover_spawner_logs_non_zero_exit_with_stderr_preview(
     caplog.set_level(logging.WARNING, logger=_logger.name)
     spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
 
-    spawner(
-        tenant_id=TENANT_ID,
-        profile_id="profile-1",
-        profile_type="custom",
-        keyword="analytics",
-    )
+    with pytest.raises(RuntimeError, match="discover worker exited non-zero"):
+        spawner(
+            tenant_id=TENANT_ID,
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="analytics",
+        )
 
     assert any("returncode=7" in message for message in caplog.messages)
     assert any("fatal worker traceback" in message for message in caplog.messages)
@@ -256,16 +451,49 @@ def test_make_discover_spawner_logs_timeout_with_keyword_context(
     caplog.set_level(logging.WARNING, logger=_logger.name)
     spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
 
-    spawner(
-        tenant_id=TENANT_ID,
-        profile_id="profile-1",
-        profile_type="custom",
-        keyword="analytics",
-    )
+    with pytest.raises(RuntimeError, match="discover worker timed out"):
+        spawner(
+            tenant_id=TENANT_ID,
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="analytics",
+        )
 
     assert fake_process.killed is True
     assert any("timed out" in message for message in caplog.messages)
     assert any("worker hung after startup" in message for message in caplog.messages)
+    assert any("keyword 'analytics'" in message for message in caplog.messages)
+
+
+def test_make_discover_spawner_raises_non_retriable_error_for_entitlement_denial(
+    tmp_path, monkeypatch, caplog
+):
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = 1
+
+        def communicate(self, *, input=None, timeout=None):
+            return (
+                None,
+                b'{"error_type":"entitlement_denied","detail":"active subscription required for runs"}\n',
+            )
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    caplog.set_level(logging.WARNING, logger=_logger.name)
+    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+
+    with pytest.raises(
+        NonRetriableDiscoveryDispatchError,
+        match="active subscription required for runs",
+    ):
+        spawner(
+            tenant_id=TENANT_ID,
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="analytics",
+        )
+
+    assert any("returncode=1" in message for message in caplog.messages)
     assert any("keyword 'analytics'" in message for message in caplog.messages)
 
 

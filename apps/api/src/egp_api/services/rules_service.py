@@ -129,6 +129,10 @@ class RulesService:
             raise ValueError("at least one keyword is required")
 
         if is_active and self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="runs",
+            )
             existing_details = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
             existing_keywords = _active_keywords_from_details(existing_details)
             prospective_keywords = _merge_keywords(existing_keywords, normalized_keywords)

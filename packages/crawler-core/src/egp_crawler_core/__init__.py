@@ -6,6 +6,14 @@ from .closure_rules import (
     check_stale_closure,
     check_winner_closure,
 )
+from .discovery_authorization import (
+    build_discovery_authorization_snapshot,
+    DiscoveryAuthorizationError,
+    DiscoveryAuthorizationSnapshot,
+    normalize_keyword,
+    require_discovery_authorization,
+    SubscriptionLike,
+)
 from .document_hasher import hash_file
 from .project_lifecycle import transition_state
 
@@ -14,7 +22,13 @@ __all__ = [
     "check_consulting_timeout",
     "check_stale_closure",
     "check_winner_closure",
+    "build_discovery_authorization_snapshot",
+    "DiscoveryAuthorizationError",
+    "DiscoveryAuthorizationSnapshot",
     "generate_canonical_id",
     "hash_file",
+    "normalize_keyword",
+    "require_discovery_authorization",
+    "SubscriptionLike",
     "transition_state",
 ]

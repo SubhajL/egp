@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
+from egp_crawler_core.discovery_authorization import (
+    build_discovery_authorization_snapshot,
+    require_discovery_authorization,
+)
 from egp_db.repositories.admin_repo import SqlAdminRepository, create_admin_repository
+from egp_db.repositories.billing_repo import SqlBillingRepository, create_billing_repository
 from egp_db.repositories.profile_repo import SqlProfileRepository, create_profile_repository
 from egp_db.repositories.run_repo import SqlRunRepository, create_run_repository
 
@@ -48,12 +53,17 @@ def run_scheduled_discovery(
     *,
     database_url: str,
     admin_repository: SqlAdminRepository | None = None,
+    billing_repository: SqlBillingRepository | None = None,
     profile_repository: SqlProfileRepository | None = None,
     run_repository: SqlRunRepository | None = None,
     job_runner: Callable[[dict[str, object]], dict[str, object]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     resolved_admin_repository = admin_repository or create_admin_repository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    resolved_billing_repository = billing_repository or create_billing_repository(
         database_url=database_url,
         bootstrap_schema=False,
     )
@@ -91,11 +101,26 @@ def run_scheduled_discovery(
         )
 
     due_jobs = build_scheduled_discovery_jobs(tenants=tenants, now=now)
-    executed_jobs = [runner(job) for job in due_jobs]
+    filtered_jobs: list[dict[str, object]] = []
+    for job in due_jobs:
+        tenant_id = str(job["tenant_id"])
+        active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant_id)
+        snapshot = build_discovery_authorization_snapshot(
+            subscriptions=resolved_billing_repository.list_subscriptions_for_tenant(
+                tenant_id=tenant_id
+            ),
+            active_keywords=active_keywords,
+        )
+        try:
+            require_discovery_authorization(snapshot=snapshot, keyword=str(job["keyword"]))
+        except PermissionError:
+            continue
+        filtered_jobs.append(job)
+    executed_jobs = [runner(job) for job in filtered_jobs]
     return {
-        "due_job_count": len(due_jobs),
+        "due_job_count": len(filtered_jobs),
         "executed_job_count": len(executed_jobs),
-        "jobs": due_jobs,
+        "jobs": filtered_jobs,
         "results": executed_jobs,
     }
 

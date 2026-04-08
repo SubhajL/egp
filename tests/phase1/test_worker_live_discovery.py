@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from types import SimpleNamespace
+
+import pytest
+from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.profile_repo import create_profile_repository
+from sqlalchemy import text
 
 from egp_shared_types.enums import ProjectState
 from egp_worker.main import run_worker_job
@@ -137,10 +143,246 @@ class FakeProfileRepository:
             )
         ]
 
+    def list_active_keywords(self, *, tenant_id: str):
+        return ["analytics", "cloud"]
+
 
 class FakeScheduledRunRepository:
     def list_runs(self, *, tenant_id: str, limit: int = 50, offset: int = 0):
         return SimpleNamespace(items=[])
+
+
+class FakeBillingRepository:
+    def __init__(self, subscriptions_by_tenant: dict[str, list[object]]) -> None:
+        self._subscriptions_by_tenant = subscriptions_by_tenant
+
+    def list_subscriptions_for_tenant(self, *, tenant_id: str):
+        return list(self._subscriptions_by_tenant.get(tenant_id, []))
+
+
+def _seed_subscription(
+    *,
+    database_url: str,
+    plan_code: str,
+    keyword_limit: int,
+    billing_period_start: date,
+    billing_period_end: date,
+) -> None:
+    repository = create_billing_repository(database_url=database_url, bootstrap_schema=True)
+    now = "2026-04-08T00:00:00+00:00"
+    with repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :tenant_id,
+                    'INV-WORKER',
+                    :plan_code,
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '0.00',
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "now": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                    :tenant_id,
+                    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    :plan_code,
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    :keyword_limit,
+                    :now,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "plan_code": plan_code,
+                "billing_period_start": billing_period_start.isoformat(),
+                "billing_period_end": billing_period_end.isoformat(),
+                "keyword_limit": keyword_limit,
+                "now": now,
+            },
+        )
+
+
+def _seed_profile(*, database_url: str, keywords: list[str], is_active: bool = True) -> None:
+    repository = create_profile_repository(database_url=database_url, bootstrap_schema=True)
+    repository.create_profile(
+        tenant_id=TENANT_ID,
+        name="Watchlist",
+        profile_type="custom",
+        is_active=is_active,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=keywords,
+    )
+
+
+def test_run_discover_workflow_denies_without_active_subscription(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-denied.sqlite3'}"
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+
+    with pytest.raises(PermissionError, match="active subscription required for runs"):
+        run_discover_workflow(
+            database_url=database_url,
+            tenant_id=TENANT_ID,
+            keyword="analytics",
+            discovered_projects=[],
+            run_repository=run_repository,
+            project_event_sink=sink,
+        )
+
+    assert run_repository.tasks == []
+    assert run_repository.finished_status is None
+    assert sink.discovery_events == []
+
+
+def test_run_worker_job_discover_denies_when_keyword_not_entitled(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-not-entitled.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+
+    with pytest.raises(PermissionError, match="discover keyword is not entitled for tenant"):
+        run_worker_job(
+            {
+                "command": "discover",
+                "database_url": database_url,
+                "tenant_id": TENANT_ID,
+                "keyword": "cloud",
+                "discovered_projects": [],
+            }
+        )
+
+
+def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-trial.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": database_url,
+            "tenant_id": TENANT_ID,
+            "keyword": "analytics",
+            "discovered_projects": [
+                {
+                    "project_number": "EGP-2026-5010",
+                    "search_name": "ระบบข้อมูลกลาง",
+                    "detail_name": "โครงการระบบข้อมูลกลาง",
+                    "project_name": "โครงการระบบข้อมูลกลาง",
+                    "organization_name": "กรมตัวอย่าง",
+                    "proposal_submission_date": "2026-05-01",
+                    "budget_amount": "1500000.00",
+                    "project_state": ProjectState.OPEN_INVITATION.value,
+                    "source_status_text": "ประกาศเชิญชวน",
+                }
+            ],
+        }
+    )
+
+    assert result["command"] == "discover"
+    assert result["run_status"] == "succeeded"
+    assert result["project_count"] == 1
+
+
+def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-per-project-keyword.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+
+    with pytest.raises(PermissionError, match="discover keyword is not entitled for tenant"):
+        run_discover_workflow(
+            database_url=database_url,
+            tenant_id=TENANT_ID,
+            keyword="analytics",
+            discovered_projects=[
+                {
+                    "keyword": "cloud",
+                    "project_number": "EGP-2026-5011",
+                    "search_name": "ระบบข้อมูลกลาง",
+                    "detail_name": "โครงการระบบข้อมูลกลาง",
+                    "project_name": "โครงการระบบข้อมูลกลาง",
+                    "organization_name": "กรมตัวอย่าง",
+                    "proposal_submission_date": "2026-05-01",
+                    "budget_amount": "1500000.00",
+                    "project_state": ProjectState.OPEN_INVITATION.value,
+                    "source_status_text": "ประกาศเชิญชวน",
+                }
+            ],
+        )
+
 
 
 def test_run_discover_workflow_uses_live_discovery_source_when_projects_missing() -> None:
@@ -264,9 +506,20 @@ def test_run_discover_workflow_uses_per_project_keyword_when_live_source_returns
 def test_run_discover_workflow_ingests_live_downloaded_documents_after_persist(
     monkeypatch, tmp_path
 ) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'discover.sqlite3'}"
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
     captured: dict[str, object] = {}
+    today = date.today()
+
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
 
     def fake_ingest_downloaded_documents(**kwargs):
         captured.update(kwargs)
@@ -304,7 +557,7 @@ def test_run_discover_workflow_ingests_live_downloaded_documents_after_persist(
         ],
         run_repository=run_repository,
         project_event_sink=sink,
-        database_url=f"sqlite+pysqlite:///{tmp_path / 'discover.sqlite3'}",
+        database_url=database_url,
         artifact_root=tmp_path / "artifacts",
     )
 
@@ -454,6 +707,16 @@ def test_run_scheduled_discovery_executes_due_jobs_from_repository_state() -> No
     result = run_scheduled_discovery(
         database_url="sqlite+pysqlite:///unused.sqlite3",
         admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(value="active"),
+                        keyword_limit=5,
+                    )
+                ]
+            }
+        ),
         profile_repository=FakeProfileRepository(),
         run_repository=FakeScheduledRunRepository(),
         job_runner=job_runner,
@@ -478,6 +741,84 @@ def test_run_scheduled_discovery_executes_due_jobs_from_repository_state() -> No
             "live": True,
         },
     ]
+
+
+def test_run_scheduled_discovery_skips_expired_subscription_profiles() -> None:
+    executed_jobs: list[dict[str, object]] = []
+
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(value="expired"),
+                        keyword_limit=5,
+                    )
+                ]
+            }
+        ),
+        profile_repository=FakeProfileRepository(),
+        run_repository=FakeScheduledRunRepository(),
+        job_runner=lambda job: executed_jobs.append(job) or {"run_id": "run-1"},
+    )
+
+    assert result["due_job_count"] == 0
+    assert result["executed_job_count"] == 0
+    assert executed_jobs == []
+
+
+def test_run_scheduled_discovery_skips_pending_activation_profiles() -> None:
+    executed_jobs: list[dict[str, object]] = []
+
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(value="pending_activation"),
+                        keyword_limit=5,
+                    )
+                ]
+            }
+        ),
+        profile_repository=FakeProfileRepository(),
+        run_repository=FakeScheduledRunRepository(),
+        job_runner=lambda job: executed_jobs.append(job) or {"run_id": "run-1"},
+    )
+
+    assert result["due_job_count"] == 0
+    assert result["executed_job_count"] == 0
+    assert executed_jobs == []
+
+
+def test_run_scheduled_discovery_skips_keywords_outside_entitlement() -> None:
+    executed_jobs: list[dict[str, object]] = []
+
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(value="active"),
+                        keyword_limit=1,
+                    )
+                ]
+            }
+        ),
+        profile_repository=FakeProfileRepository(),
+        run_repository=FakeScheduledRunRepository(),
+        job_runner=lambda job: executed_jobs.append(job) or {"run_id": "run-1"},
+    )
+
+    assert result["due_job_count"] == 0
+    assert result["executed_job_count"] == 0
+    assert executed_jobs == []
 
 
 def test_run_worker_job_executes_scheduled_discovery_jobs_through_worker_runner(
@@ -538,8 +879,19 @@ def test_run_worker_job_executes_scheduled_discovery_jobs_through_worker_runner(
 def test_run_discover_workflow_keeps_task_payload_json_safe_for_downloaded_documents(
     monkeypatch, tmp_path
 ) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'discover-safe.sqlite3'}"
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
+    today = date.today()
+
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
 
     monkeypatch.setattr(
         "egp_worker.workflows.discover.ingest_downloaded_documents",
@@ -573,7 +925,7 @@ def test_run_discover_workflow_keeps_task_payload_json_safe_for_downloaded_docum
         ],
         run_repository=run_repository,
         project_event_sink=sink,
-        database_url=f"sqlite+pysqlite:///{tmp_path / 'discover-safe.sqlite3'}",
+        database_url=database_url,
         artifact_root=tmp_path / "artifacts",
     )
 
