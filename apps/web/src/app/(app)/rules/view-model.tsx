@@ -1,14 +1,20 @@
-import { Clock3, Mail, Package, Search } from "lucide-react";
+import { AlertTriangle, Clock3, Mail, Package, Search } from "lucide-react";
 import type { ReactNode } from "react";
 
-export type PlanTier = "free_trial" | "one_time_search_pack" | "monthly_membership";
+export type PlanTier =
+  | "free_trial"
+  | "one_time_search_pack"
+  | "monthly_membership"
+  | "unknown_plan";
 
 export type RulesTabDef = { key: string; label: string; icon: ReactNode };
 
 export function resolvePlanTier(planCode: string | null): PlanTier {
+  if (planCode === null) return "free_trial";
   if (planCode === "one_time_search_pack") return "one_time_search_pack";
   if (planCode === "monthly_membership") return "monthly_membership";
-  return "free_trial";
+  if (planCode === "free_trial") return "free_trial";
+  return "unknown_plan";
 }
 
 export function tabsForPlan(tier: PlanTier): RulesTabDef[] {
@@ -32,6 +38,12 @@ export function tabsForPlan(tier: PlanTier): RulesTabDef[] {
         { key: "schedule", label: "ความถี่การติดตาม", icon: <Clock3 className="size-4" /> },
         { key: "notifications", label: "การแจ้งเตือน", icon: <Mail className="size-4" /> },
         { key: "entitlements", label: "สิทธิ์และการใช้งาน", icon: <Package className="size-4" /> },
+      ];
+    case "unknown_plan":
+      return [
+        { key: "keywords", label: "คำค้นของฉัน", icon: <Search className="size-4" /> },
+        { key: "schedule", label: "ความถี่การติดตาม", icon: <Clock3 className="size-4" /> },
+        { key: "entitlements", label: "สิทธิ์และการใช้งาน", icon: <AlertTriangle className="size-4" /> },
       ];
   }
 }
@@ -58,6 +70,12 @@ export const PLAN_DISPLAY: Record<
     color: "bg-emerald-100 text-emerald-800",
     description: "ติดตามต่อเนื่องสูงสุด 5 คำค้น พร้อมสิทธิ์ใช้งานครบทุกฟีเจอร์",
     headerSubtitle: "จัดการคำค้น ตั้งค่าการแจ้งเตือน และกำหนดความถี่การติดตามสำหรับสมาชิกรายเดือน",
+  },
+  unknown_plan: {
+    badge: "แพ็กเกจที่กำหนดเอง",
+    color: "bg-slate-100 text-slate-800",
+    description: "สิทธิ์ของบัญชีนี้ถูกกำหนดจากแพ็กเกจที่ยังไม่รองรับการแสดงผลแบบละเอียดในหน้านี้",
+    headerSubtitle: "จัดการคำค้นและตรวจสอบสิทธิ์ปัจจุบันของบัญชีนี้อย่างปลอดภัย แม้แผนใช้งานจะยังไม่มี mapping ในหน้า rules",
   },
 };
 

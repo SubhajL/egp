@@ -76,7 +76,9 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
   });
 }
 
-function buildRulesResponse(planCode: "free_trial" | "one_time_search_pack" | "monthly_membership") {
+function buildRulesResponse(
+  planCode: "free_trial" | "one_time_search_pack" | "monthly_membership" | "enterprise_preview",
+) {
   const keywordLimit = planCode === "monthly_membership" ? 5 : 1;
   return {
     profiles: [
@@ -100,7 +102,9 @@ function buildRulesResponse(planCode: "free_trial" | "one_time_search_pack" | "m
           ? "Free Trial"
           : planCode === "one_time_search_pack"
             ? "One-Time Search Pack"
-            : "Monthly Membership",
+            : planCode === "monthly_membership"
+              ? "Monthly Membership"
+              : "Enterprise Preview",
       subscription_status: "active",
       has_active_subscription: true,
       keyword_limit: keywordLimit,
@@ -200,4 +204,16 @@ test("monthly plan rules page allows editable schedule flow", async ({ page }) =
   await expect(page.getByRole("button", { name: "บันทึก" })).toBeVisible();
   await expect(page.getByLabel("ความถี่การติดตาม")).toBeVisible();
   await expect(page.getByText("ใช้งานจริง: ทุก 6 ชั่วโมง")).toBeVisible();
+});
+
+test("unknown plan rules page renders explicit fallback copy instead of free-trial copy", async ({ page }) => {
+  await mockApp(page, buildRulesResponse("enterprise_preview"));
+
+  await page.goto("/rules");
+
+  await expect(page.getByText("แพ็กเกจที่กำหนดเอง", { exact: true })).toBeVisible();
+  await expect(page.getByText("ทดลองใช้ฟรี", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "คำค้นของฉัน" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ความถี่การติดตาม" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "สิทธิ์และการใช้งาน" })).toBeVisible();
 });

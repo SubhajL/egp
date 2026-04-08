@@ -39,6 +39,9 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
         )
         return {
             "command": command,
+            "profile_id": (
+                str(payload["profile_id"]) if payload.get("profile_id") is not None else None
+            ),
             "run_id": result.run.run.id,
             "run_status": result.run.run.status,
             "project_count": len(result.projects),

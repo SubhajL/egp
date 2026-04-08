@@ -7,27 +7,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, startTransition, useEffect, useState } from "react";
 
 import { ApiError, localizeApiError, register } from "@/lib/api";
+import { normalizeSignupApiError, shouldShowSignupLoginLink } from "@/lib/api";
 import { normalizeNextPath } from "@/lib/auth";
 import { useMe } from "@/lib/hooks";
-
-function normalizeSignupErrorMessage(error: ApiError): string {
-  if (error.code === "account_already_exists") {
-    return "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทนการสมัครใหม่";
-  }
-  if (error.code === "validation_password_too_short") {
-    return "รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร";
-  }
-  if (error.code === "validation_company_name_required") {
-    return "กรุณาระบุชื่อบริษัท / องค์กร";
-  }
-  if (error.code === "validation_email_required") {
-    return "กรุณาระบุอีเมล";
-  }
-  if (error.status === 422) {
-    return "กรุณาตรวจสอบข้อมูลที่กรอก";
-  }
-  return localizeApiError(error, "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
-}
 
 function SignupPageContent() {
   const router = useRouter();
@@ -39,6 +21,7 @@ function SignupPageContent() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showLoginLink, setShowLoginLink] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const loginHref = `/login?email=${encodeURIComponent(email.trim())}`;
 
@@ -54,6 +37,7 @@ function SignupPageContent() {
     event.preventDefault();
     setSubmitting(true);
     setErrorMessage(null);
+    setShowLoginLink(false);
     try {
       const session = await register({
         company_name: companyName.trim(),
@@ -64,7 +48,8 @@ function SignupPageContent() {
       window.location.assign(nextPath);
     } catch (error) {
       if (error instanceof ApiError) {
-        setErrorMessage(normalizeSignupErrorMessage(error));
+        setErrorMessage(normalizeSignupApiError(error));
+        setShowLoginLink(shouldShowSignupLoginLink(error));
       } else {
         setErrorMessage(localizeApiError(error, "สมัครใช้งานไม่สำเร็จ"));
       }
@@ -151,7 +136,7 @@ function SignupPageContent() {
           {errorMessage ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <p>{errorMessage}</p>
-              {errorMessage.includes("เข้าสู่ระบบ") ? (
+              {showLoginLink ? (
                 <Link href={loginHref} className="mt-2 inline-flex font-semibold text-primary underline">
                   ไปหน้าเข้าสู่ระบบ
                 </Link>

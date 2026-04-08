@@ -423,6 +423,24 @@ def test_run_worker_job_dispatches_discover_workflow(tmp_path) -> None:
     assert result["project_count"] == 1
 
 
+def test_run_worker_job_preserves_profile_id_in_discover_result(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-profile.sqlite3'}"
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": database_url,
+            "tenant_id": TENANT_ID,
+            "profile_id": "profile-123",
+            "keyword": "โรงพยาบาล",
+            "discovered_projects": [],
+        }
+    )
+
+    assert result["command"] == "discover"
+    assert result["profile_id"] == "profile-123"
+
+
 def test_run_worker_job_dispatches_timeout_evaluation() -> None:
     result = run_worker_job(
         {
