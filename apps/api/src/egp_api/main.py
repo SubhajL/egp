@@ -172,7 +172,9 @@ def _make_discover_spawner(
             return normalized
         return f"{normalized[:limit].rstrip()}..."
 
-    def _parse_non_retriable_error(stderr: bytes | str | None) -> NonRetriableDiscoveryDispatchError | None:
+    def _parse_non_retriable_error(
+        stderr: bytes | str | None,
+    ) -> NonRetriableDiscoveryDispatchError | None:
         if stderr is None:
             return None
         if isinstance(stderr, bytes):

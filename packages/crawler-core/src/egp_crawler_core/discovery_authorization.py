@@ -34,7 +34,9 @@ def require_discovery_authorization(
     if not snapshot.has_active_subscription:
         raise DiscoveryAuthorizationError("active subscription required for runs")
     if snapshot.over_keyword_limit:
-        raise DiscoveryAuthorizationError("active keyword configuration exceeds plan limit")
+        raise DiscoveryAuthorizationError(
+            "active keyword configuration exceeds plan limit"
+        )
     normalized_keyword = normalize_keyword(keyword)
     entitled_keywords = {value.casefold() for value in snapshot.active_keywords}
     if not normalized_keyword or normalized_keyword.casefold() not in entitled_keywords:
@@ -48,7 +50,13 @@ def build_discovery_authorization_snapshot(
     active_keywords: list[str],
 ) -> DiscoveryAuthorizationSnapshot:
     has_active_subscription = any(
-        str(getattr(subscription.subscription_status, "value", subscription.subscription_status))
+        str(
+            getattr(
+                subscription.subscription_status,
+                "value",
+                subscription.subscription_status,
+            )
+        )
         == "active"
         for subscription in subscriptions
     )
@@ -56,13 +64,23 @@ def build_discovery_authorization_snapshot(
         (
             subscription
             for subscription in subscriptions
-            if str(getattr(subscription.subscription_status, "value", subscription.subscription_status))
+            if str(
+                getattr(
+                    subscription.subscription_status,
+                    "value",
+                    subscription.subscription_status,
+                )
+            )
             == "active"
         ),
         subscriptions[0] if subscriptions else None,
     )
-    keyword_limit = current_subscription.keyword_limit if current_subscription is not None else None
-    over_keyword_limit = keyword_limit is not None and len(active_keywords) > int(keyword_limit)
+    keyword_limit = (
+        current_subscription.keyword_limit if current_subscription is not None else None
+    )
+    over_keyword_limit = keyword_limit is not None and len(active_keywords) > int(
+        keyword_limit
+    )
     return DiscoveryAuthorizationSnapshot(
         has_active_subscription=has_active_subscription,
         over_keyword_limit=over_keyword_limit,
