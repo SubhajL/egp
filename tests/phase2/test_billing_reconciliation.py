@@ -94,7 +94,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(
     created = _create_billing_record(client)
     record_id = created["record"]["id"]
     assert created["record"]["status"] == "awaiting_payment"
-    assert created["record"]["amount_due"] == "1500.00"
+    assert created["record"]["amount_due"] == "2.00"
     assert created["payments"] == []
     assert created["events"][0]["event_type"] == "billing_record_created"
 
@@ -107,14 +107,14 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(
     assert listed_before_body["summary"] == {
         "open_records": 1,
         "awaiting_reconciliation": 0,
-        "outstanding_amount": "1500.00",
+        "outstanding_amount": "2.00",
         "collected_amount": "0.00",
     }
 
     payment = _record_payment(
         client,
         record_id=record_id,
-        amount="1500.00",
+        amount="2.00",
         reference_code="KBANK-0001",
     )
     payment_id = payment["id"]
@@ -122,7 +122,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(
 
     reconciled = _reconcile_payment(client, payment_id=payment_id)
     assert reconciled["record"]["status"] == "paid"
-    assert reconciled["record"]["reconciled_total"] == "1500.00"
+    assert reconciled["record"]["reconciled_total"] == "2.00"
     assert reconciled["record"]["outstanding_balance"] == "0.00"
     assert reconciled["subscription"]["plan_code"] == "monthly_membership"
     assert reconciled["subscription"]["subscription_status"] == "active"
@@ -146,7 +146,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(
         "open_records": 0,
         "awaiting_reconciliation": 0,
         "outstanding_amount": "0.00",
-        "collected_amount": "1500.00",
+        "collected_amount": "2.00",
     }
     assert listed_after_body["records"][0]["record"]["status"] == "paid"
 
@@ -161,16 +161,16 @@ def test_billing_snapshot_keeps_partial_payment_in_payment_detected_status(
     payment = _record_payment(
         client,
         record_id=record_id,
-        amount="500.00",
+        amount="0.50",
         reference_code="KBANK-0002",
     )
 
     reconciled = _reconcile_payment(client, payment_id=payment["id"])
 
     assert reconciled["record"]["status"] == "payment_detected"
-    assert reconciled["record"]["reconciled_total"] == "500.00"
-    assert reconciled["record"]["outstanding_balance"] == "1000.00"
-    assert reconciled["payments"][0]["amount"] == "500.00"
+    assert reconciled["record"]["reconciled_total"] == "0.50"
+    assert reconciled["record"]["outstanding_balance"] == "1.50"
+    assert reconciled["payments"][0]["amount"] == "0.50"
     assert reconciled["payments"][0]["payment_status"] == "reconciled"
     assert reconciled["subscription"] is None
 
@@ -185,7 +185,7 @@ def test_billing_reconcile_is_idempotent_for_already_reconciled_payment(
     payment = _record_payment(
         client,
         record_id=record_id,
-        amount="1500.00",
+        amount="2.00",
         reference_code="KBANK-0002B",
     )
 

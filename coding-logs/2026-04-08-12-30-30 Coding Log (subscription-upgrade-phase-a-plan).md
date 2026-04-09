@@ -696,3 +696,92 @@ LOW
 
 ### Rollout Notes
 - This follow-up is copy-only in the billing upgrade CTA path and is green on focused browser coverage plus frontend typecheck.
+
+## Implementation (2026-04-09 11:27:12 +0700) - backend test-charge override for signup and billing validation
+
+### Goal
+- Lower actual backend charge amounts for paid plans during testing while leaving the advertised web pricing unchanged.
+- Remove three local users so signup can be re-tested with those email addresses.
+
+### What Changed
+- `apps/api/src/egp_api/services/billing_service.py`
+  - added a small plan-code-to-test-charge override map for paid plans
+  - `create_record()` now persists `2.00` for `monthly_membership` and `1.00` for `one_time_search_pack`
+  - `create_record()` still accepts UI-submitted display prices (`1500.00` / `300.00`) and normalizes them to the lower charged amount so the current billing page flow keeps working
+  - `create_upgrade_record()` now uses the same charged amount override and explicitly rejects unknown target plans with the existing `unsupported subscription upgrade` error instead of raising an internal server error
+- `packages/db/src/egp_db/repositories/billing_repo.py`
+  - extended `create_upgrade_billing_record()` to accept an explicit `amount_due` override so upgrade-created records use the same effective charged amount as standard record creation
+- `tests/phase2/test_billing_reconciliation.py`
+  - updated billing snapshot, partial payment, and reconciliation expectations to reflect `2.00` monthly test charging
+- `tests/phase3/test_invoice_lifecycle.py`
+  - updated one-time and monthly invoice lifecycle assertions to the lower charged amounts
+  - added upgrade amount assertions
+  - added coverage for unknown upgrade targets returning the expected `400 unsupported subscription upgrade` error
+- `tests/phase3/test_payment_links.py`
+  - updated payment request and callback assertions so provider-facing payment amounts now reflect the lower charged monthly amount
+
+### TDD Evidence
+- RED run:
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py -q`
+  - failed in `test_upgrade_with_unknown_target_plan_returns_unsupported_upgrade` because `BillingService.create_upgrade_record()` dereferenced `get_billing_plan_definition(...).amount_due` before validating the plan existed, causing `AttributeError: 'NoneType' object has no attribute 'amount_due'`
+- GREEN runs:
+  - `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`
+  - `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q && ./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`
+- No dedicated RED run was possible for the local-user deletion because that was a direct dev-database cleanup request, not repo code behavior.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`
+- `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q && ./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`
+- `./.venv/bin/python -m compileall apps/api/src packages/db/src packages/shared-types/src`
+- `./.venv/bin/ruff check apps/api/src/egp_api/services/billing_service.py packages/db/src/egp_db/repositories/billing_repo.py tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py`
+
+### Wiring Verification
+| Component | Wiring Verified? | How Verified |
+|-----------|------------------|--------------|
+| manual billing record charge override | YES | `routes/billing.py::create_billing_record()` still calls `BillingService.create_record()`, which now normalizes paid-plan record amounts to `2.00` / `1.00`; focused tests assert persisted record amounts |
+| upgrade billing record charge override | YES | `routes/billing.py::create_billing_upgrade()` still calls `BillingService.create_upgrade_record()`, which now passes explicit charged amounts into `billing_repo.py::create_upgrade_billing_record()`; focused tests assert upgrade record amounts |
+| payment provider amount wiring | YES | `BillingService.create_payment_request()` still uses `detail.record.outstanding_balance`, so the persisted lower amount becomes the provider-facing request amount; `tests/phase3/test_payment_links.py` asserts the request amount is `2.00` |
+| current billing page compatibility | YES | manual billing UI still posts the displayed `amount_due`, and `BillingService.create_record()` now accepts either display or charged amount for paid plans; ad hoc verification created records with posted `1500.00` / `300.00` and persisted `2.00` / `1.00` |
+
+### Behavior Changes And Risks
+- The backend now actually charges `2.00 THB` for `monthly_membership` and `1.00 THB` for `one_time_search_pack` in record creation, upgrade creation, and payment-request flows.
+- `/v1/billing/plans` and the current billing page display are intentionally unchanged, so UI copy can diverge from the charged amount during this test-only period.
+- Direct repository callers that bypass `BillingService` and still create paid billing records with `1500.00` or `300.00` are unaffected; the override is intentionally service-layer scoped.
+- Deleted local users: `admin@smartwater.com`, `limanond.subhaj@gmail.com`, `owner@acme.example`. After deletion, the local dev database has 10 users and all are `owner/active`.
+
+### Follow-ups And Known Gaps
+- If the billing page should also display the test charge amounts, update `packages/shared-types/src/egp_shared_types/billing_plans.py` and the web tests in a separate change.
+- If any non-route/service flows create billing records directly through the repository in production-like paths, they will need a deliberate override strategy too.
+
+## Review (2026-04-09 11:27:12 +0700) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working-tree (billing test-charge override and targeted billing tests)
+- Commands Run: `git status --porcelain=v1`; `git log --oneline -5`; targeted `git diff` on billing service/repository/tests; Auggie code retrieval for billing wiring; `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py -q`; `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`; `./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q && ./.venv/bin/python -m pytest tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py -q`; `./.venv/bin/python -m compileall apps/api/src packages/db/src packages/shared-types/src`; `./.venv/bin/ruff check apps/api/src/egp_api/services/billing_service.py packages/db/src/egp_db/repositories/billing_repo.py tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assume the pricing divergence is intentionally test-only, so leaving `/v1/billing/plans` and the billing page display at `1500.00` / `300.00` is desired for now.
+- Assume the relevant production billing entry points are the API service paths reviewed here, not direct repository writes from other runtimes.
+
+### Recommended Tests / Validation
+- If this test-pricing period continues, add one authenticated route/integration test that posts the current billing-page payload shape with `1500.00` / `300.00` and asserts the persisted charged amount is lowered, to pin the compatibility contract more explicitly.
+- When the UI display pricing changes later, add a billing-page browser assertion on the shown amount text so backend and frontend pricing cannot silently diverge again.
+
+### Rollout Notes
+- The reviewed change is small and service-layer scoped, with green focused billing tests, repeated reruns for flake checking, clean lint, and clean compile checks.
+- Local user deletion was a direct dev-database operation only and is not part of the code diff being submitted.
