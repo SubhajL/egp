@@ -1658,6 +1658,7 @@ class SqlBillingRepository:
         tenant_id: str,
         target_plan_code: str,
         billing_period_start: str,
+        amount_due: Decimal | str | float | int | None = None,
         record_number: str,
         notes: str | None = None,
         actor_subject: str | None = None,
@@ -1716,7 +1717,9 @@ class SqlBillingRepository:
             status=BillingRecordStatus.AWAITING_PAYMENT,
             billing_period_start=period_start.isoformat(),
             billing_period_end=period_end.isoformat(),
-            amount_due=target_plan_definition.amount_due,
+            amount_due=(
+                target_plan_definition.amount_due if amount_due is None else amount_due
+            ),
             currency=target_plan_definition.currency,
             due_at=None,
             issued_at=_now().isoformat(),

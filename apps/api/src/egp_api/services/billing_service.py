@@ -27,6 +27,12 @@ from egp_shared_types.enums import (
 )
 
 
+_TEST_CHARGED_PLAN_AMOUNTS = {
+    "one_time_search_pack": "1.00",
+    "monthly_membership": "2.00",
+}
+
+
 class BillingService:
     def __init__(
         self,
@@ -39,6 +45,10 @@ class BillingService:
 
     def list_plans(self) -> list[BillingPlanDefinition]:
         return list_billing_plan_definitions()
+
+    @staticmethod
+    def _charged_plan_amount(plan_code: str, default_amount: str) -> str:
+        return _TEST_CHARGED_PLAN_AMOUNTS.get(str(plan_code).strip(), default_amount)
 
     def start_free_trial(
         self,
@@ -92,12 +102,21 @@ class BillingService:
                 resolved_end = expected_end
             elif str(resolved_end).strip() != expected_end:
                 raise ValueError(f"{plan_definition.code} must end on {expected_end}")
+            charged_amount = self._charged_plan_amount(
+                plan_definition.code,
+                plan_definition.amount_due,
+            )
             if resolved_amount is None:
-                resolved_amount = plan_definition.amount_due
-            elif str(resolved_amount).strip() != plan_definition.amount_due:
+                resolved_amount = charged_amount
+            elif str(resolved_amount).strip() not in {
+                plan_definition.amount_due,
+                charged_amount,
+            }:
                 raise ValueError(
-                    f"{plan_definition.code} must be billed at {plan_definition.amount_due} {plan_definition.currency}"
+                    f"{plan_definition.code} must be billed at {charged_amount} {plan_definition.currency}"
                 )
+            else:
+                resolved_amount = charged_amount
             if resolved_currency is None:
                 resolved_currency = plan_definition.currency
             elif resolved_currency != plan_definition.currency:
@@ -139,6 +158,9 @@ class BillingService:
     ) -> BillingRecordDetail:
         normalized_target_plan_code = str(target_plan_code).strip()
         normalized_start = str(billing_period_start).strip()
+        target_plan_definition = get_billing_plan_definition(normalized_target_plan_code)
+        if target_plan_definition is None:
+            raise ValueError("unsupported subscription upgrade")
         resolved_record_number = (record_number or "").strip()
         if not resolved_record_number:
             resolved_record_number = (
@@ -151,6 +173,10 @@ class BillingService:
             tenant_id=tenant_id,
             target_plan_code=normalized_target_plan_code,
             billing_period_start=normalized_start,
+            amount_due=self._charged_plan_amount(
+                normalized_target_plan_code,
+                target_plan_definition.amount_due,
+            ),
             record_number=resolved_record_number,
             notes=resolved_notes,
             actor_subject=actor_subject,
