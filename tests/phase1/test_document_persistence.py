@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from egp_db.repositories.document_repo import FilesystemDocumentRepository
 from egp_shared_types.enums import (
+    ArtifactBucket,
     DocumentPhase,
     DocumentReviewAction,
     DocumentReviewEventType,
@@ -182,6 +183,36 @@ def test_list_documents_returns_newest_first(tmp_path) -> None:
     listed = repository.list_documents(TENANT_ID, PROJECT_ID)
 
     assert [doc.id for doc in listed][:2] == [second.document.id, first.document.id]
+
+
+def test_get_artifact_bucket_prefers_current_final_tor(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="price.pdf",
+        file_bytes=b"price",
+        source_label="ประกาศราคากลาง",
+        source_status_text="ประกาศราคากลาง",
+    )
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="draft.pdf",
+        file_bytes=b"draft",
+        source_label="ร่างเอกสารประกวดราคา",
+        source_status_text="รับฟังความคิดเห็น",
+    )
+    repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="final.pdf",
+        file_bytes=b"final",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    assert repository.get_artifact_bucket(TENANT_ID, PROJECT_ID) is ArtifactBucket.FINAL_TOR_DOWNLOADED
 
 
 def test_store_document_persists_diff_rows_in_sql_metadata(tmp_path) -> None:

@@ -48,6 +48,14 @@ class DocumentPhase(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ArtifactBucket(StrEnum):
+    PRICING_ONLY = "pricing_only"
+    INVITATION_PLUS_PRICING = "invitation_plus_pricing"
+    DRAFT_PLUS_PRICING = "draft_plus_pricing"
+    FINAL_TOR_DOWNLOADED = "final_tor_downloaded"
+    NO_ARTIFACT_EVIDENCE = "no_artifact_evidence"
+
+
 class DocumentReviewStatus(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"

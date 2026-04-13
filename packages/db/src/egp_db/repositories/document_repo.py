@@ -40,9 +40,10 @@ from egp_db.db_utils import (
     normalize_database_url,
     normalize_uuid_string,
 )
-from egp_document_classifier.classifier import classify_document
+from egp_document_classifier.classifier import classify_document, derive_artifact_bucket
 from egp_document_classifier.diff_engine import ComparisonScope, build_document_diff
 from egp_shared_types.enums import (
+    ArtifactBucket,
     DocumentPhase,
     DocumentReviewAction,
     DocumentReviewEventType,
@@ -882,6 +883,19 @@ class SqlDocumentRepository:
                 .all()
             )
         return [_document_from_mapping(row) for row in rows]
+
+    def get_artifact_bucket(self, tenant_id: str, project_id: str) -> ArtifactBucket:
+        documents = self.list_documents(tenant_id, project_id)
+        return derive_artifact_bucket(
+            documents=[
+                {
+                    "document_type": document.document_type.value,
+                    "document_phase": document.document_phase.value,
+                }
+                for document in documents
+                if document.is_current
+            ]
+        )
 
     def get_document(
         self, *, tenant_id: str, document_id: str
