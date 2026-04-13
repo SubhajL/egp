@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from egp_shared_types.enums import ArtifactBucket, ProjectState
 from egp_worker.browser_close_check import _find_matching_observation_on_page
 from egp_worker.browser_discovery import (
+    BrowserClosedDuringKeyword,
     NEXT_PAGE_SELECTOR,
     BrowserDiscoverySettings,
     click_search_button,
+    crawl_live_discovery,
     get_results_page_marker,
     is_no_results_page,
     navigate_to_project_by_row,
+    open_and_extract_project,
     results_page_marker_changed,
+    restore_results_page,
     search_keyword,
     wait_for_cloudflare,
 )
@@ -109,6 +116,32 @@ class FakeSearchPage:
     def goto(self, url: str, wait_until=None, timeout=None):
         self.goto_calls.append((url, wait_until, timeout))
         self.url = url
+
+
+class FakeNextPage:
+    def __init__(self, *, pages_to_advance: int) -> None:
+        self.remaining_clicks = pages_to_advance
+
+    def query_selector(self, selector: str):
+        if selector == NEXT_PAGE_SELECTOR:
+            return FakeNextButton(self)
+        return None
+
+    def evaluate(self, script, arg=None):
+        if hasattr(arg, "click"):
+            arg.click()
+        return None
+
+
+class FakeNextButton:
+    def __init__(self, page: FakeNextPage) -> None:
+        self.page = page
+
+    def is_visible(self) -> bool:
+        return self.page.remaining_clicks > 0
+
+    def click(self, timeout=None) -> None:
+        self.page.remaining_clicks -= 1
 
 
 class FakeHeaderCell:
@@ -351,6 +384,39 @@ def test_next_page_selector_includes_known_fallback_variants() -> None:
     assert "li.next:not(.disabled) a" in NEXT_PAGE_SELECTOR
 
 
+def test_restore_results_page_replays_search_and_advances_pages(monkeypatch) -> None:
+    page = FakeNextPage(pages_to_advance=2)
+    settings = BrowserDiscoverySettings()
+    markers = iter(
+        [
+            {"active_page": "1", "row_count": 10, "row_sample": "a"},
+            {"active_page": "2", "row_count": 10, "row_sample": "b"},
+        ]
+    )
+    search_calls: list[str] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: search_calls.append(keyword),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_page_marker",
+        lambda page: next(markers),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda page, previous_marker, timeout_ms=None: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    restore_results_page(page, "ระบบวิเคราะห์", 3, settings)
+
+    assert search_calls == ["ระบบวิเคราะห์"]
+    assert page.remaining_clicks == 0
+
+
 def test_get_results_page_marker_uses_procurement_results_table_only() -> None:
     unrelated_table = FakeTable(
         ["หัวข้อ", "ค่า"],
@@ -458,3 +524,118 @@ def test_close_check_matching_uses_results_table_only() -> None:
     assert match is not None
     assert match["project_id"] == "project-1"
     assert match["search_name"] == "โครงการที่ตรงกัน"
+
+
+def test_open_and_extract_project_promotes_state_from_downloaded_artifacts(
+    monkeypatch,
+) -> None:
+    page = object()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info",
+        lambda page: {
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization": "กรมตัวอย่าง",
+            "project_number": "69010000001",
+            "proposal_submission_date": "10/04/2569",
+            "budget": "1,000,000.00",
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.collect_downloaded_documents",
+        lambda page: [
+            {"file_name": "price.zip", "source_label": "ประกาศราคากลาง"},
+            {"file_name": "tor.zip", "source_label": "เอกสารประกวดราคา"},
+        ],
+    )
+
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="ระบบสารสนเทศ",
+        include_documents=True,
+    )
+
+    assert payload is not None
+    assert payload["artifact_bucket"] == ArtifactBucket.FINAL_TOR_DOWNLOADED.value
+    assert payload["project_state"] == ProjectState.TOR_DOWNLOADED.value
+
+
+def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
+    monkeypatch,
+) -> None:
+    settings = BrowserDiscoverySettings()
+    page = FakeSearchPage()
+    browser = SimpleNamespace(close=lambda: None)
+    playwright = SimpleNamespace(stop=lambda: None)
+    chrome = SimpleNamespace()
+    connect_results = iter([(browser, page), (browser, page)])
+    collect_calls: list[str] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.launch_real_chrome", lambda settings: chrome
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.sync_playwright",
+        lambda: SimpleNamespace(start=lambda: playwright),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.connect_playwright_to_chrome",
+        lambda pw, settings: next(connect_results),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.clear_search", lambda page, settings: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.restore_results_page",
+        lambda page, keyword, target_page_num, settings: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_collect_keyword_projects(
+        *, page, keyword, settings, seen_keys, include_documents
+    ) -> list[dict[str, object]]:
+        collect_calls.append(keyword)
+        if len(collect_calls) == 1:
+            raise BrowserClosedDuringKeyword(page_num=4)
+        return [{"project_name": "Recovered", "project_number": "6901"}]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._collect_keyword_projects",
+        fake_collect_keyword_projects,
+    )
+
+    discovered = crawl_live_discovery(
+        keyword="ที่ปรึกษา",
+        settings=settings,
+        include_documents=False,
+    )
+
+    assert collect_calls == ["ที่ปรึกษา", "ที่ปรึกษา"]
+    assert discovered == [{"project_name": "Recovered", "project_number": "6901"}]

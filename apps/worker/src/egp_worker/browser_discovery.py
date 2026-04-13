@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from egp_document_classifier import derive_artifact_bucket
+
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
@@ -25,7 +27,7 @@ except (
         raise ModuleNotFoundError("playwright is required for live browser discovery")
 
 
-from egp_shared_types.enums import ProcurementType, ProjectState
+from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
 
 from .browser_downloads import collect_downloaded_documents
 from .profiles import resolve_profile_keywords
@@ -63,6 +65,19 @@ class BrowserDiscoverySettings:
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryResumeState:
+    keyword_index: int
+    keyword: str
+    page_num: int = 1
+
+
+class BrowserClosedDuringKeyword(RuntimeError):
+    def __init__(self, *, page_num: int, message: str = "browser has been closed") -> None:
+        super().__init__(message)
+        self.page_num = page_num
+
+
 def crawl_live_discovery(
     *,
     keyword: str | None = None,
@@ -95,21 +110,61 @@ def crawl_live_discovery(
         _logged_sleep(5)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
 
-        for index, active_keyword in enumerate(keywords):
-            if index > 0:
-                clear_search(page, resolved_settings)
-            search_keyword(page, active_keyword, resolved_settings)
-            if is_no_results_page(page):
-                continue
-            discovered.extend(
-                _collect_keyword_projects(
-                    page=page,
-                    keyword=active_keyword,
-                    settings=resolved_settings,
-                    seen_keys=seen_keys,
-                    include_documents=include_documents,
+        keyword_index = 0
+        resume_state: DiscoveryResumeState | None = None
+        while keyword_index < len(keywords):
+            active_keyword = keywords[keyword_index]
+            try:
+                if resume_state is not None and resume_state.keyword_index == keyword_index:
+                    restore_results_page(
+                        page,
+                        active_keyword,
+                        resume_state.page_num,
+                        resolved_settings,
+                    )
+                else:
+                    if keyword_index > 0:
+                        clear_search(page, resolved_settings)
+                    search_keyword(page, active_keyword, resolved_settings)
+                    if is_no_results_page(page):
+                        keyword_index += 1
+                        resume_state = None
+                        continue
+                discovered.extend(
+                    _collect_keyword_projects(
+                        page=page,
+                        keyword=active_keyword,
+                        settings=resolved_settings,
+                        seen_keys=seen_keys,
+                        include_documents=include_documents,
+                    )
                 )
-            )
+                keyword_index += 1
+                resume_state = None
+            except BrowserClosedDuringKeyword as exc:
+                resume_state = DiscoveryResumeState(
+                    keyword_index=keyword_index,
+                    keyword=active_keyword,
+                    page_num=exc.page_num,
+                )
+                safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
+                chrome_proc = launch_real_chrome(resolved_settings)
+                pw = sync_playwright().start()
+                browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+                page.goto(
+                    MAIN_PAGE_URL,
+                    wait_until="domcontentloaded",
+                    timeout=resolved_settings.nav_timeout_ms,
+                )
+                _logged_sleep(3)
+                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+                page.goto(
+                    SEARCH_URL,
+                    wait_until="domcontentloaded",
+                    timeout=resolved_settings.nav_timeout_ms,
+                )
+                _logged_sleep(5)
+                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
         return discovered
     finally:
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
@@ -126,7 +181,11 @@ def _collect_keyword_projects(
     results: list[dict[str, object]] = []
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
-        rows = get_results_rows(page)
+        try:
+            rows = get_results_rows(page)
+        except Exception as exc:
+            _raise_browser_closed(exc, page_num)
+            raise
         eligible_rows: list[tuple[int, str]] = []
         for row_index, row in enumerate(rows):
             row_payload = _extract_search_row(row)
@@ -142,20 +201,32 @@ def _collect_keyword_projects(
             eligible_rows.append((row_index, row_payload["project_name"]))
 
         for row_index, _ in eligible_rows:
-            payload = open_and_extract_project(
-                page=page,
-                row_index=row_index,
-                keyword=keyword,
-                include_documents=include_documents,
-            )
+            try:
+                payload = open_and_extract_project(
+                    page=page,
+                    row_index=row_index,
+                    keyword=keyword,
+                    include_documents=include_documents,
+                )
+            except Exception as exc:
+                _raise_browser_closed(exc, page_num)
+                raise
             if payload is None:
-                _return_to_results(page, settings)
+                try:
+                    _return_to_results(page, settings)
+                except Exception as exc:
+                    _raise_browser_closed(exc, page_num)
+                    raise
                 continue
             dedupe_key = str(payload.get("project_number") or payload["project_name"]).casefold()
             if dedupe_key not in seen_keys:
                 seen_keys.add(dedupe_key)
                 results.append(payload)
-            _return_to_results(page, settings)
+            try:
+                _return_to_results(page, settings)
+            except Exception as exc:
+                _raise_browser_closed(exc, page_num)
+                raise
 
         previous_marker = get_results_page_marker(page)
         next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
@@ -201,6 +272,36 @@ def _collect_keyword_projects(
     return results
 
 
+def _raise_browser_closed(exc: Exception, page_num: int) -> None:
+    if "has been closed" in str(exc):
+        raise BrowserClosedDuringKeyword(page_num=page_num) from exc
+
+
+def restore_results_page(
+    page,
+    keyword: str,
+    target_page_num: int,
+    settings: BrowserDiscoverySettings,
+) -> None:
+    search_keyword(page, keyword, settings)
+    current_page = 1
+    while current_page < max(target_page_num, 1):
+        previous_marker = get_results_page_marker(page)
+        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
+        if not (next_btn and next_btn.is_visible()):
+            break
+        try:
+            page.evaluate("(el) => el.click()", next_btn)
+        except Exception:
+            next_btn.click(timeout=10_000)
+        _logged_sleep(3)
+        if not wait_for_results_page_change(
+            page, previous_marker, timeout_ms=settings.nav_timeout_ms
+        ):
+            break
+        current_page += 1
+
+
 def _extract_search_row(row) -> dict[str, object] | None:
     cells = row.query_selector_all("td")
     if len(cells) < 6:
@@ -240,6 +341,13 @@ def open_and_extract_project(
         project_name=project_name, organization_name=organization_name
     )
     downloaded_documents = collect_downloaded_documents(page) if include_documents else []
+    artifact_bucket = derive_artifact_bucket(
+        labels=[str(document.get("source_label") or "") for document in downloaded_documents]
+    )
+    if artifact_bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED:
+        project_state = ProjectState.TOR_DOWNLOADED.value
+    elif artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
+        project_state = ProjectState.OPEN_PUBLIC_HEARING.value
     return {
         "keyword": keyword,
         "project_name": project_name,
@@ -254,6 +362,7 @@ def open_and_extract_project(
             organization_name=organization_name,
         ),
         "project_state": project_state,
+        "artifact_bucket": artifact_bucket.value,
         "downloaded_documents": downloaded_documents,
         "source_status_text": TARGET_STATUS,
         "raw_snapshot": {
@@ -268,6 +377,7 @@ def open_and_extract_project(
                 organization_name=organization_name,
             ),
             "project_state": project_state,
+            "artifact_bucket": artifact_bucket.value,
             "downloaded_documents": [
                 {
                     "file_name": document.get("file_name"),
