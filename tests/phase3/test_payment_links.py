@@ -34,7 +34,7 @@ class FailingPaymentProvider:
 class StubOpnProvider:
     def __init__(self) -> None:
         self.created_requests: list[object] = []
-        self.last_amount = "2.00"
+        self.last_amount = "25.00"
 
     def create_payment_request(self, *, request):
         self.created_requests.append(request)
@@ -196,7 +196,7 @@ def _settle_request(
             "tenant_id": tenant_id,
             "provider_event_id": provider_event_id,
             "status": "settled",
-            "amount": "2.00",
+            "amount": "25.00",
             "currency": "THB",
             "occurred_at": "2026-04-05T05:30:00+00:00",
             "reference_code": "PROMPTPAY-3001",
@@ -223,7 +223,7 @@ def test_create_payment_request_returns_promptpay_qr_and_payment_link(tmp_path) 
     assert request["status"] == "pending"
     assert request["payment_method"] == "promptpay_qr"
     assert request["payment_url"].startswith("https://pay.egp.test/checkout/")
-    assert request["amount"] == "2.00"
+    assert request["amount"] == "25.00"
     assert request["qr_payload"]
     assert request["qr_svg"].startswith("<svg")
     assert request["expires_at"] is not None
@@ -346,7 +346,7 @@ def test_payment_request_and_callback_are_tenant_scoped(tmp_path) -> None:
             "tenant_id": OTHER_TENANT_ID,
             "provider_event_id": "evt-foreign-001",
             "status": "settled",
-            "amount": "2.00",
+            "amount": "25.00",
             "currency": "THB",
             "occurred_at": "2026-04-05T05:30:00+00:00",
         },
@@ -390,7 +390,7 @@ def test_callback_requires_configured_secret(tmp_path) -> None:
             "tenant_id": TENANT_ID,
             "provider_event_id": "evt-secret-001",
             "status": "settled",
-            "amount": "2.00",
+            "amount": "25.00",
             "currency": "THB",
             "occurred_at": "2026-04-05T05:30:00+00:00",
         },

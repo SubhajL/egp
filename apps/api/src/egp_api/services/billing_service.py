@@ -28,8 +28,8 @@ from egp_shared_types.enums import (
 
 
 _TEST_CHARGED_PLAN_AMOUNTS = {
-    "one_time_search_pack": "1.00",
-    "monthly_membership": "2.00",
+    "one_time_search_pack": "20.00",
+    "monthly_membership": "25.00",
 }
 
 

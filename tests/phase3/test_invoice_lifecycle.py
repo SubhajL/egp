@@ -149,7 +149,7 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
     created = created_response.json()
     assert created["record"]["status"] == "draft"
     assert created["record"]["billing_period_end"] == future_end.isoformat()
-    assert created["record"]["amount_due"] == "1.00"
+    assert created["record"]["amount_due"] == "20.00"
     assert created["subscription"] is None
 
     record_id = created["record"]["id"]
@@ -183,7 +183,7 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
         json={
             "tenant_id": TENANT_ID,
             "payment_method": "bank_transfer",
-            "amount": "1.00",
+            "amount": "20.00",
             "currency": "THB",
             "reference_code": "KBANK-OT-001",
             "received_at": f"{future_start.isoformat()}T03:30:00+00:00",
@@ -239,14 +239,14 @@ def test_monthly_membership_partial_payment_does_not_activate_subscription(
     assert created_response.status_code == 201
     created = created_response.json()
     assert created["record"]["billing_period_end"] == "2026-04-30"
-    assert created["record"]["amount_due"] == "2.00"
+    assert created["record"]["amount_due"] == "25.00"
 
     payment_response = client.post(
         f"/v1/billing/records/{created['record']['id']}/payments",
         json={
             "tenant_id": TENANT_ID,
             "payment_method": "bank_transfer",
-            "amount": "0.50",
+            "amount": "5.00",
             "currency": "THB",
             "reference_code": "KBANK-MM-001",
             "received_at": "2026-04-02T03:30:00+00:00",
@@ -266,7 +266,7 @@ def test_monthly_membership_partial_payment_does_not_activate_subscription(
     assert reconciled_response.status_code == 200
     reconciled = reconciled_response.json()
     assert reconciled["record"]["status"] == "payment_detected"
-    assert reconciled["record"]["outstanding_balance"] == "1.50"
+    assert reconciled["record"]["outstanding_balance"] == "20.00"
     assert reconciled["subscription"] is None
 
 
@@ -320,7 +320,7 @@ def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> Non
     assert response.status_code == 201
     detail = response.json()
     assert detail["record"]["plan_code"] == "one_time_search_pack"
-    assert detail["record"]["amount_due"] == "1.00"
+    assert detail["record"]["amount_due"] == "20.00"
     assert detail["record"]["upgrade_from_subscription_id"] == trial_subscription_id
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
@@ -348,7 +348,7 @@ def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
     assert response.status_code == 201
     detail = response.json()
     assert detail["record"]["plan_code"] == "monthly_membership"
-    assert detail["record"]["amount_due"] == "2.00"
+    assert detail["record"]["amount_due"] == "25.00"
     assert detail["record"]["upgrade_from_subscription_id"] == one_time_subscription_id
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
@@ -460,7 +460,7 @@ def test_future_start_upgrade_creates_replace_on_activation_record(tmp_path) -> 
 
     assert response.status_code == 201
     detail = response.json()
-    assert detail["record"]["amount_due"] == "2.00"
+    assert detail["record"]["amount_due"] == "25.00"
     assert detail["record"]["upgrade_from_subscription_id"] == source_subscription_id
     assert detail["record"]["upgrade_mode"] == "replace_on_activation"
 
@@ -495,7 +495,7 @@ def test_future_start_upgrade_settlement_preserves_current_active_subscription(
         json={
             "tenant_id": TENANT_ID,
             "payment_method": "bank_transfer",
-            "amount": "2.00",
+            "amount": "25.00",
             "currency": "THB",
             "reference_code": "KBANK-UPG-FUTURE-001",
             "received_at": f"{today.isoformat()}T03:30:00+00:00",
