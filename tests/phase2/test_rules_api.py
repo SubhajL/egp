@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -468,6 +469,9 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
             artifact_root=tmp_path, database_url=database_url, auth_required=False
         )
     )
+    active_start = date.today() - timedelta(days=1)
+    active_end = date.today() + timedelta(days=6)
+    activated_at = f"{active_start.isoformat()}T00:00:00+00:00"
 
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
@@ -491,8 +495,8 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
                     'INV-LIMIT',
                     'free_trial',
                     'paid',
-                    '2026-04-05',
-                    '2026-04-11',
+                    :billing_period_start,
+                    :billing_period_end,
                     'THB',
                     '0.00',
                     :created_at,
@@ -503,8 +507,10 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
             {
                 "id": "aaaaaaaa-1111-1111-1111-111111111111",
                 "tenant_id": TENANT_ID,
-                "created_at": "2026-04-05T00:00:00+00:00",
-                "updated_at": "2026-04-05T00:00:00+00:00",
+                "billing_period_start": active_start.isoformat(),
+                "billing_period_end": active_end.isoformat(),
+                "created_at": activated_at,
+                "updated_at": activated_at,
             },
         )
         connection.execute(
@@ -528,8 +534,8 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
                     'aaaaaaaa-1111-1111-1111-111111111111',
                     'free_trial',
                     'active',
-                    '2026-04-05',
-                    '2026-04-11',
+                    :billing_period_start,
+                    :billing_period_end,
                     1,
                     :activated_at,
                     :created_at,
@@ -540,9 +546,11 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
             {
                 "id": "bbbbbbbb-1111-1111-1111-111111111111",
                 "tenant_id": TENANT_ID,
-                "activated_at": "2026-04-05T00:00:00+00:00",
-                "created_at": "2026-04-05T00:00:00+00:00",
-                "updated_at": "2026-04-05T00:00:00+00:00",
+                "billing_period_start": active_start.isoformat(),
+                "billing_period_end": active_end.isoformat(),
+                "activated_at": activated_at,
+                "created_at": activated_at,
+                "updated_at": activated_at,
             },
         )
     _seed_profile(
