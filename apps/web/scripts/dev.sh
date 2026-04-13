@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+if [ -f ./.env.local ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env.local
+  set +a
+fi
+
 DATABASE_URL="${DATABASE_URL:-sqlite+pysqlite:////tmp/egp-web-dev.sqlite3}"
 EGP_PAYMENT_CALLBACK_SECRET="${EGP_PAYMENT_CALLBACK_SECRET:-top-secret}"
 EGP_AUTH_REQUIRED="${EGP_AUTH_REQUIRED:-false}"
