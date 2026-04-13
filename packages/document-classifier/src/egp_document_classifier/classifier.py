@@ -179,11 +179,15 @@ def derive_artifact_bucket(
 
     for document in documents:
         try:
-            document_type = DocumentType(str(document.get("document_type") or "").strip())
+            document_type = DocumentType(
+                str(document.get("document_type") or "").strip()
+            )
         except ValueError:
             document_type = None
         try:
-            document_phase = DocumentPhase(str(document.get("document_phase") or "").strip())
+            document_phase = DocumentPhase(
+                str(document.get("document_phase") or "").strip()
+            )
         except ValueError:
             document_phase = None
 
@@ -193,7 +197,10 @@ def derive_artifact_bucket(
         if document_type is DocumentType.INVITATION:
             has_invitation = True
             continue
-        if document_type is DocumentType.TOR and document_phase is DocumentPhase.PUBLIC_HEARING:
+        if (
+            document_type is DocumentType.TOR
+            and document_phase is DocumentPhase.PUBLIC_HEARING
+        ):
             has_draft_tor = True
             continue
         if document_type is DocumentType.TOR and document_phase is DocumentPhase.FINAL:
@@ -206,9 +213,14 @@ def derive_artifact_bucket(
             has_mid_price = True
         elif document_type is DocumentType.INVITATION:
             has_invitation = True
-        elif document_type is DocumentType.TOR and document_phase is DocumentPhase.PUBLIC_HEARING:
+        elif (
+            document_type is DocumentType.TOR
+            and document_phase is DocumentPhase.PUBLIC_HEARING
+        ):
             has_draft_tor = True
-        elif document_type is DocumentType.TOR and document_phase is DocumentPhase.FINAL:
+        elif (
+            document_type is DocumentType.TOR and document_phase is DocumentPhase.FINAL
+        ):
             has_final_tor = True
 
     if has_final_tor:

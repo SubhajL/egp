@@ -150,8 +150,9 @@ def _download_one_document(page, target_doc: str) -> list[dict[str, object]]:
         if target_doc == "ประกาศเชิญชวน":
             return _download_documents_from_current_view(
                 page,
-                include_label=lambda label: "ประกาศเชิญชวน" in label
-                or is_final_tor_doc_label(label),
+                include_label=lambda label: (
+                    "ประกาศเชิญชวน" in label or is_final_tor_doc_label(label)
+                ),
             )
         if is_final_tor_target:
             return _download_documents_from_current_view(

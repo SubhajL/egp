@@ -43,6 +43,7 @@ COLUMNS = [
     ("artifact_bucket", 24),
 ]
 
+
 def _last_alias_value(detail: ProjectDetail | None, alias_type: str) -> str | None:
     if detail is None:
         return None
