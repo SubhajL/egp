@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-from egp_shared_types.enums import ArtifactBucket, ProjectState
+from egp_worker.browser_close_check import _find_matching_observation_on_page
 from egp_worker.browser_discovery import (
-    BrowserClosedDuringKeyword,
     NEXT_PAGE_SELECTOR,
     BrowserDiscoverySettings,
     click_search_button,
-    crawl_live_discovery,
-    open_and_extract_project,
-    restore_results_page,
+    get_results_page_marker,
+    is_no_results_page,
+    navigate_to_project_by_row,
     results_page_marker_changed,
     search_keyword,
     wait_for_cloudflare,
@@ -114,30 +111,138 @@ class FakeSearchPage:
         self.url = url
 
 
-class FakeNextPage:
-    def __init__(self, *, pages_to_advance: int) -> None:
-        self.remaining_clicks = pages_to_advance
+class FakeHeaderCell:
+    def __init__(self, text: str) -> None:
+        self._text = text
 
-    def query_selector(self, selector: str):
-        if selector == NEXT_PAGE_SELECTOR:
-            return FakeNextButton(self)
-        return None
-
-    def evaluate(self, script, arg=None):
-        if hasattr(arg, "click"):
-            arg.click()
-        return None
+    def inner_text(self) -> str:
+        return self._text
 
 
-class FakeNextButton:
-    def __init__(self, page: FakeNextPage) -> None:
-        self.page = page
-
-    def is_visible(self) -> bool:
-        return self.page.remaining_clicks > 0
+class FakeClickTarget:
+    def __init__(self) -> None:
+        self.click_calls = 0
 
     def click(self, timeout=None) -> None:
-        self.page.remaining_clicks -= 1
+        self.click_calls += 1
+
+
+class FakeCell:
+    def __init__(
+        self, text: str, *, click_target: FakeClickTarget | None = None
+    ) -> None:
+        self._text = text
+        self._click_target = click_target
+
+    def inner_text(self) -> str:
+        return self._text
+
+    def query_selector(self, selector: str):
+        if self._click_target is None:
+            return None
+        if selector == "a, button, [role='button'], svg, i":
+            return self._click_target
+        return None
+
+    def click(self) -> None:
+        if self._click_target is not None:
+            self._click_target.click()
+
+
+class FakeRow:
+    def __init__(self, cells: list[FakeCell]) -> None:
+        self._cells = cells
+
+    def query_selector_all(self, selector: str):
+        if selector == "td":
+            return self._cells
+        return []
+
+    def inner_text(self) -> str:
+        return " ".join(cell.inner_text() for cell in self._cells)
+
+
+class FakeTable:
+    def __init__(
+        self, headers: list[str], rows: list[FakeRow], *, body_text: str | None = None
+    ) -> None:
+        self._headers = [FakeHeaderCell(header) for header in headers]
+        self._rows = rows
+        self._body_text = body_text
+
+    def query_selector_all(self, selector: str):
+        if selector in (
+            "thead th, thead td",
+            "th",
+            "tr:first-child th, tr:first-child td",
+        ):
+            return self._headers
+        if selector == "tbody tr":
+            return self._rows
+        return []
+
+    def inner_text(self) -> str:
+        if self._body_text is not None:
+            return self._body_text
+        parts = [header.inner_text() for header in self._headers]
+        parts.extend(row.inner_text() for row in self._rows)
+        return "\n".join(parts)
+
+
+class FakeActivePageMarker:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def inner_text(self) -> str:
+        return self._text
+
+
+class FakeResultsPage:
+    def __init__(self, tables: list[FakeTable], *, active_page: str = "1") -> None:
+        self._tables = tables
+        self._active_page = active_page
+
+    def query_selector_all(self, selector: str):
+        if selector == "table":
+            return self._tables
+        return []
+
+    def query_selector(self, selector: str):
+        if selector == "li.page-item.active, li.active, .pagination .active":
+            return FakeActivePageMarker(self._active_page)
+        return None
+
+
+def _results_headers() -> list[str]:
+    return [
+        "ลำดับ",
+        "หน่วยจัดซื้อ",
+        "ชื่อโครงการ",
+        "วงเงินงบประมาณ (บาท)",
+        "สถานะโครงการ",
+        "ดูข้อมูล",
+    ]
+
+
+def _results_row(
+    *,
+    index: str,
+    organization: str,
+    project_name: str,
+    budget: str = "100.00",
+    status: str = "หนังสือเชิญชวน/ประกาศเชิญชวน",
+    click_target: FakeClickTarget | None = None,
+) -> FakeRow:
+    return FakeRow(
+        [
+            FakeCell(index),
+            FakeCell(organization),
+            FakeCell(project_name),
+            FakeCell(budget),
+            FakeCell(status),
+            FakeCell("ดูข้อมูล", click_target=click_target),
+        ]
+    )
 
 
 def test_results_page_marker_changed_detects_active_page_change() -> None:
@@ -246,143 +351,110 @@ def test_next_page_selector_includes_known_fallback_variants() -> None:
     assert "li.next:not(.disabled) a" in NEXT_PAGE_SELECTOR
 
 
-def test_restore_results_page_replays_search_and_advances_pages(monkeypatch) -> None:
-    page = FakeNextPage(pages_to_advance=2)
-    settings = BrowserDiscoverySettings()
-    markers = iter(
+def test_get_results_page_marker_uses_procurement_results_table_only() -> None:
+    unrelated_table = FakeTable(
+        ["หัวข้อ", "ค่า"],
+        [FakeRow([FakeCell("noise"), FakeCell("ignore me")])],
+    )
+    results_table = FakeTable(
+        _results_headers(),
+        [_results_row(index="1", organization="หน่วยงาน A", project_name="โครงการจริง")],
+    )
+    page = FakeResultsPage([unrelated_table, results_table], active_page="4")
+
+    marker = get_results_page_marker(page)
+
+    assert marker["active_page"] == "4"
+    assert marker["row_count"] == 1
+    assert "โครงการจริง" in marker["row_sample"]
+    assert "ignore me" not in marker["row_sample"]
+
+
+def test_is_no_results_page_ignores_unrelated_empty_table() -> None:
+    unrelated_empty = FakeTable(["หัวข้อ"], [], body_text="ไม่พบข้อมูล ใน widget อื่น")
+    results_table = FakeTable(
+        _results_headers(),
+        [_results_row(index="1", organization="หน่วยงาน A", project_name="โครงการจริง")],
+    )
+    page = FakeResultsPage([unrelated_empty, results_table])
+
+    assert is_no_results_page(page) is False
+
+
+def test_navigate_to_project_by_row_uses_results_table_only() -> None:
+    wrong_click = FakeClickTarget()
+    expected_click = FakeClickTarget()
+    unrelated_table = FakeTable(
+        ["หัวข้อ", "ค่า", "อื่น", "อื่น", "อื่น", "ดูข้อมูล"],
         [
-            {"active_page": "1", "row_count": 10, "row_sample": "a"},
-            {"active_page": "2", "row_count": 10, "row_sample": "b"},
-        ]
-    )
-    search_calls: list[str] = []
-
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.search_keyword",
-        lambda page, keyword, settings: search_calls.append(keyword),
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.get_results_page_marker", lambda page: next(markers)
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.wait_for_results_page_change",
-        lambda page, previous_marker, timeout_ms=None: True,
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
-    )
-
-    restore_results_page(page, "ระบบวิเคราะห์", 3, settings)
-
-    assert search_calls == ["ระบบวิเคราะห์"]
-    assert page.remaining_clicks == 0
-
-
-def test_open_and_extract_project_promotes_state_from_downloaded_artifacts(
-    monkeypatch,
-) -> None:
-    page = object()
-
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.navigate_to_project_by_row", lambda page, row_index: True
-    )
-    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.extract_project_info",
-        lambda page: {
-            "project_name": "โครงการระบบข้อมูลกลาง",
-            "organization": "กรมตัวอย่าง",
-            "project_number": "69010000001",
-            "proposal_submission_date": "10/04/2569",
-            "budget": "1,000,000.00",
-        },
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.collect_downloaded_documents",
-        lambda page: [
-            {"file_name": "price.zip", "source_label": "ประกาศราคากลาง"},
-            {"file_name": "tor.zip", "source_label": "เอกสารประกวดราคา"},
+            FakeRow(
+                [
+                    FakeCell("x"),
+                    FakeCell("noise"),
+                    FakeCell("not a procurement row"),
+                    FakeCell("0"),
+                    FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
+                    FakeCell("ดูข้อมูล", click_target=wrong_click),
+                ]
+            )
         ],
     )
+    results_table = FakeTable(
+        _results_headers(),
+        [
+            _results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A"),
+            _results_row(
+                index="2",
+                organization="หน่วยงาน B",
+                project_name="โครงการ B",
+                click_target=expected_click,
+            ),
+        ],
+    )
+    page = FakeResultsPage([unrelated_table, results_table])
 
-    payload = open_and_extract_project(
-        page=page,
-        row_index=0,
-        keyword="ระบบสารสนเทศ",
-        include_documents=True,
-    )
-
-    assert payload is not None
-    assert payload["artifact_bucket"] == ArtifactBucket.FINAL_TOR_DOWNLOADED.value
-    assert payload["project_state"] == ProjectState.TOR_DOWNLOADED.value
+    assert navigate_to_project_by_row(page, 1) is True
+    assert wrong_click.click_calls == 0
+    assert expected_click.click_calls == 1
 
 
-def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
-    monkeypatch,
-) -> None:
-    settings = BrowserDiscoverySettings()
-    page = FakeSearchPage()
-    browser = SimpleNamespace(close=lambda: None)
-    playwright = SimpleNamespace(stop=lambda: None)
-    chrome = SimpleNamespace()
-    connect_results = iter([(browser, page), (browser, page)])
-    collect_calls: list[str] = []
+def test_close_check_matching_uses_results_table_only() -> None:
+    unrelated_table = FakeTable(
+        ["หัวข้อ", "ค่า", "อื่น", "อื่น", "อื่น"],
+        [
+            FakeRow(
+                [
+                    FakeCell("x"),
+                    FakeCell("noise"),
+                    FakeCell("project name collision"),
+                    FakeCell("0"),
+                    FakeCell("สถานะอื่น"),
+                ]
+            )
+        ],
+    )
+    results_table = FakeTable(
+        _results_headers(),
+        [
+            _results_row(
+                index="1",
+                organization="หน่วยงาน A",
+                project_name="โครงการที่ตรงกัน",
+                status="หนังสือเชิญชวน/ประกาศเชิญชวน",
+            )
+        ],
+    )
+    page = FakeResultsPage([unrelated_table, results_table])
 
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings: chrome
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.sync_playwright",
-        lambda: SimpleNamespace(start=lambda: playwright),
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.connect_playwright_to_chrome",
-        lambda pw, settings: next(connect_results),
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.wait_for_cloudflare",
-        lambda *args, **kwargs: True,
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.search_keyword",
-        lambda page, keyword, settings: None,
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.clear_search", lambda page, settings: None
-    )
-    monkeypatch.setattr("egp_worker.browser_discovery.is_no_results_page", lambda page: False)
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.restore_results_page",
-        lambda page, keyword, target_page_num, settings: None,
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None
-    )
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    match = _find_matching_observation_on_page(
+        page,
+        project={
+            "project_id": "project-1",
+            "project_name": "โครงการที่ตรงกัน",
+            "project_number": "",
+        },
     )
 
-    def fake_collect_keyword_projects(
-        *, page, keyword, settings, seen_keys, include_documents
-    ) -> list[dict[str, object]]:
-        collect_calls.append(keyword)
-        if len(collect_calls) == 1:
-            raise BrowserClosedDuringKeyword(page_num=4)
-        return [{"project_name": "Recovered", "project_number": "6901"}]
-
-    monkeypatch.setattr(
-        "egp_worker.browser_discovery._collect_keyword_projects",
-        fake_collect_keyword_projects,
-    )
-
-    discovered = crawl_live_discovery(
-        keyword="ที่ปรึกษา",
-        settings=settings,
-        include_documents=False,
-    )
-
-    assert collect_calls == ["ที่ปรึกษา", "ที่ปรึกษา"]
-    assert discovered == [{"project_name": "Recovered", "project_number": "6901"}]
+    assert match is not None
+    assert match["project_id"] == "project-1"
+    assert match["search_name"] == "โครงการที่ตรงกัน"

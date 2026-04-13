@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from egp_document_classifier import derive_artifact_bucket
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
@@ -26,7 +25,7 @@ except (
         raise ModuleNotFoundError("playwright is required for live browser discovery")
 
 
-from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
+from egp_shared_types.enums import ProcurementType, ProjectState
 
 from .browser_downloads import collect_downloaded_documents
 from .profiles import resolve_profile_keywords
@@ -42,6 +41,14 @@ NEXT_PAGE_SELECTOR = (
     "a:has-text('»'), "
     "li.next:not(.disabled) a"
 )
+RESULTS_TABLE_REQUIRED_HEADERS = [
+    "ลำดับ",
+    "หน่วยจัดซื้อ",
+    "ชื่อโครงการ",
+    "วงเงินงบประมาณ",
+    "สถานะโครงการ",
+    "ดูข้อมูล",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,19 +61,6 @@ class BrowserDiscoverySettings:
     search_page_recovery_retries: int = 1
     max_pages_per_keyword: int = 15
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
-
-
-@dataclass(frozen=True, slots=True)
-class DiscoveryResumeState:
-    keyword_index: int
-    keyword: str
-    page_num: int = 1
-
-
-class BrowserClosedDuringKeyword(RuntimeError):
-    def __init__(self, *, page_num: int, message: str = "browser has been closed") -> None:
-        super().__init__(message)
-        self.page_num = page_num
 
 
 def crawl_live_discovery(
@@ -101,64 +95,21 @@ def crawl_live_discovery(
         _logged_sleep(5)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
 
-        keyword_index = 0
-        resume_state: DiscoveryResumeState | None = None
-        while keyword_index < len(keywords):
-            active_keyword = keywords[keyword_index]
-            try:
-                if (
-                    resume_state is not None
-                    and resume_state.keyword_index == keyword_index
-                ):
-                    restore_results_page(
-                        page,
-                        active_keyword,
-                        resume_state.page_num,
-                        resolved_settings,
-                    )
-                else:
-                    if keyword_index > 0:
-                        clear_search(page, resolved_settings)
-                    search_keyword(page, active_keyword, resolved_settings)
-                    if is_no_results_page(page):
-                        keyword_index += 1
-                        resume_state = None
-                        continue
-                discovered.extend(
-                    _collect_keyword_projects(
-                        page=page,
-                        keyword=active_keyword,
-                        settings=resolved_settings,
-                        seen_keys=seen_keys,
-                        include_documents=include_documents,
-                    )
-                )
-                keyword_index += 1
-                resume_state = None
-            except BrowserClosedDuringKeyword as exc:
-                resume_state = DiscoveryResumeState(
-                    keyword_index=keyword_index,
+        for index, active_keyword in enumerate(keywords):
+            if index > 0:
+                clear_search(page, resolved_settings)
+            search_keyword(page, active_keyword, resolved_settings)
+            if is_no_results_page(page):
+                continue
+            discovered.extend(
+                _collect_keyword_projects(
+                    page=page,
                     keyword=active_keyword,
-                    page_num=exc.page_num,
+                    settings=resolved_settings,
+                    seen_keys=seen_keys,
+                    include_documents=include_documents,
                 )
-                safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
-                chrome_proc = launch_real_chrome(resolved_settings)
-                pw = sync_playwright().start()
-                browser, page = connect_playwright_to_chrome(pw, resolved_settings)
-                page.goto(
-                    MAIN_PAGE_URL,
-                    wait_until="domcontentloaded",
-                    timeout=resolved_settings.nav_timeout_ms,
-                )
-                _logged_sleep(3)
-                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
-                page.goto(
-                    SEARCH_URL,
-                    wait_until="domcontentloaded",
-                    timeout=resolved_settings.nav_timeout_ms,
-                )
-                _logged_sleep(5)
-                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+            )
         return discovered
     finally:
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
@@ -175,11 +126,7 @@ def _collect_keyword_projects(
     results: list[dict[str, object]] = []
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
-        try:
-            rows = page.query_selector_all("table tbody tr")
-        except Exception as exc:
-            _raise_browser_closed(exc, page_num)
-            raise
+        rows = get_results_rows(page)
         eligible_rows: list[tuple[int, str]] = []
         for row_index, row in enumerate(rows):
             row_payload = _extract_search_row(row)
@@ -195,32 +142,20 @@ def _collect_keyword_projects(
             eligible_rows.append((row_index, row_payload["project_name"]))
 
         for row_index, _ in eligible_rows:
-            try:
-                payload = open_and_extract_project(
-                    page=page,
-                    row_index=row_index,
-                    keyword=keyword,
-                    include_documents=include_documents,
-                )
-            except Exception as exc:
-                _raise_browser_closed(exc, page_num)
-                raise
+            payload = open_and_extract_project(
+                page=page,
+                row_index=row_index,
+                keyword=keyword,
+                include_documents=include_documents,
+            )
             if payload is None:
-                try:
-                    _return_to_results(page, settings)
-                except Exception as exc:
-                    _raise_browser_closed(exc, page_num)
-                    raise
+                _return_to_results(page, settings)
                 continue
             dedupe_key = str(payload.get("project_number") or payload["project_name"]).casefold()
             if dedupe_key not in seen_keys:
                 seen_keys.add(dedupe_key)
                 results.append(payload)
-            try:
-                _return_to_results(page, settings)
-            except Exception as exc:
-                _raise_browser_closed(exc, page_num)
-                raise
+            _return_to_results(page, settings)
 
         previous_marker = get_results_page_marker(page)
         next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
@@ -266,36 +201,6 @@ def _collect_keyword_projects(
     return results
 
 
-def _raise_browser_closed(exc: Exception, page_num: int) -> None:
-    if "has been closed" in str(exc):
-        raise BrowserClosedDuringKeyword(page_num=page_num) from exc
-
-
-def restore_results_page(
-    page,
-    keyword: str,
-    target_page_num: int,
-    settings: BrowserDiscoverySettings,
-) -> None:
-    search_keyword(page, keyword, settings)
-    current_page = 1
-    while current_page < max(target_page_num, 1):
-        previous_marker = get_results_page_marker(page)
-        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
-        if not (next_btn and next_btn.is_visible()):
-            break
-        try:
-            page.evaluate("(el) => el.click()", next_btn)
-        except Exception:
-            next_btn.click(timeout=10_000)
-        _logged_sleep(3)
-        if not wait_for_results_page_change(
-            page, previous_marker, timeout_ms=settings.nav_timeout_ms
-        ):
-            break
-        current_page += 1
-
-
 def _extract_search_row(row) -> dict[str, object] | None:
     cells = row.query_selector_all("td")
     if len(cells) < 6:
@@ -335,13 +240,6 @@ def open_and_extract_project(
         project_name=project_name, organization_name=organization_name
     )
     downloaded_documents = collect_downloaded_documents(page) if include_documents else []
-    artifact_bucket = derive_artifact_bucket(
-        labels=[str(document.get("source_label") or "") for document in downloaded_documents]
-    )
-    if artifact_bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED:
-        project_state = ProjectState.TOR_DOWNLOADED.value
-    elif artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
-        project_state = ProjectState.OPEN_PUBLIC_HEARING.value
     return {
         "keyword": keyword,
         "project_name": project_name,
@@ -356,7 +254,6 @@ def open_and_extract_project(
             organization_name=organization_name,
         ),
         "project_state": project_state,
-        "artifact_bucket": artifact_bucket.value,
         "downloaded_documents": downloaded_documents,
         "source_status_text": TARGET_STATUS,
         "raw_snapshot": {
@@ -371,7 +268,6 @@ def open_and_extract_project(
                 organization_name=organization_name,
             ),
             "project_state": project_state,
-            "artifact_bucket": artifact_bucket.value,
             "downloaded_documents": [
                 {
                     "file_name": document.get("file_name"),
@@ -499,6 +395,51 @@ def status_matches_target(status_text: str) -> bool:
     return _compact_visible_text(TARGET_STATUS) in _compact_visible_text(status_text)
 
 
+def _table_matches_results_headers(table) -> bool:
+    """Return True when a table looks like the procurement results table."""
+    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    headers: list[str] = []
+    for selector in header_selectors:
+        try:
+            header_els = table.query_selector_all(selector)
+        except Exception:
+            header_els = []
+        headers = [
+            header.inner_text().strip() for header in header_els if header.inner_text().strip()
+        ]
+        if headers:
+            break
+    if not headers:
+        return False
+    compact_headers = [_compact_visible_text(header) for header in headers]
+    return all(
+        any(_compact_visible_text(required) in header for header in compact_headers)
+        for required in RESULTS_TABLE_REQUIRED_HEADERS
+    )
+
+
+def find_results_table(page):
+    """Return the procurement search results table, if present."""
+    for table in page.query_selector_all("table"):
+        try:
+            if _table_matches_results_headers(table):
+                return table
+        except Exception:
+            continue
+    return None
+
+
+def get_results_rows(page) -> list:
+    """Return rows from the procurement search results table only."""
+    table = find_results_table(page)
+    if not table:
+        return []
+    try:
+        return table.query_selector_all("tbody tr")
+    except Exception:
+        return []
+
+
 def find_search_input(page, search_btn):
     try:
         handle = search_btn.evaluate_handle(
@@ -575,18 +516,13 @@ def click_search_button(page, search_btn=None, timeout_ms: int | None = None) ->
 
 def is_no_results_page(page) -> bool:
     try:
-        return bool(
-            page.evaluate(
-                r"""() => {
-                    const table = document.querySelector('table');
-                    if (!table) return false;
-                    const rows = table.querySelectorAll('tbody tr');
-                    if (rows.length > 0) return false;
-                    const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
-                    return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-                }"""
-            )
-        )
+        table = find_results_table(page)
+        if not table:
+            return False
+        if get_results_rows(page):
+            return False
+        text = re.sub(r"\s+", " ", table.inner_text() or "").strip()
+        return "ไม่พบข้อมูล" in text or "จำนวนโครงการที่พบ : 0" in text
     except Exception:
         return False
 
@@ -596,60 +532,36 @@ def wait_for_results_ready(page, settings: BrowserDiscoverySettings) -> None:
         page.wait_for_selector("table", state="attached", timeout=settings.nav_timeout_ms)
     except Exception:
         pass
-    try:
-        page.wait_for_function(
-            r"""() => {
-                const table = document.querySelector('table');
-                if (!table) return false;
-                const rows = table.querySelectorAll('tbody tr');
-                if (rows.length > 0) return true;
-                const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
-                return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-            }""",
-            timeout=settings.nav_timeout_ms,
-        )
-    except Exception:
-        pass
     for _ in range(3):
         try:
-            if page.query_selector("table tbody tr"):
+            if get_results_rows(page):
                 return
         except Exception:
             pass
+        if is_no_results_page(page):
+            return
         _logged_sleep(1.0)
 
 
 def get_results_page_marker(page) -> dict[str, str | int]:
     """Capture a compact signature for the current results page."""
+    rows = get_results_rows(page)[:3]
+    row_sample_parts: list[str] = []
+    for row in rows:
+        try:
+            cells = row.query_selector_all("td")[:5]
+            row_sample_parts.append("|".join((cell.inner_text() or "").strip() for cell in cells))
+        except Exception:
+            continue
     try:
-        marker = page.evaluate(
-            r"""() => {
-                const table = document.querySelector('table');
-                const rows = Array.from(table?.querySelectorAll('tbody tr') || []).slice(0, 3);
-                const rowSample = rows.map((tr) =>
-                    Array.from(tr.querySelectorAll('td'))
-                        .slice(0, 5)
-                        .map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim())
-                        .join('|')
-                ).join(' || ');
-                const active = document.querySelector('li.page-item.active, li.active, .pagination .active');
-                return {
-                    active_page: active ? (active.innerText || '').replace(/\s+/g, ' ').trim() : '',
-                    row_count: rows.length,
-                    row_sample: rowSample,
-                };
-            }"""
-        )
+        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active_page = active.inner_text().strip() if active else ""
     except Exception:
-        marker = None
-
-    if not isinstance(marker, dict):
-        return {"active_page": "", "row_count": -1, "row_sample": ""}
-
+        active_page = ""
     return {
-        "active_page": str(marker.get("active_page", "") or ""),
-        "row_count": int(marker.get("row_count", -1) or -1),
-        "row_sample": str(marker.get("row_sample", "") or ""),
+        "active_page": active_page,
+        "row_count": len(rows),
+        "row_sample": " || ".join(row_sample_parts),
     }
 
 
@@ -658,12 +570,9 @@ def results_page_marker_changed(
 ) -> bool:
     """Return True once pagination changes the active page or visible row sample."""
     return (
-        str(previous.get("active_page", "") or "")
-        != str(current.get("active_page", "") or "")
-        or int(previous.get("row_count", -1) or -1)
-        != int(current.get("row_count", -1) or -1)
-        or str(previous.get("row_sample", "") or "")
-        != str(current.get("row_sample", "") or "")
+        str(previous.get("active_page", "") or "") != str(current.get("active_page", "") or "")
+        or int(previous.get("row_count", -1) or -1) != int(current.get("row_count", -1) or -1)
+        or str(previous.get("row_sample", "") or "") != str(current.get("row_sample", "") or "")
     )
 
 
@@ -671,36 +580,16 @@ def wait_for_results_page_change(
     page, previous_marker: dict[str, str | int], timeout_ms: int
 ) -> bool:
     """Wait for the result table to move to a different page or row sample."""
-    try:
-        page.wait_for_function(
-            r"""previous => {
-                const table = document.querySelector('table');
-                if (!table) return false;
-                const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 3);
-                const rowSample = rows.map((tr) =>
-                    Array.from(tr.querySelectorAll('td'))
-                        .slice(0, 5)
-                        .map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim())
-                        .join('|')
-                ).join(' || ');
-                const active = document.querySelector('li.page-item.active, li.active, .pagination .active');
-                const activePage = active ? (active.innerText || '').replace(/\s+/g, ' ').trim() : '';
-                const markerChanged =
-                    activePage !== (previous.active_page || '') ||
-                    rows.length !== (previous.row_count ?? -1) ||
-                    rowSample !== (previous.row_sample || '');
-                if (markerChanged) return true;
-                const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
-                return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-            }""",
-            arg=previous_marker,
-            timeout=timeout_ms,
-        )
-    except Exception:
-        pass
-
+    deadline = time.monotonic() + max(1.0, timeout_ms / 1000)
     fallback_settings = BrowserDiscoverySettings(nav_timeout_ms=timeout_ms)
-    wait_for_results_ready(page, fallback_settings)
+    while time.monotonic() < deadline:
+        wait_for_results_ready(page, fallback_settings)
+        current_marker = get_results_page_marker(page)
+        if results_page_marker_changed(previous_marker, current_marker):
+            return True
+        if is_no_results_page(page):
+            return True
+        _logged_sleep(0.5)
     current_marker = get_results_page_marker(page)
     return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
 
@@ -753,13 +642,13 @@ def clear_search(page, settings: BrowserDiscoverySettings) -> None:
 
 
 def navigate_to_project_by_row(page, row_index: int) -> bool:
-    rows = page.query_selector_all("table tbody tr")
+    rows = get_results_rows(page)
     eligible_idx = 0
     for row in rows:
         cells = row.query_selector_all("td")
         if len(cells) < 6:
             continue
-        if TARGET_STATUS not in cells[4].inner_text().strip():
+        if not status_matches_target(cells[4].inner_text().strip()):
             continue
         if eligible_idx == row_index:
             view_btn = cells[5].query_selector("a, button, [role='button'], svg, i")

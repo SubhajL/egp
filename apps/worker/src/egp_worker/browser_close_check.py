@@ -23,6 +23,7 @@ from .browser_discovery import (
     connect_playwright_to_chrome,
     find_search_input,
     get_results_page_marker,
+    get_results_rows,
     launch_real_chrome,
     pagination_button_is_disabled,
     safe_shutdown,
@@ -146,7 +147,7 @@ def _find_matching_observation_on_page(
 ) -> dict[str, object] | None:
     expected_number = str(project.get("project_number") or "").strip()
     expected_name = str(project.get("project_name") or "").strip()
-    for row in page.query_selector_all("table tbody tr"):
+    for row in get_results_rows(page):
         cells = row.query_selector_all("td")
         if len(cells) < 5:
             continue
