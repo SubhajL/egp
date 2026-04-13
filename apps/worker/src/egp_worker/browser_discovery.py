@@ -34,6 +34,21 @@ MAIN_PAGE_URL = "https://www.gprocurement.go.th/new_index.html"
 SEARCH_URL = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
 TARGET_STATUS = "หนังสือเชิญชวน/ประกาศเชิญชวน"
 SKIP_KEYWORDS_IN_PROJECT = ["ทางหลวง", "วิธีคัดเลือก", "บำรุงรักษา"]
+NEXT_PAGE_SELECTOR = (
+    "a:has-text('ถัดไป'), "
+    "button:has-text('ถัดไป'), "
+    "button[aria-label='next'], "
+    "a:has-text('»'), "
+    "li.next:not(.disabled) a"
+)
+RESULTS_TABLE_REQUIRED_HEADERS = [
+    "ลำดับ",
+    "หน่วยจัดซื้อ",
+    "ชื่อโครงการ",
+    "วงเงินงบประมาณ",
+    "สถานะโครงการ",
+    "ดูข้อมูล",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +57,8 @@ class BrowserDiscoverySettings:
     cdp_port: int = 9222
     nav_timeout_ms: int = 60_000
     cloudflare_timeout_ms: int = 120_000
+    cloudflare_reload_retries: int = 1
+    search_page_recovery_retries: int = 1
     max_pages_per_keyword: int = 15
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
 
@@ -109,7 +126,7 @@ def _collect_keyword_projects(
     results: list[dict[str, object]] = []
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
-        rows = page.query_selector_all("table tbody tr")
+        rows = get_results_rows(page)
         eligible_rows: list[tuple[int, str]] = []
         for row_index, row in enumerate(rows):
             row_payload = _extract_search_row(row)
@@ -140,7 +157,8 @@ def _collect_keyword_projects(
                 results.append(payload)
             _return_to_results(page, settings)
 
-        next_btn = page.query_selector("a:has-text('ถัดไป'), button:has-text('ถัดไป')")
+        previous_marker = get_results_page_marker(page)
+        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
         if not (next_btn and next_btn.is_visible()):
             break
         state = None
@@ -173,9 +191,9 @@ def _collect_keyword_projects(
             except Exception:
                 break
         _logged_sleep(3)
-        try:
-            page.wait_for_selector("table tbody tr", timeout=settings.nav_timeout_ms)
-        except PlaywrightTimeout:
+        if not wait_for_results_page_change(
+            page, previous_marker, timeout_ms=settings.nav_timeout_ms
+        ):
             break
         if is_no_results_page(page):
             break
@@ -344,18 +362,29 @@ def safe_shutdown(*, browser=None, pw=None, chrome_proc: subprocess.Popen | None
                 pass
 
 
-def wait_for_cloudflare(page, timeout_ms: int) -> None:
+def wait_for_cloudflare(page, timeout_ms: int, reload_retries: int = 1) -> bool:
     start = time.time()
     timeout_s = timeout_ms / 1000
     while time.time() - start < timeout_s:
         search_btn = page.query_selector("button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))")
         if search_btn and search_btn.get_attribute("disabled") is None:
-            return
+            return True
         if not search_btn:
             cf_iframe = page.query_selector("iframe[src*='challenges.cloudflare.com']")
             if not cf_iframe:
-                return
+                return True
         _logged_sleep(2)
+    if reload_retries > 0:
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception:
+            try:
+                page.goto(page.url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception:
+                return False
+        _logged_sleep(3)
+        return wait_for_cloudflare(page, timeout_ms, reload_retries=reload_retries - 1)
+    return False
 
 
 def _compact_visible_text(value: str | None) -> str:
@@ -364,6 +393,51 @@ def _compact_visible_text(value: str | None) -> str:
 
 def status_matches_target(status_text: str) -> bool:
     return _compact_visible_text(TARGET_STATUS) in _compact_visible_text(status_text)
+
+
+def _table_matches_results_headers(table) -> bool:
+    """Return True when a table looks like the procurement results table."""
+    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    headers: list[str] = []
+    for selector in header_selectors:
+        try:
+            header_els = table.query_selector_all(selector)
+        except Exception:
+            header_els = []
+        headers = [
+            header.inner_text().strip() for header in header_els if header.inner_text().strip()
+        ]
+        if headers:
+            break
+    if not headers:
+        return False
+    compact_headers = [_compact_visible_text(header) for header in headers]
+    return all(
+        any(_compact_visible_text(required) in header for header in compact_headers)
+        for required in RESULTS_TABLE_REQUIRED_HEADERS
+    )
+
+
+def find_results_table(page):
+    """Return the procurement search results table, if present."""
+    for table in page.query_selector_all("table"):
+        try:
+            if _table_matches_results_headers(table):
+                return table
+        except Exception:
+            continue
+    return None
+
+
+def get_results_rows(page) -> list:
+    """Return rows from the procurement search results table only."""
+    table = find_results_table(page)
+    if not table:
+        return []
+    try:
+        return table.query_selector_all("tbody tr")
+    except Exception:
+        return []
 
 
 def find_search_input(page, search_btn):
@@ -401,51 +475,146 @@ def find_search_input(page, search_btn):
     return page.wait_for_selector("input[type='text']")
 
 
+def click_search_button(page, search_btn=None, timeout_ms: int | None = None) -> None:
+    """Click the primary search button with a DOM-query fallback for SPA rerenders."""
+    try:
+        clicked = page.evaluate(
+            """() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    const txt = (btn.innerText || '').trim();
+                    if (
+                        txt.includes('ค้นหา') &&
+                        !txt.includes('ค้นหาขั้นสูง') &&
+                        btn.offsetParent !== null &&
+                        !btn.disabled
+                    ) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+        if clicked:
+            return
+    except Exception:
+        pass
+
+    selector = "button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))"
+    effective_timeout = timeout_ms or 60_000
+
+    try:
+        if search_btn is None:
+            search_btn = page.wait_for_selector(selector, timeout=effective_timeout)
+        search_btn.click()
+        return
+    except Exception:
+        fallback_btn = page.wait_for_selector(selector, timeout=effective_timeout)
+        page.evaluate("(el) => el.click()", fallback_btn)
+
+
 def is_no_results_page(page) -> bool:
     try:
-        return bool(
-            page.evaluate(
-                r"""() => {
-                    const table = document.querySelector('table');
-                    if (!table) return false;
-                    const rows = table.querySelectorAll('tbody tr');
-                    if (rows.length > 0) return false;
-                    const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
-                    return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-                }"""
-            )
-        )
+        table = find_results_table(page)
+        if not table:
+            return False
+        if get_results_rows(page):
+            return False
+        text = re.sub(r"\s+", " ", table.inner_text() or "").strip()
+        return "ไม่พบข้อมูล" in text or "จำนวนโครงการที่พบ : 0" in text
     except Exception:
         return False
 
 
 def wait_for_results_ready(page, settings: BrowserDiscoverySettings) -> None:
-    page.wait_for_selector("table", timeout=settings.nav_timeout_ms)
     try:
-        page.wait_for_function(
-            r"""() => {
-                const table = document.querySelector('table');
-                if (!table) return false;
-                const rows = table.querySelectorAll('tbody tr');
-                if (rows.length > 0) return true;
-                const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
-                return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-            }""",
-            timeout=settings.nav_timeout_ms,
-        )
+        page.wait_for_selector("table", state="attached", timeout=settings.nav_timeout_ms)
     except Exception:
         pass
     for _ in range(3):
         try:
-            if page.query_selector("table tbody tr"):
+            if get_results_rows(page):
                 return
         except Exception:
             pass
+        if is_no_results_page(page):
+            return
         _logged_sleep(1.0)
 
 
+def get_results_page_marker(page) -> dict[str, str | int]:
+    """Capture a compact signature for the current results page."""
+    rows = get_results_rows(page)[:3]
+    row_sample_parts: list[str] = []
+    for row in rows:
+        try:
+            cells = row.query_selector_all("td")[:5]
+            row_sample_parts.append("|".join((cell.inner_text() or "").strip() for cell in cells))
+        except Exception:
+            continue
+    try:
+        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active_page = active.inner_text().strip() if active else ""
+    except Exception:
+        active_page = ""
+    return {
+        "active_page": active_page,
+        "row_count": len(rows),
+        "row_sample": " || ".join(row_sample_parts),
+    }
+
+
+def results_page_marker_changed(
+    previous: dict[str, str | int], current: dict[str, str | int]
+) -> bool:
+    """Return True once pagination changes the active page or visible row sample."""
+    return (
+        str(previous.get("active_page", "") or "") != str(current.get("active_page", "") or "")
+        or int(previous.get("row_count", -1) or -1) != int(current.get("row_count", -1) or -1)
+        or str(previous.get("row_sample", "") or "") != str(current.get("row_sample", "") or "")
+    )
+
+
+def wait_for_results_page_change(
+    page, previous_marker: dict[str, str | int], timeout_ms: int
+) -> bool:
+    """Wait for the result table to move to a different page or row sample."""
+    deadline = time.monotonic() + max(1.0, timeout_ms / 1000)
+    fallback_settings = BrowserDiscoverySettings(nav_timeout_ms=timeout_ms)
+    while time.monotonic() < deadline:
+        wait_for_results_ready(page, fallback_settings)
+        current_marker = get_results_page_marker(page)
+        if results_page_marker_changed(previous_marker, current_marker):
+            return True
+        if is_no_results_page(page):
+            return True
+        _logged_sleep(0.5)
+    current_marker = get_results_page_marker(page)
+    return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
+
+
 def search_keyword(page, keyword: str, settings: BrowserDiscoverySettings) -> None:
-    wait_for_cloudflare(page, settings.cloudflare_timeout_ms)
+    cloudflare_ok = wait_for_cloudflare(
+        page,
+        settings.cloudflare_timeout_ms,
+        reload_retries=settings.cloudflare_reload_retries,
+    )
+    if not cloudflare_ok and settings.search_page_recovery_retries > 0:
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
+        _logged_sleep(3)
+        retry_settings = BrowserDiscoverySettings(
+            chrome_path=settings.chrome_path,
+            cdp_port=settings.cdp_port,
+            nav_timeout_ms=settings.nav_timeout_ms,
+            cloudflare_timeout_ms=settings.cloudflare_timeout_ms,
+            cloudflare_reload_retries=settings.cloudflare_reload_retries,
+            search_page_recovery_retries=settings.search_page_recovery_retries - 1,
+            max_pages_per_keyword=settings.max_pages_per_keyword,
+            browser_profile_dir=settings.browser_profile_dir,
+        )
+        search_keyword(page, keyword, retry_settings)
+        return
     search_btn = page.query_selector("button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))")
     if not search_btn:
         search_btn = page.wait_for_selector(
@@ -457,7 +626,7 @@ def search_keyword(page, keyword: str, settings: BrowserDiscoverySettings) -> No
     search_input.fill("")
     search_input.fill(keyword)
     _logged_sleep(0.5)
-    search_btn.click()
+    click_search_button(page, search_btn, timeout_ms=settings.nav_timeout_ms)
     wait_for_results_ready(page, settings)
 
 
@@ -473,13 +642,13 @@ def clear_search(page, settings: BrowserDiscoverySettings) -> None:
 
 
 def navigate_to_project_by_row(page, row_index: int) -> bool:
-    rows = page.query_selector_all("table tbody tr")
+    rows = get_results_rows(page)
     eligible_idx = 0
     for row in rows:
         cells = row.query_selector_all("td")
         if len(cells) < 6:
             continue
-        if TARGET_STATUS not in cells[4].inner_text().strip():
+        if not status_matches_target(cells[4].inner_text().strip()):
             continue
         if eligible_idx == row_index:
             view_btn = cells[5].query_selector("a, button, [role='button'], svg, i")

@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 try:
-    from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
 except (
     ModuleNotFoundError
 ):  # pragma: no cover - exercised in CI import environments without Playwright
-
-    class PlaywrightTimeout(Exception):
-        pass
 
     def sync_playwright():
         raise ModuleNotFoundError("playwright is required for live browser close checks")
@@ -18,16 +14,21 @@ except (
 
 from .browser_discovery import (
     MAIN_PAGE_URL,
+    NEXT_PAGE_SELECTOR,
     SEARCH_URL,
     BrowserDiscoverySettings,
     _logged_sleep,
+    click_search_button,
     clear_search,
     connect_playwright_to_chrome,
     find_search_input,
+    get_results_page_marker,
+    get_results_rows,
     launch_real_chrome,
     pagination_button_is_disabled,
     safe_shutdown,
     wait_for_cloudflare,
+    wait_for_results_page_change,
     wait_for_results_ready,
 )
 
@@ -91,7 +92,7 @@ def _search_and_observe_project(
     search_input.fill("")
     search_input.fill(term)
     _logged_sleep(0.5)
-    search_button.click()
+    click_search_button(page, search_button, timeout_ms=settings.nav_timeout_ms)
     wait_for_results_ready(page, settings)
 
     page_number = 1
@@ -99,7 +100,8 @@ def _search_and_observe_project(
         match = _find_matching_observation_on_page(page, project=project)
         if match is not None:
             return match
-        next_button = page.query_selector("a:has-text('ถัดไป'), button:has-text('ถัดไป')")
+        previous_marker = get_results_page_marker(page)
+        next_button = page.query_selector(NEXT_PAGE_SELECTOR)
         if not (next_button and next_button.is_visible()):
             return None
         state = None
@@ -132,9 +134,9 @@ def _search_and_observe_project(
             except Exception:
                 return None
         _logged_sleep(3)
-        try:
-            page.wait_for_selector("table tbody tr", timeout=settings.nav_timeout_ms)
-        except PlaywrightTimeout:
+        if not wait_for_results_page_change(
+            page, previous_marker, timeout_ms=settings.nav_timeout_ms
+        ):
             return None
         page_number += 1
     return None
@@ -145,7 +147,7 @@ def _find_matching_observation_on_page(
 ) -> dict[str, object] | None:
     expected_number = str(project.get("project_number") or "").strip()
     expected_name = str(project.get("project_name") or "").strip()
-    for row in page.query_selector_all("table tbody tr"):
+    for row in get_results_rows(page):
         cells = row.query_selector_all("td")
         if len(cells) < 5:
             continue
