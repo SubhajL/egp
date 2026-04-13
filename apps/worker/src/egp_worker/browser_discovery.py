@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from egp_document_classifier import derive_artifact_bucket
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
     from playwright.sync_api import sync_playwright
@@ -25,7 +26,7 @@ except (
         raise ModuleNotFoundError("playwright is required for live browser discovery")
 
 
-from egp_shared_types.enums import ProcurementType, ProjectState
+from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
 
 from .browser_downloads import collect_downloaded_documents
 from .profiles import resolve_profile_keywords
@@ -34,6 +35,13 @@ MAIN_PAGE_URL = "https://www.gprocurement.go.th/new_index.html"
 SEARCH_URL = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
 TARGET_STATUS = "หนังสือเชิญชวน/ประกาศเชิญชวน"
 SKIP_KEYWORDS_IN_PROJECT = ["ทางหลวง", "วิธีคัดเลือก", "บำรุงรักษา"]
+NEXT_PAGE_SELECTOR = (
+    "a:has-text('ถัดไป'), "
+    "button:has-text('ถัดไป'), "
+    "button[aria-label='next'], "
+    "a:has-text('»'), "
+    "li.next:not(.disabled) a"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +50,23 @@ class BrowserDiscoverySettings:
     cdp_port: int = 9222
     nav_timeout_ms: int = 60_000
     cloudflare_timeout_ms: int = 120_000
+    cloudflare_reload_retries: int = 1
+    search_page_recovery_retries: int = 1
     max_pages_per_keyword: int = 15
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryResumeState:
+    keyword_index: int
+    keyword: str
+    page_num: int = 1
+
+
+class BrowserClosedDuringKeyword(RuntimeError):
+    def __init__(self, *, page_num: int, message: str = "browser has been closed") -> None:
+        super().__init__(message)
+        self.page_num = page_num
 
 
 def crawl_live_discovery(
@@ -78,21 +101,64 @@ def crawl_live_discovery(
         _logged_sleep(5)
         wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
 
-        for index, active_keyword in enumerate(keywords):
-            if index > 0:
-                clear_search(page, resolved_settings)
-            search_keyword(page, active_keyword, resolved_settings)
-            if is_no_results_page(page):
-                continue
-            discovered.extend(
-                _collect_keyword_projects(
-                    page=page,
-                    keyword=active_keyword,
-                    settings=resolved_settings,
-                    seen_keys=seen_keys,
-                    include_documents=include_documents,
+        keyword_index = 0
+        resume_state: DiscoveryResumeState | None = None
+        while keyword_index < len(keywords):
+            active_keyword = keywords[keyword_index]
+            try:
+                if (
+                    resume_state is not None
+                    and resume_state.keyword_index == keyword_index
+                ):
+                    restore_results_page(
+                        page,
+                        active_keyword,
+                        resume_state.page_num,
+                        resolved_settings,
+                    )
+                else:
+                    if keyword_index > 0:
+                        clear_search(page, resolved_settings)
+                    search_keyword(page, active_keyword, resolved_settings)
+                    if is_no_results_page(page):
+                        keyword_index += 1
+                        resume_state = None
+                        continue
+                discovered.extend(
+                    _collect_keyword_projects(
+                        page=page,
+                        keyword=active_keyword,
+                        settings=resolved_settings,
+                        seen_keys=seen_keys,
+                        include_documents=include_documents,
+                    )
                 )
-            )
+                keyword_index += 1
+                resume_state = None
+            except BrowserClosedDuringKeyword as exc:
+                resume_state = DiscoveryResumeState(
+                    keyword_index=keyword_index,
+                    keyword=active_keyword,
+                    page_num=exc.page_num,
+                )
+                safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
+                chrome_proc = launch_real_chrome(resolved_settings)
+                pw = sync_playwright().start()
+                browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+                page.goto(
+                    MAIN_PAGE_URL,
+                    wait_until="domcontentloaded",
+                    timeout=resolved_settings.nav_timeout_ms,
+                )
+                _logged_sleep(3)
+                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+                page.goto(
+                    SEARCH_URL,
+                    wait_until="domcontentloaded",
+                    timeout=resolved_settings.nav_timeout_ms,
+                )
+                _logged_sleep(5)
+                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
         return discovered
     finally:
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
@@ -109,7 +175,11 @@ def _collect_keyword_projects(
     results: list[dict[str, object]] = []
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
-        rows = page.query_selector_all("table tbody tr")
+        try:
+            rows = page.query_selector_all("table tbody tr")
+        except Exception as exc:
+            _raise_browser_closed(exc, page_num)
+            raise
         eligible_rows: list[tuple[int, str]] = []
         for row_index, row in enumerate(rows):
             row_payload = _extract_search_row(row)
@@ -125,22 +195,35 @@ def _collect_keyword_projects(
             eligible_rows.append((row_index, row_payload["project_name"]))
 
         for row_index, _ in eligible_rows:
-            payload = open_and_extract_project(
-                page=page,
-                row_index=row_index,
-                keyword=keyword,
-                include_documents=include_documents,
-            )
+            try:
+                payload = open_and_extract_project(
+                    page=page,
+                    row_index=row_index,
+                    keyword=keyword,
+                    include_documents=include_documents,
+                )
+            except Exception as exc:
+                _raise_browser_closed(exc, page_num)
+                raise
             if payload is None:
-                _return_to_results(page, settings)
+                try:
+                    _return_to_results(page, settings)
+                except Exception as exc:
+                    _raise_browser_closed(exc, page_num)
+                    raise
                 continue
             dedupe_key = str(payload.get("project_number") or payload["project_name"]).casefold()
             if dedupe_key not in seen_keys:
                 seen_keys.add(dedupe_key)
                 results.append(payload)
-            _return_to_results(page, settings)
+            try:
+                _return_to_results(page, settings)
+            except Exception as exc:
+                _raise_browser_closed(exc, page_num)
+                raise
 
-        next_btn = page.query_selector("a:has-text('ถัดไป'), button:has-text('ถัดไป')")
+        previous_marker = get_results_page_marker(page)
+        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
         if not (next_btn and next_btn.is_visible()):
             break
         state = None
@@ -173,14 +256,44 @@ def _collect_keyword_projects(
             except Exception:
                 break
         _logged_sleep(3)
-        try:
-            page.wait_for_selector("table tbody tr", timeout=settings.nav_timeout_ms)
-        except PlaywrightTimeout:
+        if not wait_for_results_page_change(
+            page, previous_marker, timeout_ms=settings.nav_timeout_ms
+        ):
             break
         if is_no_results_page(page):
             break
         page_num += 1
     return results
+
+
+def _raise_browser_closed(exc: Exception, page_num: int) -> None:
+    if "has been closed" in str(exc):
+        raise BrowserClosedDuringKeyword(page_num=page_num) from exc
+
+
+def restore_results_page(
+    page,
+    keyword: str,
+    target_page_num: int,
+    settings: BrowserDiscoverySettings,
+) -> None:
+    search_keyword(page, keyword, settings)
+    current_page = 1
+    while current_page < max(target_page_num, 1):
+        previous_marker = get_results_page_marker(page)
+        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
+        if not (next_btn and next_btn.is_visible()):
+            break
+        try:
+            page.evaluate("(el) => el.click()", next_btn)
+        except Exception:
+            next_btn.click(timeout=10_000)
+        _logged_sleep(3)
+        if not wait_for_results_page_change(
+            page, previous_marker, timeout_ms=settings.nav_timeout_ms
+        ):
+            break
+        current_page += 1
 
 
 def _extract_search_row(row) -> dict[str, object] | None:
@@ -222,6 +335,13 @@ def open_and_extract_project(
         project_name=project_name, organization_name=organization_name
     )
     downloaded_documents = collect_downloaded_documents(page) if include_documents else []
+    artifact_bucket = derive_artifact_bucket(
+        labels=[str(document.get("source_label") or "") for document in downloaded_documents]
+    )
+    if artifact_bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED:
+        project_state = ProjectState.TOR_DOWNLOADED.value
+    elif artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
+        project_state = ProjectState.OPEN_PUBLIC_HEARING.value
     return {
         "keyword": keyword,
         "project_name": project_name,
@@ -236,6 +356,7 @@ def open_and_extract_project(
             organization_name=organization_name,
         ),
         "project_state": project_state,
+        "artifact_bucket": artifact_bucket.value,
         "downloaded_documents": downloaded_documents,
         "source_status_text": TARGET_STATUS,
         "raw_snapshot": {
@@ -250,6 +371,7 @@ def open_and_extract_project(
                 organization_name=organization_name,
             ),
             "project_state": project_state,
+            "artifact_bucket": artifact_bucket.value,
             "downloaded_documents": [
                 {
                     "file_name": document.get("file_name"),
@@ -344,18 +466,29 @@ def safe_shutdown(*, browser=None, pw=None, chrome_proc: subprocess.Popen | None
                 pass
 
 
-def wait_for_cloudflare(page, timeout_ms: int) -> None:
+def wait_for_cloudflare(page, timeout_ms: int, reload_retries: int = 1) -> bool:
     start = time.time()
     timeout_s = timeout_ms / 1000
     while time.time() - start < timeout_s:
         search_btn = page.query_selector("button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))")
         if search_btn and search_btn.get_attribute("disabled") is None:
-            return
+            return True
         if not search_btn:
             cf_iframe = page.query_selector("iframe[src*='challenges.cloudflare.com']")
             if not cf_iframe:
-                return
+                return True
         _logged_sleep(2)
+    if reload_retries > 0:
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception:
+            try:
+                page.goto(page.url, wait_until="domcontentloaded", timeout=timeout_ms)
+            except Exception:
+                return False
+        _logged_sleep(3)
+        return wait_for_cloudflare(page, timeout_ms, reload_retries=reload_retries - 1)
+    return False
 
 
 def _compact_visible_text(value: str | None) -> str:
@@ -401,6 +534,45 @@ def find_search_input(page, search_btn):
     return page.wait_for_selector("input[type='text']")
 
 
+def click_search_button(page, search_btn=None, timeout_ms: int | None = None) -> None:
+    """Click the primary search button with a DOM-query fallback for SPA rerenders."""
+    try:
+        clicked = page.evaluate(
+            """() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    const txt = (btn.innerText || '').trim();
+                    if (
+                        txt.includes('ค้นหา') &&
+                        !txt.includes('ค้นหาขั้นสูง') &&
+                        btn.offsetParent !== null &&
+                        !btn.disabled
+                    ) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+        if clicked:
+            return
+    except Exception:
+        pass
+
+    selector = "button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))"
+    effective_timeout = timeout_ms or 60_000
+
+    try:
+        if search_btn is None:
+            search_btn = page.wait_for_selector(selector, timeout=effective_timeout)
+        search_btn.click()
+        return
+    except Exception:
+        fallback_btn = page.wait_for_selector(selector, timeout=effective_timeout)
+        page.evaluate("(el) => el.click()", fallback_btn)
+
+
 def is_no_results_page(page) -> bool:
     try:
         return bool(
@@ -420,7 +592,10 @@ def is_no_results_page(page) -> bool:
 
 
 def wait_for_results_ready(page, settings: BrowserDiscoverySettings) -> None:
-    page.wait_for_selector("table", timeout=settings.nav_timeout_ms)
+    try:
+        page.wait_for_selector("table", state="attached", timeout=settings.nav_timeout_ms)
+    except Exception:
+        pass
     try:
         page.wait_for_function(
             r"""() => {
@@ -444,8 +619,113 @@ def wait_for_results_ready(page, settings: BrowserDiscoverySettings) -> None:
         _logged_sleep(1.0)
 
 
+def get_results_page_marker(page) -> dict[str, str | int]:
+    """Capture a compact signature for the current results page."""
+    try:
+        marker = page.evaluate(
+            r"""() => {
+                const table = document.querySelector('table');
+                const rows = Array.from(table?.querySelectorAll('tbody tr') || []).slice(0, 3);
+                const rowSample = rows.map((tr) =>
+                    Array.from(tr.querySelectorAll('td'))
+                        .slice(0, 5)
+                        .map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim())
+                        .join('|')
+                ).join(' || ');
+                const active = document.querySelector('li.page-item.active, li.active, .pagination .active');
+                return {
+                    active_page: active ? (active.innerText || '').replace(/\s+/g, ' ').trim() : '',
+                    row_count: rows.length,
+                    row_sample: rowSample,
+                };
+            }"""
+        )
+    except Exception:
+        marker = None
+
+    if not isinstance(marker, dict):
+        return {"active_page": "", "row_count": -1, "row_sample": ""}
+
+    return {
+        "active_page": str(marker.get("active_page", "") or ""),
+        "row_count": int(marker.get("row_count", -1) or -1),
+        "row_sample": str(marker.get("row_sample", "") or ""),
+    }
+
+
+def results_page_marker_changed(
+    previous: dict[str, str | int], current: dict[str, str | int]
+) -> bool:
+    """Return True once pagination changes the active page or visible row sample."""
+    return (
+        str(previous.get("active_page", "") or "")
+        != str(current.get("active_page", "") or "")
+        or int(previous.get("row_count", -1) or -1)
+        != int(current.get("row_count", -1) or -1)
+        or str(previous.get("row_sample", "") or "")
+        != str(current.get("row_sample", "") or "")
+    )
+
+
+def wait_for_results_page_change(
+    page, previous_marker: dict[str, str | int], timeout_ms: int
+) -> bool:
+    """Wait for the result table to move to a different page or row sample."""
+    try:
+        page.wait_for_function(
+            r"""previous => {
+                const table = document.querySelector('table');
+                if (!table) return false;
+                const rows = Array.from(table.querySelectorAll('tbody tr')).slice(0, 3);
+                const rowSample = rows.map((tr) =>
+                    Array.from(tr.querySelectorAll('td'))
+                        .slice(0, 5)
+                        .map((td) => (td.innerText || '').replace(/\s+/g, ' ').trim())
+                        .join('|')
+                ).join(' || ');
+                const active = document.querySelector('li.page-item.active, li.active, .pagination .active');
+                const activePage = active ? (active.innerText || '').replace(/\s+/g, ' ').trim() : '';
+                const markerChanged =
+                    activePage !== (previous.active_page || '') ||
+                    rows.length !== (previous.row_count ?? -1) ||
+                    rowSample !== (previous.row_sample || '');
+                if (markerChanged) return true;
+                const txt = (table.innerText || '').replace(/\s+/g, ' ').trim();
+                return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
+            }""",
+            arg=previous_marker,
+            timeout=timeout_ms,
+        )
+    except Exception:
+        pass
+
+    fallback_settings = BrowserDiscoverySettings(nav_timeout_ms=timeout_ms)
+    wait_for_results_ready(page, fallback_settings)
+    current_marker = get_results_page_marker(page)
+    return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
+
+
 def search_keyword(page, keyword: str, settings: BrowserDiscoverySettings) -> None:
-    wait_for_cloudflare(page, settings.cloudflare_timeout_ms)
+    cloudflare_ok = wait_for_cloudflare(
+        page,
+        settings.cloudflare_timeout_ms,
+        reload_retries=settings.cloudflare_reload_retries,
+    )
+    if not cloudflare_ok and settings.search_page_recovery_retries > 0:
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
+        _logged_sleep(3)
+        retry_settings = BrowserDiscoverySettings(
+            chrome_path=settings.chrome_path,
+            cdp_port=settings.cdp_port,
+            nav_timeout_ms=settings.nav_timeout_ms,
+            cloudflare_timeout_ms=settings.cloudflare_timeout_ms,
+            cloudflare_reload_retries=settings.cloudflare_reload_retries,
+            search_page_recovery_retries=settings.search_page_recovery_retries - 1,
+            max_pages_per_keyword=settings.max_pages_per_keyword,
+            browser_profile_dir=settings.browser_profile_dir,
+        )
+        search_keyword(page, keyword, retry_settings)
+        return
     search_btn = page.query_selector("button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))")
     if not search_btn:
         search_btn = page.wait_for_selector(
@@ -457,7 +737,7 @@ def search_keyword(page, keyword: str, settings: BrowserDiscoverySettings) -> No
     search_input.fill("")
     search_input.fill(keyword)
     _logged_sleep(0.5)
-    search_btn.click()
+    click_search_button(page, search_btn, timeout_ms=settings.nav_timeout_ms)
     wait_for_results_ready(page, settings)
 
 
