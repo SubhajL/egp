@@ -13,11 +13,13 @@ from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_api.services.export_service import ExportService
+from egp_db.repositories.document_repo import FilesystemDocumentRepository
 from egp_db.repositories.project_repo import (
     SqlProjectRepository,
     build_project_upsert_record,
 )
 from egp_shared_types.enums import (
+    ArtifactBucket,
     ClosedReason,
     NotificationType,
     ProcurementType,
@@ -143,20 +145,34 @@ def test_export_to_excel_produces_valid_xlsx_with_headers(tmp_path) -> None:
     ws = wb.active
     assert ws is not None
 
-    # Check header row has all 10 columns
-    headers = [ws.cell(row=1, column=i).value for i in range(1, 11)]
-    assert headers[0] == "ชื่อโครงการ"
-    assert headers[5] == "งบประมาณ (บาท)"
-    assert headers[9] == "เหตุผลการปิด"
+    headers = [ws.cell(row=1, column=i).value for i in range(1, 14)]
+    assert headers == [
+        "download_date",
+        "project_name",
+        "organization",
+        "project_number",
+        "budget",
+        "proposal_submission_date",
+        "keyword",
+        "tor_downloaded",
+        "prelim_pricing",
+        "search_name",
+        "tracking_status",
+        "closed_reason",
+        "artifact_bucket",
+    ]
 
-    # Check data row
-    assert ws.cell(row=2, column=1).value == "จัดซื้อระบบสารสนเทศ"
-    assert ws.cell(row=2, column=2).value == "กรมตัวอย่าง"
-    assert ws.cell(row=2, column=3).value == "EGP-2026-0001"
-    assert ws.cell(row=2, column=4).value == "บริการ"
-    assert ws.cell(row=2, column=5).value == "เปิดรับข้อเสนอ"
-    budget_value = ws.cell(row=2, column=6).value
+    assert ws.cell(row=2, column=2).value == "จัดซื้อระบบสารสนเทศ"
+    assert ws.cell(row=2, column=3).value == "กรมตัวอย่าง"
+    assert ws.cell(row=2, column=4).value == "EGP-2026-0001"
+    budget_value = ws.cell(row=2, column=5).value
     assert budget_value is not None and float(budget_value) > 0
+    assert ws.cell(row=2, column=8).value == "No"
+    assert ws.cell(row=2, column=9).value == "No"
+    assert ws.cell(row=2, column=10).value == "ระบบสารสนเทศ"
+    assert ws.cell(row=2, column=11).value == ProjectState.OPEN_INVITATION.value
+    assert ws.cell(row=2, column=12).value is None
+    assert ws.cell(row=2, column=13).value == ArtifactBucket.NO_ARTIFACT_EVIDENCE.value
 
 
 def test_export_respects_state_filter(tmp_path) -> None:
@@ -188,7 +204,7 @@ def test_export_respects_state_filter(tmp_path) -> None:
     ws = wb.active
     assert ws is not None
     assert ws.max_row == 2  # header + 1 filtered row
-    assert ws.cell(row=2, column=5).value == "ค้นพบใหม่"
+    assert ws.cell(row=2, column=11).value == ProjectState.DISCOVERED.value
 
 
 def _seed_project(
@@ -250,10 +266,57 @@ def _exported_project_numbers(excel_bytes: bytes) -> list[str]:
     assert worksheet is not None
     values: list[str] = []
     for row in worksheet.iter_rows(min_row=2, values_only=True):
-        project_number = row[2]
+        project_number = row[3]
         if isinstance(project_number, str) and project_number:
             values.append(project_number)
     return values
+
+
+def test_export_to_excel_derives_legacy_state_columns_from_db_and_documents(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'export-legacy.sqlite3'}"
+    repo = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
+    document_repo = FilesystemDocumentRepository(tmp_path / "artifacts")
+
+    project = repo.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-0099",
+            search_name="ระบบสุขภาพดิจิทัล",
+            detail_name="จัดซื้อระบบสุขภาพดิจิทัล",
+            project_name="จัดซื้อระบบสุขภาพดิจิทัล",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.WINNER_ANNOUNCED,
+            closed_reason=ClosedReason.WINNER_ANNOUNCED,
+        ),
+        source_status_text="ประกาศผู้ชนะการเสนอราคา",
+        raw_snapshot={"keyword": "สุขภาพดิจิทัล"},
+    )
+    document_repo.store_document(
+        tenant_id=TENANT_ID,
+        project_id=project.id,
+        file_name="tor-final.pdf",
+        file_bytes=b"final-tor",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    service = ExportService(repo, document_repository=document_repo)
+    excel_bytes = service.export_to_excel(tenant_id=TENANT_ID)
+
+    workbook = load_workbook(BytesIO(excel_bytes))
+    worksheet = workbook.active
+    assert worksheet is not None
+
+    assert worksheet.cell(row=2, column=7).value == "สุขภาพดิจิทัล"
+    assert worksheet.cell(row=2, column=8).value == "Yes"
+    assert worksheet.cell(row=2, column=9).value == "No"
+    assert worksheet.cell(row=2, column=10).value == "ระบบสุขภาพดิจิทัล"
+    assert worksheet.cell(row=2, column=11).value == ProjectState.WINNER_ANNOUNCED.value
+    assert worksheet.cell(row=2, column=12).value == ClosedReason.WINNER_ANNOUNCED.value
+    assert worksheet.cell(row=2, column=13).value == ArtifactBucket.FINAL_TOR_DOWNLOADED.value
 
 
 def test_export_route_matches_explorer_filter_contract(tmp_path) -> None:

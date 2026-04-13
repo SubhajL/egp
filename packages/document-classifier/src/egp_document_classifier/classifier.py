@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import re
 
-from egp_shared_types.enums import DocumentPhase, DocumentType, ProjectState
+from egp_shared_types.enums import (
+    ArtifactBucket,
+    DocumentPhase,
+    DocumentType,
+    ProjectState,
+)
 
 
 _PUBLIC_HEARING_MARKERS = (
@@ -152,3 +158,65 @@ def classify_document(
         file_name=file_name,
     )
     return (result.document_type, result.document_phase)
+
+
+def derive_artifact_bucket(
+    *,
+    labels: Sequence[str] = (),
+    documents: Sequence[Mapping[str, object]] = (),
+) -> ArtifactBucket:
+    """Collapse observed document evidence into one export/reporting bucket.
+
+    The buckets are intentionally coarse because the legacy script and worker
+    surfaces need one comparable value even when evidence came from filenames,
+    source labels, or already-classified DB rows.
+    """
+
+    has_mid_price = False
+    has_invitation = False
+    has_draft_tor = False
+    has_final_tor = False
+
+    for document in documents:
+        try:
+            document_type = DocumentType(str(document.get("document_type") or "").strip())
+        except ValueError:
+            document_type = None
+        try:
+            document_phase = DocumentPhase(str(document.get("document_phase") or "").strip())
+        except ValueError:
+            document_phase = None
+
+        if document_type is DocumentType.MID_PRICE:
+            has_mid_price = True
+            continue
+        if document_type is DocumentType.INVITATION:
+            has_invitation = True
+            continue
+        if document_type is DocumentType.TOR and document_phase is DocumentPhase.PUBLIC_HEARING:
+            has_draft_tor = True
+            continue
+        if document_type is DocumentType.TOR and document_phase is DocumentPhase.FINAL:
+            has_final_tor = True
+            continue
+
+    for label in labels:
+        document_type, document_phase = classify_document(label=label)
+        if document_type is DocumentType.MID_PRICE:
+            has_mid_price = True
+        elif document_type is DocumentType.INVITATION:
+            has_invitation = True
+        elif document_type is DocumentType.TOR and document_phase is DocumentPhase.PUBLIC_HEARING:
+            has_draft_tor = True
+        elif document_type is DocumentType.TOR and document_phase is DocumentPhase.FINAL:
+            has_final_tor = True
+
+    if has_final_tor:
+        return ArtifactBucket.FINAL_TOR_DOWNLOADED
+    if has_draft_tor:
+        return ArtifactBucket.DRAFT_PLUS_PRICING
+    if has_invitation and has_mid_price:
+        return ArtifactBucket.INVITATION_PLUS_PRICING
+    if has_mid_price:
+        return ArtifactBucket.PRICING_ONLY
+    return ArtifactBucket.NO_ARTIFACT_EVIDENCE

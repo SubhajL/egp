@@ -1,9 +1,11 @@
 """Unit tests for egp_crawler.py — tests pure functions without browser."""
 
 from datetime import datetime, date
+import json
 from pathlib import Path
 import socket
 
+from egp_shared_types.enums import ArtifactBucket, ClosedReason, ProjectState
 from openpyxl import Workbook, load_workbook
 
 import os
@@ -22,6 +24,8 @@ from egp_crawler import (
     apply_profile_defaults,
     parse_cli_args,
     build_safe_filename,
+    build_results_debug_snapshot,
+    download_project_documents,
     env_get_float,
     env_get_int,
     env_get_path,
@@ -38,18 +42,28 @@ from egp_crawler import (
     load_existing_project_row_stats,
     load_existing_projects,
     filename_from_content_disposition,
+    get_results_page_marker,
     keywords_from_env,
     load_dotenv_file,
     pagination_button_is_disabled,
     parse_buddhist_date,
     parse_keywords,
+    results_page_marker_changed,
+    restore_results_page,
     safe_shutdown,
     sanitize_dirname,
     sanitize_filename_preserve_suffix,
+    SEARCH_URL,
     sniff_extension_from_bytes,
     status_matches_target,
+    _download_one_document,
+    _save_from_new_tab,
+    wait_for_cloudflare,
     update_excel,
     wait_for_local_tcp_listen,
+    wait_for_results_ready,
+    write_project_manifest,
+    search_keyword,
 )
 
 
@@ -193,7 +207,7 @@ class TestUpdateExcel:
 
         wb = load_workbook(excel_path)
         ws = wb.active
-        assert ws.max_column == 10
+        assert ws.max_column == len(EXCEL_HEADERS)
 
     def test_handles_missing_fields(self, tmp_path):
         excel_path = tmp_path / "test.xlsx"
@@ -254,7 +268,7 @@ class TestUpdateExcel:
 
         wb2 = load_workbook(excel_path)
         ws2 = wb2.active
-        headers = [ws2.cell(1, i).value for i in range(1, 11)]
+        headers = [ws2.cell(1, i).value for i in range(1, len(EXCEL_HEADERS) + 1)]
         assert headers == EXCEL_HEADERS
         assert ws2.cell(2, 10).value == "Legacy from table"
 
@@ -285,6 +299,62 @@ class TestUpdateExcel:
         assert ws.cell(2, 4).value == "6901"
         assert ws.cell(2, 8).value == "Yes"
         assert ws.cell(2, 10).value == "From results table"
+
+    def test_reannouncement_with_same_name_but_new_project_number_appends(self, tmp_path):
+        excel_path = tmp_path / "reannounce.xlsx"
+        update_excel(
+            {
+                "project_name": "โครงการระบบข้อมูลกลาง",
+                "project_number": "69010000001",
+                "search_name": "โครงการระบบข้อมูลกลาง (เลขที่โครงการ : 69010000001)",
+                "tor_downloaded": "Yes",
+                "tracking_status": ProjectState.TOR_DOWNLOADED.value,
+            },
+            excel_path,
+        )
+        update_excel(
+            {
+                "project_name": "โครงการระบบข้อมูลกลาง",
+                "project_number": "69020000002",
+                "search_name": "โครงการระบบข้อมูลกลาง (เลขที่โครงการ : 69020000002)",
+                "tor_downloaded": "No",
+                "tracking_status": ProjectState.OPEN_INVITATION.value,
+            },
+            excel_path,
+        )
+
+        wb = load_workbook(excel_path)
+        ws = wb.active
+        assert ws.max_row == 3
+        assert ws.cell(2, 4).value == "69010000001"
+        assert ws.cell(3, 4).value == "69020000002"
+
+    def test_backfills_numberless_row_when_same_project_revisited(self, tmp_path):
+        excel_path = tmp_path / "backfill.xlsx"
+        update_excel(
+            {
+                "project_name": "โครงการระบบข้อมูลกลาง",
+                "search_name": "โครงการระบบข้อมูลกลาง",
+                "tor_downloaded": "No",
+            },
+            excel_path,
+        )
+        update_excel(
+            {
+                "project_name": "โครงการระบบข้อมูลกลาง",
+                "project_number": "69030000003",
+                "search_name": "โครงการระบบข้อมูลกลาง",
+                "tor_downloaded": "Yes",
+                "tracking_status": ProjectState.TOR_DOWNLOADED.value,
+            },
+            excel_path,
+        )
+
+        wb = load_workbook(excel_path)
+        ws = wb.active
+        assert ws.max_row == 2
+        assert ws.cell(2, 4).value == "69030000003"
+        assert ws.cell(2, 8).value == "Yes"
 
 
 # ---------------------------------------------------------------------------
@@ -479,17 +549,20 @@ class TestConstants:
             assert isinstance(kw, str)
             assert len(kw) > 0
 
-    def test_docs_to_download_has_three_entries(self):
-        assert len(DOCS_TO_DOWNLOAD) == 3
+    def test_docs_to_download_has_four_entries(self):
+        assert len(DOCS_TO_DOWNLOAD) == 4
 
     def test_excel_headers_has_ten_entries(self):
-        assert len(EXCEL_HEADERS) == 10
+        assert len(EXCEL_HEADERS) == 13
 
     def test_excel_headers_include_keyword_tor_prelim_search_name(self):
         assert "keyword" in EXCEL_HEADERS
         assert "tor_downloaded" in EXCEL_HEADERS
         assert "prelim_pricing" in EXCEL_HEADERS
         assert "search_name" in EXCEL_HEADERS
+        assert "tracking_status" in EXCEL_HEADERS
+        assert "closed_reason" in EXCEL_HEADERS
+        assert "artifact_bucket" in EXCEL_HEADERS
 
     def test_keywords_contain_expected_terms(self):
         expected = {"วิเคราะห์ข้อมูล", "ระบบสารสนเทศ", "ที่ปรึกษา", "เทคโนโลยีสารสนเทศ"}
@@ -534,7 +607,6 @@ class TestSearchNameDedup:
         )
 
         result = load_existing_projects(excel_path)
-        assert "Detail Name" in result
         assert "Table Name" in result
         assert result["Table Name"] is True
 
@@ -551,7 +623,6 @@ class TestSearchNameDedup:
         )
 
         result = load_existing_projects(excel_path)
-        assert "Some Project" in result
         assert "67129000001" in result
         assert result["67129000001"] is True
 
@@ -569,7 +640,6 @@ class TestSearchNameDedup:
         )
 
         result = load_existing_projects(excel_path)
-        assert result["Detail Name"] is False
         assert result["Table Name"] is False
         assert result["99001"] is False
 
@@ -587,6 +657,22 @@ class TestSearchNameDedup:
         result = load_existing_projects(excel_path)
         assert "Only Name" in result
         assert "" not in result
+
+    def test_tracking_status_controls_terminal_skip(self, tmp_path):
+        excel_path = tmp_path / "status.xlsx"
+        update_excel(
+            {
+                "project_name": "Consulting timeout",
+                "search_name": "Consulting timeout",
+                "tor_downloaded": "No",
+                "tracking_status": ProjectState.CLOSED_TIMEOUT_CONSULTING.value,
+                "closed_reason": ClosedReason.CONSULTING_TIMEOUT_30D.value,
+            },
+            excel_path,
+        )
+
+        result = load_existing_projects(excel_path)
+        assert result["Consulting timeout"] is True
 
     def test_missing_project_number_only_indexes_by_name(self, tmp_path):
         """If project_number is empty, don't add empty string as a key."""
@@ -1049,6 +1135,414 @@ class TestWaitForLocalTcpListen:
             s.close()
 
 
+class _FakeTextElement:
+    def __init__(self, text: str):
+        self._text = text
+
+    def inner_text(self):
+        return self._text
+
+    def click(self):
+        return None
+
+
+class _FakeCell:
+    def __init__(self, text: str = "", clickable=None):
+        self._text = text
+        self._clickable = clickable
+
+    def inner_text(self):
+        return self._text
+
+    def query_selector(self, selector: str):
+        if self._clickable and any(
+            key in selector
+            for key in ("a", "button", "[role='button']", '[role="button"]', "svg", "i")
+        ):
+            return self._clickable
+        return None
+
+    def click(self):
+        if self._clickable:
+            self._clickable.click()
+
+
+class _FakeRow:
+    def __init__(self, cells):
+        self._cells = cells
+
+    def query_selector_all(self, selector: str):
+        if selector == "td":
+            return self._cells
+        return []
+
+    def inner_text(self):
+        return " ".join(cell.inner_text() for cell in self._cells)
+
+
+class _FakeTable:
+    def __init__(self, headers, rows):
+        self._headers = headers
+        self._rows = rows
+
+    def query_selector_all(self, selector: str):
+        if selector in ("thead th, thead td", "th", "tr:first-child th, tr:first-child td"):
+            return [_FakeTextElement(h) for h in self._headers]
+        if selector == "tbody tr":
+            return self._rows
+        return []
+
+    def inner_text(self):
+        header_text = " ".join(self._headers)
+        row_text = " ".join(row.inner_text() for row in self._rows)
+        return f"{header_text} {row_text}".strip()
+
+
+class _FakeResultsPage:
+    def __init__(self, tables, body_text: str = "", active_page: str | None = None):
+        self._tables = tables
+        self._body_text = body_text
+        self._active_page = active_page
+
+    def query_selector_all(self, selector: str):
+        if selector == "table":
+            return self._tables
+        if selector == "li.page-item.active, li.active, .pagination .active":
+            return [_FakeTextElement(self._active_page)] if self._active_page else []
+        return []
+
+    def query_selector(self, selector: str):
+        if selector == "li.page-item.active, li.active, .pagination .active":
+            return _FakeTextElement(self._active_page) if self._active_page else None
+        return None
+
+    def inner_text(self, selector: str):
+        if selector == "body":
+            return self._body_text
+        raise AssertionError(f"unexpected selector: {selector}")
+
+
+class TestResultsDebugSnapshot:
+    def test_includes_results_headers_rows_and_body_snippet(self):
+        results_table = _FakeTable(
+            ["ลำดับ", "หน่วยจัดซื้อ", "ชื่อโครงการ", "วงเงินงบประมาณ (บาท)", "สถานะโครงการ", "ดูข้อมูล"],
+            [
+                _FakeRow(
+                    [
+                        _FakeCell("1"),
+                        _FakeCell("หน่วยงาน A"),
+                        _FakeCell("โครงการระบบวิเคราะห์"),
+                        _FakeCell("100.00"),
+                        _FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
+                        _FakeCell("article"),
+                    ]
+                )
+            ],
+        )
+        page = _FakeResultsPage(
+            [results_table],
+            body_text="จำนวนโครงการที่พบ : 1 โครงการ\nโครงการระบบวิเคราะห์\nเพิ่มเติม",
+        )
+        page.url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
+
+        snapshot = build_results_debug_snapshot(page)
+
+        assert snapshot["url"] == page.url
+        assert snapshot["table_count"] == 1
+        assert snapshot["results_row_count"] == 1
+        assert snapshot["results_headers"] == [
+            "ลำดับ",
+            "หน่วยจัดซื้อ",
+            "ชื่อโครงการ",
+            "วงเงินงบประมาณ (บาท)",
+            "สถานะโครงการ",
+            "ดูข้อมูล",
+        ]
+        assert snapshot["results_row_samples"] == [
+            [
+                "1",
+                "หน่วยงาน A",
+                "โครงการระบบวิเคราะห์",
+                "100.00",
+                "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "article",
+            ]
+        ]
+        assert "จำนวนโครงการที่พบ : 1 โครงการ" in snapshot["body_snippet"]
+
+
+class TestResultsPageMarker:
+    def test_captures_active_page_and_row_sample(self):
+        results_table = _FakeTable(
+            ["ลำดับ", "หน่วยจัดซื้อ", "ชื่อโครงการ", "วงเงินงบประมาณ (บาท)", "สถานะโครงการ", "ดูข้อมูล"],
+            [
+                _FakeRow(
+                    [
+                        _FakeCell("1"),
+                        _FakeCell("หน่วยงาน A"),
+                        _FakeCell("โครงการ A"),
+                        _FakeCell("100.00"),
+                        _FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
+                        _FakeCell("article"),
+                    ]
+                ),
+                _FakeRow(
+                    [
+                        _FakeCell("2"),
+                        _FakeCell("หน่วยงาน B"),
+                        _FakeCell("โครงการ B"),
+                        _FakeCell("200.00"),
+                        _FakeCell("จัดทำสัญญา/บริหารสัญญา"),
+                        _FakeCell("article"),
+                    ]
+                ),
+            ],
+        )
+        page = _FakeResultsPage([results_table], active_page="4")
+
+        marker = get_results_page_marker(page)
+
+        assert marker["active_page"] == "4"
+        assert marker["row_count"] == 2
+        assert "โครงการ A" in marker["row_sample"]
+        assert "โครงการ B" in marker["row_sample"]
+
+    def test_detects_page_marker_change(self):
+        previous = {"active_page": "1", "row_count": 3, "row_sample": "old"}
+        current = {"active_page": "2", "row_count": 3, "row_sample": "old"}
+
+        assert results_page_marker_changed(previous, current) is True
+
+
+class _FakeWaitPage:
+    def __init__(self):
+        self.wait_for_selector_calls = []
+
+    def wait_for_selector(self, selector: str, timeout=None, state=None):
+        self.wait_for_selector_calls.append(
+            {"selector": selector, "timeout": timeout, "state": state}
+        )
+        return object()
+
+    def wait_for_function(self, expression: str, timeout=None):
+        return None
+
+    def query_selector_all(self, selector: str):
+        return []
+
+    def query_selector(self, selector: str):
+        return None
+
+
+class TestWaitForResultsReady:
+    def test_waits_for_attached_table_not_visible_table(self, monkeypatch):
+        page = _FakeWaitPage()
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+
+        wait_for_results_ready(page)
+
+        assert page.wait_for_selector_calls[0]["selector"] == "table"
+        assert page.wait_for_selector_calls[0]["state"] == "attached"
+
+
+class _FakeCloudflareButton:
+    def __init__(self, *, disabled: bool):
+        self._disabled = disabled
+
+    def get_attribute(self, name: str):
+        if name == "disabled":
+            return "" if self._disabled else None
+        return None
+
+
+class _FakeCloudflarePage:
+    def __init__(self, *, enabled_after_reload: bool = True):
+        self.enabled_after_reload = enabled_after_reload
+        self.reload_calls = 0
+        self.url = "https://example.test/announcement"
+
+    def query_selector(self, selector: str):
+        if "button:has-text('ค้นหา')" in selector:
+            disabled = self.reload_calls == 0 or not self.enabled_after_reload
+            return _FakeCloudflareButton(disabled=disabled)
+        if "iframe[src*='challenges.cloudflare.com']" in selector:
+            return object()
+        return None
+
+    def reload(self, wait_until=None, timeout=None):
+        self.reload_calls += 1
+
+    def goto(self, url: str, wait_until=None, timeout=None):
+        self.reload_calls += 1
+
+
+class TestWaitForCloudflare:
+    def test_reloads_once_and_then_passes(self, monkeypatch):
+        page = _FakeCloudflarePage(enabled_after_reload=True)
+        clock = iter([0.0, 0.0, 1.0, 2.0, 2.0])
+
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+        monkeypatch.setattr("egp_crawler.time.time", lambda: next(clock))
+
+        wait_for_cloudflare(page, timeout_ms=500, reload_retries=1)
+
+        assert page.reload_calls == 1
+
+    def test_continues_after_reload_budget_exhausted(self, monkeypatch):
+        page = _FakeCloudflarePage(enabled_after_reload=False)
+        clock = iter([0.0, 0.0, 1.0])
+
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+        monkeypatch.setattr("egp_crawler.time.time", lambda: next(clock))
+
+        wait_for_cloudflare(page, timeout_ms=500, reload_retries=0)
+
+        assert page.reload_calls == 0
+
+
+class _FakeSearchInput:
+    def __init__(self):
+        self.values = []
+
+    def click(self):
+        return None
+
+    def fill(self, value: str):
+        self.values.append(value)
+
+
+class _FakeSearchPage:
+    def __init__(self):
+        self.goto_calls = []
+        self.url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
+        self._button = _FakeTextElement("ค้นหา")
+
+    def query_selector(self, selector: str):
+        if "button:has-text('ค้นหา')" in selector:
+            return self._button
+        return None
+
+    def wait_for_selector(self, selector: str, timeout=None, state=None):
+        if "button:has-text('ค้นหา')" in selector:
+            return self._button
+        raise AssertionError(f"unexpected selector: {selector}")
+
+    def goto(self, url: str, wait_until=None, timeout=None):
+        self.goto_calls.append((url, wait_until, timeout))
+        self.url = url
+
+
+class _FakeNextButton:
+    def __init__(self, page) -> None:
+        self.page = page
+
+    def is_visible(self) -> bool:
+        return self.page.remaining_clicks > 0
+
+    def click(self, timeout=None) -> None:
+        self.page.remaining_clicks -= 1
+
+
+class _FakeRestorePage:
+    def __init__(self, pages_to_advance: int) -> None:
+        self.remaining_clicks = pages_to_advance
+        self.evaluate_calls = 0
+
+    def query_selector(self, selector: str):
+        if "ถัดไป" in selector:
+            return _FakeNextButton(self)
+        return None
+
+    def evaluate(self, script: str, arg=None):
+        self.evaluate_calls += 1
+        if callable(getattr(arg, "click", None)):
+            arg.click()
+        return None
+
+
+class TestSearchKeyword:
+    def test_retries_from_fresh_search_page_after_cloudflare_exhausted(
+        self, monkeypatch
+    ):
+        page = _FakeSearchPage()
+        search_input = _FakeSearchInput()
+        cloudflare_results = iter([False, True])
+        waits = []
+
+        monkeypatch.setattr(
+            "egp_crawler.wait_for_cloudflare",
+            lambda page, timeout_ms=None, reload_retries=None: next(cloudflare_results),
+        )
+        monkeypatch.setattr("egp_crawler.find_search_input", lambda page, btn: search_input)
+        monkeypatch.setattr("egp_crawler.click_search_button", lambda page, btn=None: None)
+        monkeypatch.setattr("egp_crawler.wait_for_results_ready", lambda page: None)
+        monkeypatch.setattr("egp_crawler.get_results_rows", lambda page: [])
+        monkeypatch.setattr(
+            "egp_crawler.logged_sleep",
+            lambda seconds, reason="": waits.append((seconds, reason)),
+        )
+
+        search_keyword(page, "ธรรมาภิบาลข้อมูล")
+
+        assert page.goto_calls == [(SEARCH_URL, "domcontentloaded", 60_000)]
+        assert search_input.values == ["", "ธรรมาภิบาลข้อมูล"]
+
+    def test_waits_for_full_row_stabilization_before_reporting_count(
+        self, monkeypatch
+    ):
+        page = _FakeSearchPage()
+        search_input = _FakeSearchInput()
+        waits = []
+        row_counts = iter([1, 1, 10, 10, 10])
+        printed = []
+
+        monkeypatch.setattr("egp_crawler.wait_for_cloudflare", lambda page: None)
+        monkeypatch.setattr("egp_crawler.find_search_input", lambda page, btn: search_input)
+        monkeypatch.setattr("egp_crawler.wait_for_results_ready", lambda page: None)
+        monkeypatch.setattr(
+            "egp_crawler.get_results_rows",
+            lambda page: [object()] * next(row_counts, 10),
+        )
+        monkeypatch.setattr(
+            "egp_crawler.logged_sleep",
+            lambda seconds, reason="": waits.append((seconds, reason)),
+        )
+        monkeypatch.setattr("egp_crawler.print", lambda *args, **kwargs: printed.append(args))
+
+        search_keyword(page, "ระบบวิเคราะห์")
+
+        assert search_input.values == ["", "ระบบวิเคราะห์"]
+        assert any("rows: 10" in " ".join(str(part) for part in line) for line in printed)
+
+    def test_restore_results_page_replays_search_and_advances_pages(self, monkeypatch):
+        page = _FakeRestorePage(pages_to_advance=2)
+        search_calls = []
+        marker_values = iter(
+            [
+                {"active_page": "1", "row_count": 10, "row_sample": "a"},
+                {"active_page": "2", "row_count": 10, "row_sample": "b"},
+            ]
+        )
+
+        monkeypatch.setattr(
+            "egp_crawler.search_keyword",
+            lambda page, keyword: search_calls.append(keyword),
+        )
+        monkeypatch.setattr("egp_crawler.dismiss_modal", lambda page: None)
+        monkeypatch.setattr(
+            "egp_crawler.get_results_page_marker", lambda page: next(marker_values)
+        )
+        monkeypatch.setattr(
+            "egp_crawler.wait_for_results_page_change", lambda page, previous_marker: True
+        )
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+
+        restore_results_page(page, "ระบบวิเคราะห์", 3)
+
+        assert search_calls == ["ระบบวิเคราะห์"]
+        assert page.remaining_clicks == 0
+
+
 # ---------------------------------------------------------------------------
 # parse_cli_args
 # ---------------------------------------------------------------------------
@@ -1177,3 +1671,160 @@ class TestProfileDefaults:
 
     def test_lue_download_dir_ends_with_lue(self):
         assert str(PROFILE_DEFAULTS["lue"]["download_dir"]).endswith("LUE")
+
+
+class TestProjectDocumentDownloads:
+    def test_doc_targets_include_final_tor(self):
+        assert "เอกสารประกวดราคา" in DOCS_TO_DOWNLOAD
+
+    def test_returns_draft_bucket_when_only_draft_tor_is_downloaded(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(
+            "egp_crawler._download_one_document",
+            lambda page, target_doc, project_dir: {
+                "ประกาศเชิญชวน": [],
+                "ประกาศราคากลาง": ["ประกาศราคากลาง"],
+                "ร่างเอกสารประกวดราคา": ["ร่างเอกสารประกวดราคา"],
+                "เอกสารประกวดราคา": [],
+            }[target_doc],
+        )
+
+        summary = download_project_documents(_FakeResultsPage([]), tmp_path)
+
+        assert summary.tor_downloaded is False
+        assert summary.artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING
+
+    def test_invitation_popup_counts_final_tor_download(self, monkeypatch, tmp_path):
+        clickable = object()
+        page = _FakeResultsPage(
+            [
+                _FakeTable(
+                    ["ลำดับ", "ประกาศที่เกี่ยวข้อง", "วันที่ประกาศ", "ดูข้อมูล"],
+                    [
+                        _FakeRow(
+                            [
+                                _FakeCell("1"),
+                                _FakeCell("ประกาศเชิญชวน"),
+                                _FakeCell("10/04/2569"),
+                                _FakeCell("", clickable=clickable),
+                            ]
+                        )
+                    ],
+                )
+            ]
+        )
+
+        monkeypatch.setattr("egp_crawler.dismiss_modal", lambda page: None)
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "egp_crawler._handle_direct_or_page_download",
+            lambda page, btn, project_dir, doc_name: None,
+        )
+        monkeypatch.setattr(
+            "egp_crawler._download_documents_from_current_view",
+            lambda page, project_dir, include_label: [
+                "ประกาศเชิญชวน",
+                "เอกสารประกวดราคา",
+            ],
+            raising=False,
+        )
+
+        assert _download_one_document(page, "ประกาศเชิญชวน", tmp_path) == [
+            "ประกาศเชิญชวน",
+            "เอกสารประกวดราคา",
+        ]
+
+    def test_write_project_manifest_records_saved_files(self, tmp_path):
+        project_dir = tmp_path / "example-project"
+        project_dir.mkdir()
+        (project_dir / "ประกาศราคากลาง.zip").write_bytes(b"zip")
+        manifest_path = write_project_manifest(
+            project_dir=project_dir,
+            project_info={
+                "project_number": "6901",
+                "project_name": "Example Project",
+                "search_name": "Example Project",
+                "keyword": "ระบบสารสนเทศ",
+            },
+            tracking_status=ProjectState.OPEN_INVITATION,
+            closed_reason=None,
+            artifact_bucket=ArtifactBucket.PRICING_ONLY,
+        )
+
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert payload["saved_by"] == "crawler"
+        assert payload["artifact_bucket"] == ArtifactBucket.PRICING_ONLY.value
+        assert payload["saved_files"] == ["ประกาศราคากลาง.zip"]
+
+
+class _FakeResponse:
+    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None, ok: bool = True):
+        self._body = body
+        self.headers = headers or {}
+        self.ok = ok
+        self.status = 200 if ok else 500
+
+    def body(self):
+        return self._body
+
+
+class _FakeRequestClient:
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+        self.calls = []
+
+    def get(self, url: str, timeout=None):
+        self.calls.append({"url": url, "timeout": timeout})
+        return self._response
+
+
+class _FakeKeyboard:
+    def __init__(self):
+        self.keys = []
+
+    def press(self, key: str):
+        self.keys.append(key)
+
+
+class _FakeViewerPage:
+    def __init__(self, *, url: str, embedded_src: str, response: _FakeResponse):
+        self.url = url
+        self._embedded_src = embedded_src
+        self.request = _FakeRequestClient(response)
+        self.keyboard = _FakeKeyboard()
+
+    def wait_for_load_state(self, state: str, timeout=None):
+        return None
+
+    def evaluate(self, script: str):
+        if "embed[src]" in script or "iframe[src]" in script or "object[data]" in script:
+            return self._embedded_src
+        return None
+
+
+class TestNewTabFallback:
+    def test_save_from_new_tab_uses_request_for_blob_viewer(self, monkeypatch, tmp_path):
+        viewer_page = _FakeViewerPage(
+            url="blob:https://process5.gprocurement.go.th/example-blob",
+            embedded_src="https://process5.gprocurement.go.th/egp-download/final-tor.zip",
+            response=_FakeResponse(
+                b"PK\x03\x04zip-bytes",
+                headers={"content-type": "application/zip"},
+            ),
+        )
+
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+        monkeypatch.setattr("egp_crawler.run_with_toast_recovery", lambda *args, **kwargs: (_ for _ in ()).throw(Exception("no download event")))
+        monkeypatch.setattr("egp_crawler._cancel_pending_downloads", lambda page: None)
+
+        saved_name = _save_from_new_tab(viewer_page, tmp_path, "ประกาศเชิญชวน")
+
+        assert saved_name == "ประกาศเชิญชวน.zip"
+        assert (tmp_path / saved_name).read_bytes() == b"PK\x03\x04zip-bytes"
+        assert viewer_page.request.calls == [
+            {
+                "url": "https://process5.gprocurement.go.th/egp-download/final-tor.zip",
+                "timeout": SUBPAGE_DOWNLOAD_TIMEOUT,
+            }
+        ]

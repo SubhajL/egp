@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from egp_document_classifier.classifier import classify_document
+from egp_document_classifier.classifier import classify_document, derive_artifact_bucket
 from egp_crawler_core.closure_rules import (
     check_consulting_timeout,
     check_stale_closure,
@@ -10,6 +10,7 @@ from egp_crawler_core.closure_rules import (
 )
 from egp_crawler_core.document_hasher import hash_file
 from egp_shared_types.enums import (
+    ArtifactBucket,
     ClosedReason,
     DocumentPhase,
     DocumentType,
@@ -268,3 +269,40 @@ def test_classify_document_handles_non_tor_labels() -> None:
 
     assert document_type is DocumentType.MID_PRICE
     assert document_phase is DocumentPhase.UNKNOWN
+
+
+def test_derive_artifact_bucket_detects_pricing_only() -> None:
+    bucket = derive_artifact_bucket(labels=["ประกาศราคากลาง"])
+
+    assert bucket is ArtifactBucket.PRICING_ONLY
+
+
+def test_derive_artifact_bucket_detects_invitation_plus_pricing() -> None:
+    bucket = derive_artifact_bucket(labels=["ประกาศราคากลาง", "ประกาศเชิญชวน"])
+
+    assert bucket is ArtifactBucket.INVITATION_PLUS_PRICING
+
+
+def test_derive_artifact_bucket_detects_draft_plus_pricing() -> None:
+    bucket = derive_artifact_bucket(
+        labels=["ประกาศราคากลาง", "ร่างเอกสารประกวดราคาโครงการระบบข้อมูลกลาง"]
+    )
+
+    assert bucket is ArtifactBucket.DRAFT_PLUS_PRICING
+
+
+def test_derive_artifact_bucket_detects_final_tor_from_document_rows() -> None:
+    bucket = derive_artifact_bucket(
+        documents=[
+            {
+                "document_type": DocumentType.MID_PRICE.value,
+                "document_phase": DocumentPhase.UNKNOWN.value,
+            },
+            {
+                "document_type": DocumentType.TOR.value,
+                "document_phase": DocumentPhase.FINAL.value,
+            },
+        ]
+    )
+
+    assert bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED

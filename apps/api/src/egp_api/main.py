@@ -573,6 +573,7 @@ def create_app(
     )
     app.state.export_service = ExportService(
         project_repository,
+        document_repository=repository,
         entitlement_service=entitlement_service,
         notification_dispatcher=gated_notification_dispatcher,
     )

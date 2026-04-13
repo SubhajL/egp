@@ -31,6 +31,8 @@ Configuration (optional environment variables):
     EGP_MAX_PAGES_PER_KEYWORD    Pagination cap per keyword (default 15)
     EGP_NAV_TIMEOUT_MS           Page navigation timeout in ms (default 60000)
     EGP_CLOUDFLARE_TIMEOUT_MS    Cloudflare wait timeout in ms (default 120000)
+    EGP_CLOUDFLARE_RELOAD_RETRIES  Page reload retries after Cloudflare timeout
+    EGP_SEARCH_PAGE_RECOVERY_RETRIES  Fresh search-page retries after CF failure
     EGP_DOWNLOAD_TIMEOUT_MS      Ctrl+S/new-tab save timeout in ms (default 30000)
     EGP_SUBPAGE_DOWNLOAD_TIMEOUT_MS  Large TOR file timeout in ms (default 90000)
     EGP_DOWNLOAD_EVENT_TIMEOUT_MS    Wait for download event start in ms (default 15000)
@@ -49,11 +51,14 @@ import socket
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from egp_document_classifier import derive_artifact_bucket
+from egp_shared_types.enums import ArtifactBucket, ClosedReason, ProcurementType, ProjectState
 from openpyxl import Workbook, load_workbook
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -237,6 +242,8 @@ def apply_env_config_overrides() -> None:
     global \
         NAV_TIMEOUT, \
         CLOUDFLARE_TIMEOUT, \
+        CLOUDFLARE_RELOAD_RETRIES, \
+        SEARCH_PAGE_RECOVERY_RETRIES, \
         DOWNLOAD_TIMEOUT, \
         SUBPAGE_DOWNLOAD_TIMEOUT, \
         DOWNLOAD_EVENT_TIMEOUT
@@ -263,6 +270,18 @@ def apply_env_config_overrides() -> None:
         "EGP_CLOUDFLARE_TIMEOUT_MS",
         CLOUDFLARE_TIMEOUT,
         min_value=10_000,
+    )
+    CLOUDFLARE_RELOAD_RETRIES = env_get_int(
+        "EGP_CLOUDFLARE_RELOAD_RETRIES",
+        CLOUDFLARE_RELOAD_RETRIES,
+        min_value=0,
+        max_value=5,
+    )
+    SEARCH_PAGE_RECOVERY_RETRIES = env_get_int(
+        "EGP_SEARCH_PAGE_RECOVERY_RETRIES",
+        SEARCH_PAGE_RECOVERY_RETRIES,
+        min_value=0,
+        max_value=5,
     )
     DOWNLOAD_TIMEOUT = env_get_int(
         "EGP_DOWNLOAD_TIMEOUT_MS", DOWNLOAD_TIMEOUT, min_value=5_000
@@ -403,12 +422,20 @@ SKIP_KEYWORDS_IN_PROJECT = [
     "วิธีคัดเลือก",
     "บำรุงรักษา",
 ]  # Skip projects containing these in name or org
+NEXT_PAGE_SELECTOR = (
+    "a:has-text('ถัดไป'), "
+    "button:has-text('ถัดไป'), "
+    "button[aria-label='next'], "
+    "a:has-text('»'), "
+    "li.next:not(.disabled) a"
+)
 
 # Documents to download from project info page
 DOCS_TO_DOWNLOAD = [
     "ประกาศเชิญชวน",
     "ประกาศราคากลาง",
     "ร่างเอกสารประกวดราคา",
+    "เอกสารประกวดราคา",
 ]
 
 # Alternate labels seen for TOR-like docs (especially consulting procurements)
@@ -420,6 +447,12 @@ TOR_DOC_MATCH_TERMS = [
     "เอกสารจ้างที่ปรึกษา",
     "terms of reference",
     "tor",
+]
+DRAFT_TOR_DOC_MATCH_TERMS = [
+    "ร่างขอบเขตของงาน",
+    "ร่างเอกสารประกวดราคา",
+    "draft tor",
+    "draft terms of reference",
 ]
 
 EXCEL_HEADERS = [
@@ -433,11 +466,42 @@ EXCEL_HEADERS = [
     "tor_downloaded",
     "prelim_pricing",
     "search_name",
+    "tracking_status",
+    "closed_reason",
+    "artifact_bucket",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectDocumentSummary:
+    saved_labels: tuple[str, ...]
+    artifact_bucket: ArtifactBucket
+
+    @property
+    def tor_downloaded(self) -> bool:
+        return self.artifact_bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED
+
+    @property
+    def draft_tor_downloaded(self) -> bool:
+        return self.artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING
+
+
+@dataclass(frozen=True, slots=True)
+class KeywordResumeState:
+    keyword_index: int
+    keyword: str
+    page_num: int = 1
+
 
 # Timeouts (ms)
 NAV_TIMEOUT = env_get_int("EGP_NAV_TIMEOUT_MS", 60_000, min_value=5_000)
 CLOUDFLARE_TIMEOUT = env_get_int("EGP_CLOUDFLARE_TIMEOUT_MS", 120_000, min_value=10_000)
+CLOUDFLARE_RELOAD_RETRIES = env_get_int(
+    "EGP_CLOUDFLARE_RELOAD_RETRIES", 1, min_value=0, max_value=5
+)
+SEARCH_PAGE_RECOVERY_RETRIES = env_get_int(
+    "EGP_SEARCH_PAGE_RECOVERY_RETRIES", 1, min_value=0, max_value=5
+)
 DOWNLOAD_TIMEOUT = env_get_int("EGP_DOWNLOAD_TIMEOUT_MS", 30_000, min_value=5_000)
 SUBPAGE_DOWNLOAD_TIMEOUT = env_get_int(
     "EGP_SUBPAGE_DOWNLOAD_TIMEOUT_MS", 90_000, min_value=10_000
@@ -723,6 +787,17 @@ def is_tor_doc_label(label: str) -> bool:
     return any(term in lowered for term in TOR_DOC_MATCH_TERMS)
 
 
+def is_draft_tor_doc_label(label: str) -> bool:
+    """Check if a document row label refers to a draft/public-hearing TOR."""
+    lowered = label.strip().lower()
+    return any(term in lowered for term in DRAFT_TOR_DOC_MATCH_TERMS)
+
+
+def is_final_tor_doc_label(label: str) -> bool:
+    """Check if a document row label refers to a final invitation-stage TOR."""
+    return is_tor_doc_label(label) and not is_draft_tor_doc_label(label)
+
+
 def extract_file_label_from_cell_texts(texts: list[str]) -> str:
     """Best-effort extraction of a file label from a table row's cell texts.
 
@@ -757,10 +832,87 @@ def pagination_button_is_disabled(
 
 
 def ensure_excel_headers(ws) -> None:
-    """Backfill/repair header row so legacy 9-column sheets upgrade safely."""
+    """Backfill/repair header row so legacy sheets upgrade safely."""
     for idx, header in enumerate(EXCEL_HEADERS, start=1):
         if ws.cell(1, idx).value != header:
             ws.cell(1, idx).value = header
+
+
+_TERMINAL_TRACKING_STATES = {
+    ProjectState.TOR_DOWNLOADED.value,
+    ProjectState.PRELIM_PRICING_SEEN.value,
+    ProjectState.WINNER_ANNOUNCED.value,
+    ProjectState.CONTRACT_SIGNED.value,
+    ProjectState.CLOSED_TIMEOUT_CONSULTING.value,
+    ProjectState.CLOSED_STALE_NO_TOR.value,
+    ProjectState.CLOSED_MANUAL.value,
+}
+
+
+def is_terminal_tracking_status(value: str | None) -> bool:
+    normalized = str(value or "").strip()
+    if normalized in _TERMINAL_TRACKING_STATES:
+        return True
+    return False
+
+
+def infer_procurement_type(project_name: str, organization: str = "") -> ProcurementType:
+    combined = f"{project_name} {organization}"
+    if "ที่ปรึกษา" in combined:
+        return ProcurementType.CONSULTING
+    return ProcurementType.SERVICES
+
+
+def derive_tracking_status(
+    *,
+    project_name: str,
+    organization: str,
+    artifact_bucket: ArtifactBucket,
+    prelim_pricing: bool = False,
+    stale_without_tor: bool = False,
+) -> tuple[ProjectState, ClosedReason | None]:
+    if prelim_pricing:
+        return (ProjectState.PRELIM_PRICING_SEEN, ClosedReason.PRELIM_PRICING)
+    if stale_without_tor:
+        return (ProjectState.CLOSED_STALE_NO_TOR, ClosedReason.STALE_NO_TOR)
+    if artifact_bucket is ArtifactBucket.FINAL_TOR_DOWNLOADED:
+        return (ProjectState.TOR_DOWNLOADED, None)
+    if artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
+        return (ProjectState.OPEN_PUBLIC_HEARING, None)
+    if infer_procurement_type(project_name, organization) is ProcurementType.CONSULTING:
+        return (ProjectState.OPEN_CONSULTING, None)
+    return (ProjectState.OPEN_INVITATION, None)
+
+
+def write_project_manifest(
+    *,
+    project_dir: Path,
+    project_info: dict[str, object],
+    tracking_status: ProjectState,
+    closed_reason: ClosedReason | None,
+    artifact_bucket: ArtifactBucket,
+) -> Path:
+    project_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = project_dir / "crawler_manifest.json"
+    payload = {
+        "project_number": str(project_info.get("project_number") or ""),
+        "project_name": str(project_info.get("project_name") or ""),
+        "search_name": str(project_info.get("search_name") or ""),
+        "keyword": str(project_info.get("keyword") or ""),
+        "tracking_status": tracking_status.value,
+        "closed_reason": closed_reason.value if closed_reason is not None else None,
+        "artifact_bucket": artifact_bucket.value,
+        "saved_files": sorted(
+            path.name for path in project_dir.iterdir() if path.is_file() and path.name != manifest_path.name
+        ),
+        "written_at": datetime.now().isoformat(timespec="seconds"),
+        "saved_by": "crawler",
+    }
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def sanitize_dirname(name: str) -> str:
@@ -1038,13 +1190,10 @@ def load_existing_projects(excel_path: Path | None = None) -> dict[str, bool]:
     """Load projects from Excel with their completion status.
 
     Returns dict mapping keys → fully_done (True/False).
-    Each project is indexed by up to three keys (all non-empty):
-      - project_name  (column B, from detail page)
-      - project_number (column D, unique ID)
-      - search_name   (column J, from search results table)
 
-    True = skip entirely (TOR downloaded OR prelim pricing reached).
-    False = revisit to check for new files.
+    We prefer stable keys (`project_number`, `search_name`) and only fall back to
+    `project_name` when neither is available. This avoids re-announcements with a
+    reused title incorrectly inheriting a previous row's completion state.
     """
     excel_path = Path(excel_path) if excel_path else EXCEL_PATH
     if not excel_path.exists():
@@ -1066,10 +1215,12 @@ def load_existing_projects(excel_path: Path | None = None) -> dict[str, bool]:
         tor_status = str(row[7]).strip().lower() if len(row) > 7 and row[7] else "no"
         # column I = prelim_pricing (index 8)
         prelim = str(row[8]).strip().lower() if len(row) > 8 and row[8] else "no"
-        done = tor_status == "yes" or prelim == "yes"
-
-        # Index by project_name
-        existing[name] = done
+        tracking_status = str(row[10]).strip() if len(row) > 10 and row[10] else ""
+        done = (
+            is_terminal_tracking_status(tracking_status)
+            or tor_status == "yes"
+            or prelim == "yes"
+        )
 
         # Index by project_number (column D, index 3)
         proj_num = str(row[3]).strip() if len(row) > 3 and row[3] else ""
@@ -1080,6 +1231,8 @@ def load_existing_projects(excel_path: Path | None = None) -> dict[str, bool]:
         search_name = str(row[9]).strip() if len(row) > 9 and row[9] else ""
         if search_name:
             existing[search_name] = done
+        elif not proj_num:
+            existing[name] = done
 
     return existing
 
@@ -1112,7 +1265,12 @@ def load_existing_project_row_stats(
         total_rows += 1
         tor_status = str(row[7]).strip().lower() if len(row) > 7 and row[7] else "no"
         prelim = str(row[8]).strip().lower() if len(row) > 8 and row[8] else "no"
-        if tor_status == "yes" or prelim == "yes":
+        tracking_status = str(row[10]).strip() if len(row) > 10 and row[10] else ""
+        if (
+            is_terminal_tracking_status(tracking_status)
+            or tor_status == "yes"
+            or prelim == "yes"
+        ):
             complete_rows += 1
 
     return (total_rows, complete_rows, total_rows - complete_rows)
@@ -1121,8 +1279,9 @@ def load_existing_project_row_stats(
 def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
     """Create or append to the project list Excel file.
 
-    If the project already exists (by name), updates the tor_downloaded status
-    and download_date instead of adding a duplicate row.
+    Re-announcements must not merge by shared title text alone. Prefer exact
+    `project_number`, then exact `search_name`, and only fall back to name-only
+    rows that never had a project number.
     """
     excel_path = Path(excel_path) if excel_path else EXCEL_PATH
     excel_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1160,6 +1319,12 @@ def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
         # Update search_name if provided
         if "search_name" in project_info:
             ws.cell(row_idx, 10).value = project_info["search_name"]
+        if "tracking_status" in project_info:
+            ws.cell(row_idx, 11).value = project_info["tracking_status"]
+        if "closed_reason" in project_info:
+            ws.cell(row_idx, 12).value = project_info["closed_reason"]
+        if "artifact_bucket" in project_info:
+            ws.cell(row_idx, 13).value = project_info["artifact_bucket"]
         # Backfill project_number if missing
         if project_number and not ws.cell(row_idx, 4).value:
             ws.cell(row_idx, 4).value = project_number
@@ -1172,10 +1337,50 @@ def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
                 wb.save(excel_path)
                 return
 
-    if project_name:
+    search_name = str(project_info.get("search_name", "") or "").strip()
+    if search_name:
+        for row_idx in range(2, ws.max_row + 1):
+            existing_search_name = ws.cell(row_idx, 10).value  # column J
+            existing_number = ws.cell(row_idx, 4).value  # column D
+            if (
+                existing_search_name
+                and str(existing_search_name).strip() == search_name
+                and (
+                    not project_number
+                    or not existing_number
+                    or str(existing_number).strip() == project_number
+                )
+            ):
+                _update_row(row_idx)
+                wb.save(excel_path)
+                return
+
+    if project_name and project_number:
         for row_idx in range(2, ws.max_row + 1):
             existing_name = ws.cell(row_idx, 2).value  # column B
-            if existing_name and str(existing_name).strip() == project_name:
+            existing_number = ws.cell(row_idx, 4).value  # column D
+            existing_search_name = ws.cell(row_idx, 10).value  # column J
+            if not (
+                existing_name
+                and str(existing_name).strip() == project_name
+                and not str(existing_number or "").strip()
+            ):
+                continue
+            if existing_search_name and search_name and str(existing_search_name).strip() != search_name:
+                continue
+            _update_row(row_idx)
+            wb.save(excel_path)
+            return
+
+    if project_name and not project_number:
+        for row_idx in range(2, ws.max_row + 1):
+            existing_name = ws.cell(row_idx, 2).value  # column B
+            existing_number = ws.cell(row_idx, 4).value  # column D
+            if (
+                existing_name
+                and str(existing_name).strip() == project_name
+                and not str(existing_number or "").strip()
+            ):
                 _update_row(row_idx)
                 wb.save(excel_path)
                 return
@@ -1193,6 +1398,9 @@ def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
             project_info.get("tor_downloaded", "No"),
             project_info.get("prelim_pricing", "No"),
             project_info.get("search_name", ""),
+            project_info.get("tracking_status", ""),
+            project_info.get("closed_reason", ""),
+            project_info.get("artifact_bucket", ""),
         ]
     )
     wb.save(excel_path)
@@ -1358,7 +1566,11 @@ def safe_shutdown(
                 pass
 
 
-def wait_for_cloudflare(page, timeout_ms: int = CLOUDFLARE_TIMEOUT) -> None:
+def wait_for_cloudflare(
+    page,
+    timeout_ms: int = CLOUDFLARE_TIMEOUT,
+    reload_retries: int = CLOUDFLARE_RELOAD_RETRIES,
+) -> bool:
     """Wait for Cloudflare Turnstile to pass.
 
     On the search page: checks if ค้นหา button is enabled (disabled until CF passes).
@@ -1379,7 +1591,7 @@ def wait_for_cloudflare(page, timeout_ms: int = CLOUDFLARE_TIMEOUT) -> None:
             if is_disabled is None:  # No disabled attribute = enabled
                 if prompted:
                     print("  Cloudflare: Passed!")
-                return
+                return True
 
         # Check 2: No search button (main page or other page)
         # Wait for CF iframe to disappear, or timeout after brief wait
@@ -1387,7 +1599,7 @@ def wait_for_cloudflare(page, timeout_ms: int = CLOUDFLARE_TIMEOUT) -> None:
             cf_iframe = page.query_selector("iframe[src*='challenges.cloudflare.com']")
             if not cf_iframe:
                 # No Cloudflare challenge and no search button — page is ready
-                return
+                return True
 
         if not prompted:
             print("  Cloudflare: Waiting for verification...", flush=True)
@@ -1395,7 +1607,24 @@ def wait_for_cloudflare(page, timeout_ms: int = CLOUDFLARE_TIMEOUT) -> None:
 
         logged_sleep(2)
 
+    if reload_retries > 0:
+        print("  WARNING: Cloudflare timeout — reloading page and retrying")
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        except Exception:
+            try:
+                page.goto(page.url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+            except Exception:
+                print("  WARNING: Cloudflare reload failed")
+                print("  WARNING: Cloudflare timeout — continuing anyway")
+                return False
+        logged_sleep(3, "reload after Cloudflare timeout")
+        return wait_for_cloudflare(
+            page, timeout_ms=timeout_ms, reload_retries=reload_retries - 1
+        )
+
     print("  WARNING: Cloudflare timeout — continuing anyway")
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1407,9 +1636,102 @@ def _compact_visible_text(s: str | None) -> str:
     return re.sub(r"\s+", "", s or "")
 
 
+RESULTS_TABLE_REQUIRED_HEADERS = [
+    "ลำดับ",
+    "หน่วยจัดซื้อ",
+    "ชื่อโครงการ",
+    "วงเงินงบประมาณ",
+    "สถานะโครงการ",
+    "ดูข้อมูล",
+]
+
+
 def status_matches_target(status_text: str) -> bool:
     """Normalize whitespace and compare against TARGET_STATUS."""
     return _TARGET_STATUS_COMPACT in _compact_visible_text(status_text)
+
+
+def get_results_page_marker(page) -> dict[str, str | int]:
+    """Capture a compact signature for the current results page."""
+    rows = get_results_rows(page)[:3]
+    row_sample_parts = []
+    for row in rows:
+        try:
+            cells = row.query_selector_all("td")[:5]
+            row_sample_parts.append(
+                "|".join((cell.inner_text() or "").strip() for cell in cells)
+            )
+        except Exception:
+            continue
+    try:
+        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active_page = active.inner_text().strip() if active else ""
+    except Exception:
+        active_page = ""
+    return {
+        "active_page": active_page,
+        "row_count": len(rows),
+        "row_sample": " || ".join(row_sample_parts),
+    }
+
+
+def results_page_marker_changed(
+    previous: dict[str, str | int], current: dict[str, str | int]
+) -> bool:
+    """Return True once pagination changes the active page or visible row sample."""
+    return (
+        str(previous.get("active_page", "") or "")
+        != str(current.get("active_page", "") or "")
+        or int(previous.get("row_count", -1) or -1)
+        != int(current.get("row_count", -1) or -1)
+        or str(previous.get("row_sample", "") or "")
+        != str(current.get("row_sample", "") or "")
+    )
+
+
+def _table_matches_results_headers(table) -> bool:
+    """Return True when a table looks like the main procurement results table."""
+    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    headers: list[str] = []
+    for selector in header_selectors:
+        try:
+            header_els = table.query_selector_all(selector)
+        except Exception:
+            header_els = []
+        headers = [h.inner_text().strip() for h in header_els if h.inner_text().strip()]
+        if headers:
+            break
+
+    if not headers:
+        return False
+
+    header_compact = [_compact_visible_text(h) for h in headers]
+    return all(
+        any(_compact_visible_text(required) in header for header in header_compact)
+        for required in RESULTS_TABLE_REQUIRED_HEADERS
+    )
+
+
+def find_results_table(page):
+    """Return the procurement search results table, if present."""
+    for table in page.query_selector_all("table"):
+        try:
+            if _table_matches_results_headers(table):
+                return table
+        except Exception:
+            continue
+    return None
+
+
+def get_results_rows(page) -> list:
+    """Return rows from the procurement search results table only."""
+    table = find_results_table(page)
+    if not table:
+        return []
+    try:
+        return table.query_selector_all("tbody tr")
+    except Exception:
+        return []
 
 
 def find_search_input(page, search_btn):
@@ -1453,28 +1775,66 @@ def find_search_input(page, search_btn):
     return page.wait_for_selector("input[type='text']", timeout=NAV_TIMEOUT)
 
 
+def click_search_button(page, search_btn=None) -> None:
+    """Click the primary search button with a DOM-query fallback for SPA re-renders."""
+    try:
+        clicked = page.evaluate(
+            """() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    const txt = (btn.innerText || '').trim();
+                    if (
+                        txt.includes('ค้นหา') &&
+                        !txt.includes('ค้นหาขั้นสูง') &&
+                        btn.offsetParent !== null &&
+                        !btn.disabled
+                    ) {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            }"""
+        )
+        if clicked:
+            return
+    except Exception:
+        pass
+
+    try:
+        if search_btn is None:
+            search_btn = page.wait_for_selector(
+                "button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))",
+                timeout=NAV_TIMEOUT,
+            )
+        search_btn.click()
+        return
+    except Exception:
+        fallback_btn = page.wait_for_selector(
+            "button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))",
+            timeout=NAV_TIMEOUT,
+        )
+        page.evaluate("(el) => el.click()", fallback_btn)
+
+
 def is_no_results_page(page) -> bool:
     """Return True only when the results table is empty and shows an empty-state message."""
     try:
-        return bool(
-            page.evaluate(
-                """() => {
-                    const table = document.querySelector('table');
-                    if (!table) return false;
-                    const rows = table.querySelectorAll('tbody tr');
-                    if (rows.length > 0) return false;
-                    const txt = (table.innerText || '').replace(/\\s+/g, ' ').trim();
-                    return txt.includes('ไม่พบข้อมูล') || txt.includes('จำนวนโครงการที่พบ : 0');
-                }"""
-            )
-        )
+        table = find_results_table(page)
+        if not table:
+            return False
+        rows = get_results_rows(page)
+        if rows:
+            return False
+        text = re.sub(r"\s+", " ", table.inner_text() or "").strip()
+        return "ไม่พบข้อมูล" in text or "จำนวนโครงการที่พบ : 0" in text
     except Exception:
         return False
 
 
 def wait_for_results_ready(page) -> None:
     """Wait until results rows appear or an empty-state is reliably shown."""
-    page.wait_for_selector("table", timeout=NAV_TIMEOUT)
+    page.wait_for_selector("table", state="attached", timeout=NAV_TIMEOUT)
 
     try:
         page.wait_for_function(
@@ -1494,7 +1854,7 @@ def wait_for_results_ready(page) -> None:
     # Guard against premature "ไม่พบข้อมูล" placeholder while the SPA is still loading.
     for _ in range(3):
         try:
-            if page.query_selector("table tbody tr"):
+            if get_results_rows(page):
                 return
         except Exception:
             pass
@@ -1504,10 +1864,35 @@ def wait_for_results_ready(page) -> None:
             logged_sleep(1.0, "wait results render")
 
 
-def search_keyword(page, keyword: str) -> None:
+def wait_for_results_page_change(
+    page, previous_marker: dict[str, str | int], timeout_ms: int = NAV_TIMEOUT
+) -> bool:
+    """Wait for the results table to move to a different page or row sample."""
+    deadline = time.monotonic() + max(1.0, timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        wait_for_results_ready(page)
+        current_marker = get_results_page_marker(page)
+        if results_page_marker_changed(previous_marker, current_marker):
+            return True
+        if is_no_results_page(page):
+            return True
+        logged_sleep(0.5, "wait page change")
+    current_marker = get_results_page_marker(page)
+    return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
+
+
+def search_keyword(
+    page, keyword: str, search_page_retries: int = SEARCH_PAGE_RECOVERY_RETRIES
+) -> None:
     """Enter keyword on the search page and submit. Assumes page is already on search URL."""
     # Wait for Cloudflare to pass (ค้นหา button is disabled until it does)
-    wait_for_cloudflare(page)
+    cloudflare_ok = wait_for_cloudflare(page)
+    if not cloudflare_ok and search_page_retries > 0:
+        print("  Cloudflare still blocked — reopening search page and retrying keyword")
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        logged_sleep(3, "reopen search page after Cloudflare timeout")
+        search_keyword(page, keyword, search_page_retries=search_page_retries - 1)
+        return
 
     search_btn = page.query_selector(
         "button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))"
@@ -1527,23 +1912,131 @@ def search_keyword(page, keyword: str) -> None:
     logged_sleep(0.5)
 
     # Click the search button (already confirmed enabled by wait_for_cloudflare)
-    search_btn.click()
+    click_search_button(page, search_btn)
 
     wait_for_results_ready(page)
 
     row_count = -1
     last = None
+    stable_polls = 0
     # Give the SPA a moment to finish rendering/paginating rows.
-    for _ in range(6):
+    for _ in range(10):
         try:
-            row_count = len(page.query_selector_all("table tbody tr"))
+            current_count = len(get_results_rows(page))
         except Exception:
-            row_count = -1
-        if row_count > 0 and row_count == last:
+            current_count = -1
+        row_count = max(row_count, current_count)
+        if current_count == last:
+            stable_polls += 1
+        else:
+            stable_polls = 0
+        if current_count > 0 and stable_polls >= 2:
             break
-        last = row_count
+        last = current_count
         logged_sleep(0.5, "results stabilize")
     print(f"  Searched for: {keyword} (rows: {row_count}, url: {page.url})")
+
+
+def restore_results_page(page, keyword: str, target_page_num: int) -> None:
+    """Re-run the keyword search and advance back to the requested results page."""
+    search_keyword(page, keyword)
+    current_page = 1
+    while current_page < max(target_page_num, 1):
+        dismiss_modal(page)
+        previous_marker = get_results_page_marker(page)
+        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
+        if not (next_btn and next_btn.is_visible()):
+            break
+        try:
+            page.evaluate("(el) => el.click()", next_btn)
+        except Exception:
+            next_btn.click(timeout=10_000)
+        logged_sleep(3, f"restore results page {current_page + 1}")
+        if not wait_for_results_page_change(page, previous_marker):
+            break
+        current_page += 1
+
+
+def build_results_debug_snapshot(page, sample_limit: int = 3) -> dict[str, object]:
+    """Capture a compact diagnostic snapshot of the current search results view."""
+    snapshot: dict[str, object] = {
+        "url": getattr(page, "url", ""),
+        "active_page": "",
+        "results_headers": [],
+        "results_row_count": 0,
+        "results_row_samples": [],
+        "table_count": 0,
+        "body_snippet": "",
+    }
+
+    try:
+        tables = page.query_selector_all("table")
+    except Exception:
+        tables = []
+    snapshot["table_count"] = len(tables)
+
+    table = find_results_table(page)
+    if table:
+        header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+        headers: list[str] = []
+        for selector in header_selectors:
+            try:
+                header_els = table.query_selector_all(selector)
+            except Exception:
+                header_els = []
+            headers = [h.inner_text().strip() for h in header_els if h.inner_text().strip()]
+            if headers:
+                break
+        snapshot["results_headers"] = headers
+
+        rows = get_results_rows(page)
+        snapshot["results_row_count"] = len(rows)
+        samples: list[list[str]] = []
+        for row in rows[:sample_limit]:
+            try:
+                samples.append(
+                    [cell.inner_text().strip() for cell in row.query_selector_all("td")]
+                )
+            except Exception:
+                continue
+        snapshot["results_row_samples"] = samples
+
+    try:
+        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        snapshot["active_page"] = active.inner_text().strip() if active else ""
+    except Exception:
+        pass
+
+    try:
+        body_text = page.inner_text("body")
+        body_lines = _split_visible_lines(body_text)
+        snapshot["body_snippet"] = " | ".join(body_lines[:10])
+    except Exception:
+        pass
+
+    return snapshot
+
+
+def log_results_debug_snapshot(page, keyword: str, reason: str) -> None:
+    """Print a compact diagnostic snapshot for unexpected search-result states."""
+    snapshot = build_results_debug_snapshot(page)
+    print(
+        f"    DEBUG [{reason}] keyword={keyword} active_page={snapshot['active_page'] or '-'} "
+        f"tables={snapshot['table_count']} results_rows={snapshot['results_row_count']} "
+        f"url={snapshot['url']}"
+    )
+    headers = snapshot.get("results_headers") or []
+    if headers:
+        print(f"    DEBUG headers: {' | '.join(str(h) for h in headers)}")
+    for idx, row in enumerate(snapshot.get("results_row_samples") or [], start=1):
+        print(f"    DEBUG row{idx}: {' | '.join(str(cell) for cell in row)}")
+    body_snippet = str(snapshot.get("body_snippet") or "")
+    if body_snippet:
+        print(f"    DEBUG body: {body_snippet[:500]}")
+
+
+def _split_visible_lines(text: str) -> list[str]:
+    return [line.strip() for line in re.split(r"[\r\n]+", text or "") if line.strip()]
 
 
 def clear_search(page) -> None:
@@ -1573,7 +2066,7 @@ def collect_eligible_project_links(page) -> list[dict]:
 
     while True:
         print(f"    Scanning results page {page_num}...")
-        rows = page.query_selector_all("table tbody tr")
+        rows = get_results_rows(page)
 
         for row in rows:
             cells = row.query_selector_all("td")
@@ -1609,9 +2102,11 @@ def collect_eligible_project_links(page) -> list[dict]:
         )
 
         if next_btn and next_btn.is_visible() and next_btn.is_enabled():
+            previous_marker = get_results_page_marker(page)
             next_btn.click()
             logged_sleep(2)
-            page.wait_for_selector("table tbody tr", timeout=NAV_TIMEOUT)
+            if not wait_for_results_page_change(page, previous_marker):
+                break
             page_num += 1
         else:
             break
@@ -1625,7 +2120,7 @@ def navigate_to_project_by_row(page, row_index: int) -> bool:
     Re-query the table and click ดูข้อมูล for the row at given index.
     Returns True if navigation succeeds.
     """
-    rows = page.query_selector_all("table tbody tr")
+    rows = get_results_rows(page)
 
     # Find eligible rows again and click the one at row_index
     eligible_idx = 0
@@ -1760,34 +2255,38 @@ def extract_project_info(page) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def download_project_documents(page, project_dir: Path) -> bool:
+def download_project_documents(page, project_dir: Path) -> ProjectDocumentSummary:
     """Download target documents from the project info page.
 
-    ประกาศเชิญชวน and ประกาศราคากลาง download directly as files.
-    ร่างเอกสารประกวดราคา opens a sub-page with multiple files to download.
+    Downloads draft TOR, final TOR, invitation, and price-announcement artifacts.
+    Draft TORs are saved for public-hearing monitoring, but the return value only
+    marks completion once the final invitation-stage TOR is available.
 
     Re-queries the DOM before each document to handle page state changes
     after navigating to/from sub-pages.
 
-    Returns True if actual TOR files were successfully downloaded
-    (not just pricebuild/price estimate files).
+    Returns a compact artifact summary for downstream state/export decisions.
     """
     project_dir.mkdir(parents=True, exist_ok=True)
-    tor_downloaded = False
+    saved_labels: list[str] = []
 
     for target_doc in DOCS_TO_DOWNLOAD:
         try:
-            result = _download_one_document(page, target_doc, project_dir)
-            if "ร่างเอกสารประกวดราคา" in target_doc and result > 0:
-                tor_downloaded = True
+            saved_labels.extend(_download_one_document(page, target_doc, project_dir))
         except Exception as e:
             print(f"      ERROR downloading {target_doc}: {e}")
             # Skip this file, continue to next document type
 
-    return tor_downloaded
+    artifact_bucket = derive_artifact_bucket(labels=saved_labels)
+    if artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
+        print("      Draft TOR downloaded; final TOR not available yet")
+    return ProjectDocumentSummary(
+        saved_labels=tuple(saved_labels),
+        artifact_bucket=artifact_bucket,
+    )
 
 
-def _download_one_document(page, target_doc: str, project_dir: Path) -> int:
+def _download_one_document(page, target_doc: str, project_dir: Path) -> list[str]:
     """Find and download a single document type from the project info page.
 
     Only searches tables that have a ดูข้อมูล or ดาวน์โหลด column header —
@@ -1795,12 +2294,12 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> int:
     with dates but have no download functionality.
 
     Returns:
-        For ร่างเอกสารประกวดราคา: number of actual TOR files downloaded (0 = none).
-        For other docs: 1 if found and attempted, 0 if not found.
+        Saved source labels for the downloaded artifacts.
     """
     dismiss_modal(page)
     logged_sleep(0.5)
-    is_tor_target = target_doc == "ร่างเอกสารประกวดราคา"
+    is_draft_tor_target = target_doc == "ร่างเอกสารประกวดราคา"
+    is_final_tor_target = target_doc == "เอกสารประกวดราคา"
 
     # Find tables that have a download column (ดูข้อมูล or ดาวน์โหลด in headers)
     tables = page.query_selector_all("table")
@@ -1823,7 +2322,13 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> int:
         doc_name = ""
         for cell in cells:
             text = cell.inner_text().strip()
-            if target_doc in text or (is_tor_target and is_tor_doc_label(text)):
+            if target_doc in text:
+                doc_name = text
+                break
+            if is_draft_tor_target and is_draft_tor_doc_label(text):
+                doc_name = text
+                break
+            if is_final_tor_target and is_final_tor_doc_label(text):
                 doc_name = text
                 break
 
@@ -1842,22 +2347,43 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> int:
             or last_cell
         )
 
-        if "ร่างเอกสารประกวดราคา" in doc_name:
+        if is_draft_tor_doc_label(doc_name):
             dismiss_modal(page)
-            tor_count = _handle_subpage_download(page, clickable, project_dir)
-            return tor_count  # Number of actual TOR files downloaded
-        else:
-            saved_name = _handle_direct_or_page_download(
-                page, clickable, project_dir, doc_name
+            return _handle_subpage_download(
+                page,
+                clickable,
+                project_dir,
+                include_label=lambda label: is_tor_file(label),
             )
-            if is_tor_target:
-                # Some TOR docs (e.g., consultant projects) are direct downloads.
-                if saved_name and is_tor_file(saved_name):
-                    return 1
-                return 0
-            return 1 if saved_name else 0
 
-    return 0  # Document not found in any downloadable table
+        saved_name = _handle_direct_or_page_download(page, clickable, project_dir, doc_name)
+        if saved_name:
+            if target_doc == "ประกาศเชิญชวน":
+                return [doc_name]
+            if is_final_tor_target and is_tor_file(saved_name):
+                return [doc_name]
+            if not is_final_tor_target:
+                return [doc_name]
+            return []
+
+        if target_doc == "ประกาศเชิญชวน":
+            return _download_documents_from_current_view(
+                page,
+                project_dir,
+                include_label=lambda label: "ประกาศเชิญชวน" in label
+                or is_final_tor_doc_label(label),
+            )
+
+        if is_final_tor_target:
+            return _download_documents_from_current_view(
+                page,
+                project_dir,
+                include_label=is_final_tor_doc_label,
+            )
+
+        return []
+
+    return []  # Document not found in any downloadable table
 
 
 def _save_download_to_project(
@@ -2420,17 +2946,23 @@ def _save_from_new_tab(
             return None
 
 
-def _handle_subpage_download(page, btn, project_dir: Path) -> int:
-    """Handle ร่างเอกสารประกวดราคา — opens sub-page with file list to download.
-
-    Returns the number of actual TOR files successfully downloaded
-    (excludes pricebuild/price estimate files).
-    """
+def _handle_subpage_download(page, btn, project_dir: Path, include_label) -> list[str]:
+    """Open a related-documents listing and download matching rows."""
     clear_site_error_toast(page)
 
     # Use JS click to bypass any modal overlay
     page.evaluate("(el) => el.click()", btn)
     logged_sleep(1)
+
+    return _download_documents_from_current_view(
+        page,
+        project_dir,
+        include_label=include_label,
+    )
+
+
+def _download_documents_from_current_view(page, project_dir: Path, include_label) -> list[str]:
+    """Download matching files from the current modal or related-documents page."""
 
     # Many TOR downloads open a modal popup (bootstrap) with a file list.
     modal_table_ready = False
@@ -2486,7 +3018,6 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
                 _click_back_or_exit(page)
                 return 0
 
-    tor_count = 0
     if modal:
         rows = modal.query_selector_all("table tbody tr")
     elif download_table:
@@ -2494,14 +3025,14 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
     else:
         rows = page.query_selector_all("table tbody tr")
 
+    downloaded_labels: list[str] = []
     for row in rows:
         cells = row.query_selector_all("td")
         if len(cells) < 2:
             continue
         cell_texts = [c.inner_text().strip() for c in cells]
         file_label = extract_file_label_from_cell_texts(cell_texts) or "TOR"
-        # Skip known price build-up artifacts (not TOR) to avoid long timeouts.
-        if not is_tor_file(file_label):
+        if not include_label(file_label):
             continue
 
         # Find the download link/button in this row
@@ -2535,9 +3066,9 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
                     "Subpage file download",
                     retries=DOWNLOAD_CLICK_RETRIES,
                 )
-                _save_download_to_project(download, project_dir)
-                if is_tor_file(download.suggested_filename):
-                    tor_count += 1
+                saved_name = _save_download_to_project(download, project_dir)
+                if saved_name:
+                    downloaded_labels.append(file_label)
             except PlaywrightTimeout:
                 _cancel_pending_downloads(page)
                 logged_sleep(0.5)
@@ -2547,8 +3078,8 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
                 if url_after != url_before_click:
                     print("      Subpage file opened in content view, saving...")
                     saved_name = _save_from_content_page(page, project_dir, file_label)
-                    if saved_name and is_tor_file(saved_name):
-                        tor_count += 1
+                    if saved_name:
+                        downloaded_labels.append(file_label)
                     continue
 
                 all_pages = page.context.pages
@@ -2560,8 +3091,8 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
                         new_page.close()
                     except Exception:
                         pass
-                    if saved_name and is_tor_file(saved_name):
-                        tor_count += 1
+                    if saved_name:
+                        downloaded_labels.append(file_label)
                     continue
 
                 print(
@@ -2569,7 +3100,7 @@ def _handle_subpage_download(page, btn, project_dir: Path) -> int:
                 )
 
     _click_back_or_exit(page)
-    return tor_count
+    return downloaded_labels
 
 
 def dismiss_modal(page) -> None:
@@ -2697,7 +3228,7 @@ def _process_one_project(
     dismiss_modal(page)
 
     # Re-query rows (DOM may have changed from previous project)
-    rows = page.query_selector_all("table tbody tr")
+    rows = get_results_rows(page)
     if row_idx >= len(rows):
         print("      Row index out of range, skipping")
         return "skipped"
@@ -2722,6 +3253,7 @@ def _process_one_project(
     if check_has_preliminary_pricing(page):
         info = extract_project_info(page)
         project_name = info["project_name"] or preview
+        info["project_name"] = project_name
         safe_name = sanitize_dirname(project_name)
         project_number = str(info.get("project_number", "") or "").strip()
         if project_folder_map is not None and project_number:
@@ -2733,10 +3265,19 @@ def _process_one_project(
         project_dir = project_dir_base / safe_name
 
         print("      Has preliminary pricing — marking complete")
+        tracking_status, closed_reason = derive_tracking_status(
+            project_name=project_name,
+            organization=str(info.get("organization", "") or ""),
+            artifact_bucket=ArtifactBucket.NO_ARTIFACT_EVIDENCE,
+            prelim_pricing=True,
+        )
         info["keyword"] = keyword
         info["search_name"] = search_name
         info["prelim_pricing"] = "Yes"
-        info["tor_downloaded"] = "Yes"  # No need to revisit
+        info["tor_downloaded"] = "No"
+        info["tracking_status"] = tracking_status.value
+        info["closed_reason"] = closed_reason.value if closed_reason else ""
+        info["artifact_bucket"] = ArtifactBucket.NO_ARTIFACT_EVIDENCE.value
         update_excel(info)
 
         # Delete downloaded files — bidding is closed, no longer needed
@@ -2751,6 +3292,7 @@ def _process_one_project(
     # Extract project info
     info = extract_project_info(page)
     project_name = info["project_name"] or preview
+    info["project_name"] = project_name
     org = info.get("organization", "")
 
     # Skip projects with blacklisted keywords in name or organization
@@ -2776,17 +3318,26 @@ def _process_one_project(
     stale = check_announcement_stale(page)
 
     # Download documents (each doc has its own try/except inside)
-    tor_downloaded = download_project_documents(page, project_dir)
+    document_summary = download_project_documents(page, project_dir)
     dismiss_modal(page)
 
     # If announcement is stale and TOR still not available, clean up
-    if stale and not tor_downloaded:
+    if stale and not document_summary.tor_downloaded:
         print("      Stale announcement — deleting folder, marking complete")
         _safe_remove_dir(project_dir, "Stale announcement cleanup")
+        tracking_status, closed_reason = derive_tracking_status(
+            project_name=project_name,
+            organization=str(org or ""),
+            artifact_bucket=document_summary.artifact_bucket,
+            stale_without_tor=True,
+        )
         info["keyword"] = keyword
         info["search_name"] = search_name
-        info["tor_downloaded"] = "Yes"  # No need to revisit
+        info["tor_downloaded"] = "No"
         info["prelim_pricing"] = "No"
+        info["tracking_status"] = tracking_status.value
+        info["closed_reason"] = closed_reason.value if closed_reason else ""
+        info["artifact_bucket"] = document_summary.artifact_bucket.value
         update_excel(info)
         processed_projects[search_name] = True
         processed_projects[project_name] = True
@@ -2795,15 +3346,32 @@ def _process_one_project(
         return "skipped"
 
     # Update Excel with keyword, search_name, and tor_downloaded status
+    tracking_status, closed_reason = derive_tracking_status(
+        project_name=project_name,
+        organization=str(org or ""),
+        artifact_bucket=document_summary.artifact_bucket,
+    )
     info["keyword"] = keyword
     info["search_name"] = search_name
-    info["tor_downloaded"] = "Yes" if tor_downloaded else "No"
+    info["tor_downloaded"] = "Yes" if document_summary.tor_downloaded else "No"
+    info["prelim_pricing"] = "No"
+    info["tracking_status"] = tracking_status.value
+    info["closed_reason"] = closed_reason.value if closed_reason else ""
+    info["artifact_bucket"] = document_summary.artifact_bucket.value
     update_excel(info)
-    processed_projects[search_name] = tor_downloaded
-    processed_projects[project_name] = tor_downloaded
+    if project_dir.exists():
+        write_project_manifest(
+            project_dir=project_dir,
+            project_info=info,
+            tracking_status=tracking_status,
+            closed_reason=closed_reason,
+            artifact_bucket=document_summary.artifact_bucket,
+        )
+    processed_projects[search_name] = document_summary.tor_downloaded
+    processed_projects[project_name] = document_summary.tor_downloaded
     if info.get("project_number"):
-        processed_projects[info["project_number"]] = tor_downloaded
-    return "downloaded" if tor_downloaded else "incomplete"
+        processed_projects[info["project_number"]] = document_summary.tor_downloaded
+    return "downloaded" if document_summary.tor_downloaded else "incomplete"
 
 
 # ---------------------------------------------------------------------------
@@ -2891,26 +3459,36 @@ def main(profile: str = "tor") -> None:
         wait_for_cloudflare(page)
         print("Ready to search.\n")
 
-        for kw_idx, keyword in enumerate(KEYWORDS):
+        kw_idx = 0
+        resume_state: KeywordResumeState | None = None
+        while kw_idx < len(KEYWORDS):
+            keyword = KEYWORDS[kw_idx]
             print(f"\n[{kw_idx + 1}/{len(KEYWORDS)}] Keyword: {keyword}")
             print("-" * 40)
+            page_num = 1
 
             try:
-                if kw_idx > 0:
-                    clear_search(page)
+                if resume_state is not None and resume_state.keyword_index == kw_idx:
+                    restore_results_page(page, keyword, resume_state.page_num)
+                    page_num = resume_state.page_num
+                else:
+                    if kw_idx > 0:
+                        clear_search(page)
 
-                search_keyword(page, keyword)
+                    search_keyword(page, keyword)
 
-                # Check if search returned any results at all (avoid false positives from body text)
-                if is_no_results_page(page):
-                    print("    No results for this keyword")
-                    continue
+                    # Check if search returned any results at all (avoid false positives from body text)
+                    if is_no_results_page(page):
+                        print("    No results for this keyword")
+                        log_results_debug_snapshot(page, keyword, "no-results")
+                        kw_idx += 1
+                        resume_state = None
+                        continue
 
                 # Process page-by-page to avoid stale DOM references
-                page_num = 1
                 while page_num <= MAX_PAGES_PER_KEYWORD:
                     print(f"    Scanning results page {page_num}...")
-                    rows = page.query_selector_all("table tbody tr")
+                    rows = get_results_rows(page)
                     eligible_indices = []
 
                     for i, row in enumerate(rows):
@@ -2984,6 +3562,7 @@ def main(profile: str = "tor") -> None:
                     # no more pages. We rely on ถัดไป being present+enabled rather than
                     # specific tag names for numeric page links.
                     dismiss_modal(page)
+                    previous_marker = get_results_page_marker(page)
                     next_btn = page.query_selector(
                         "a:has-text('ถัดไป'), button:has-text('ถัดไป')"
                     )
@@ -3027,20 +3606,26 @@ def main(profile: str = "tor") -> None:
                             break
 
                     logged_sleep(3)
-                    try:
-                        page.wait_for_selector("table tbody tr", timeout=NAV_TIMEOUT)
-                    except PlaywrightTimeout:
+                    if not wait_for_results_page_change(page, previous_marker):
                         break
                     # Check if we landed on an empty page
                     if is_no_results_page(page):
                         break
                     page_num += 1
 
+                resume_state = None
+                kw_idx += 1
+
             except Exception as e:
                 error_msg = str(e)
                 print(f"  ERROR processing keyword '{keyword}': {error_msg}")
 
                 if "has been closed" in error_msg:
+                    resume_state = KeywordResumeState(
+                        keyword_index=kw_idx,
+                        keyword=keyword,
+                        page_num=page_num,
+                    )
                     # Chrome crashed — restart browser and reconnect
                     print("  Chrome crashed. Restarting browser...")
                     try:
@@ -3076,7 +3661,10 @@ def main(profile: str = "tor") -> None:
                     )
                     logged_sleep(5)
                     wait_for_cloudflare(page)
+                    continue
                 else:
+                    resume_state = None
+                    kw_idx += 1
                     # Non-crash error — try to navigate back to search
                     try:
                         page.goto(

@@ -24,6 +24,7 @@ DOCS_TO_DOWNLOAD = [
     "ประกาศเชิญชวน",
     "ประกาศราคากลาง",
     "ร่างเอกสารประกวดราคา",
+    "เอกสารประกวดราคา",
 ]
 TOR_DOC_MATCH_TERMS = [
     "ร่างขอบเขตของงาน",
@@ -31,6 +32,12 @@ TOR_DOC_MATCH_TERMS = [
     "เอกสารประกวดราคา",
     "terms of reference",
     "tor",
+]
+DRAFT_TOR_DOC_MATCH_TERMS = [
+    "ร่างขอบเขตของงาน",
+    "ร่างเอกสารประกวดราคา",
+    "draft tor",
+    "draft terms of reference",
 ]
 ALLOWED_DOWNLOAD_HOST_SUFFIXES = ("gprocurement.go.th",)
 DOWNLOAD_TIMEOUT = 30_000
@@ -91,7 +98,8 @@ def ingest_downloaded_documents(
 def _download_one_document(page, target_doc: str) -> list[dict[str, object]]:
     dismiss_modal(page)
     _sleep(0.5)
-    is_tor_target = target_doc == "ร่างเอกสารประกวดราคา"
+    is_draft_tor_target = target_doc == "ร่างเอกสารประกวดราคา"
+    is_final_tor_target = target_doc == "เอกสารประกวดราคา"
     downloadable_rows = []
     for table in page.query_selector_all("table"):
         header_combined = " ".join(
@@ -108,7 +116,13 @@ def _download_one_document(page, target_doc: str) -> list[dict[str, object]]:
         doc_name = ""
         for cell in cells:
             text = cell.inner_text().strip()
-            if target_doc in text or (is_tor_target and is_tor_doc_label(text)):
+            if target_doc in text:
+                doc_name = text
+                break
+            if is_draft_tor_target and is_draft_tor_doc_label(text):
+                doc_name = text
+                break
+            if is_final_tor_target and is_final_tor_doc_label(text):
                 doc_name = text
                 break
         if not doc_name:
@@ -119,11 +133,31 @@ def _download_one_document(page, target_doc: str) -> list[dict[str, object]]:
             or last_cell.query_selector("a, button, [role='button']")
             or last_cell
         )
-        if "ร่างเอกสารประกวดราคา" in doc_name:
+        if is_draft_tor_doc_label(doc_name):
             dismiss_modal(page)
-            return _handle_subpage_download(page, clickable)
+            return _handle_subpage_download(
+                page, clickable, include_label=lambda label: is_tor_file(label)
+            )
         downloaded = _handle_direct_or_page_download(page, clickable, doc_name)
-        return downloaded if downloaded is not None else []
+        if downloaded is not None:
+            if is_final_tor_target:
+                return [
+                    document
+                    for document in downloaded
+                    if is_final_tor_doc_label(str(document.get("source_label") or doc_name))
+                ]
+            return downloaded
+        if target_doc == "ประกาศเชิญชวน":
+            return _download_documents_from_current_view(
+                page,
+                include_label=lambda label: "ประกาศเชิญชวน" in label
+                or is_final_tor_doc_label(label),
+            )
+        if is_final_tor_target:
+            return _download_documents_from_current_view(
+                page,
+                include_label=is_final_tor_doc_label,
+            )
     return []
 
 
@@ -276,10 +310,14 @@ def _save_from_new_tab(
         return [document] if document is not None else []
 
 
-def _handle_subpage_download(page, btn) -> list[dict[str, object]]:
+def _handle_subpage_download(page, btn, include_label) -> list[dict[str, object]]:
     clear_site_error_toast(page)
     page.evaluate("(el) => el.click()", btn)
     _sleep(1)
+    return _download_documents_from_current_view(page, include_label=include_label)
+
+
+def _download_documents_from_current_view(page, include_label) -> list[dict[str, object]]:
     modal = _find_modal_with_downloads(page)
     download_table = None
     if modal is None:
@@ -310,7 +348,7 @@ def _handle_subpage_download(page, btn) -> list[dict[str, object]]:
             continue
         cell_texts = [cell.inner_text().strip() for cell in cells]
         file_label = extract_file_label_from_cell_texts(cell_texts) or "TOR"
-        if not is_tor_file(file_label):
+        if not include_label(file_label):
             continue
         last_cell = cells[-1]
         download_button = (
@@ -604,6 +642,15 @@ def is_tor_file(filename: str) -> bool:
 def is_tor_doc_label(label: str) -> bool:
     lowered = label.strip().lower()
     return any(term in lowered for term in TOR_DOC_MATCH_TERMS)
+
+
+def is_draft_tor_doc_label(label: str) -> bool:
+    lowered = label.strip().lower()
+    return any(term in lowered for term in DRAFT_TOR_DOC_MATCH_TERMS)
+
+
+def is_final_tor_doc_label(label: str) -> bool:
+    return is_tor_doc_label(label) and not is_draft_tor_doc_label(label)
 
 
 def extract_file_label_from_cell_texts(texts: list[str]) -> str:
