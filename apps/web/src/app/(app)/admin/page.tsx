@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Building2, CreditCard, LifeBuoy, Mail, ScrollText, Search, Users, Webhook } from "lucide-react";
@@ -1165,6 +1166,14 @@ export default function AdminPage() {
       <PageHeader
         title="แอดมินองค์กร"
         subtitle="จัดการผู้ใช้ การแจ้งเตือน สิทธิ์ใช้งาน การตั้งค่าองค์กร และ support context"
+        actions={
+          <Link
+            href="/admin/storage"
+            className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)]"
+          >
+            ตั้งค่าที่เก็บเอกสาร
+          </Link>
+        }
       />
 
       {submitError ? (

@@ -11,7 +11,7 @@ from egp_api.auth import require_admin_role, require_support_role, resolve_reque
 from egp_api.services.admin_service import AdminService, AdminSnapshot, AdminUserView
 from egp_api.services.audit_service import AuditService
 from egp_api.services.support_service import SupportService
-from egp_db.repositories.admin_repo import TenantSettingsRecord
+from egp_db.repositories.admin_repo import TenantSettingsRecord, TenantStorageSettingsRecord
 from egp_shared_types.enums import UserRole
 
 
@@ -36,6 +36,19 @@ class AdminTenantSettingsResponse(BaseModel):
     daily_digest_enabled: bool
     weekly_digest_enabled: bool
     crawl_interval_hours: int | None
+    created_at: str | None
+    updated_at: str | None
+
+
+class AdminTenantStorageSettingsResponse(BaseModel):
+    provider: str
+    connection_status: str
+    account_email: str | None
+    folder_label: str | None
+    folder_path_hint: str | None
+    managed_fallback_enabled: bool
+    last_validated_at: str | None
+    last_validation_error: str | None
     created_at: str | None
     updated_at: str | None
 
@@ -241,6 +254,24 @@ class UpdateTenantSettingsRequest(BaseModel):
     crawl_interval_hours: int | None = Field(default=None, ge=1, le=168)
 
 
+class UpdateTenantStorageSettingsRequest(BaseModel):
+    tenant_id: str | None = None
+    provider: str | None = Field(
+        default=None,
+        pattern="^(managed|google_drive|onedrive|local_agent)$",
+    )
+    connection_status: str | None = Field(
+        default=None,
+        pattern="^(managed|pending_setup|connected|error|disconnected)$",
+    )
+    account_email: str | None = None
+    folder_label: str | None = None
+    folder_path_hint: str | None = None
+    managed_fallback_enabled: bool | None = None
+    last_validated_at: str | None = None
+    last_validation_error: str | None = None
+
+
 class AdminInviteUserRequest(BaseModel):
     tenant_id: str | None = None
 
@@ -279,6 +310,12 @@ def _serialize_user(user: AdminUserView) -> AdminUserResponse:
 
 def _serialize_settings(settings: TenantSettingsRecord) -> AdminTenantSettingsResponse:
     return AdminTenantSettingsResponse(**asdict(settings))
+
+
+def _serialize_storage_settings(
+    settings: TenantStorageSettingsRecord,
+) -> AdminTenantStorageSettingsResponse:
+    return AdminTenantStorageSettingsResponse(**asdict(settings))
 
 
 def _serialize_snapshot(snapshot: AdminSnapshot) -> AdminSnapshotResponse:
@@ -612,3 +649,54 @@ def update_tenant_settings(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
     return _serialize_settings(settings)
+
+
+@router.get("/storage", response_model=AdminTenantStorageSettingsResponse)
+def get_tenant_storage_settings(
+    request: Request,
+    tenant_id: str | None = None,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.get_storage_settings(tenant_id=resolved_tenant_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.patch("/storage", response_model=AdminTenantStorageSettingsResponse)
+def update_tenant_storage_settings(
+    payload: UpdateTenantStorageSettingsRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.update_storage_settings(
+            tenant_id=resolved_tenant_id,
+            provider=payload.provider,
+            connection_status=payload.connection_status,
+            account_email=payload.account_email,
+            folder_label=payload.folder_label,
+            folder_path_hint=payload.folder_path_hint,
+            managed_fallback_enabled=payload.managed_fallback_enabled,
+            last_validated_at=payload.last_validated_at,
+            last_validation_error=payload.last_validation_error,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)

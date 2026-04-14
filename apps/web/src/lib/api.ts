@@ -479,6 +479,19 @@ export type AdminTenantSettings = {
   updated_at: string | null;
 };
 
+export type AdminTenantStorageSettings = {
+  provider: string;
+  connection_status: string;
+  account_email: string | null;
+  folder_label: string | null;
+  folder_path_hint: string | null;
+  managed_fallback_enabled: boolean;
+  last_validated_at: string | null;
+  last_validation_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
 export type AdminUser = {
   id: string;
   email: string;
@@ -1204,6 +1217,22 @@ export type UpdateTenantSettingsInput = {
   crawl_interval_hours?: number | null;
 };
 
+export type FetchTenantStorageSettingsParams = {
+  tenant_id?: string;
+};
+
+export type UpdateTenantStorageSettingsInput = {
+  tenant_id?: string;
+  provider?: string;
+  connection_status?: string;
+  account_email?: string;
+  folder_label?: string;
+  folder_path_hint?: string;
+  managed_fallback_enabled?: boolean;
+  last_validated_at?: string | null;
+  last_validation_error?: string | null;
+};
+
 export type CreateRuleProfileInput = {
   tenant_id?: string;
   name: string;
@@ -1337,6 +1366,15 @@ export async function register(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function fetchTenantStorageSettings(
+  params: FetchTenantStorageSettingsParams = {},
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage", {
+    tenant_id: params.tenant_id,
+  });
+  return apiJsonRequest<AdminTenantStorageSettings>(url, { method: "GET" });
 }
 
 export async function login(
@@ -1590,6 +1628,26 @@ export async function updateTenantSettings(
     body: JSON.stringify({
       tenant_id: payload.tenant_id,
       ...payload,
+    }),
+  });
+}
+
+export async function updateTenantStorageSettings(
+  payload: UpdateTenantStorageSettingsInput,
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "PATCH",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      provider: payload.provider,
+      connection_status: payload.connection_status,
+      account_email: payload.account_email,
+      folder_label: payload.folder_label,
+      folder_path_hint: payload.folder_path_hint,
+      managed_fallback_enabled: payload.managed_fallback_enabled,
+      last_validated_at: payload.last_validated_at,
+      last_validation_error: payload.last_validation_error,
     }),
   });
 }

@@ -746,6 +746,142 @@ def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
     assert snapshot.json()["users"][0]["notification_preferences"]["run_failed"] is True
 
 
+def test_storage_settings_default_to_managed_storage(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+
+    response = client.get("/v1/admin/storage", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "managed"
+    assert body["connection_status"] == "managed"
+    assert body["account_email"] is None
+    assert body["folder_label"] is None
+    assert body["folder_path_hint"] is None
+    assert body["managed_fallback_enabled"] is False
+    assert body["last_validated_at"] is None
+    assert body["last_validation_error"] is None
+
+
+def test_storage_settings_can_be_updated_and_written_to_audit_log(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    updated = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+            "managed_fallback_enabled": True,
+            "last_validation_error": "OAuth connection required",
+        },
+    )
+
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["provider"] == "google_drive"
+    assert body["connection_status"] == "pending_setup"
+    assert body["account_email"] == "ops@example.com"
+    assert body["folder_label"] == "Acme Procurement TOR"
+    assert body["folder_path_hint"] == "Google Drive/Acme Procurement TOR"
+    assert body["managed_fallback_enabled"] is True
+    assert body["last_validation_error"] == "OAuth connection required"
+
+    fetched = client.get(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID},
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["provider"] == "google_drive"
+
+    audit = client.get(
+        "/v1/admin/audit-log",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID, "source": "admin"},
+    )
+    assert audit.status_code == 200
+    assert any(
+        item["event_type"] == "tenant.storage_settings_updated"
+        for item in audit.json()["items"]
+    )
+
+
+def test_storage_settings_switching_back_to_managed_clears_provider_metadata(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    first_update = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+            "managed_fallback_enabled": True,
+            "last_validation_error": "OAuth connection required",
+        },
+    )
+    assert first_update.status_code == 200
+
+    managed_update = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "managed",
+            "connection_status": "managed",
+            "account_email": "stale@example.com",
+            "folder_label": "Should be cleared",
+            "folder_path_hint": "Should be cleared",
+            "managed_fallback_enabled": True,
+            "last_validation_error": "Should be cleared",
+        },
+    )
+
+    assert managed_update.status_code == 200
+    body = managed_update.json()
+    assert body["provider"] == "managed"
+    assert body["connection_status"] == "managed"
+    assert body["account_email"] is None
+    assert body["folder_label"] is None
+    assert body["folder_path_hint"] is None
+    assert body["managed_fallback_enabled"] is False
+    assert body["last_validated_at"] is None
+    assert body["last_validation_error"] is None
+
+
+def test_storage_settings_reject_connected_status_before_real_validation_exists(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    response = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "connected",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "reserved" in response.json()["detail"]
+
+
 def test_create_user_with_password_can_subsequently_login(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client)

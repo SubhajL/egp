@@ -60,6 +60,32 @@ TENANT_SETTINGS_TABLE = Table(
     UniqueConstraint("tenant_id", name="tenant_settings_tenant_uq"),
 )
 
+TENANT_STORAGE_SETTINGS_TABLE = Table(
+    "tenant_storage_settings",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column("provider", String, nullable=False, default="managed"),
+    Column("connection_status", String, nullable=False, default="managed"),
+    Column("account_email", String, nullable=True),
+    Column("folder_label", String, nullable=True),
+    Column("folder_path_hint", String, nullable=True),
+    Column("managed_fallback_enabled", Boolean, nullable=False, default=False),
+    Column("last_validated_at", DateTime(timezone=True), nullable=True),
+    Column("last_validation_error", String, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "provider IN ('managed', 'google_drive', 'onedrive', 'local_agent')",
+        name="tenant_storage_settings_provider_check",
+    ),
+    CheckConstraint(
+        "connection_status IN ('managed', 'pending_setup', 'connected', 'error', 'disconnected')",
+        name="tenant_storage_settings_connection_status_check",
+    ),
+    UniqueConstraint("tenant_id", name="tenant_storage_settings_tenant_uq"),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TenantRecord:
@@ -81,6 +107,20 @@ class TenantSettingsRecord:
     daily_digest_enabled: bool
     weekly_digest_enabled: bool
     crawl_interval_hours: int | None
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TenantStorageSettingsRecord:
+    provider: str
+    connection_status: str
+    account_email: str | None
+    folder_label: str | None
+    folder_path_hint: str | None
+    managed_fallback_enabled: bool
+    last_validated_at: str | None
+    last_validation_error: str | None
     created_at: str | None
     updated_at: str | None
 
@@ -129,6 +169,40 @@ def _settings_from_mapping(row) -> TenantSettingsRecord:
         created_at=_to_iso(row["created_at"]),
         updated_at=_to_iso(row["updated_at"]),
     )
+
+
+def _storage_settings_from_mapping(row) -> TenantStorageSettingsRecord:
+    return TenantStorageSettingsRecord(
+        provider=str(row["provider"]),
+        connection_status=str(row["connection_status"]),
+        account_email=str(row["account_email"])
+        if row["account_email"] is not None
+        else None,
+        folder_label=str(row["folder_label"])
+        if row["folder_label"] is not None
+        else None,
+        folder_path_hint=(
+            str(row["folder_path_hint"])
+            if row["folder_path_hint"] is not None
+            else None
+        ),
+        managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        last_validated_at=_to_iso(row["last_validated_at"]),
+        last_validation_error=(
+            str(row["last_validation_error"])
+            if row["last_validation_error"] is not None
+            else None
+        ),
+        created_at=_to_iso(row["created_at"]),
+        updated_at=_to_iso(row["updated_at"]),
+    )
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
 
 
 class SqlAdminRepository:
@@ -330,6 +404,138 @@ class SqlAdminRepository:
                     )
                 )
         return self.get_tenant_settings(tenant_id=normalized_tenant_id)
+
+    def get_tenant_storage_settings(
+        self, *, tenant_id: str
+    ) -> TenantStorageSettingsRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(TENANT_STORAGE_SETTINGS_TABLE).where(
+                        TENANT_STORAGE_SETTINGS_TABLE.c.tenant_id
+                        == normalized_tenant_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return TenantStorageSettingsRecord(
+                provider="managed",
+                connection_status="managed",
+                account_email=None,
+                folder_label=None,
+                folder_path_hint=None,
+                managed_fallback_enabled=False,
+                last_validated_at=None,
+                last_validation_error=None,
+                created_at=None,
+                updated_at=None,
+            )
+        return _storage_settings_from_mapping(row)
+
+    def update_tenant_storage_settings(
+        self,
+        *,
+        tenant_id: str,
+        provider: str | None = None,
+        connection_status: str | None = None,
+        account_email: str | None = None,
+        folder_label: str | None = None,
+        folder_path_hint: str | None = None,
+        managed_fallback_enabled: bool | None = None,
+        last_validated_at: str | None = None,
+        last_validation_error: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        now = _now()
+        normalized_account_email = _normalize_optional_text(account_email)
+        normalized_folder_label = _normalize_optional_text(folder_label)
+        normalized_folder_path_hint = _normalize_optional_text(folder_path_hint)
+        normalized_last_validation_error = _normalize_optional_text(
+            last_validation_error
+        )
+        resolved_last_validated_at = (
+            datetime.fromisoformat(last_validated_at) if last_validated_at else None
+        )
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(TENANT_STORAGE_SETTINGS_TABLE).where(
+                        TENANT_STORAGE_SETTINGS_TABLE.c.tenant_id
+                        == normalized_tenant_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                connection.execute(
+                    insert(TENANT_STORAGE_SETTINGS_TABLE).values(
+                        id=str(uuid4()),
+                        tenant_id=normalized_tenant_id,
+                        provider=provider or "managed",
+                        connection_status=connection_status or "managed",
+                        account_email=normalized_account_email,
+                        folder_label=normalized_folder_label,
+                        folder_path_hint=normalized_folder_path_hint,
+                        managed_fallback_enabled=(
+                            False
+                            if managed_fallback_enabled is None
+                            else bool(managed_fallback_enabled)
+                        ),
+                        last_validated_at=resolved_last_validated_at,
+                        last_validation_error=normalized_last_validation_error,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                connection.execute(
+                    update(TENANT_STORAGE_SETTINGS_TABLE)
+                    .where(TENANT_STORAGE_SETTINGS_TABLE.c.id == existing["id"])
+                    .values(
+                        provider=existing["provider"] if provider is None else provider,
+                        connection_status=(
+                            existing["connection_status"]
+                            if connection_status is None
+                            else connection_status
+                        ),
+                        account_email=(
+                            existing["account_email"]
+                            if account_email is None
+                            else normalized_account_email
+                        ),
+                        folder_label=(
+                            existing["folder_label"]
+                            if folder_label is None
+                            else normalized_folder_label
+                        ),
+                        folder_path_hint=(
+                            existing["folder_path_hint"]
+                            if folder_path_hint is None
+                            else normalized_folder_path_hint
+                        ),
+                        managed_fallback_enabled=(
+                            existing["managed_fallback_enabled"]
+                            if managed_fallback_enabled is None
+                            else bool(managed_fallback_enabled)
+                        ),
+                        last_validated_at=(
+                            existing["last_validated_at"]
+                            if last_validated_at is None
+                            else resolved_last_validated_at
+                        ),
+                        last_validation_error=(
+                            existing["last_validation_error"]
+                            if last_validation_error is None
+                            else normalized_last_validation_error
+                        ),
+                        updated_at=now,
+                    )
+                )
+        return self.get_tenant_storage_settings(tenant_id=normalized_tenant_id)
 
 
 def create_admin_repository(
