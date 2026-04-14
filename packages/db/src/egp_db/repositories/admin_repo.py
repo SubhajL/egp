@@ -86,6 +86,51 @@ TENANT_STORAGE_SETTINGS_TABLE = Table(
     UniqueConstraint("tenant_id", name="tenant_storage_settings_tenant_uq"),
 )
 
+TENANT_STORAGE_CONFIGS_TABLE = Table(
+    "tenant_storage_configs",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column("provider", String, nullable=False, default="managed"),
+    Column("connection_status", String, nullable=False, default="managed"),
+    Column("account_email", String, nullable=True),
+    Column("folder_label", String, nullable=True),
+    Column("folder_path_hint", String, nullable=True),
+    Column("managed_fallback_enabled", Boolean, nullable=False, default=False),
+    Column("last_validated_at", DateTime(timezone=True), nullable=True),
+    Column("last_validation_error", String, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "provider IN ('managed', 'google_drive', 'onedrive', 'local_agent')",
+        name="tenant_storage_configs_provider_check",
+    ),
+    CheckConstraint(
+        "connection_status IN ('managed', 'pending_setup', 'connected', 'error', 'disconnected')",
+        name="tenant_storage_configs_connection_status_check",
+    ),
+    UniqueConstraint("tenant_id", name="tenant_storage_configs_tenant_uq"),
+)
+
+TENANT_STORAGE_CREDENTIALS_TABLE = Table(
+    "tenant_storage_credentials",
+    METADATA,
+    Column("id", UUID_SQL_TYPE, primary_key=True),
+    Column("tenant_id", UUID_SQL_TYPE, nullable=False),
+    Column("provider", String, nullable=False),
+    Column("credential_type", String, nullable=False, default="oauth_tokens"),
+    Column("encrypted_payload", String, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "provider IN ('google_drive', 'onedrive', 'local_agent')",
+        name="tenant_storage_credentials_provider_check",
+    ),
+    UniqueConstraint(
+        "tenant_id", "provider", name="tenant_storage_credentials_tenant_provider_uq"
+    ),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TenantRecord:
@@ -121,8 +166,34 @@ class TenantStorageSettingsRecord:
     managed_fallback_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
+    has_credentials: bool
+    credential_type: str | None
+    credential_updated_at: str | None
     created_at: str | None
     updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TenantStorageConfigRecord:
+    provider: str
+    connection_status: str
+    account_email: str | None
+    folder_label: str | None
+    folder_path_hint: str | None
+    managed_fallback_enabled: bool
+    last_validated_at: str | None
+    last_validation_error: str | None
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TenantStorageCredentialRecord:
+    provider: str
+    credential_type: str
+    encrypted_payload: str
+    created_at: str
+    updated_at: str
 
 
 def _now() -> datetime:
@@ -193,6 +264,9 @@ def _storage_settings_from_mapping(row) -> TenantStorageSettingsRecord:
             if row["last_validation_error"] is not None
             else None
         ),
+        has_credentials=False,
+        credential_type=None,
+        credential_updated_at=None,
         created_at=_to_iso(row["created_at"]),
         updated_at=_to_iso(row["updated_at"]),
     )
@@ -203,6 +277,65 @@ def _normalize_optional_text(value: str | None) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _storage_config_from_mapping(row) -> TenantStorageConfigRecord:
+    return TenantStorageConfigRecord(
+        provider=str(row["provider"]),
+        connection_status=str(row["connection_status"]),
+        account_email=str(row["account_email"])
+        if row["account_email"] is not None
+        else None,
+        folder_label=str(row["folder_label"])
+        if row["folder_label"] is not None
+        else None,
+        folder_path_hint=(
+            str(row["folder_path_hint"])
+            if row["folder_path_hint"] is not None
+            else None
+        ),
+        managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        last_validated_at=_to_iso(row["last_validated_at"]),
+        last_validation_error=(
+            str(row["last_validation_error"])
+            if row["last_validation_error"] is not None
+            else None
+        ),
+        created_at=_to_iso(row["created_at"]),
+        updated_at=_to_iso(row["updated_at"]),
+    )
+
+
+def _storage_credential_from_mapping(row) -> TenantStorageCredentialRecord:
+    return TenantStorageCredentialRecord(
+        provider=str(row["provider"]),
+        credential_type=str(row["credential_type"]),
+        encrypted_payload=str(row["encrypted_payload"]),
+        created_at=_to_iso(row["created_at"]) or "",
+        updated_at=_to_iso(row["updated_at"]) or "",
+    )
+
+
+def _compose_storage_settings(
+    *,
+    config: TenantStorageConfigRecord,
+    credential: TenantStorageCredentialRecord | None,
+) -> TenantStorageSettingsRecord:
+    return TenantStorageSettingsRecord(
+        provider=config.provider,
+        connection_status=config.connection_status,
+        account_email=config.account_email,
+        folder_label=config.folder_label,
+        folder_path_hint=config.folder_path_hint,
+        managed_fallback_enabled=config.managed_fallback_enabled,
+        last_validated_at=config.last_validated_at,
+        last_validation_error=config.last_validation_error,
+        has_credentials=credential is not None,
+        credential_type=credential.credential_type if credential is not None else None,
+        credential_updated_at=credential.updated_at if credential is not None else None,
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
 
 
 class SqlAdminRepository:
@@ -408,20 +541,30 @@ class SqlAdminRepository:
     def get_tenant_storage_settings(
         self, *, tenant_id: str
     ) -> TenantStorageSettingsRecord:
+        config = self.get_tenant_storage_config(tenant_id=tenant_id)
+        credential = (
+            self.get_tenant_storage_credentials(
+                tenant_id=tenant_id, provider=config.provider
+            )
+            if config.provider != "managed"
+            else None
+        )
+        return _compose_storage_settings(config=config, credential=credential)
+
+    def get_tenant_storage_config(self, *, tenant_id: str) -> TenantStorageConfigRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
-                    select(TENANT_STORAGE_SETTINGS_TABLE).where(
-                        TENANT_STORAGE_SETTINGS_TABLE.c.tenant_id
-                        == normalized_tenant_id
+                    select(TENANT_STORAGE_CONFIGS_TABLE).where(
+                        TENANT_STORAGE_CONFIGS_TABLE.c.tenant_id == normalized_tenant_id
                     )
                 )
                 .mappings()
                 .first()
             )
         if row is None:
-            return TenantStorageSettingsRecord(
+            return TenantStorageConfigRecord(
                 provider="managed",
                 connection_status="managed",
                 account_email=None,
@@ -433,7 +576,7 @@ class SqlAdminRepository:
                 created_at=None,
                 updated_at=None,
             )
-        return _storage_settings_from_mapping(row)
+        return _storage_config_from_mapping(row)
 
     def update_tenant_storage_settings(
         self,
@@ -448,6 +591,32 @@ class SqlAdminRepository:
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
     ) -> TenantStorageSettingsRecord:
+        self.update_tenant_storage_config(
+            tenant_id=tenant_id,
+            provider=provider,
+            connection_status=connection_status,
+            account_email=account_email,
+            folder_label=folder_label,
+            folder_path_hint=folder_path_hint,
+            managed_fallback_enabled=managed_fallback_enabled,
+            last_validated_at=last_validated_at,
+            last_validation_error=last_validation_error,
+        )
+        return self.get_tenant_storage_settings(tenant_id=tenant_id)
+
+    def update_tenant_storage_config(
+        self,
+        *,
+        tenant_id: str,
+        provider: str | None = None,
+        connection_status: str | None = None,
+        account_email: str | None = None,
+        folder_label: str | None = None,
+        folder_path_hint: str | None = None,
+        managed_fallback_enabled: bool | None = None,
+        last_validated_at: str | None = None,
+        last_validation_error: str | None = None,
+    ) -> TenantStorageConfigRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         now = _now()
         normalized_account_email = _normalize_optional_text(account_email)
@@ -462,9 +631,8 @@ class SqlAdminRepository:
         with self._engine.begin() as connection:
             existing = (
                 connection.execute(
-                    select(TENANT_STORAGE_SETTINGS_TABLE).where(
-                        TENANT_STORAGE_SETTINGS_TABLE.c.tenant_id
-                        == normalized_tenant_id
+                    select(TENANT_STORAGE_CONFIGS_TABLE).where(
+                        TENANT_STORAGE_CONFIGS_TABLE.c.tenant_id == normalized_tenant_id
                     )
                 )
                 .mappings()
@@ -472,7 +640,7 @@ class SqlAdminRepository:
             )
             if existing is None:
                 connection.execute(
-                    insert(TENANT_STORAGE_SETTINGS_TABLE).values(
+                    insert(TENANT_STORAGE_CONFIGS_TABLE).values(
                         id=str(uuid4()),
                         tenant_id=normalized_tenant_id,
                         provider=provider or "managed",
@@ -493,8 +661,8 @@ class SqlAdminRepository:
                 )
             else:
                 connection.execute(
-                    update(TENANT_STORAGE_SETTINGS_TABLE)
-                    .where(TENANT_STORAGE_SETTINGS_TABLE.c.id == existing["id"])
+                    update(TENANT_STORAGE_CONFIGS_TABLE)
+                    .where(TENANT_STORAGE_CONFIGS_TABLE.c.id == existing["id"])
                     .values(
                         provider=existing["provider"] if provider is None else provider,
                         connection_status=(
@@ -535,7 +703,111 @@ class SqlAdminRepository:
                         updated_at=now,
                     )
                 )
-        return self.get_tenant_storage_settings(tenant_id=normalized_tenant_id)
+        return self.get_tenant_storage_config(tenant_id=normalized_tenant_id)
+
+    def get_tenant_storage_credentials(
+        self,
+        *,
+        tenant_id: str,
+        provider: str,
+    ) -> TenantStorageCredentialRecord | None:
+        if provider == "managed":
+            return None
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(TENANT_STORAGE_CREDENTIALS_TABLE).where(
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.tenant_id
+                        == normalized_tenant_id,
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.provider == provider,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if row is None:
+            return None
+        return _storage_credential_from_mapping(row)
+
+    def upsert_tenant_storage_credentials(
+        self,
+        *,
+        tenant_id: str,
+        provider: str,
+        credential_type: str,
+        encrypted_payload: str,
+    ) -> TenantStorageCredentialRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(TENANT_STORAGE_CREDENTIALS_TABLE).where(
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.tenant_id
+                        == normalized_tenant_id,
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.provider == provider,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                connection.execute(
+                    insert(TENANT_STORAGE_CREDENTIALS_TABLE).values(
+                        id=str(uuid4()),
+                        tenant_id=normalized_tenant_id,
+                        provider=provider,
+                        credential_type=credential_type,
+                        encrypted_payload=encrypted_payload,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                connection.execute(
+                    update(TENANT_STORAGE_CREDENTIALS_TABLE)
+                    .where(TENANT_STORAGE_CREDENTIALS_TABLE.c.id == existing["id"])
+                    .values(
+                        credential_type=credential_type,
+                        encrypted_payload=encrypted_payload,
+                        updated_at=now,
+                    )
+                )
+        result = self.get_tenant_storage_credentials(
+            tenant_id=normalized_tenant_id,
+            provider=provider,
+        )
+        if result is None:
+            raise RuntimeError("tenant storage credentials missing after upsert")
+        return result
+
+    def delete_tenant_storage_credentials(
+        self,
+        *,
+        tenant_id: str,
+        provider: str,
+    ) -> None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(TENANT_STORAGE_CREDENTIALS_TABLE).where(
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.tenant_id
+                        == normalized_tenant_id,
+                        TENANT_STORAGE_CREDENTIALS_TABLE.c.provider == provider,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is None:
+                return
+            connection.execute(
+                TENANT_STORAGE_CREDENTIALS_TABLE.delete().where(
+                    TENANT_STORAGE_CREDENTIALS_TABLE.c.id == existing["id"]
+                )
+            )
 
 
 def create_admin_repository(

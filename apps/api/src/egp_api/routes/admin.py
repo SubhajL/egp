@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from egp_api.auth import require_admin_role, require_support_role, resolve_request_tenant_id
 from egp_api.services.admin_service import AdminService, AdminSnapshot, AdminUserView
 from egp_api.services.audit_service import AuditService
+from egp_api.services.storage_settings_service import StorageSettingsService
 from egp_api.services.support_service import SupportService
 from egp_db.repositories.admin_repo import TenantSettingsRecord, TenantStorageSettingsRecord
 from egp_shared_types.enums import UserRole
@@ -49,6 +50,9 @@ class AdminTenantStorageSettingsResponse(BaseModel):
     managed_fallback_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
+    has_credentials: bool
+    credential_type: str | None
+    credential_updated_at: str | None
     created_at: str | None
     updated_at: str | None
 
@@ -272,6 +276,22 @@ class UpdateTenantStorageSettingsRequest(BaseModel):
     last_validation_error: str | None = None
 
 
+class ConnectTenantStorageRequest(BaseModel):
+    tenant_id: str | None = None
+    provider: str = Field(pattern="^(google_drive|onedrive|local_agent)$")
+    credential_type: str = Field(min_length=1)
+    credentials: dict[str, object] = Field(default_factory=dict)
+
+
+class DisconnectTenantStorageRequest(BaseModel):
+    tenant_id: str | None = None
+    provider: str = Field(pattern="^(google_drive|onedrive|local_agent)$")
+
+
+class TestTenantStorageRequest(BaseModel):
+    tenant_id: str | None = None
+
+
 class AdminInviteUserRequest(BaseModel):
     tenant_id: str | None = None
 
@@ -283,6 +303,10 @@ class AdminInviteUserResponse(BaseModel):
 
 def _service_from_request(request: Request) -> AdminService:
     return request.app.state.admin_service
+
+
+def _storage_service_from_request(request: Request) -> StorageSettingsService:
+    return request.app.state.storage_settings_service
 
 
 def _audit_service_from_request(request: Request) -> AuditService:
@@ -657,7 +681,7 @@ def get_tenant_storage_settings(
     tenant_id: str | None = None,
 ) -> AdminTenantStorageSettingsResponse:
     require_admin_role(request)
-    service = _service_from_request(request)
+    service = _storage_service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
         tenant_id,
@@ -676,14 +700,14 @@ def update_tenant_storage_settings(
     request: Request,
 ) -> AdminTenantStorageSettingsResponse:
     require_admin_role(request)
-    service = _service_from_request(request)
+    service = _storage_service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
         payload.tenant_id,
         allow_support_override=True,
     )
     try:
-        settings = service.update_storage_settings(
+        settings = service.update_config(
             tenant_id=resolved_tenant_id,
             provider=payload.provider,
             connection_status=payload.connection_status,
@@ -693,6 +717,82 @@ def update_tenant_storage_settings(
             managed_fallback_enabled=payload.managed_fallback_enabled,
             last_validated_at=payload.last_validated_at,
             last_validation_error=payload.last_validation_error,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/connect", response_model=AdminTenantStorageSettingsResponse)
+def connect_tenant_storage(
+    payload: ConnectTenantStorageRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.connect_provider(
+            tenant_id=resolved_tenant_id,
+            provider=payload.provider,
+            credential_type=payload.credential_type,
+            credentials=payload.credentials,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/disconnect", response_model=AdminTenantStorageSettingsResponse)
+def disconnect_tenant_storage(
+    payload: DisconnectTenantStorageRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.disconnect_provider(
+            tenant_id=resolved_tenant_id,
+            provider=payload.provider,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/test-write", response_model=AdminTenantStorageSettingsResponse)
+def test_tenant_storage_write(
+    payload: TestTenantStorageRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.test_write(
+            tenant_id=resolved_tenant_id,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:

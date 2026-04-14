@@ -25,6 +25,7 @@ def _create_client(tmp_path, *, auth_required: bool = False) -> TestClient:
             database_url=database_url,
             auth_required=auth_required,
             jwt_secret=JWT_SECRET if auth_required else None,
+            storage_credentials_secret="phase4-storage-secret",
         )
     )
 
@@ -880,6 +881,243 @@ def test_storage_settings_reject_connected_status_before_real_validation_exists(
 
     assert response.status_code == 422
     assert "reserved" in response.json()["detail"]
+
+
+def test_storage_connect_stores_encrypted_credentials_and_masks_response(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    config_response = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+        },
+    )
+    assert config_response.status_code == 200
+
+    connect_response = client.post(
+        "/v1/admin/storage/connect",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "credential_type": "oauth_tokens",
+            "credentials": {
+                "access_token": "access-token-value",
+                "refresh_token": "refresh-token-value",
+            },
+        },
+    )
+
+    assert connect_response.status_code == 200
+    body = connect_response.json()
+    assert body["provider"] == "google_drive"
+    assert body["has_credentials"] is True
+    assert body["credential_type"] == "oauth_tokens"
+    assert body["credential_updated_at"] is not None
+    assert "credentials" not in body
+
+    with client.app.state.db_engine.connect() as connection:
+        row = (
+            connection.execute(
+                text(
+                    """
+                    SELECT encrypted_payload
+                    FROM tenant_storage_credentials
+                    WHERE tenant_id = :tenant_id AND provider = 'google_drive'
+                    """
+                ),
+                {"tenant_id": TENANT_ID},
+            )
+            .mappings()
+            .one()
+        )
+    encrypted_payload = row["encrypted_payload"]
+    assert "access-token-value" not in encrypted_payload
+    assert "refresh-token-value" not in encrypted_payload
+
+
+def test_storage_disconnect_clears_credentials_and_marks_disconnected(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+        },
+    )
+    client.post(
+        "/v1/admin/storage/connect",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "credential_type": "oauth_tokens",
+            "credentials": {
+                "refresh_token": "refresh-token-value",
+            },
+        },
+    )
+
+    response = client.post(
+        "/v1/admin/storage/disconnect",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID, "provider": "google_drive"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "google_drive"
+    assert body["connection_status"] == "disconnected"
+    assert body["has_credentials"] is False
+    assert body["credential_type"] is None
+    assert body["credential_updated_at"] is None
+
+    with client.app.state.db_engine.connect() as connection:
+        count = connection.execute(
+            text(
+                """
+                SELECT COUNT(*) AS value
+                FROM tenant_storage_credentials
+                WHERE tenant_id = :tenant_id AND provider = 'google_drive'
+                """
+            ),
+            {"tenant_id": TENANT_ID},
+        ).scalar_one()
+    assert count == 0
+
+
+def test_storage_disconnect_rejects_provider_mismatch(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    configured = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+        },
+    )
+    assert configured.status_code == 200
+
+    response = client.post(
+        "/v1/admin/storage/disconnect",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID, "provider": "onedrive"},
+    )
+
+    assert response.status_code == 422
+    assert "mismatch" in response.json()["detail"]
+
+    current = client.get(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID},
+    )
+    assert current.status_code == 200
+    assert current.json()["provider"] == "google_drive"
+    assert current.json()["connection_status"] == "pending_setup"
+
+
+def test_storage_test_write_marks_pending_config_as_connected_when_inputs_complete(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+        },
+    )
+    client.post(
+        "/v1/admin/storage/connect",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "credential_type": "oauth_tokens",
+            "credentials": {
+                "refresh_token": "refresh-token-value",
+            },
+        },
+    )
+
+    response = client.post(
+        "/v1/admin/storage/test-write",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connection_status"] == "connected"
+    assert body["last_validated_at"] is not None
+    assert body["last_validation_error"] is None
+
+
+def test_storage_test_write_marks_error_when_credentials_missing(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "account_email": "ops@example.com",
+            "folder_label": "Acme Procurement TOR",
+            "folder_path_hint": "Google Drive/Acme Procurement TOR",
+        },
+    )
+
+    response = client.post(
+        "/v1/admin/storage/test-write",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 422
+    assert "credentials" in response.json()["detail"]
+
+    current = client.get(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID},
+    )
+    assert current.status_code == 200
+    assert current.json()["connection_status"] == "error"
+    assert current.json()["last_validation_error"] is not None
+    assert "credentials" in current.json()["last_validation_error"]
 
 
 def test_create_user_with_password_can_subsequently_login(tmp_path) -> None:

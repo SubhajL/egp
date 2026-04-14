@@ -38,6 +38,7 @@ from egp_api.config import (
     get_session_cookie_samesite,
     get_session_cookie_secure,
     get_smtp_config,
+    get_storage_credentials_secret,
     get_supabase_service_role_key,
     get_supabase_url,
     get_web_allow_origin_regex,
@@ -73,6 +74,8 @@ from egp_api.services.project_ingest_service import ProjectIngestService
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
+from egp_api.services.storage_credentials import StorageCredentialCipher
+from egp_api.services.storage_settings_service import StorageSettingsService
 from egp_api.services.support_service import SupportService
 from egp_api.services.webhook_service import WebhookService
 from egp_db.connection import create_shared_engine
@@ -304,6 +307,7 @@ def create_app(
     supabase_client=None,
     auth_required: bool | None = None,
     jwt_secret: str | None = None,
+    storage_credentials_secret: str | None = None,
     smtp_config: SmtpConfig | None = None,
     notification_email_sender: EmailSender | None = None,
     payment_provider: PaymentProvider | None = None,
@@ -408,6 +412,9 @@ def create_app(
     resolved_auth_required = get_auth_required(auth_required)
     resolved_internal_worker_token = get_internal_worker_token(internal_worker_token)
     resolved_jwt_secret = get_jwt_secret(jwt_secret)
+    resolved_storage_credentials_secret = (
+        get_storage_credentials_secret(storage_credentials_secret) or resolved_jwt_secret
+    )
     session_cookie_name = get_session_cookie_name(None)
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
     session_cookie_secure = get_session_cookie_secure(None)
@@ -507,6 +514,15 @@ def create_app(
         ),
         web_base_url=get_web_base_url(None, allowed_origins=resolved_web_allowed_origins),
     )
+    storage_settings_service = StorageSettingsService(
+        admin_repository,
+        credential_cipher=(
+            StorageCredentialCipher(resolved_storage_credentials_secret)
+            if resolved_storage_credentials_secret is not None
+            else None
+        ),
+        audit_repository=audit_repository,
+    )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository
     app.state.auth_repository = auth_repository
@@ -520,6 +536,7 @@ def create_app(
         billing_repository,
         audit_repository,
     )
+    app.state.storage_settings_service = storage_settings_service
     app.state.billing_service = BillingService(
         billing_repository,
         payment_provider=resolved_payment_provider,

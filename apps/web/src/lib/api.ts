@@ -488,6 +488,9 @@ export type AdminTenantStorageSettings = {
   managed_fallback_enabled: boolean;
   last_validated_at: string | null;
   last_validation_error: string | null;
+  has_credentials: boolean;
+  credential_type: string | null;
+  credential_updated_at: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -1233,6 +1236,22 @@ export type UpdateTenantStorageSettingsInput = {
   last_validation_error?: string | null;
 };
 
+export type ConnectTenantStorageInput = {
+  tenant_id?: string;
+  provider: string;
+  credential_type: string;
+  credentials: Record<string, string>;
+};
+
+export type DisconnectTenantStorageInput = {
+  tenant_id?: string;
+  provider: string;
+};
+
+export type TestTenantStorageWriteInput = {
+  tenant_id?: string;
+};
+
 export type CreateRuleProfileInput = {
   tenant_id?: string;
   name: string;
@@ -1648,6 +1667,46 @@ export async function updateTenantStorageSettings(
       managed_fallback_enabled: payload.managed_fallback_enabled,
       last_validated_at: payload.last_validated_at,
       last_validation_error: payload.last_validation_error,
+    }),
+  });
+}
+
+export async function connectTenantStorage(
+  payload: ConnectTenantStorageInput,
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage/connect", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      provider: payload.provider,
+      credential_type: payload.credential_type,
+      credentials: payload.credentials,
+    }),
+  });
+}
+
+export async function disconnectTenantStorage(
+  payload: DisconnectTenantStorageInput,
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage/disconnect", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      provider: payload.provider,
+    }),
+  });
+}
+
+export async function testTenantStorageWrite(
+  payload: TestTenantStorageWriteInput = {},
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage/test-write", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
     }),
   });
 }
