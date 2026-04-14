@@ -14,6 +14,7 @@ import {
   fetchMe,
   fetchRules,
   fetchRuns,
+  fetchTenantStorageSettings,
   fetchSupportSummary,
   fetchSupportTenants,
   fetchWebhooks,
@@ -23,6 +24,7 @@ import {
   type FetchDashboardSummaryParams,
   type FetchProjectsParams,
   type FetchRunsParams,
+  type FetchTenantStorageSettingsParams,
   type FetchSupportSummaryParams,
   type FetchSupportTenantsParams,
   type FetchWebhooksParams,
@@ -106,6 +108,15 @@ export function useAdminSnapshot(params: FetchAdminSnapshotParams = {}) {
   return useQuery({
     queryKey: ["admin-snapshot", params],
     queryFn: () => fetchAdminSnapshot(params),
+  });
+}
+
+export function useTenantStorageSettings(
+  params: FetchTenantStorageSettingsParams = {},
+) {
+  return useQuery({
+    queryKey: ["tenant-storage-settings", params],
+    queryFn: () => fetchTenantStorageSettings(params),
   });
 }
 

@@ -13,6 +13,7 @@ VALID_AUDIT_ENTITY_TYPES = {
     "document",
     "user",
     "tenant_settings",
+    "tenant_storage_settings",
     "webhook",
 }
 

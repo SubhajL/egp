@@ -11,6 +11,7 @@ from egp_db.repositories.admin_repo import (
     SqlAdminRepository,
     TenantRecord,
     TenantSettingsRecord,
+    TenantStorageSettingsRecord,
 )
 from egp_db.repositories.billing_repo import (
     BillingRecordRecord,
@@ -306,6 +307,95 @@ class AdminService:
                         "daily_digest_enabled": updated.daily_digest_enabled,
                         "weekly_digest_enabled": updated.weekly_digest_enabled,
                         "crawl_interval_hours": updated.crawl_interval_hours,
+                    },
+                },
+            )
+        return updated
+
+    def get_storage_settings(self, *, tenant_id: str) -> TenantStorageSettingsRecord:
+        if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
+            raise KeyError(tenant_id)
+        return self._admin_repository.get_tenant_storage_settings(tenant_id=tenant_id)
+
+    def update_storage_settings(
+        self,
+        *,
+        tenant_id: str,
+        provider: str | None = None,
+        connection_status: str | None = None,
+        account_email: str | None = None,
+        folder_label: str | None = None,
+        folder_path_hint: str | None = None,
+        managed_fallback_enabled: bool | None = None,
+        last_validated_at: str | None = None,
+        last_validation_error: str | None = None,
+        actor_subject: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
+            raise KeyError(tenant_id)
+        resolved_provider = provider
+        resolved_connection_status = connection_status
+        resolved_account_email = account_email
+        resolved_folder_label = folder_label
+        resolved_folder_path_hint = folder_path_hint
+        resolved_managed_fallback_enabled = managed_fallback_enabled
+        resolved_last_validated_at = last_validated_at
+        resolved_last_validation_error = last_validation_error
+
+        if resolved_provider == "managed":
+            resolved_connection_status = "managed"
+            resolved_account_email = ""
+            resolved_folder_label = ""
+            resolved_folder_path_hint = ""
+            resolved_managed_fallback_enabled = False
+            resolved_last_validated_at = ""
+            resolved_last_validation_error = ""
+        elif resolved_connection_status in {"connected", "error"}:
+            raise ValueError(
+                "connection_status values 'connected' and 'error' are reserved for validated integrations"
+            )
+
+        previous = self._admin_repository.get_tenant_storage_settings(tenant_id=tenant_id)
+        updated = self._admin_repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            provider=resolved_provider,
+            connection_status=resolved_connection_status,
+            account_email=resolved_account_email,
+            folder_label=resolved_folder_label,
+            folder_path_hint=resolved_folder_path_hint,
+            managed_fallback_enabled=resolved_managed_fallback_enabled,
+            last_validated_at=resolved_last_validated_at,
+            last_validation_error=resolved_last_validation_error,
+        )
+        if self._audit_repository is not None:
+            self._audit_repository.record_event(
+                tenant_id=tenant_id,
+                source="admin",
+                entity_type="tenant_storage_settings",
+                entity_id=tenant_id,
+                actor_subject=actor_subject or "manual-operator",
+                event_type="tenant.storage_settings_updated",
+                summary="Updated tenant storage settings",
+                metadata_json={
+                    "before": {
+                        "provider": previous.provider,
+                        "connection_status": previous.connection_status,
+                        "account_email": previous.account_email,
+                        "folder_label": previous.folder_label,
+                        "folder_path_hint": previous.folder_path_hint,
+                        "managed_fallback_enabled": previous.managed_fallback_enabled,
+                        "last_validated_at": previous.last_validated_at,
+                        "last_validation_error": previous.last_validation_error,
+                    },
+                    "after": {
+                        "provider": updated.provider,
+                        "connection_status": updated.connection_status,
+                        "account_email": updated.account_email,
+                        "folder_label": updated.folder_label,
+                        "folder_path_hint": updated.folder_path_hint,
+                        "managed_fallback_enabled": updated.managed_fallback_enabled,
+                        "last_validated_at": updated.last_validated_at,
+                        "last_validation_error": updated.last_validation_error,
                     },
                 },
             )
