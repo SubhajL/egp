@@ -86,6 +86,14 @@ def get_jwt_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_storage_credentials_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_STORAGE_CREDENTIALS_SECRET", "").strip()
+    return raw or None
+
+
 def get_internal_worker_token(override: str | None = None) -> str | None:
     if override is not None:
         value = override.strip()
