@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.onedrive import OneDriveOAuthConfig
 
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
@@ -76,6 +77,8 @@ def ingest_downloaded_documents(
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
     google_drive_client: object | None = None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+    onedrive_client: object | None = None,
 ) -> list:
     results = []
     for document in downloaded_documents:
@@ -86,6 +89,8 @@ def ingest_downloaded_documents(
                 storage_credentials_secret=storage_credentials_secret,
                 google_drive_oauth_config=google_drive_oauth_config,
                 google_drive_client=google_drive_client,
+                onedrive_oauth_config=onedrive_oauth_config,
+                onedrive_client=onedrive_client,
                 tenant_id=tenant_id,
                 project_id=project_id,
                 file_name=str(document["file_name"]),

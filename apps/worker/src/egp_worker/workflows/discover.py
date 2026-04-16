@@ -11,6 +11,7 @@ from egp_crawler_core.discovery_authorization import (
     require_discovery_authorization,
 )
 from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
@@ -95,6 +96,8 @@ def run_discover_workflow(
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
     google_drive_client: object | None = None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+    onedrive_client: object | None = None,
 ) -> DiscoverWorkflowResult:
     if database_url is not None:
         _authorize_discovery(database_url=database_url, tenant_id=tenant_id, keyword=keyword)
@@ -172,6 +175,8 @@ def run_discover_workflow(
                     storage_credentials_secret=storage_credentials_secret,
                     google_drive_oauth_config=google_drive_oauth_config,
                     google_drive_client=google_drive_client,
+                    onedrive_oauth_config=onedrive_oauth_config,
+                    onedrive_client=onedrive_client,
                     tenant_id=tenant_id,
                     project_id=project.id,
                     downloaded_documents=downloaded_documents,

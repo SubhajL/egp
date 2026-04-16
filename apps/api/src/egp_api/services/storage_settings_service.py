@@ -13,6 +13,11 @@ from egp_api.services.google_drive import (
     GoogleDriveOAuthConfig,
     email_from_id_token,
 )
+from egp_api.services.onedrive import (
+    OneDriveClient,
+    OneDriveOAuthConfig,
+    email_from_onedrive_id_token,
+)
 from egp_api.services.storage_credentials import StorageCredentialCipher
 from egp_db.repositories.admin_repo import (
     SqlAdminRepository,
@@ -37,12 +42,16 @@ class StorageSettingsService:
         audit_repository: SqlAuditRepository | None = None,
         google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
         google_drive_client: GoogleDriveClient | None = None,
+        onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+        onedrive_client: OneDriveClient | None = None,
     ) -> None:
         self._repository = repository
         self._credential_cipher = credential_cipher
         self._audit_repository = audit_repository
         self._google_drive_oauth_config = google_drive_oauth_config
         self._google_drive_client = google_drive_client
+        self._onedrive_oauth_config = onedrive_oauth_config
+        self._onedrive_client = onedrive_client
 
     def get_storage_settings(self, *, tenant_id: str) -> TenantStorageSettingsRecord:
         self._require_tenant(tenant_id)
@@ -277,6 +286,124 @@ class StorageSettingsService:
         )
         return updated
 
+    def start_onedrive_oauth(
+        self,
+        *,
+        tenant_id: str,
+    ) -> dict[str, str]:
+        self._require_tenant(tenant_id)
+        config = self._require_onedrive_oauth_config()
+        state = self._require_cipher().encrypt_dict(
+            {
+                "tenant_id": tenant_id,
+                "provider": "onedrive",
+                "exp": int(time.time()) + 600,
+            }
+        )
+        return {
+            "provider": "onedrive",
+            "authorization_url": self._require_onedrive_client().build_authorization_url(
+                config=config,
+                state=state,
+            ),
+            "state": state,
+        }
+
+    def handle_onedrive_oauth_callback(
+        self,
+        *,
+        code: str,
+        state: str,
+        expected_tenant_id: str | None = None,
+        actor_subject: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        config = self._require_onedrive_oauth_config()
+        state_payload = self._decode_onedrive_state(state)
+        tenant_id = str(state_payload["tenant_id"])
+        self._require_tenant(tenant_id)
+        if expected_tenant_id is not None and tenant_id != expected_tenant_id:
+            raise ValueError("OneDrive OAuth state tenant mismatch")
+
+        previous = self._repository.get_tenant_storage_settings(tenant_id=tenant_id)
+        token_payload = self._require_onedrive_client().exchange_code(
+            config=config,
+            code=code,
+        )
+        refresh_token = token_payload.get("refresh_token")
+        if not refresh_token:
+            existing = self._repository.get_tenant_storage_credentials(
+                tenant_id=tenant_id,
+                provider="onedrive",
+            )
+            if existing is None:
+                raise ValueError("OneDrive OAuth response did not include a refresh token")
+            existing_payload = self._require_cipher().decrypt_dict(existing.encrypted_payload)
+            refresh_token = existing_payload.get("refresh_token")
+            if refresh_token:
+                token_payload["refresh_token"] = refresh_token
+
+        account_email = email_from_onedrive_id_token(
+            str(token_payload.get("id_token")) if token_payload.get("id_token") else None
+        )
+        encrypted_payload = self._require_cipher().encrypt_dict(token_payload)
+        self._repository.upsert_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="onedrive",
+            credential_type="oauth_tokens",
+            encrypted_payload=encrypted_payload,
+        )
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            provider="onedrive",
+            connection_status="pending_setup",
+            account_email=account_email,
+            last_validated_at="",
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_onedrive_oauth_connected",
+            summary="Connected OneDrive OAuth credentials",
+            before=previous,
+            after=updated,
+        )
+        return updated
+
+    def select_onedrive_folder(
+        self,
+        *,
+        tenant_id: str,
+        folder_id: str,
+        folder_label: str | None = None,
+        folder_url: str | None = None,
+        actor_subject: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        self._require_tenant(tenant_id)
+        if not folder_id.strip():
+            raise ValueError("folder_id is required")
+        previous = self._repository.get_tenant_storage_settings(tenant_id=tenant_id)
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            provider="onedrive",
+            connection_status="pending_setup",
+            folder_label=folder_label,
+            folder_path_hint=folder_url,
+            provider_folder_id=folder_id,
+            provider_folder_url=folder_url,
+            last_validated_at="",
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_onedrive_folder_selected",
+            summary="Selected OneDrive folder for tenant storage",
+            before=previous,
+            after=updated,
+        )
+        return updated
+
     def disconnect_provider(
         self,
         *,
@@ -324,6 +451,16 @@ class StorageSettingsService:
             and self._google_drive_client is not None
         ):
             return self._test_google_drive_write(
+                tenant_id=tenant_id,
+                current=current,
+                actor_subject=actor_subject,
+            )
+        if (
+            current.provider == "onedrive"
+            and self._onedrive_oauth_config is not None
+            and self._onedrive_client is not None
+        ):
+            return self._test_onedrive_write(
                 tenant_id=tenant_id,
                 current=current,
                 actor_subject=actor_subject,
@@ -430,6 +567,16 @@ class StorageSettingsService:
             raise ValueError("Google Drive client is not configured")
         return self._google_drive_client
 
+    def _require_onedrive_oauth_config(self) -> OneDriveOAuthConfig:
+        if self._onedrive_oauth_config is None:
+            raise ValueError("OneDrive OAuth is not configured")
+        return self._onedrive_oauth_config
+
+    def _require_onedrive_client(self) -> OneDriveClient:
+        if self._onedrive_client is None:
+            raise ValueError("OneDrive client is not configured")
+        return self._onedrive_client
+
     def _decode_google_drive_state(self, state: str) -> dict[str, Any]:
         try:
             payload = self._require_cipher().decrypt_dict(state)
@@ -440,6 +587,18 @@ class StorageSettingsService:
         expires_at = int(payload.get("exp") or 0)
         if expires_at < int(time.time()):
             raise ValueError("expired Google Drive OAuth state")
+        return payload
+
+    def _decode_onedrive_state(self, state: str) -> dict[str, Any]:
+        try:
+            payload = self._require_cipher().decrypt_dict(state)
+        except ValueError as exc:
+            raise ValueError("invalid OneDrive OAuth state") from exc
+        if payload.get("provider") != "onedrive" or not payload.get("tenant_id"):
+            raise ValueError("invalid OneDrive OAuth state")
+        expires_at = int(payload.get("exp") or 0)
+        if expires_at < int(time.time()):
+            raise ValueError("expired OneDrive OAuth state")
         return payload
 
     def _test_google_drive_write(
@@ -513,6 +672,82 @@ class StorageSettingsService:
             actor_subject=actor_subject,
             event_type="tenant.storage_validation_succeeded",
             summary="Validated tenant storage for google_drive",
+            before=current,
+            after=updated,
+        )
+        return updated
+
+    def _test_onedrive_write(
+        self,
+        *,
+        tenant_id: str,
+        current: TenantStorageSettingsRecord,
+        actor_subject: str | None,
+    ) -> TenantStorageSettingsRecord:
+        credential = self._repository.get_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="onedrive",
+        )
+        if credential is None:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message="storage credentials missing for provider onedrive",
+                actor_subject=actor_subject,
+            )
+        if not current.provider_folder_id:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message="OneDrive folder_id is required before validation",
+                actor_subject=actor_subject,
+            )
+        try:
+            credentials = self._require_cipher().decrypt_dict(credential.encrypted_payload)
+            refresh_token = str(credentials.get("refresh_token") or "").strip()
+            if not refresh_token:
+                raise ValueError("OneDrive refresh token is missing")
+            refreshed = self._require_onedrive_client().refresh_access_token(
+                config=self._require_onedrive_oauth_config(),
+                refresh_token=refresh_token,
+            )
+            access_token = str(refreshed.get("access_token") or "").strip()
+            if not access_token:
+                raise ValueError("OneDrive refresh response did not include access_token")
+            self._require_onedrive_client().upload_file(
+                access_token=access_token,
+                folder_id=current.provider_folder_id,
+                name="egp-storage-validation.txt",
+                data=b"e-GP Intelligence storage validation",
+                content_type="text/plain",
+            )
+        except Exception as exc:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message=str(exc),
+                actor_subject=actor_subject,
+            )
+
+        credentials.update(refreshed)
+        credentials["refresh_token"] = refresh_token
+        self._repository.upsert_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="onedrive",
+            credential_type=credential.credential_type,
+            encrypted_payload=self._require_cipher().encrypt_dict(credentials),
+        )
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            connection_status="connected",
+            last_validated_at=_now_iso(),
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_validation_succeeded",
+            summary="Validated tenant storage for onedrive",
             before=current,
             after=updated,
         )

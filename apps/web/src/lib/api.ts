@@ -1266,7 +1266,24 @@ export type StartGoogleDriveOAuthInput = {
   tenant_id?: string;
 };
 
+export type OneDriveOAuthStartResponse = {
+  provider: string;
+  authorization_url: string;
+  state: string;
+};
+
+export type StartOneDriveOAuthInput = {
+  tenant_id?: string;
+};
+
 export type SelectGoogleDriveFolderInput = {
+  tenant_id?: string;
+  folder_id: string;
+  folder_label?: string;
+  folder_url?: string;
+};
+
+export type SelectOneDriveFolderInput = {
   tenant_id?: string;
   folder_id: string;
   folder_label?: string;
@@ -1725,6 +1742,33 @@ export async function selectGoogleDriveFolder(
   payload: SelectGoogleDriveFolderInput,
 ): Promise<AdminTenantStorageSettings> {
   const url = buildUrl("/v1/admin/storage/google-drive/folder", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      folder_id: payload.folder_id,
+      folder_label: payload.folder_label,
+      folder_url: payload.folder_url,
+    }),
+  });
+}
+
+export async function startOneDriveOAuth(
+  payload: StartOneDriveOAuthInput = {},
+): Promise<OneDriveOAuthStartResponse> {
+  const url = buildUrl("/v1/admin/storage/onedrive/oauth/start", {});
+  return apiJsonRequest<OneDriveOAuthStartResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+    }),
+  });
+}
+
+export async function selectOneDriveFolder(
+  payload: SelectOneDriveFolderInput,
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage/onedrive/folder", {});
   return apiJsonRequest<AdminTenantStorageSettings>(url, {
     method: "POST",
     body: JSON.stringify({

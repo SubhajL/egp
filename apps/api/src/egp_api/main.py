@@ -31,6 +31,10 @@ from egp_api.config import (
     get_google_drive_scopes,
     get_internal_worker_token,
     get_jwt_secret,
+    get_onedrive_client_id,
+    get_onedrive_client_secret,
+    get_onedrive_redirect_uri,
+    get_onedrive_scopes,
     get_opn_public_key,
     get_opn_secret_key,
     get_payment_base_url,
@@ -77,6 +81,11 @@ from egp_api.services.google_drive import (
     GoogleDriveClient,
     GoogleDriveOAuthConfig,
     normalize_google_drive_scopes,
+)
+from egp_api.services.onedrive import (
+    OneDriveClient,
+    OneDriveOAuthConfig,
+    normalize_onedrive_scopes,
 )
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
 from egp_api.services.project_ingest_service import ProjectIngestService
@@ -320,6 +329,8 @@ def create_app(
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
     google_drive_client=None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+    onedrive_client=None,
     smtp_config: SmtpConfig | None = None,
     notification_email_sender: EmailSender | None = None,
     payment_provider: PaymentProvider | None = None,
@@ -439,6 +450,18 @@ def create_app(
                 redirect_uri=google_redirect_uri,
                 scopes=normalize_google_drive_scopes(get_google_drive_scopes(None)),
             )
+    resolved_onedrive_oauth_config = onedrive_oauth_config
+    if resolved_onedrive_oauth_config is None:
+        onedrive_client_id = get_onedrive_client_id(None)
+        onedrive_client_secret = get_onedrive_client_secret(None)
+        onedrive_redirect_uri = get_onedrive_redirect_uri(None)
+        if onedrive_client_id and onedrive_client_secret and onedrive_redirect_uri:
+            resolved_onedrive_oauth_config = OneDriveOAuthConfig(
+                client_id=onedrive_client_id,
+                client_secret=onedrive_client_secret,
+                redirect_uri=onedrive_redirect_uri,
+                scopes=normalize_onedrive_scopes(get_onedrive_scopes(None)),
+            )
     session_cookie_name = get_session_cookie_name(None)
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
     session_cookie_secure = get_session_cookie_secure(None)
@@ -464,12 +487,15 @@ def create_app(
         else None
     )
     resolved_google_drive_client = google_drive_client or GoogleDriveClient()
+    resolved_onedrive_client = onedrive_client or OneDriveClient()
     tenant_artifact_store_resolver = TenantArtifactStoreResolver(
         admin_repository=admin_repository,
         managed_artifact_store=managed_artifact_store,
         credential_cipher=storage_credential_cipher,
         google_drive_oauth_config=resolved_google_drive_oauth_config,
         google_drive_client=resolved_google_drive_client,
+        onedrive_oauth_config=resolved_onedrive_oauth_config,
+        onedrive_client=resolved_onedrive_client,
     )
     repository = create_document_repository(
         database_url=resolved_database_url,
@@ -569,6 +595,8 @@ def create_app(
         audit_repository=audit_repository,
         google_drive_oauth_config=resolved_google_drive_oauth_config,
         google_drive_client=resolved_google_drive_client,
+        onedrive_oauth_config=resolved_onedrive_oauth_config,
+        onedrive_client=resolved_onedrive_client,
     )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository

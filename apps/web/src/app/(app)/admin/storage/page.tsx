@@ -12,6 +12,8 @@ import {
   disconnectTenantStorage,
   localizeApiError,
   selectGoogleDriveFolder,
+  selectOneDriveFolder,
+  startOneDriveOAuth,
   startGoogleDriveOAuth,
   testTenantStorageWrite,
   updateTenantStorageSettings,
@@ -80,6 +82,9 @@ export default function AdminStoragePage() {
 
   const externalProviderSelected = provider !== "managed";
   const googleDriveSelected = provider === "google_drive";
+  const onedriveSelected = provider === "onedrive";
+  const oauthProviderSelected = googleDriveSelected || onedriveSelected;
+  const oauthProviderLabel = googleDriveSelected ? "Google Drive" : "OneDrive";
 
   async function refreshStorageSettings() {
     await queryClient.invalidateQueries({ queryKey: ["tenant-storage-settings"] });
@@ -195,6 +200,48 @@ export default function AdminStoragePage() {
       setErrorMessage(
         localizeApiError(mutationError, "ไม่สามารถบันทึกโฟลเดอร์ Google Drive ได้"),
       );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleStartOneDriveOAuth() {
+    setBusyAction("onedrive-oauth");
+    setStatusMessage(null);
+    setErrorMessage(null);
+    try {
+      if (provider !== "onedrive") {
+        await updateTenantStorageSettings({
+          provider: "onedrive",
+          connection_status: "pending_setup",
+          account_email: accountEmail.trim(),
+          folder_label: folderLabel.trim(),
+          folder_path_hint: folderPathHint.trim(),
+          managed_fallback_enabled: managedFallbackEnabled,
+        });
+      }
+      const result = await startOneDriveOAuth();
+      window.location.href = result.authorization_url;
+    } catch (mutationError) {
+      setErrorMessage(localizeApiError(mutationError, "ไม่สามารถเริ่มเชื่อมต่อ OneDrive ได้"));
+      setBusyAction(null);
+    }
+  }
+
+  async function handleSelectOneDriveFolder() {
+    setBusyAction("onedrive-folder");
+    setStatusMessage(null);
+    setErrorMessage(null);
+    try {
+      await selectOneDriveFolder({
+        folder_id: providerFolderId.trim(),
+        folder_label: folderLabel.trim(),
+        folder_url: providerFolderUrl.trim(),
+      });
+      await refreshStorageSettings();
+      setStatusMessage("บันทึกโฟลเดอร์ OneDrive แล้ว");
+    } catch (mutationError) {
+      setErrorMessage(localizeApiError(mutationError, "ไม่สามารถบันทึกโฟลเดอร์ OneDrive ได้"));
     } finally {
       setBusyAction(null);
     }
@@ -391,24 +438,28 @@ export default function AdminStoragePage() {
                       Credentials และ validation
                     </h2>
                     <p className="mt-1 text-sm text-[var(--text-muted)]">
-                      Google Drive รองรับ OAuth, folder ID และ server-side validation แล้ว ส่วน OneDrive
-                      และ local agent ยังใช้ credential form ชั่วคราวจนกว่า provider slice ถัดไปจะพร้อม
+                      Google Drive และ OneDrive รองรับ OAuth, folder ID และ server-side validation
+                      แล้ว ส่วน local agent ยังใช้ credential form ชั่วคราว
                     </p>
                   </div>
                 </div>
 
-                {googleDriveSelected ? (
+                {oauthProviderSelected ? (
                   <div className="space-y-4 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
                     <div className="flex flex-wrap gap-3">
                       <button
                         type="button"
                         disabled={busyAction !== null}
-                        onClick={handleStartGoogleDriveOAuth}
+                        onClick={
+                          googleDriveSelected ? handleStartGoogleDriveOAuth : handleStartOneDriveOAuth
+                        }
                         className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                       >
                         {busyAction === "google-oauth"
                           ? "กำลังเปิด Google..."
-                          : "เชื่อมต่อด้วย Google OAuth"}
+                          : busyAction === "onedrive-oauth"
+                            ? "กำลังเปิด Microsoft..."
+                            : `เชื่อมต่อด้วย ${oauthProviderLabel} OAuth`}
                       </button>
                       <span className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-muted)]">
                         {data.has_credentials ? "มี OAuth tokens แล้ว" : "ยังไม่ได้เชื่อมต่อ OAuth"}
@@ -418,7 +469,7 @@ export default function AdminStoragePage() {
                     <div className="grid gap-4 md:grid-cols-2">
                       <label className="block space-y-2">
                         <span className="text-sm font-medium text-[var(--text-secondary)]">
-                          Google Drive folder ID
+                          {oauthProviderLabel} folder ID
                         </span>
                         <input
                           value={providerFolderId}
@@ -430,12 +481,16 @@ export default function AdminStoragePage() {
                       </label>
                       <label className="block space-y-2">
                         <span className="text-sm font-medium text-[var(--text-secondary)]">
-                          Google Drive folder URL
+                          {oauthProviderLabel} folder URL
                         </span>
                         <input
                           value={providerFolderUrl}
                           onChange={(event) => setProviderFolderUrl(event.target.value)}
-                          placeholder="https://drive.google.com/drive/folders/..."
+                          placeholder={
+                            googleDriveSelected
+                              ? "https://drive.google.com/drive/folders/..."
+                              : "https://onedrive.live.com/?id=..."
+                          }
                           disabled={busyAction !== null}
                           className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                         />
@@ -445,10 +500,16 @@ export default function AdminStoragePage() {
                     <button
                       type="button"
                       disabled={busyAction !== null || !providerFolderId.trim()}
-                      onClick={handleSelectGoogleDriveFolder}
+                      onClick={
+                        googleDriveSelected ? handleSelectGoogleDriveFolder : handleSelectOneDriveFolder
+                      }
                       className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] disabled:opacity-60"
                     >
-                      {busyAction === "google-folder" ? "กำลังบันทึก..." : "บันทึก Google Drive folder"}
+                      {busyAction === "google-folder"
+                        ? "กำลังบันทึก..."
+                        : busyAction === "onedrive-folder"
+                          ? "กำลังบันทึก..."
+                          : `บันทึก ${oauthProviderLabel} folder`}
                     </button>
                   </div>
                 ) : null}
@@ -461,7 +522,7 @@ export default function AdminStoragePage() {
                     <input
                       value={credentialType}
                       onChange={(event) => setCredentialType(event.target.value)}
-                      disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
+                      disabled={!externalProviderSelected || oauthProviderSelected || busyAction !== null}
                       className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                     />
                   </label>
@@ -473,7 +534,7 @@ export default function AdminStoragePage() {
                       type="password"
                       value={accessToken}
                       onChange={(event) => setAccessToken(event.target.value)}
-                      disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
+                      disabled={!externalProviderSelected || oauthProviderSelected || busyAction !== null}
                       placeholder="access-token"
                       className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                     />
@@ -488,7 +549,7 @@ export default function AdminStoragePage() {
                     type="password"
                     value={refreshToken}
                     onChange={(event) => setRefreshToken(event.target.value)}
-                    disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
+                    disabled={!externalProviderSelected || oauthProviderSelected || busyAction !== null}
                     placeholder="refresh-token"
                     className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                   />
@@ -497,7 +558,7 @@ export default function AdminStoragePage() {
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
-                    disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
+                    disabled={!externalProviderSelected || oauthProviderSelected || busyAction !== null}
                     onClick={handleConnect}
                     className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                   >
@@ -573,8 +634,8 @@ export default function AdminStoragePage() {
                       </p>
                     ) : null}
                     <p className="text-sm text-[var(--text-muted)]">
-                      Runtime artifact upload per tenant จะตามมาใน slice PR4; หน้านี้เตรียม OAuth,
-                      folder metadata และ validation สำหรับ Google Drive แล้ว
+                      ใช้หน้านี้เพื่อเชื่อมต่อ Google Drive หรือ OneDrive, บันทึก folder metadata,
+                      และทดสอบการอัปโหลดฝั่งเซิร์ฟเวอร์ก่อนเปิดใช้งานกับ tenant นี้
                     </p>
                   </div>
                 </div>

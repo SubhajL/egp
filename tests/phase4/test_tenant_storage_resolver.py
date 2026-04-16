@@ -6,6 +6,8 @@ from sqlalchemy import text
 
 from egp_db.artifact_store import LocalArtifactStore
 from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.onedrive import OneDriveOAuthConfig
+from egp_db.repositories import profile_repo as _profile_repo  # noqa: F401
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.tenant_storage_resolver import (
@@ -65,11 +67,66 @@ class FakeGoogleDriveClient:
         return f"https://drive.example/{file_id}"
 
 
+class FakeOneDriveClient:
+    def __init__(self) -> None:
+        self.refresh_calls: list[str] = []
+        self.upload_calls: list[dict[str, object]] = []
+        self.refresh_exception: Exception | None = None
+
+    def refresh_access_token(
+        self,
+        *,
+        config: OneDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        self.refresh_calls.append(refresh_token)
+        if self.refresh_exception is not None:
+            raise self.refresh_exception
+        return {"access_token": f"access-for-{config.client_id}"}
+
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        folder_id: str | None,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        self.upload_calls.append(
+            {
+                "access_token": access_token,
+                "folder_id": folder_id,
+                "name": name,
+                "data": data,
+                "content_type": content_type,
+            }
+        )
+        return {"id": "onedrive-item-id"}
+
+    def download_file(self, *, access_token: str, file_id: str) -> bytes:
+        return f"download:{access_token}:{file_id}".encode("utf-8")
+
+    def delete_file(self, *, access_token: str, file_id: str) -> None:
+        return None
+
+    def download_url(self, *, access_token: str, file_id: str) -> str:
+        return f"https://onedrive.example/{file_id}"
+
+
 def _google_config() -> GoogleDriveOAuthConfig:
     return GoogleDriveOAuthConfig(
         client_id="google-client-id",
         client_secret="google-client-secret",
         redirect_uri="https://api.example/v1/admin/storage/google-drive/oauth/callback",
+    )
+
+
+def _onedrive_config() -> OneDriveOAuthConfig:
+    return OneDriveOAuthConfig(
+        client_id="onedrive-client-id",
+        client_secret="onedrive-client-secret",
+        redirect_uri="https://api.example/v1/admin/storage/onedrive/oauth/callback",
     )
 
 
@@ -256,6 +313,69 @@ def test_resolver_uses_managed_fallback_when_enabled(tmp_path) -> None:
     resolved = resolver.resolve_for_write(tenant_id=TENANT_ID)
 
     assert resolved.provider == "managed"
+
+
+def test_resolver_returns_onedrive_store_for_connected_tenant(tmp_path) -> None:
+    repository = create_admin_repository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'resolver.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_tenant_storage(
+        repository,
+        provider="onedrive",
+        folder_id="onedrive-folder-id",
+        refresh_token="onedrive-refresh-token",
+    )
+    onedrive_client = FakeOneDriveClient()
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=repository,
+        managed_artifact_store=LocalArtifactStore(tmp_path / "managed"),
+        credential_cipher=StorageCredentialCipher("resolver-secret"),
+        onedrive_oauth_config=_onedrive_config(),
+        onedrive_client=onedrive_client,
+    )
+
+    resolved = resolver.resolve_for_write(tenant_id=TENANT_ID)
+    raw_key = resolved.store.put_bytes(
+        key="tenants/t/projects/p/artifacts/hash/tor.pdf",
+        data=b"tor",
+        content_type="application/pdf",
+    )
+
+    assert resolved.provider == "onedrive"
+    assert resolved.encode_storage_key(raw_key) == "onedrive:onedrive-item-id"
+    assert onedrive_client.refresh_calls == ["onedrive-refresh-token"]
+    assert onedrive_client.upload_calls[0]["folder_id"] == "onedrive-folder-id"
+
+
+def test_resolver_uses_onedrive_for_prefixed_storage_key(tmp_path) -> None:
+    repository = create_admin_repository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'resolver.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_tenant_storage(
+        repository,
+        provider="onedrive",
+        folder_id="onedrive-folder-id",
+        refresh_token="onedrive-refresh-token",
+    )
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=repository,
+        managed_artifact_store=LocalArtifactStore(tmp_path / "managed"),
+        credential_cipher=StorageCredentialCipher("resolver-secret"),
+        onedrive_oauth_config=_onedrive_config(),
+        onedrive_client=FakeOneDriveClient(),
+    )
+
+    resolved = resolver.resolve_for_storage_key(
+        tenant_id=TENANT_ID,
+        storage_key="onedrive:onedrive-item-id",
+    )
+
+    assert resolved.provider == "onedrive"
+    assert (
+        resolved.decode_storage_key("onedrive:onedrive-item-id") == "onedrive-item-id"
+    )
 
 
 def test_resolver_uses_managed_fallback_on_google_refresh_failure(tmp_path) -> None:

@@ -308,7 +308,24 @@ class GoogleDriveOAuthStartResponse(BaseModel):
     state: str
 
 
+class StartOneDriveOAuthRequest(BaseModel):
+    tenant_id: str | None = None
+
+
+class OneDriveOAuthStartResponse(BaseModel):
+    provider: str
+    authorization_url: str
+    state: str
+
+
 class SelectGoogleDriveFolderRequest(BaseModel):
+    tenant_id: str | None = None
+    folder_id: str = Field(min_length=1)
+    folder_label: str | None = None
+    folder_url: str | None = None
+
+
+class SelectOneDriveFolderRequest(BaseModel):
     tenant_id: str | None = None
     folder_id: str = Field(min_length=1)
     folder_label: str | None = None
@@ -337,11 +354,16 @@ def _accepts_html(request: Request) -> bool:
     return "text/html" in accept and "application/json" not in accept
 
 
-def _storage_settings_redirect(request: Request, *, outcome: str) -> RedirectResponse:
+def _storage_settings_redirect(
+    request: Request,
+    *,
+    provider: str,
+    outcome: str,
+) -> RedirectResponse:
     web_base_url = str(getattr(request.app.state, "web_base_url", "http://localhost:3000")).rstrip(
         "/"
     )
-    query = urlencode({"provider": "google_drive", "status": outcome})
+    query = urlencode({"provider": provider, "status": outcome})
     return RedirectResponse(
         f"{web_base_url}/admin/storage?{query}",
         status_code=status.HTTP_303_SEE_OTHER,
@@ -842,7 +864,7 @@ def handle_google_drive_oauth_callback(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if _accepts_html(request):
-        return _storage_settings_redirect(request, outcome="connected")
+        return _storage_settings_redirect(request, provider="google_drive", outcome="connected")
     return _serialize_storage_settings(settings)
 
 
@@ -860,6 +882,83 @@ def select_google_drive_folder(
     )
     try:
         settings = service.select_google_drive_folder(
+            tenant_id=resolved_tenant_id,
+            folder_id=payload.folder_id,
+            folder_label=payload.folder_label,
+            folder_url=payload.folder_url,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/onedrive/oauth/start", response_model=OneDriveOAuthStartResponse)
+def start_onedrive_oauth(
+    payload: StartOneDriveOAuthRequest,
+    request: Request,
+) -> OneDriveOAuthStartResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        result = service.start_onedrive_oauth(tenant_id=resolved_tenant_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return OneDriveOAuthStartResponse(**result)
+
+
+@router.get("/storage/onedrive/oauth/callback", response_model=AdminTenantStorageSettingsResponse)
+def handle_onedrive_oauth_callback(
+    request: Request,
+    code: str,
+    state: str,
+) -> AdminTenantStorageSettingsResponse | RedirectResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    auth_tenant_id = resolve_request_tenant_id(
+        request,
+        None,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.handle_onedrive_oauth_callback(
+            code=code,
+            state=state,
+            expected_tenant_id=auth_tenant_id,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _accepts_html(request):
+        return _storage_settings_redirect(request, provider="onedrive", outcome="connected")
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/onedrive/folder", response_model=AdminTenantStorageSettingsResponse)
+def select_onedrive_folder(
+    payload: SelectOneDriveFolderRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.select_onedrive_folder(
             tenant_id=resolved_tenant_id,
             folder_id=payload.folder_id,
             folder_label=payload.folder_label,
