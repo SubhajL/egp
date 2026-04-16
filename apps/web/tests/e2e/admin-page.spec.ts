@@ -124,7 +124,96 @@ async function mockAdminApp(page: Page) {
         await fulfillJson(route, 200, { webhooks: [] });
         return;
       case "GET /v1/admin/support/tenants":
-        await fulfillJson(route, 200, { tenants: [] });
+        await fulfillJson(route, 200, {
+          tenants: [
+            {
+              id: "tenant-1",
+              name: "Example Tenant",
+              slug: "example-tenant",
+              plan_code: "one_time_search_pack",
+              is_active: true,
+              support_email: "support@example.com",
+              billing_contact_email: "billing@example.com",
+              active_user_count: 2,
+            },
+          ],
+        });
+        return;
+      case "GET /v1/admin/support/tenants/tenant-1/summary":
+        await fulfillJson(route, 200, {
+          tenant: {
+            id: "tenant-1",
+            name: "Example Tenant",
+            slug: "example-tenant",
+            plan_code: "one_time_search_pack",
+            is_active: true,
+            support_email: "support@example.com",
+            billing_contact_email: "billing@example.com",
+            active_user_count: 2,
+          },
+          triage: {
+            failed_runs_recent: 1,
+            pending_document_reviews: 0,
+            failed_webhook_deliveries: 0,
+            outstanding_billing_records: 0,
+          },
+          cost_summary: {
+            window_days: 30,
+            currency: "THB",
+            estimated_total_thb: "0.35",
+            crawl: {
+              estimated_cost_thb: "0.35",
+              run_count: 1,
+              task_count: 1,
+              failed_run_count: 1,
+            },
+            storage: {
+              estimated_cost_thb: "0.00",
+              document_count: 0,
+              total_bytes: 0,
+            },
+            notifications: {
+              estimated_cost_thb: "0.00",
+              sent_count: 0,
+              failed_webhook_delivery_count: 0,
+            },
+            payments: {
+              estimated_cost_thb: "0.00",
+              billing_record_count: 0,
+              payment_request_count: 0,
+              collected_amount_thb: "0.00",
+            },
+          },
+          storage_diagnostics: {
+            provider: "google_drive",
+            connection_status: "error",
+            account_email: "ops@example.com",
+            provider_folder_id: "provider-folder-id",
+            provider_folder_url: "https://example.com/provider-folder",
+            managed_fallback_enabled: true,
+            has_credentials: false,
+            last_validated_at: null,
+            last_validation_error: "google refresh token expired",
+          },
+          alerts: [
+            {
+              severity: "error",
+              code: "storage_connection_error",
+              title: "External storage needs attention",
+              detail: "google_drive is in error state: google refresh token expired",
+            },
+            {
+              severity: "warning",
+              code: "storage_credentials_missing",
+              title: "Storage credentials are missing",
+              detail: "Support should reconnect google_drive credentials for this tenant",
+            },
+          ],
+          recent_failed_runs: [],
+          pending_reviews: [],
+          failed_webhooks: [],
+          billing_issues: [],
+        });
         return;
       default:
         await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
@@ -144,4 +233,26 @@ test("admin billing tab shows current and upcoming upgrade chain", async ({ page
   await expect(page.getByText("monthly_membership เริ่ม", { exact: false })).toBeVisible();
   await expect(page.getByText("replace_on_activation", { exact: true })).toBeVisible();
   await expect(page.getByText("from sub-curr", { exact: false })).toBeVisible();
+});
+
+test("admin support tab shows storage diagnostics and alerts", async ({ page }) => {
+  await mockAdminApp(page);
+
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Support" }).click();
+  await page.getByPlaceholder("ค้นหาจากชื่อ tenant, slug, support email หรือ user email").fill(
+    "example",
+  );
+  await page.getByRole("button", { name: "ค้นหา Support" }).click();
+  await page.getByRole("button", { name: /Example Tenant/ }).click();
+
+  await expect(page.getByText("Storage Health", { exact: true })).toBeVisible();
+  await expect(page.getByText("Support Alerts", { exact: true })).toBeVisible();
+  await expect(page.getByText("External storage needs attention", { exact: true })).toBeVisible();
+  await expect(page.getByText("Storage credentials are missing", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("google_drive is in error state: google refresh token expired", {
+      exact: true,
+    }),
+  ).toBeVisible();
 });

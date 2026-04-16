@@ -641,10 +641,31 @@ export type SupportBillingIssue = {
   created_at: string;
 };
 
+export type SupportStorageDiagnostics = {
+  provider: string;
+  connection_status: string;
+  account_email: string | null;
+  provider_folder_id: string | null;
+  provider_folder_url: string | null;
+  managed_fallback_enabled: boolean;
+  has_credentials: boolean;
+  last_validated_at: string | null;
+  last_validation_error: string | null;
+};
+
+export type SupportAlert = {
+  severity: string;
+  code: string;
+  title: string;
+  detail: string;
+};
+
 export type SupportSummaryResponse = {
   tenant: SupportTenant;
   triage: SupportTriageSummary;
   cost_summary: DashboardCostSummary;
+  storage_diagnostics: SupportStorageDiagnostics;
+  alerts: SupportAlert[];
   recent_failed_runs: SupportFailedRun[];
   pending_reviews: SupportPendingReview[];
   failed_webhooks: SupportFailedWebhook[];
@@ -838,6 +859,11 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "document not found", thai: "ไม่พบเอกสารนี้" },
   { pattern: "document diff not found", thai: "ไม่พบผลเปรียบเทียบเอกสารนี้" },
   { pattern: "document review not found", thai: "ไม่พบรายการตรวจสอบเอกสารนี้" },
+  { pattern: "storage credentials missing", thai: "การเชื่อมต่อที่เก็บเอกสารยังไม่สมบูรณ์ กรุณาให้ผู้ดูแลตรวจสอบ" },
+  { pattern: "refresh token is missing", thai: "โทเค็นของปลายทางจัดเก็บเอกสารไม่ครบ กรุณาเชื่อมต่อใหม่" },
+  { pattern: "oauth is not configured", thai: "ระบบยังไม่ได้ตั้งค่า OAuth สำหรับปลายทางจัดเก็บเอกสาร" },
+  { pattern: "client is not configured", thai: "ระบบยังไม่ได้ตั้งค่า client สำหรับปลายทางจัดเก็บเอกสาร" },
+  { pattern: "did not include access_token", thai: "ไม่สามารถต่ออายุการเชื่อมต่อปลายทางจัดเก็บเอกสารได้" },
 
   // Tenant / Webhooks
   { pattern: "tenant not found", thai: "ไม่พบองค์กรนี้ในระบบ" },

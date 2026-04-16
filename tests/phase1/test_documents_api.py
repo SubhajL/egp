@@ -5,11 +5,15 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from egp_api.main import create_app
+from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.onedrive import OneDriveOAuthConfig
+from egp_db.repositories.admin_repo import create_admin_repository
 from egp_shared_types.enums import NotificationType
+from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import (
     DocumentReviewEventType,
@@ -75,14 +79,77 @@ class FakeSupabaseClient:
         self.storage = FakeSupabaseStorageClient()
 
 
-def create_test_client(tmp_path, **overrides) -> TestClient:
+class FakeGoogleDriveDownloadClient:
+    def __init__(
+        self, *, download_url: str = "https://drive.example/drive-file-id"
+    ) -> None:
+        self.download_url_value = download_url
+        self.refresh_calls: list[str] = []
+        self.download_url_calls: list[str] = []
+
+    def refresh_access_token(
+        self,
+        *,
+        config: GoogleDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        self.refresh_calls.append(refresh_token)
+        return {"access_token": f"access-for-{config.client_id}"}
+
+    def download_url(self, *, file_id: str) -> str:
+        self.download_url_calls.append(file_id)
+        return self.download_url_value
+
+
+class FakeOneDriveDownloadClient:
+    def __init__(
+        self, *, download_url: str = "https://onedrive.example/onedrive-item-id"
+    ) -> None:
+        self.download_url_value = download_url
+        self.refresh_calls: list[str] = []
+        self.download_url_calls: list[str] = []
+
+    def refresh_access_token(
+        self,
+        *,
+        config: OneDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        self.refresh_calls.append(refresh_token)
+        return {"access_token": f"access-for-{config.client_id}"}
+
+    def download_url(self, *, access_token: str, file_id: str) -> str:
+        self.download_url_calls.append(file_id)
+        return self.download_url_value
+
+
+def _google_config() -> GoogleDriveOAuthConfig:
+    return GoogleDriveOAuthConfig(
+        client_id="google-client-id",
+        client_secret="google-client-secret",
+        redirect_uri="https://api.example/v1/admin/storage/google-drive/oauth/callback",
+    )
+
+
+def _onedrive_config() -> OneDriveOAuthConfig:
+    return OneDriveOAuthConfig(
+        client_id="onedrive-client-id",
+        client_secret="onedrive-client-secret",
+        redirect_uri="https://api.example/v1/admin/storage/onedrive/oauth/callback",
+    )
+
+
+def create_test_client(
+    tmp_path, *, raise_server_exceptions: bool = True, **overrides
+) -> TestClient:
     client = TestClient(
         create_app(
             artifact_root=tmp_path,
             database_url=f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}",
             auth_required=False,
             **overrides,
-        )
+        ),
+        raise_server_exceptions=raise_server_exceptions,
     )
     seed_active_subscription(client)
     return client
@@ -240,6 +307,107 @@ def seed_project(client: TestClient) -> str:
         source_status_text="ประกาศเชิญชวน",
     )
     return project.id
+
+
+def seed_external_storage(
+    client: TestClient,
+    *,
+    provider: str,
+    refresh_token: str | None = "provider-refresh-token",
+    connection_status: str = "connected",
+    storage_secret: str = "phase1-storage-secret",
+) -> None:
+    repository = create_admin_repository(
+        engine=client.app.state.db_engine,
+    )
+    now = datetime.now(UTC)
+    encrypted_payload = (
+        StorageCredentialCipher(storage_secret).encrypt_dict(
+            {"refresh_token": refresh_token}
+        )
+        if refresh_token is not None
+        else None
+    )
+    with repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT OR REPLACE INTO tenant_storage_configs (
+                    id,
+                    tenant_id,
+                    provider,
+                    connection_status,
+                    provider_folder_id,
+                    provider_folder_url,
+                    managed_fallback_enabled,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :provider,
+                    :connection_status,
+                    :provider_folder_id,
+                    :provider_folder_url,
+                    0,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "provider": provider,
+                "connection_status": connection_status,
+                "provider_folder_id": f"{provider}-folder-id",
+                "provider_folder_url": f"https://example.com/{provider}/folder",
+                "now": now,
+            },
+        )
+        if encrypted_payload is not None:
+            connection.execute(
+                text(
+                    """
+                    INSERT OR REPLACE INTO tenant_storage_credentials (
+                        id,
+                        tenant_id,
+                        provider,
+                        credential_type,
+                        encrypted_payload,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :id,
+                        :tenant_id,
+                        :provider,
+                        'oauth_tokens',
+                        :encrypted_payload,
+                        :now,
+                        :now
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "tenant_id": TENANT_ID,
+                    "provider": provider,
+                    "encrypted_payload": encrypted_payload,
+                    "now": now,
+                },
+            )
+
+
+def set_document_storage_key(
+    client: TestClient, *, document_id: str, storage_key: str
+) -> None:
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE documents SET storage_key = :storage_key WHERE id = :document_id"
+            ),
+            {"storage_key": storage_key, "document_id": document_id},
+        )
 
 
 def seed_notification_user(
@@ -807,3 +975,121 @@ def test_document_download_endpoint_returns_supabase_signed_url(tmp_path) -> Non
     assert response.json()["download_url"] == (
         f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{storage_key}"
     )
+
+
+def test_document_download_endpoint_returns_google_drive_url_for_prefixed_storage_key(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveDownloadClient()
+    client = create_test_client(
+        tmp_path,
+        storage_credentials_secret="phase1-storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+    seed_external_storage(client, provider="google_drive")
+    set_document_storage_key(
+        client, document_id=document_id, storage_key="google_drive:drive-file-id"
+    )
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["download_url"] == "https://drive.example/drive-file-id"
+    assert google_client.refresh_calls == ["provider-refresh-token"]
+    assert google_client.download_url_calls == ["drive-file-id"]
+
+
+def test_document_download_endpoint_returns_onedrive_url_for_prefixed_storage_key(
+    tmp_path,
+) -> None:
+    onedrive_client = FakeOneDriveDownloadClient()
+    client = create_test_client(
+        tmp_path,
+        storage_credentials_secret="phase1-storage-secret",
+        onedrive_oauth_config=_onedrive_config(),
+        onedrive_client=onedrive_client,
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+    seed_external_storage(client, provider="onedrive")
+    set_document_storage_key(
+        client, document_id=document_id, storage_key="onedrive:onedrive-item-id"
+    )
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["download_url"] == "https://onedrive.example/onedrive-item-id"
+    )
+    assert onedrive_client.refresh_calls == ["provider-refresh-token"]
+    assert onedrive_client.download_url_calls == ["onedrive-item-id"]
+
+
+def test_document_download_endpoint_returns_422_when_external_provider_download_is_misconfigured(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveDownloadClient()
+    client = create_test_client(
+        tmp_path,
+        raise_server_exceptions=False,
+        storage_credentials_secret="phase1-storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+    seed_external_storage(client, provider="google_drive", refresh_token=None)
+    set_document_storage_key(
+        client, document_id=document_id, storage_key="google_drive:drive-file-id"
+    )
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 422
+    assert "credentials missing" in response.json()["detail"]

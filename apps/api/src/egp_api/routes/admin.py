@@ -209,6 +209,25 @@ class SupportBillingIssueResponse(BaseModel):
     created_at: str
 
 
+class SupportStorageDiagnosticsResponse(BaseModel):
+    provider: str
+    connection_status: str
+    account_email: str | None
+    provider_folder_id: str | None
+    provider_folder_url: str | None
+    managed_fallback_enabled: bool
+    has_credentials: bool
+    last_validated_at: str | None
+    last_validation_error: str | None
+
+
+class SupportAlertResponse(BaseModel):
+    severity: str
+    code: str
+    title: str
+    detail: str
+
+
 class SupportCostSummaryResponse(BaseModel):
     window_days: int
     currency: str
@@ -223,6 +242,8 @@ class SupportSummaryResponse(BaseModel):
     tenant: SupportTenantResponse
     triage: SupportTriageResponse
     cost_summary: SupportCostSummaryResponse
+    storage_diagnostics: SupportStorageDiagnosticsResponse
+    alerts: list[SupportAlertResponse]
     recent_failed_runs: list[SupportFailedRunResponse]
     pending_reviews: list[SupportPendingReviewResponse]
     failed_webhooks: list[SupportFailedWebhookResponse]
@@ -506,6 +527,10 @@ def _serialize_support_summary(summary) -> SupportSummaryResponse:
         tenant=_serialize_support_tenant(summary.tenant),
         triage=SupportTriageResponse(**asdict(summary.triage)),
         cost_summary=_serialize_support_cost_summary(summary.cost_summary),
+        storage_diagnostics=SupportStorageDiagnosticsResponse(
+            **asdict(summary.storage_diagnostics)
+        ),
+        alerts=[SupportAlertResponse(**asdict(item)) for item in summary.alerts],
         recent_failed_runs=[
             SupportFailedRunResponse(**asdict(item)) for item in summary.recent_failed_runs
         ],

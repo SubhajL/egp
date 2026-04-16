@@ -344,4 +344,6 @@ def get_document_download_url(
         raise HTTPException(status_code=404, detail="document not found") from exc
     except EntitlementError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return DocumentDownloadResponse(download_url=download_url)
