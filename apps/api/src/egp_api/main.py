@@ -25,6 +25,10 @@ from egp_api.config import (
     get_artifact_root,
     get_artifact_storage_backend,
     get_database_url,
+    get_google_drive_client_id,
+    get_google_drive_client_secret,
+    get_google_drive_redirect_uri,
+    get_google_drive_scopes,
     get_internal_worker_token,
     get_jwt_secret,
     get_opn_public_key,
@@ -69,6 +73,11 @@ from egp_api.services.entitlement_service import (
     TenantEntitlementService,
 )
 from egp_api.services.export_service import ExportService
+from egp_api.services.google_drive import (
+    GoogleDriveClient,
+    GoogleDriveOAuthConfig,
+    normalize_google_drive_scopes,
+)
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
 from egp_api.services.project_ingest_service import ProjectIngestService
 from egp_api.services.project_service import ProjectService
@@ -308,6 +317,8 @@ def create_app(
     auth_required: bool | None = None,
     jwt_secret: str | None = None,
     storage_credentials_secret: str | None = None,
+    google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+    google_drive_client=None,
     smtp_config: SmtpConfig | None = None,
     notification_email_sender: EmailSender | None = None,
     payment_provider: PaymentProvider | None = None,
@@ -415,6 +426,18 @@ def create_app(
     resolved_storage_credentials_secret = (
         get_storage_credentials_secret(storage_credentials_secret) or resolved_jwt_secret
     )
+    resolved_google_drive_oauth_config = google_drive_oauth_config
+    if resolved_google_drive_oauth_config is None:
+        google_client_id = get_google_drive_client_id(None)
+        google_client_secret = get_google_drive_client_secret(None)
+        google_redirect_uri = get_google_drive_redirect_uri(None)
+        if google_client_id and google_client_secret and google_redirect_uri:
+            resolved_google_drive_oauth_config = GoogleDriveOAuthConfig(
+                client_id=google_client_id,
+                client_secret=google_client_secret,
+                redirect_uri=google_redirect_uri,
+                scopes=normalize_google_drive_scopes(get_google_drive_scopes(None)),
+            )
     session_cookie_name = get_session_cookie_name(None)
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
     session_cookie_secure = get_session_cookie_secure(None)
@@ -502,6 +525,7 @@ def create_app(
         notification_dispatcher,
         entitlement_service,
     )
+    resolved_web_base_url = get_web_base_url(None, allowed_origins=resolved_web_allowed_origins)
     auth_service = AuthService(
         auth_repository,
         admin_repository,
@@ -512,7 +536,7 @@ def create_app(
             billing_repository,
             payment_provider=resolved_payment_provider,
         ),
-        web_base_url=get_web_base_url(None, allowed_origins=resolved_web_allowed_origins),
+        web_base_url=resolved_web_base_url,
     )
     storage_settings_service = StorageSettingsService(
         admin_repository,
@@ -522,6 +546,8 @@ def create_app(
             else None
         ),
         audit_repository=audit_repository,
+        google_drive_oauth_config=resolved_google_drive_oauth_config,
+        google_drive_client=google_drive_client or GoogleDriveClient(),
     )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository
@@ -557,6 +583,7 @@ def create_app(
         audit_repository,
     )
     app.state.payment_callback_secret = resolved_payment_callback_secret
+    app.state.web_base_url = resolved_web_base_url
     app.state.document_ingest_service = DocumentIngestService(
         repository,
         entitlement_service=entitlement_service,

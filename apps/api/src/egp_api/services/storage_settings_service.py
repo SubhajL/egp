@@ -5,8 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
+import time
 from typing import Any
 
+from egp_api.services.google_drive import (
+    GoogleDriveClient,
+    GoogleDriveOAuthConfig,
+    email_from_id_token,
+)
 from egp_api.services.storage_credentials import StorageCredentialCipher
 from egp_db.repositories.admin_repo import (
     SqlAdminRepository,
@@ -29,10 +35,14 @@ class StorageSettingsService:
         *,
         credential_cipher: StorageCredentialCipher | None,
         audit_repository: SqlAuditRepository | None = None,
+        google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+        google_drive_client: GoogleDriveClient | None = None,
     ) -> None:
         self._repository = repository
         self._credential_cipher = credential_cipher
         self._audit_repository = audit_repository
+        self._google_drive_oauth_config = google_drive_oauth_config
+        self._google_drive_client = google_drive_client
 
     def get_storage_settings(self, *, tenant_id: str) -> TenantStorageSettingsRecord:
         self._require_tenant(tenant_id)
@@ -47,6 +57,8 @@ class StorageSettingsService:
         account_email: str | None = None,
         folder_label: str | None = None,
         folder_path_hint: str | None = None,
+        provider_folder_id: str | None = None,
+        provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
@@ -59,6 +71,8 @@ class StorageSettingsService:
         resolved_account_email = account_email
         resolved_folder_label = folder_label
         resolved_folder_path_hint = folder_path_hint
+        resolved_provider_folder_id = provider_folder_id
+        resolved_provider_folder_url = provider_folder_url
         resolved_managed_fallback_enabled = managed_fallback_enabled
         resolved_last_validated_at = last_validated_at
         resolved_last_validation_error = last_validation_error
@@ -68,6 +82,8 @@ class StorageSettingsService:
             resolved_account_email = ""
             resolved_folder_label = ""
             resolved_folder_path_hint = ""
+            resolved_provider_folder_id = ""
+            resolved_provider_folder_url = ""
             resolved_managed_fallback_enabled = False
             resolved_last_validated_at = ""
             resolved_last_validation_error = ""
@@ -83,6 +99,8 @@ class StorageSettingsService:
             account_email=resolved_account_email,
             folder_label=resolved_folder_label,
             folder_path_hint=resolved_folder_path_hint,
+            provider_folder_id=resolved_provider_folder_id,
+            provider_folder_url=resolved_provider_folder_url,
             managed_fallback_enabled=resolved_managed_fallback_enabled,
             last_validated_at=resolved_last_validated_at,
             last_validation_error=resolved_last_validation_error,
@@ -141,6 +159,124 @@ class StorageSettingsService:
         )
         return updated
 
+    def start_google_drive_oauth(
+        self,
+        *,
+        tenant_id: str,
+    ) -> dict[str, str]:
+        self._require_tenant(tenant_id)
+        config = self._require_google_drive_oauth_config()
+        state = self._require_cipher().encrypt_dict(
+            {
+                "tenant_id": tenant_id,
+                "provider": "google_drive",
+                "exp": int(time.time()) + 600,
+            }
+        )
+        return {
+            "provider": "google_drive",
+            "authorization_url": self._require_google_drive_client().build_authorization_url(
+                config=config,
+                state=state,
+            ),
+            "state": state,
+        }
+
+    def handle_google_drive_oauth_callback(
+        self,
+        *,
+        code: str,
+        state: str,
+        expected_tenant_id: str | None = None,
+        actor_subject: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        config = self._require_google_drive_oauth_config()
+        state_payload = self._decode_google_drive_state(state)
+        tenant_id = str(state_payload["tenant_id"])
+        self._require_tenant(tenant_id)
+        if expected_tenant_id is not None and tenant_id != expected_tenant_id:
+            raise ValueError("Google Drive OAuth state tenant mismatch")
+
+        previous = self._repository.get_tenant_storage_settings(tenant_id=tenant_id)
+        token_payload = self._require_google_drive_client().exchange_code(
+            config=config,
+            code=code,
+        )
+        refresh_token = token_payload.get("refresh_token")
+        if not refresh_token:
+            existing = self._repository.get_tenant_storage_credentials(
+                tenant_id=tenant_id,
+                provider="google_drive",
+            )
+            if existing is None:
+                raise ValueError("Google Drive OAuth response did not include a refresh token")
+            existing_payload = self._require_cipher().decrypt_dict(existing.encrypted_payload)
+            refresh_token = existing_payload.get("refresh_token")
+            if refresh_token:
+                token_payload["refresh_token"] = refresh_token
+
+        account_email = email_from_id_token(
+            str(token_payload.get("id_token")) if token_payload.get("id_token") else None
+        )
+        encrypted_payload = self._require_cipher().encrypt_dict(token_payload)
+        self._repository.upsert_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="google_drive",
+            credential_type="oauth_tokens",
+            encrypted_payload=encrypted_payload,
+        )
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            provider="google_drive",
+            connection_status="pending_setup",
+            account_email=account_email,
+            last_validated_at="",
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_google_drive_oauth_connected",
+            summary="Connected Google Drive OAuth credentials",
+            before=previous,
+            after=updated,
+        )
+        return updated
+
+    def select_google_drive_folder(
+        self,
+        *,
+        tenant_id: str,
+        folder_id: str,
+        folder_label: str | None = None,
+        folder_url: str | None = None,
+        actor_subject: str | None = None,
+    ) -> TenantStorageSettingsRecord:
+        self._require_tenant(tenant_id)
+        if not folder_id.strip():
+            raise ValueError("folder_id is required")
+        previous = self._repository.get_tenant_storage_settings(tenant_id=tenant_id)
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            provider="google_drive",
+            connection_status="pending_setup",
+            folder_label=folder_label,
+            folder_path_hint=folder_url,
+            provider_folder_id=folder_id,
+            provider_folder_url=folder_url,
+            last_validated_at="",
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_google_drive_folder_selected",
+            summary="Selected Google Drive folder for tenant storage",
+            before=previous,
+            after=updated,
+        )
+        return updated
+
     def disconnect_provider(
         self,
         *,
@@ -182,6 +318,16 @@ class StorageSettingsService:
         current = self._repository.get_tenant_storage_settings(tenant_id=tenant_id)
         if current.provider == "managed":
             return current
+        if (
+            current.provider == "google_drive"
+            and self._google_drive_oauth_config is not None
+            and self._google_drive_client is not None
+        ):
+            return self._test_google_drive_write(
+                tenant_id=tenant_id,
+                current=current,
+                actor_subject=actor_subject,
+            )
 
         missing_parts: list[str] = []
         if not current.account_email:
@@ -273,6 +419,104 @@ class StorageSettingsService:
         if self._credential_cipher is None:
             raise ValueError("storage credentials secret is not configured")
         return self._credential_cipher
+
+    def _require_google_drive_oauth_config(self) -> GoogleDriveOAuthConfig:
+        if self._google_drive_oauth_config is None:
+            raise ValueError("Google Drive OAuth is not configured")
+        return self._google_drive_oauth_config
+
+    def _require_google_drive_client(self) -> GoogleDriveClient:
+        if self._google_drive_client is None:
+            raise ValueError("Google Drive client is not configured")
+        return self._google_drive_client
+
+    def _decode_google_drive_state(self, state: str) -> dict[str, Any]:
+        try:
+            payload = self._require_cipher().decrypt_dict(state)
+        except ValueError as exc:
+            raise ValueError("invalid Google Drive OAuth state") from exc
+        if payload.get("provider") != "google_drive" or not payload.get("tenant_id"):
+            raise ValueError("invalid Google Drive OAuth state")
+        expires_at = int(payload.get("exp") or 0)
+        if expires_at < int(time.time()):
+            raise ValueError("expired Google Drive OAuth state")
+        return payload
+
+    def _test_google_drive_write(
+        self,
+        *,
+        tenant_id: str,
+        current: TenantStorageSettingsRecord,
+        actor_subject: str | None,
+    ) -> TenantStorageSettingsRecord:
+        credential = self._repository.get_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="google_drive",
+        )
+        if credential is None:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message="storage credentials missing for provider google_drive",
+                actor_subject=actor_subject,
+            )
+        if not current.provider_folder_id:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message="Google Drive folder_id is required before validation",
+                actor_subject=actor_subject,
+            )
+        try:
+            credentials = self._require_cipher().decrypt_dict(credential.encrypted_payload)
+            refresh_token = str(credentials.get("refresh_token") or "").strip()
+            if not refresh_token:
+                raise ValueError("Google Drive refresh token is missing")
+            refreshed = self._require_google_drive_client().refresh_access_token(
+                config=self._require_google_drive_oauth_config(),
+                refresh_token=refresh_token,
+            )
+            access_token = str(refreshed.get("access_token") or "").strip()
+            if not access_token:
+                raise ValueError("Google Drive refresh response did not include access_token")
+            self._require_google_drive_client().upload_file(
+                access_token=access_token,
+                folder_id=current.provider_folder_id,
+                name="egp-storage-validation.txt",
+                data=b"e-GP Intelligence storage validation",
+                content_type="text/plain",
+            )
+        except Exception as exc:
+            return self._mark_validation_error(
+                tenant_id=tenant_id,
+                current=current,
+                message=str(exc),
+                actor_subject=actor_subject,
+            )
+
+        credentials.update(refreshed)
+        credentials["refresh_token"] = refresh_token
+        self._repository.upsert_tenant_storage_credentials(
+            tenant_id=tenant_id,
+            provider="google_drive",
+            credential_type=credential.credential_type,
+            encrypted_payload=self._require_cipher().encrypt_dict(credentials),
+        )
+        updated = self._repository.update_tenant_storage_settings(
+            tenant_id=tenant_id,
+            connection_status="connected",
+            last_validated_at=_now_iso(),
+            last_validation_error="",
+        )
+        self._record_event(
+            tenant_id=tenant_id,
+            actor_subject=actor_subject,
+            event_type="tenant.storage_validation_succeeded",
+            summary="Validated tenant storage for google_drive",
+            before=current,
+            after=updated,
+        )
+        return updated
 
     def _clear_stale_credentials(
         self,

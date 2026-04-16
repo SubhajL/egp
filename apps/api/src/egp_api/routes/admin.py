@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, require_support_role, resolve_request_tenant_id
@@ -47,6 +49,8 @@ class AdminTenantStorageSettingsResponse(BaseModel):
     account_email: str | None
     folder_label: str | None
     folder_path_hint: str | None
+    provider_folder_id: str | None
+    provider_folder_url: str | None
     managed_fallback_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
@@ -271,6 +275,8 @@ class UpdateTenantStorageSettingsRequest(BaseModel):
     account_email: str | None = None
     folder_label: str | None = None
     folder_path_hint: str | None = None
+    provider_folder_id: str | None = None
+    provider_folder_url: str | None = None
     managed_fallback_enabled: bool | None = None
     last_validated_at: str | None = None
     last_validation_error: str | None = None
@@ -292,6 +298,23 @@ class TestTenantStorageRequest(BaseModel):
     tenant_id: str | None = None
 
 
+class StartGoogleDriveOAuthRequest(BaseModel):
+    tenant_id: str | None = None
+
+
+class GoogleDriveOAuthStartResponse(BaseModel):
+    provider: str
+    authorization_url: str
+    state: str
+
+
+class SelectGoogleDriveFolderRequest(BaseModel):
+    tenant_id: str | None = None
+    folder_id: str = Field(min_length=1)
+    folder_label: str | None = None
+    folder_url: str | None = None
+
+
 class AdminInviteUserRequest(BaseModel):
     tenant_id: str | None = None
 
@@ -307,6 +330,22 @@ def _service_from_request(request: Request) -> AdminService:
 
 def _storage_service_from_request(request: Request) -> StorageSettingsService:
     return request.app.state.storage_settings_service
+
+
+def _accepts_html(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "application/json" not in accept
+
+
+def _storage_settings_redirect(request: Request, *, outcome: str) -> RedirectResponse:
+    web_base_url = str(getattr(request.app.state, "web_base_url", "http://localhost:3000")).rstrip(
+        "/"
+    )
+    query = urlencode({"provider": "google_drive", "status": outcome})
+    return RedirectResponse(
+        f"{web_base_url}/admin/storage?{query}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 def _audit_service_from_request(request: Request) -> AuditService:
@@ -714,6 +753,8 @@ def update_tenant_storage_settings(
             account_email=payload.account_email,
             folder_label=payload.folder_label,
             folder_path_hint=payload.folder_path_hint,
+            provider_folder_id=payload.provider_folder_id,
+            provider_folder_url=payload.provider_folder_url,
             managed_fallback_enabled=payload.managed_fallback_enabled,
             last_validated_at=payload.last_validated_at,
             last_validation_error=payload.last_validation_error,
@@ -744,6 +785,85 @@ def connect_tenant_storage(
             provider=payload.provider,
             credential_type=payload.credential_type,
             credentials=payload.credentials,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/google-drive/oauth/start", response_model=GoogleDriveOAuthStartResponse)
+def start_google_drive_oauth(
+    payload: StartGoogleDriveOAuthRequest,
+    request: Request,
+) -> GoogleDriveOAuthStartResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        result = service.start_google_drive_oauth(tenant_id=resolved_tenant_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return GoogleDriveOAuthStartResponse(**result)
+
+
+@router.get(
+    "/storage/google-drive/oauth/callback", response_model=AdminTenantStorageSettingsResponse
+)
+def handle_google_drive_oauth_callback(
+    request: Request,
+    code: str,
+    state: str,
+) -> AdminTenantStorageSettingsResponse | RedirectResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    auth_tenant_id = resolve_request_tenant_id(
+        request,
+        None,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.handle_google_drive_oauth_callback(
+            code=code,
+            state=state,
+            expected_tenant_id=auth_tenant_id,
+            actor_subject=_actor_subject_from_request(request),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if _accepts_html(request):
+        return _storage_settings_redirect(request, outcome="connected")
+    return _serialize_storage_settings(settings)
+
+
+@router.post("/storage/google-drive/folder", response_model=AdminTenantStorageSettingsResponse)
+def select_google_drive_folder(
+    payload: SelectGoogleDriveFolderRequest,
+    request: Request,
+) -> AdminTenantStorageSettingsResponse:
+    require_admin_role(request)
+    service = _storage_service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(
+        request,
+        payload.tenant_id,
+        allow_support_override=True,
+    )
+    try:
+        settings = service.select_google_drive_folder(
+            tenant_id=resolved_tenant_id,
+            folder_id=payload.folder_id,
+            folder_label=payload.folder_label,
+            folder_url=payload.folder_url,
             actor_subject=_actor_subject_from_request(request),
         )
     except KeyError as exc:

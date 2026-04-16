@@ -96,6 +96,8 @@ TENANT_STORAGE_CONFIGS_TABLE = Table(
     Column("account_email", String, nullable=True),
     Column("folder_label", String, nullable=True),
     Column("folder_path_hint", String, nullable=True),
+    Column("provider_folder_id", String, nullable=True),
+    Column("provider_folder_url", String, nullable=True),
     Column("managed_fallback_enabled", Boolean, nullable=False, default=False),
     Column("last_validated_at", DateTime(timezone=True), nullable=True),
     Column("last_validation_error", String, nullable=True),
@@ -163,6 +165,8 @@ class TenantStorageSettingsRecord:
     account_email: str | None
     folder_label: str | None
     folder_path_hint: str | None
+    provider_folder_id: str | None
+    provider_folder_url: str | None
     managed_fallback_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
@@ -180,6 +184,8 @@ class TenantStorageConfigRecord:
     account_email: str | None
     folder_label: str | None
     folder_path_hint: str | None
+    provider_folder_id: str | None
+    provider_folder_url: str | None
     managed_fallback_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
@@ -257,6 +263,16 @@ def _storage_settings_from_mapping(row) -> TenantStorageSettingsRecord:
             if row["folder_path_hint"] is not None
             else None
         ),
+        provider_folder_id=(
+            str(row["provider_folder_id"])
+            if "provider_folder_id" in row and row["provider_folder_id"] is not None
+            else None
+        ),
+        provider_folder_url=(
+            str(row["provider_folder_url"])
+            if "provider_folder_url" in row and row["provider_folder_url"] is not None
+            else None
+        ),
         managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
         last_validated_at=_to_iso(row["last_validated_at"]),
         last_validation_error=(
@@ -294,6 +310,16 @@ def _storage_config_from_mapping(row) -> TenantStorageConfigRecord:
             if row["folder_path_hint"] is not None
             else None
         ),
+        provider_folder_id=(
+            str(row["provider_folder_id"])
+            if row["provider_folder_id"] is not None
+            else None
+        ),
+        provider_folder_url=(
+            str(row["provider_folder_url"])
+            if row["provider_folder_url"] is not None
+            else None
+        ),
         managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
         last_validated_at=_to_iso(row["last_validated_at"]),
         last_validation_error=(
@@ -327,6 +353,8 @@ def _compose_storage_settings(
         account_email=config.account_email,
         folder_label=config.folder_label,
         folder_path_hint=config.folder_path_hint,
+        provider_folder_id=config.provider_folder_id,
+        provider_folder_url=config.provider_folder_url,
         managed_fallback_enabled=config.managed_fallback_enabled,
         last_validated_at=config.last_validated_at,
         last_validation_error=config.last_validation_error,
@@ -570,6 +598,8 @@ class SqlAdminRepository:
                 account_email=None,
                 folder_label=None,
                 folder_path_hint=None,
+                provider_folder_id=None,
+                provider_folder_url=None,
                 managed_fallback_enabled=False,
                 last_validated_at=None,
                 last_validation_error=None,
@@ -587,6 +617,8 @@ class SqlAdminRepository:
         account_email: str | None = None,
         folder_label: str | None = None,
         folder_path_hint: str | None = None,
+        provider_folder_id: str | None = None,
+        provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
@@ -598,6 +630,8 @@ class SqlAdminRepository:
             account_email=account_email,
             folder_label=folder_label,
             folder_path_hint=folder_path_hint,
+            provider_folder_id=provider_folder_id,
+            provider_folder_url=provider_folder_url,
             managed_fallback_enabled=managed_fallback_enabled,
             last_validated_at=last_validated_at,
             last_validation_error=last_validation_error,
@@ -613,6 +647,8 @@ class SqlAdminRepository:
         account_email: str | None = None,
         folder_label: str | None = None,
         folder_path_hint: str | None = None,
+        provider_folder_id: str | None = None,
+        provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
@@ -622,6 +658,8 @@ class SqlAdminRepository:
         normalized_account_email = _normalize_optional_text(account_email)
         normalized_folder_label = _normalize_optional_text(folder_label)
         normalized_folder_path_hint = _normalize_optional_text(folder_path_hint)
+        normalized_provider_folder_id = _normalize_optional_text(provider_folder_id)
+        normalized_provider_folder_url = _normalize_optional_text(provider_folder_url)
         normalized_last_validation_error = _normalize_optional_text(
             last_validation_error
         )
@@ -648,6 +686,8 @@ class SqlAdminRepository:
                         account_email=normalized_account_email,
                         folder_label=normalized_folder_label,
                         folder_path_hint=normalized_folder_path_hint,
+                        provider_folder_id=normalized_provider_folder_id,
+                        provider_folder_url=normalized_provider_folder_url,
                         managed_fallback_enabled=(
                             False
                             if managed_fallback_enabled is None
@@ -684,6 +724,16 @@ class SqlAdminRepository:
                             existing["folder_path_hint"]
                             if folder_path_hint is None
                             else normalized_folder_path_hint
+                        ),
+                        provider_folder_id=(
+                            existing["provider_folder_id"]
+                            if provider_folder_id is None
+                            else normalized_provider_folder_id
+                        ),
+                        provider_folder_url=(
+                            existing["provider_folder_url"]
+                            if provider_folder_url is None
+                            else normalized_provider_folder_url
                         ),
                         managed_fallback_enabled=(
                             existing["managed_fallback_enabled"]

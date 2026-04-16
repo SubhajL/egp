@@ -94,6 +94,39 @@ def get_storage_credentials_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_google_drive_client_id(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_GOOGLE_DRIVE_CLIENT_ID", "").strip()
+    return raw or None
+
+
+def get_google_drive_client_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_GOOGLE_DRIVE_CLIENT_SECRET", "").strip()
+    return raw or None
+
+
+def get_google_drive_redirect_uri(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_GOOGLE_DRIVE_REDIRECT_URI", "").strip()
+    return raw or None
+
+
+def get_google_drive_scopes(override: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+    if override is not None:
+        return tuple(scope.strip() for scope in override if scope.strip())
+    raw = os.getenv("EGP_GOOGLE_DRIVE_SCOPES", "").strip()
+    if not raw:
+        return ()
+    return tuple(scope.strip() for scope in raw.split(",") if scope.strip())
+
+
 def get_internal_worker_token(override: str | None = None) -> str | None:
     if override is not None:
         value = override.strip()
