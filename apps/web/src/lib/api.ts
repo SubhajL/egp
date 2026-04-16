@@ -485,6 +485,8 @@ export type AdminTenantStorageSettings = {
   account_email: string | null;
   folder_label: string | null;
   folder_path_hint: string | null;
+  provider_folder_id: string | null;
+  provider_folder_url: string | null;
   managed_fallback_enabled: boolean;
   last_validated_at: string | null;
   last_validation_error: string | null;
@@ -1231,6 +1233,8 @@ export type UpdateTenantStorageSettingsInput = {
   account_email?: string;
   folder_label?: string;
   folder_path_hint?: string;
+  provider_folder_id?: string | null;
+  provider_folder_url?: string | null;
   managed_fallback_enabled?: boolean;
   last_validated_at?: string | null;
   last_validation_error?: string | null;
@@ -1250,6 +1254,23 @@ export type DisconnectTenantStorageInput = {
 
 export type TestTenantStorageWriteInput = {
   tenant_id?: string;
+};
+
+export type GoogleDriveOAuthStartResponse = {
+  provider: string;
+  authorization_url: string;
+  state: string;
+};
+
+export type StartGoogleDriveOAuthInput = {
+  tenant_id?: string;
+};
+
+export type SelectGoogleDriveFolderInput = {
+  tenant_id?: string;
+  folder_id: string;
+  folder_label?: string;
+  folder_url?: string;
 };
 
 export type CreateRuleProfileInput = {
@@ -1664,6 +1685,8 @@ export async function updateTenantStorageSettings(
       account_email: payload.account_email,
       folder_label: payload.folder_label,
       folder_path_hint: payload.folder_path_hint,
+      provider_folder_id: payload.provider_folder_id,
+      provider_folder_url: payload.provider_folder_url,
       managed_fallback_enabled: payload.managed_fallback_enabled,
       last_validated_at: payload.last_validated_at,
       last_validation_error: payload.last_validation_error,
@@ -1682,6 +1705,33 @@ export async function connectTenantStorage(
       provider: payload.provider,
       credential_type: payload.credential_type,
       credentials: payload.credentials,
+    }),
+  });
+}
+
+export async function startGoogleDriveOAuth(
+  payload: StartGoogleDriveOAuthInput = {},
+): Promise<GoogleDriveOAuthStartResponse> {
+  const url = buildUrl("/v1/admin/storage/google-drive/oauth/start", {});
+  return apiJsonRequest<GoogleDriveOAuthStartResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+    }),
+  });
+}
+
+export async function selectGoogleDriveFolder(
+  payload: SelectGoogleDriveFolderInput,
+): Promise<AdminTenantStorageSettings> {
+  const url = buildUrl("/v1/admin/storage/google-drive/folder", {});
+  return apiJsonRequest<AdminTenantStorageSettings>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      folder_id: payload.folder_id,
+      folder_label: payload.folder_label,
+      folder_url: payload.folder_url,
     }),
   });
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 
@@ -20,6 +21,67 @@ class ArtifactStore(Protocol):
     def delete(self, key: str) -> None: ...
 
     def download_url(self, key: str, *, expires_in: int = 300) -> str: ...
+
+
+class GoogleDriveClientProtocol(Protocol):
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        folder_id: str | None,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> dict[str, object]: ...
+
+    def download_file(self, *, access_token: str, file_id: str) -> bytes: ...
+
+    def delete_file(self, *, access_token: str, file_id: str) -> None: ...
+
+    def download_url(self, *, file_id: str) -> str: ...
+
+
+class GoogleDriveArtifactStore:
+    def __init__(
+        self,
+        *,
+        client: GoogleDriveClientProtocol,
+        access_token: str,
+        folder_id: str | None = None,
+    ) -> None:
+        self._client = client
+        self._access_token = access_token
+        self._folder_id = folder_id
+
+    def put_bytes(
+        self,
+        *,
+        key: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> str:
+        name = PurePosixPath(key.lstrip("/") or "artifact").name
+        result = self._client.upload_file(
+            access_token=self._access_token,
+            folder_id=self._folder_id,
+            name=name,
+            data=data,
+            content_type=content_type,
+        )
+        file_id = result.get("id")
+        if not file_id:
+            raise ValueError("Google Drive upload response did not include file id")
+        return str(file_id)
+
+    def get_bytes(self, key: str) -> bytes:
+        return self._client.download_file(access_token=self._access_token, file_id=key)
+
+    def delete(self, key: str) -> None:
+        self._client.delete_file(access_token=self._access_token, file_id=key)
+
+    def download_url(self, key: str, *, expires_in: int = 300) -> str:
+        del expires_in
+        return self._client.download_url(file_id=key)
 
 
 class LocalArtifactStore:

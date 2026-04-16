@@ -11,6 +11,8 @@ import {
   connectTenantStorage,
   disconnectTenantStorage,
   localizeApiError,
+  selectGoogleDriveFolder,
+  startGoogleDriveOAuth,
   testTenantStorageWrite,
   updateTenantStorageSettings,
 } from "@/lib/api";
@@ -58,6 +60,8 @@ export default function AdminStoragePage() {
   const [credentialType, setCredentialType] = useState("oauth_tokens");
   const [accessToken, setAccessToken] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
+  const [providerFolderId, setProviderFolderId] = useState("");
+  const [providerFolderUrl, setProviderFolderUrl] = useState("");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -70,9 +74,12 @@ export default function AdminStoragePage() {
     setFolderPathHint(data.folder_path_hint ?? "");
     setManagedFallbackEnabled(data.managed_fallback_enabled);
     setCredentialType(data.credential_type ?? "oauth_tokens");
+    setProviderFolderId(data.provider_folder_id ?? "");
+    setProviderFolderUrl(data.provider_folder_url ?? "");
   }, [data]);
 
   const externalProviderSelected = provider !== "managed";
+  const googleDriveSelected = provider === "google_drive";
 
   async function refreshStorageSettings() {
     await queryClient.invalidateQueries({ queryKey: ["tenant-storage-settings"] });
@@ -141,6 +148,52 @@ export default function AdminStoragePage() {
     } catch (mutationError) {
       setErrorMessage(
         localizeApiError(mutationError, "ไม่สามารถบันทึก credentials สำหรับ storage ได้"),
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleStartGoogleDriveOAuth() {
+    setBusyAction("google-oauth");
+    setStatusMessage(null);
+    setErrorMessage(null);
+    try {
+      if (provider !== "google_drive") {
+        await updateTenantStorageSettings({
+          provider: "google_drive",
+          connection_status: "pending_setup",
+          account_email: accountEmail.trim(),
+          folder_label: folderLabel.trim(),
+          folder_path_hint: folderPathHint.trim(),
+          managed_fallback_enabled: managedFallbackEnabled,
+        });
+      }
+      const result = await startGoogleDriveOAuth();
+      window.location.href = result.authorization_url;
+    } catch (mutationError) {
+      setErrorMessage(
+        localizeApiError(mutationError, "ไม่สามารถเริ่มเชื่อมต่อ Google Drive ได้"),
+      );
+      setBusyAction(null);
+    }
+  }
+
+  async function handleSelectGoogleDriveFolder() {
+    setBusyAction("google-folder");
+    setStatusMessage(null);
+    setErrorMessage(null);
+    try {
+      await selectGoogleDriveFolder({
+        folder_id: providerFolderId.trim(),
+        folder_label: folderLabel.trim(),
+        folder_url: providerFolderUrl.trim(),
+      });
+      await refreshStorageSettings();
+      setStatusMessage("บันทึกโฟลเดอร์ Google Drive แล้ว");
+    } catch (mutationError) {
+      setErrorMessage(
+        localizeApiError(mutationError, "ไม่สามารถบันทึกโฟลเดอร์ Google Drive ได้"),
       );
     } finally {
       setBusyAction(null);
@@ -338,12 +391,67 @@ export default function AdminStoragePage() {
                       Credentials และ validation
                     </h2>
                     <p className="mt-1 text-sm text-[var(--text-muted)]">
-                      Slice นี้ยังไม่เปิด OAuth flow จริง แต่รองรับการบันทึก credentials แบบเข้ารหัส,
-                      การตัดการเชื่อมต่อ, และ server-side validation เพื่อเตรียมต่อไปยัง Google Drive,
-                      OneDrive และ local agent
+                      Google Drive รองรับ OAuth, folder ID และ server-side validation แล้ว ส่วน OneDrive
+                      และ local agent ยังใช้ credential form ชั่วคราวจนกว่า provider slice ถัดไปจะพร้อม
                     </p>
                   </div>
                 </div>
+
+                {googleDriveSelected ? (
+                  <div className="space-y-4 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        disabled={busyAction !== null}
+                        onClick={handleStartGoogleDriveOAuth}
+                        className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                      >
+                        {busyAction === "google-oauth"
+                          ? "กำลังเปิด Google..."
+                          : "เชื่อมต่อด้วย Google OAuth"}
+                      </button>
+                      <span className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm text-[var(--text-muted)]">
+                        {data.has_credentials ? "มี OAuth tokens แล้ว" : "ยังไม่ได้เชื่อมต่อ OAuth"}
+                      </span>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <label className="block space-y-2">
+                        <span className="text-sm font-medium text-[var(--text-secondary)]">
+                          Google Drive folder ID
+                        </span>
+                        <input
+                          value={providerFolderId}
+                          onChange={(event) => setProviderFolderId(event.target.value)}
+                          placeholder="1AbCdEf..."
+                          disabled={busyAction !== null}
+                          className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
+                        />
+                      </label>
+                      <label className="block space-y-2">
+                        <span className="text-sm font-medium text-[var(--text-secondary)]">
+                          Google Drive folder URL
+                        </span>
+                        <input
+                          value={providerFolderUrl}
+                          onChange={(event) => setProviderFolderUrl(event.target.value)}
+                          placeholder="https://drive.google.com/drive/folders/..."
+                          disabled={busyAction !== null}
+                          className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
+                        />
+                      </label>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={busyAction !== null || !providerFolderId.trim()}
+                      onClick={handleSelectGoogleDriveFolder}
+                      className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] disabled:opacity-60"
+                    >
+                      {busyAction === "google-folder" ? "กำลังบันทึก..." : "บันทึก Google Drive folder"}
+                    </button>
+                  </div>
+                ) : null}
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="block space-y-2">
@@ -353,7 +461,7 @@ export default function AdminStoragePage() {
                     <input
                       value={credentialType}
                       onChange={(event) => setCredentialType(event.target.value)}
-                      disabled={!externalProviderSelected || busyAction !== null}
+                      disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
                       className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                     />
                   </label>
@@ -365,7 +473,7 @@ export default function AdminStoragePage() {
                       type="password"
                       value={accessToken}
                       onChange={(event) => setAccessToken(event.target.value)}
-                      disabled={!externalProviderSelected || busyAction !== null}
+                      disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
                       placeholder="access-token"
                       className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                     />
@@ -380,7 +488,7 @@ export default function AdminStoragePage() {
                     type="password"
                     value={refreshToken}
                     onChange={(event) => setRefreshToken(event.target.value)}
-                    disabled={!externalProviderSelected || busyAction !== null}
+                    disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
                     placeholder="refresh-token"
                     className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none disabled:opacity-60"
                   />
@@ -389,7 +497,7 @@ export default function AdminStoragePage() {
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
-                    disabled={!externalProviderSelected || busyAction !== null}
+                    disabled={!externalProviderSelected || googleDriveSelected || busyAction !== null}
                     onClick={handleConnect}
                     className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                   >
@@ -449,6 +557,12 @@ export default function AdminStoragePage() {
                         {data.credential_updated_at ? formatThaiDate(data.credential_updated_at) : "-"}
                       </p>
                       <p className="mt-1">
+                        Provider folder ID: {data.provider_folder_id ?? "-"}
+                      </p>
+                      <p className="mt-1">
+                        Provider folder URL: {data.provider_folder_url ?? "-"}
+                      </p>
+                      <p className="mt-1">
                         ตรวจสอบล่าสุด:{" "}
                         {data.last_validated_at ? formatThaiDate(data.last_validated_at) : "-"}
                       </p>
@@ -459,8 +573,8 @@ export default function AdminStoragePage() {
                       </p>
                     ) : null}
                     <p className="text-sm text-[var(--text-muted)]">
-                      OAuth จริง, provider folder picker, token refresh, และ runtime artifact upload
-                      per tenant จะตามมาใน slice ถัดไป
+                      Runtime artifact upload per tenant จะตามมาใน slice PR4; หน้านี้เตรียม OAuth,
+                      folder metadata และ validation สำหรับ Google Drive แล้ว
                     </p>
                   </div>
                 </div>
