@@ -2,7 +2,7 @@
 
 import { use, useState } from "react";
 import Link from "next/link";
-import { ChevronRight, Download, FileText } from "lucide-react";
+import { AlertTriangle, ChevronRight, Download, FileText } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { STATE_BADGE_CONFIG, PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
@@ -342,7 +342,20 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] lg:col-span-4">
               <h2 className="mb-4 text-lg font-bold text-[var(--text-primary)]">เอกสาร</h2>
               {downloadError ? (
-                <p className="mb-3 text-sm text-[var(--badge-red-text)]">{downloadError}</p>
+                <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                    <div>
+                      <p className="font-semibold">ดาวน์โหลดเอกสารไม่สำเร็จ</p>
+                      <p className="mt-1">{downloadError}</p>
+                      <p className="mt-1 text-xs text-red-700">
+                        หากเอกสารถูกเก็บไว้บน Google Drive หรือ OneDrive ให้ตรวจสอบแท็บ
+                        {" "}Support ในหน้า Admin หรือติดต่อทีม support เพื่อเช็กการเชื่อมต่อของ
+                        {" "}tenant นี้
+                      </p>
+                    </div>
+                  </div>
+                </div>
               ) : null}
               {isDocumentsError ? (
                 <p className="text-sm text-[var(--badge-red-text)]">
@@ -386,6 +399,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                         onClick={() => void handleDownload(document.id)}
                         disabled={downloadingDocumentId === document.id}
                         className="shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-surface-hover)] hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-label={
+                          downloadingDocumentId === document.id
+                            ? "กำลังเตรียมดาวน์โหลดเอกสาร"
+                            : "ดาวน์โหลดเอกสาร"
+                        }
                       >
                         <Download className="size-4" />
                       </button>

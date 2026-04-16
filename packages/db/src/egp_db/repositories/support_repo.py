@@ -11,7 +11,12 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import create_shared_engine
 from egp_db.db_utils import normalize_database_url, normalize_uuid_string
-from egp_db.repositories.admin_repo import TENANTS_TABLE, TENANT_SETTINGS_TABLE
+from egp_db.repositories.admin_repo import (
+    TENANTS_TABLE,
+    TENANT_SETTINGS_TABLE,
+    TENANT_STORAGE_CONFIGS_TABLE,
+    TENANT_STORAGE_CREDENTIALS_TABLE,
+)
 from egp_db.repositories.billing_repo import (
     BILLING_PAYMENTS_TABLE,
     BILLING_PAYMENT_REQUESTS_TABLE,
@@ -102,6 +107,27 @@ class SupportTriageSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class SupportStorageDiagnostics:
+    provider: str
+    connection_status: str
+    account_email: str | None
+    provider_folder_id: str | None
+    provider_folder_url: str | None
+    managed_fallback_enabled: bool
+    has_credentials: bool
+    last_validated_at: str | None
+    last_validation_error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SupportAlert:
+    severity: str
+    code: str
+    title: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
 class SupportFailedRunRecord:
     id: str
     trigger_type: str
@@ -142,6 +168,8 @@ class SupportSummary:
     tenant: SupportTenantRecord
     triage: SupportTriageSummary
     cost_summary: SupportCostSummary
+    storage_diagnostics: SupportStorageDiagnostics
+    alerts: list[SupportAlert]
     recent_failed_runs: list[SupportFailedRunRecord]
     pending_reviews: list[SupportPendingReviewRecord]
     failed_webhooks: list[SupportFailedWebhookRecord]
@@ -233,6 +261,98 @@ def _billing_issue_from_mapping(row: RowMapping) -> SupportBillingIssueRecord:
         due_at=_to_iso(row["due_at"]),
         created_at=_to_iso(row["created_at"]) or "",
     )
+
+
+def _storage_diagnostics_from_mapping(
+    row: RowMapping | None,
+) -> SupportStorageDiagnostics:
+    if row is None:
+        return SupportStorageDiagnostics(
+            provider="managed",
+            connection_status="managed",
+            account_email=None,
+            provider_folder_id=None,
+            provider_folder_url=None,
+            managed_fallback_enabled=False,
+            has_credentials=False,
+            last_validated_at=None,
+            last_validation_error=None,
+        )
+    return SupportStorageDiagnostics(
+        provider=str(row["provider"]),
+        connection_status=str(row["connection_status"]),
+        account_email=str(row["account_email"])
+        if row["account_email"] is not None
+        else None,
+        provider_folder_id=(
+            str(row["provider_folder_id"])
+            if row["provider_folder_id"] is not None
+            else None
+        ),
+        provider_folder_url=(
+            str(row["provider_folder_url"])
+            if row["provider_folder_url"] is not None
+            else None
+        ),
+        managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        has_credentials=bool(row["has_credentials"]),
+        last_validated_at=_to_iso(row["last_validated_at"]),
+        last_validation_error=(
+            str(row["last_validation_error"])
+            if row["last_validation_error"] is not None
+            else None
+        ),
+    )
+
+
+def _build_storage_alerts(
+    diagnostics: SupportStorageDiagnostics,
+) -> list[SupportAlert]:
+    if diagnostics.provider == "managed":
+        return []
+
+    alerts: list[SupportAlert] = []
+    if diagnostics.connection_status == "error":
+        detail = f"{diagnostics.provider} is in error state"
+        if diagnostics.last_validation_error:
+            detail += f": {diagnostics.last_validation_error}"
+        alerts.append(
+            SupportAlert(
+                severity="error",
+                code="storage_connection_error",
+                title="External storage needs attention",
+                detail=detail,
+            )
+        )
+    elif diagnostics.connection_status == "disconnected":
+        alerts.append(
+            SupportAlert(
+                severity="error",
+                code="storage_disconnected",
+                title="External storage is disconnected",
+                detail=f"Support should reconnect {diagnostics.provider} for this tenant",
+            )
+        )
+    elif diagnostics.connection_status == "pending_setup":
+        alerts.append(
+            SupportAlert(
+                severity="warning",
+                code="storage_setup_incomplete",
+                title="External storage setup is incomplete",
+                detail=f"Support should finish {diagnostics.provider} setup for this tenant",
+            )
+        )
+
+    if not diagnostics.has_credentials:
+        alerts.append(
+            SupportAlert(
+                severity="warning",
+                code="storage_credentials_missing",
+                title="Storage credentials are missing",
+                detail=f"Support should reconnect {diagnostics.provider} credentials for this tenant",
+            )
+        )
+    return alerts
 
 
 class SqlSupportRepository:
@@ -537,6 +657,40 @@ class SqlSupportRepository:
             window_days=normalized_window_days,
         )
         with self._engine.connect() as connection:
+            storage_row = (
+                connection.execute(
+                    select(
+                        TENANT_STORAGE_CONFIGS_TABLE.c.provider,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.connection_status,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.account_email,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.provider_folder_id,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.provider_folder_url,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.managed_fallback_enabled,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.last_validated_at,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.last_validation_error,
+                        case(
+                            (TENANT_STORAGE_CREDENTIALS_TABLE.c.id.is_not(None), True),
+                            else_=False,
+                        ).label("has_credentials"),
+                    )
+                    .select_from(
+                        TENANT_STORAGE_CONFIGS_TABLE.outerjoin(
+                            TENANT_STORAGE_CREDENTIALS_TABLE,
+                            and_(
+                                TENANT_STORAGE_CREDENTIALS_TABLE.c.tenant_id
+                                == TENANT_STORAGE_CONFIGS_TABLE.c.tenant_id,
+                                TENANT_STORAGE_CREDENTIALS_TABLE.c.provider
+                                == TENANT_STORAGE_CONFIGS_TABLE.c.provider,
+                            ),
+                        )
+                    )
+                    .where(
+                        TENANT_STORAGE_CONFIGS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
             failed_runs_recent = _count(
                 connection.execute(
                     select(func.count())
@@ -656,6 +810,7 @@ class SqlSupportRepository:
                 .all()
             )
 
+        storage_diagnostics = _storage_diagnostics_from_mapping(storage_row)
         return SupportSummary(
             tenant=tenant,
             triage=SupportTriageSummary(
@@ -665,6 +820,8 @@ class SqlSupportRepository:
                 outstanding_billing_records=outstanding_billing_records,
             ),
             cost_summary=cost_summary,
+            storage_diagnostics=storage_diagnostics,
+            alerts=_build_storage_alerts(storage_diagnostics),
             recent_failed_runs=[
                 _failed_run_from_mapping(row) for row in failed_run_rows
             ],

@@ -436,6 +436,99 @@ def _create_billing_record(
     return response.json()
 
 
+def _seed_support_storage_config(
+    client: TestClient,
+    *,
+    tenant_id: str = TENANT_ID,
+    provider: str = "google_drive",
+    connection_status: str = "error",
+    has_credentials: bool = False,
+    managed_fallback_enabled: bool = True,
+    last_validation_error: str | None = "google refresh token expired",
+) -> None:
+    now = datetime.now(UTC).isoformat()
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_storage_configs (
+                    id,
+                    tenant_id,
+                    provider,
+                    connection_status,
+                    account_email,
+                    folder_label,
+                    folder_path_hint,
+                    provider_folder_id,
+                    provider_folder_url,
+                    managed_fallback_enabled,
+                    last_validated_at,
+                    last_validation_error,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :provider,
+                    :connection_status,
+                    'ops@example.com',
+                    'Acme TOR',
+                    'Drive/Acme TOR',
+                    'provider-folder-id',
+                    'https://example.com/provider-folder',
+                    :managed_fallback_enabled,
+                    NULL,
+                    :last_validation_error,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": tenant_id,
+                "provider": provider,
+                "connection_status": connection_status,
+                "managed_fallback_enabled": managed_fallback_enabled,
+                "last_validation_error": last_validation_error,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        if has_credentials:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO tenant_storage_credentials (
+                        id,
+                        tenant_id,
+                        provider,
+                        credential_type,
+                        encrypted_payload,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :id,
+                        :tenant_id,
+                        :provider,
+                        'oauth_tokens',
+                        :encrypted_payload,
+                        :created_at,
+                        :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "tenant_id": tenant_id,
+                    "provider": provider,
+                    "encrypted_payload": "encrypted-payload",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+
+
 def test_owner_can_start_free_trial_once_for_tenant(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client)
@@ -2207,6 +2300,44 @@ def test_admin_support_summary_returns_triage_and_cost_report(tmp_path) -> None:
         body["billing_issues"][0]["record_number"]
         == billing_detail["record"]["record_number"]
     )
+
+
+def test_admin_support_summary_includes_storage_diagnostics_and_alerts(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_support_storage_config(client)
+
+    summary = client.get(f"/v1/admin/support/tenants/{TENANT_ID}/summary")
+
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["storage_diagnostics"] == {
+        "provider": "google_drive",
+        "connection_status": "error",
+        "account_email": "ops@example.com",
+        "provider_folder_id": "provider-folder-id",
+        "provider_folder_url": "https://example.com/provider-folder",
+        "managed_fallback_enabled": True,
+        "has_credentials": False,
+        "last_validated_at": None,
+        "last_validation_error": "google refresh token expired",
+    }
+    assert body["alerts"] == [
+        {
+            "severity": "error",
+            "code": "storage_connection_error",
+            "title": "External storage needs attention",
+            "detail": "google_drive is in error state: google refresh token expired",
+        },
+        {
+            "severity": "warning",
+            "code": "storage_credentials_missing",
+            "title": "Storage credentials are missing",
+            "detail": "Support should reconnect google_drive credentials for this tenant",
+        },
+    ]
 
 
 def test_support_role_can_access_selected_tenant_context(tmp_path) -> None:

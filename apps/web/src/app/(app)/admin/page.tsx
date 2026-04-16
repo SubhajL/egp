@@ -3,7 +3,18 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Building2, CreditCard, LifeBuoy, Mail, ScrollText, Search, Users, Webhook } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  CreditCard,
+  HardDrive,
+  LifeBuoy,
+  Mail,
+  ScrollText,
+  Search,
+  Users,
+  Webhook,
+} from "lucide-react";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
@@ -62,6 +73,34 @@ function SummaryCard({
       <p className="mt-1 text-sm text-[var(--text-muted)]">{hint}</p>
     </div>
   );
+}
+
+function supportAlertStyles(severity: string): string {
+  if (severity === "error") {
+    return "border-red-200 bg-red-50 text-red-800";
+  }
+  if (severity === "warning") {
+    return "border-amber-200 bg-amber-50 text-amber-900";
+  }
+  return "border-[var(--border-default)] bg-[var(--bg-surface-secondary)] text-[var(--text-secondary)]";
+}
+
+function supportStorageProviderLabel(provider: string): string {
+  return provider === "managed" ? "managed storage" : provider;
+}
+
+function supportStorageCredentialLabel(provider: string, hasCredentials: boolean): string {
+  if (provider === "managed") {
+    return "managed";
+  }
+  return hasCredentials ? "พร้อม" : "ยังขาด";
+}
+
+function supportStorageFallbackLabel(provider: string, managedFallbackEnabled: boolean): string {
+  if (provider === "managed") {
+    return "-";
+  }
+  return managedFallbackEnabled ? "เปิด" : "ปิด";
 }
 
 function UserRow({
@@ -597,6 +636,95 @@ export default function AdminPage() {
                       value={supportSummaryData.triage.outstanding_billing_records}
                       hint="บิลที่ยังไม่เข้าสถานะสิ้นสุด"
                     />
+                  </div>
+
+                  <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                    <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                      <div className="flex items-start gap-3">
+                        <HardDrive className="mt-0.5 size-5 text-primary" />
+                        <div className="space-y-3">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                              Storage Health
+                            </p>
+                            <h3 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                              {supportStorageProviderLabel(
+                                supportSummaryData.storage_diagnostics.provider,
+                              )}
+                            </h3>
+                          </div>
+                          <div className="grid gap-3 text-sm text-[var(--text-secondary)] md:grid-cols-2">
+                            <p>
+                              Connection: {supportSummaryData.storage_diagnostics.connection_status}
+                            </p>
+                            <p>
+                              Credentials:{" "}
+                              {supportStorageCredentialLabel(
+                                supportSummaryData.storage_diagnostics.provider,
+                                supportSummaryData.storage_diagnostics.has_credentials,
+                              )}
+                            </p>
+                            <p>
+                              Fallback:{" "}
+                              {supportStorageFallbackLabel(
+                                supportSummaryData.storage_diagnostics.provider,
+                                supportSummaryData.storage_diagnostics.managed_fallback_enabled,
+                              )}
+                            </p>
+                            <p>
+                              Account: {supportSummaryData.storage_diagnostics.account_email ?? "-"}
+                            </p>
+                            <p>
+                              Folder ID:{" "}
+                              {supportSummaryData.storage_diagnostics.provider_folder_id ?? "-"}
+                            </p>
+                            <p>
+                              Validated:{" "}
+                              {supportSummaryData.storage_diagnostics.last_validated_at
+                                ? formatThaiDate(
+                                    supportSummaryData.storage_diagnostics.last_validated_at,
+                                  )
+                                : "-"}
+                            </p>
+                          </div>
+                          {supportSummaryData.storage_diagnostics.last_validation_error ? (
+                            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                              {supportSummaryData.storage_diagnostics.last_validation_error}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                          Support Alerts
+                        </p>
+                        <div className="mt-3 space-y-3">
+                          {supportSummaryData.alerts.length > 0 ? (
+                            supportSummaryData.alerts.map((alert) => (
+                              <div
+                                key={`${alert.code}-${alert.detail}`}
+                                className={`rounded-2xl border px-4 py-3 ${supportAlertStyles(alert.severity)}`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                                  <div>
+                                    <p className="font-semibold">{alert.title}</p>
+                                    <p className="mt-1 text-sm">{alert.detail}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-sm text-[var(--text-muted)]">
+                              ยังไม่มี storage alerts ที่ต้องติดตามในตอนนี้
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
