@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_api.services.google_drive import GoogleDriveOAuthConfig
+from egp_api.services.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ProcurementType, ProjectState
 
@@ -24,6 +25,8 @@ def _create_client(
     auth_required: bool = False,
     google_drive_client=None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+    onedrive_client=None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
 ) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase4-admin.sqlite3'}"
     return TestClient(
@@ -35,6 +38,8 @@ def _create_client(
             storage_credentials_secret="phase4-storage-secret",
             google_drive_oauth_config=google_drive_oauth_config,
             google_drive_client=google_drive_client,
+            onedrive_oauth_config=onedrive_oauth_config,
+            onedrive_client=onedrive_client,
         )
     )
 
@@ -622,6 +627,19 @@ def _fake_google_id_token(email: str) -> str:
     )
 
 
+def _fake_onedrive_id_token(email: str) -> str:
+    def encode(payload: bytes) -> str:
+        return base64.urlsafe_b64encode(payload).decode("utf-8").rstrip("=")
+
+    return ".".join(
+        [
+            encode(b'{"alg":"none"}'),
+            encode((f'{{"preferred_username":"{email}"}}').encode("utf-8")),
+            "",
+        ]
+    )
+
+
 class FakeGoogleDriveClient:
     def __init__(self) -> None:
         self.exchange_calls: list[dict[str, str]] = []
@@ -679,6 +697,105 @@ class FakeGoogleDriveClient:
         self,
         *,
         config: GoogleDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        del config
+        self.refresh_calls.append(refresh_token)
+        return dict(self.refresh_response)
+
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        folder_id: str | None,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        if self.upload_exception is not None:
+            raise self.upload_exception
+        self.upload_calls.append(
+            {
+                "access_token": access_token,
+                "folder_id": folder_id,
+                "name": name,
+                "data": data,
+                "content_type": content_type,
+            }
+        )
+        return dict(self.upload_response)
+
+
+def _onedrive_oauth_config() -> OneDriveOAuthConfig:
+    return OneDriveOAuthConfig(
+        client_id="onedrive-client-id",
+        client_secret="onedrive-client-secret",
+        redirect_uri="http://api.test/v1/admin/storage/onedrive/oauth/callback",
+        scopes=(
+            "openid",
+            "email",
+            "offline_access",
+            "Files.ReadWrite",
+        ),
+    )
+
+
+class FakeOneDriveClient:
+    def __init__(self) -> None:
+        self.exchange_calls: list[dict[str, str]] = []
+        self.refresh_calls: list[str] = []
+        self.upload_calls: list[dict[str, object]] = []
+        self.exchange_response: dict[str, object] = {
+            "access_token": "onedrive-access-token",
+            "refresh_token": "onedrive-refresh-token",
+            "expires_in": 3600,
+            "scope": "openid email offline_access Files.ReadWrite",
+            "id_token": _fake_onedrive_id_token("ops@example.com"),
+        }
+        self.refresh_response: dict[str, object] = {
+            "access_token": "refreshed-onedrive-access-token",
+            "expires_in": 3600,
+        }
+        self.upload_response: dict[str, object] = {
+            "id": "validation-onedrive-file-id",
+        }
+        self.upload_exception: Exception | None = None
+
+    def build_authorization_url(
+        self,
+        *,
+        config: OneDriveOAuthConfig,
+        state: str,
+    ) -> str:
+        from urllib.parse import urlencode
+
+        return (
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"
+            + urlencode(
+                {
+                    "client_id": config.client_id,
+                    "redirect_uri": config.redirect_uri,
+                    "response_type": "code",
+                    "response_mode": "query",
+                    "scope": " ".join(config.scopes),
+                    "state": state,
+                }
+            )
+        )
+
+    def exchange_code(
+        self,
+        *,
+        config: OneDriveOAuthConfig,
+        code: str,
+    ) -> dict[str, object]:
+        self.exchange_calls.append({"client_id": config.client_id, "code": code})
+        return dict(self.exchange_response)
+
+    def refresh_access_token(
+        self,
+        *,
+        config: OneDriveOAuthConfig,
         refresh_token: str,
     ) -> dict[str, object]:
         del config
@@ -1510,6 +1627,253 @@ def test_storage_test_write_marks_error_when_credentials_missing(tmp_path) -> No
     assert current.json()["connection_status"] == "error"
     assert current.json()["last_validation_error"] is not None
     assert "credentials" in current.json()["last_validation_error"]
+
+
+def test_onedrive_oauth_start_returns_microsoft_authorization_url(tmp_path) -> None:
+    onedrive_client = FakeOneDriveClient()
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+
+    response = client.post(
+        "/v1/admin/storage/onedrive/oauth/start",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "onedrive"
+    assert body["authorization_url"].startswith(
+        "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?"
+    )
+    assert "client_id=onedrive-client-id" in body["authorization_url"]
+    assert "Files.ReadWrite" in body["authorization_url"]
+    assert body["state"]
+
+
+def test_onedrive_oauth_callback_exchanges_code_and_stores_tokens(tmp_path) -> None:
+    onedrive_client = FakeOneDriveClient()
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+    start = client.post(
+        "/v1/admin/storage/onedrive/oauth/start",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+    assert start.status_code == 200
+
+    callback = client.get(
+        "/v1/admin/storage/onedrive/oauth/callback",
+        headers=_auth_headers(role="owner"),
+        params={"code": "onedrive-auth-code", "state": start.json()["state"]},
+    )
+
+    assert callback.status_code == 200
+    body = callback.json()
+    assert body["provider"] == "onedrive"
+    assert body["connection_status"] == "pending_setup"
+    assert body["account_email"] == "ops@example.com"
+    assert body["has_credentials"] is True
+    assert body["credential_type"] == "oauth_tokens"
+    assert onedrive_client.exchange_calls == [
+        {"client_id": "onedrive-client-id", "code": "onedrive-auth-code"}
+    ]
+
+    with client.app.state.db_engine.connect() as connection:
+        encrypted_payload = connection.execute(
+            text(
+                """
+                SELECT encrypted_payload
+                FROM tenant_storage_credentials
+                WHERE tenant_id = :tenant_id AND provider = 'onedrive'
+                """
+            ),
+            {"tenant_id": TENANT_ID},
+        ).scalar_one()
+    assert "onedrive-refresh-token" not in encrypted_payload
+    assert "onedrive-access-token" not in encrypted_payload
+
+
+def test_onedrive_oauth_callback_redirects_browser_to_storage_page(tmp_path) -> None:
+    onedrive_client = FakeOneDriveClient()
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+    start = client.post(
+        "/v1/admin/storage/onedrive/oauth/start",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+    assert start.status_code == 200
+
+    callback = client.get(
+        "/v1/admin/storage/onedrive/oauth/callback",
+        headers={
+            **_auth_headers(role="owner"),
+            "accept": "text/html,application/xhtml+xml",
+        },
+        params={"code": "onedrive-auth-code", "state": start.json()["state"]},
+        follow_redirects=False,
+    )
+
+    assert callback.status_code == 303
+    assert (
+        callback.headers["location"]
+        == "http://localhost:3000/admin/storage?provider=onedrive&status=connected"
+    )
+
+
+def test_onedrive_folder_selection_persists_folder_metadata(tmp_path) -> None:
+    onedrive_client = FakeOneDriveClient()
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+
+    response = client.post(
+        "/v1/admin/storage/onedrive/folder",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "folder_id": "onedrive-folder-id",
+            "folder_label": "Acme TOR Folder",
+            "folder_url": "https://onedrive.live.com/?id=onedrive-folder-id",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "onedrive"
+    assert body["connection_status"] == "pending_setup"
+    assert body["folder_label"] == "Acme TOR Folder"
+    assert body["provider_folder_id"] == "onedrive-folder-id"
+    assert (
+        body["provider_folder_url"]
+        == "https://onedrive.live.com/?id=onedrive-folder-id"
+    )
+
+
+def test_onedrive_test_write_refreshes_token_and_uploads_validation_file(
+    tmp_path,
+) -> None:
+    onedrive_client = FakeOneDriveClient()
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+    start = client.post(
+        "/v1/admin/storage/onedrive/oauth/start",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+    assert start.status_code == 200
+    callback = client.get(
+        "/v1/admin/storage/onedrive/oauth/callback",
+        headers=_auth_headers(role="owner"),
+        params={"code": "onedrive-auth-code", "state": start.json()["state"]},
+    )
+    assert callback.status_code == 200
+    folder = client.post(
+        "/v1/admin/storage/onedrive/folder",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "folder_id": "onedrive-folder-id",
+            "folder_label": "Acme TOR Folder",
+        },
+    )
+    assert folder.status_code == 200
+
+    response = client.post(
+        "/v1/admin/storage/test-write",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connection_status"] == "connected"
+    assert body["last_validated_at"] is not None
+    assert body["last_validation_error"] is None
+    assert onedrive_client.refresh_calls == ["onedrive-refresh-token"]
+    assert onedrive_client.upload_calls
+    assert (
+        onedrive_client.upload_calls[0]["access_token"]
+        == "refreshed-onedrive-access-token"
+    )
+    assert onedrive_client.upload_calls[0]["folder_id"] == "onedrive-folder-id"
+    assert onedrive_client.upload_calls[0]["content_type"] == "text/plain"
+
+
+def test_onedrive_test_write_marks_error_on_upload_failure(tmp_path) -> None:
+    onedrive_client = FakeOneDriveClient()
+    onedrive_client.upload_exception = RuntimeError("onedrive upload failed")
+    client = _create_client(
+        tmp_path,
+        auth_required=True,
+        onedrive_client=onedrive_client,
+        onedrive_oauth_config=_onedrive_oauth_config(),
+    )
+    _seed_tenant(client)
+    start = client.post(
+        "/v1/admin/storage/onedrive/oauth/start",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+    assert start.status_code == 200
+    callback = client.get(
+        "/v1/admin/storage/onedrive/oauth/callback",
+        headers=_auth_headers(role="owner"),
+        params={"code": "onedrive-auth-code", "state": start.json()["state"]},
+    )
+    assert callback.status_code == 200
+    folder = client.post(
+        "/v1/admin/storage/onedrive/folder",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "folder_id": "onedrive-folder-id",
+            "folder_label": "Acme TOR Folder",
+        },
+    )
+    assert folder.status_code == 200
+
+    response = client.post(
+        "/v1/admin/storage/test-write",
+        headers=_auth_headers(role="owner"),
+        json={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 422
+    assert "onedrive upload failed" in response.json()["detail"]
+    current = client.get(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID},
+    )
+    assert current.status_code == 200
+    assert current.json()["connection_status"] == "error"
+    assert "onedrive upload failed" in current.json()["last_validation_error"]
 
 
 def test_create_user_with_password_can_subsequently_login(tmp_path) -> None:

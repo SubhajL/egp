@@ -10,6 +10,11 @@ from egp_db.google_drive import (
     GoogleDriveOAuthConfig,
     normalize_google_drive_scopes,
 )
+from egp_db.onedrive import (
+    OneDriveClient,
+    OneDriveOAuthConfig,
+    normalize_onedrive_scopes,
+)
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.document_repo import (
     SqlDocumentRepository,
@@ -37,6 +42,22 @@ def _google_drive_config_from_env() -> GoogleDriveOAuthConfig | None:
     )
 
 
+def _onedrive_config_from_env() -> OneDriveOAuthConfig | None:
+    client_id = os.getenv("EGP_ONEDRIVE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("EGP_ONEDRIVE_CLIENT_SECRET", "").strip()
+    redirect_uri = os.getenv("EGP_ONEDRIVE_REDIRECT_URI", "").strip()
+    if not client_id or not client_secret or not redirect_uri:
+        return None
+    raw_scopes = os.getenv("EGP_ONEDRIVE_SCOPES", "").strip()
+    scopes = tuple(scope.strip() for scope in raw_scopes.split(",") if scope.strip())
+    return OneDriveOAuthConfig(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        scopes=normalize_onedrive_scopes(scopes),
+    )
+
+
 def ingest_document_artifact(
     *,
     artifact_root: Path | str,
@@ -51,6 +72,8 @@ def ingest_document_artifact(
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
     google_drive_client=None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+    onedrive_client=None,
     repository: SqlDocumentRepository | None = None,
     tenant_id: str,
     project_id: str,
@@ -94,6 +117,8 @@ def ingest_document_artifact(
             credential_cipher=credential_cipher,
             google_drive_oauth_config=google_drive_oauth_config or _google_drive_config_from_env(),
             google_drive_client=google_drive_client or GoogleDriveClient(),
+            onedrive_oauth_config=onedrive_oauth_config or _onedrive_config_from_env(),
+            onedrive_client=onedrive_client or OneDriveClient(),
         )
         repository = create_document_repository(
             database_url=resolved_database_url,
