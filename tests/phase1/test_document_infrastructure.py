@@ -209,6 +209,7 @@ def _seed_google_drive_storage(
     database_url: str,
     *,
     storage_secret: str = "storage-secret",
+    managed_backup_enabled: bool = False,
 ) -> None:
     repository = create_admin_repository(
         database_url=database_url, bootstrap_schema=True
@@ -239,6 +240,7 @@ def _seed_google_drive_storage(
                     provider,
                     connection_status,
                     provider_folder_id,
+                    managed_backup_enabled,
                     managed_fallback_enabled,
                     created_at,
                     updated_at
@@ -248,13 +250,18 @@ def _seed_google_drive_storage(
                     'google_drive',
                     'connected',
                     'drive-folder-id',
+                    :managed_backup_enabled,
                     0,
                     :now,
                     :now
                 )
                 """
             ),
-            {"tenant_id": TENANT_ID, "now": now},
+            {
+                "tenant_id": TENANT_ID,
+                "managed_backup_enabled": int(managed_backup_enabled),
+                "now": now,
+            },
         )
         connection.execute(
             text(
@@ -290,6 +297,7 @@ def _seed_onedrive_storage(
     database_url: str,
     *,
     storage_secret: str = "storage-secret",
+    managed_backup_enabled: bool = False,
 ) -> None:
     repository = create_admin_repository(
         database_url=database_url, bootstrap_schema=True
@@ -320,6 +328,7 @@ def _seed_onedrive_storage(
                     provider,
                     connection_status,
                     provider_folder_id,
+                    managed_backup_enabled,
                     managed_fallback_enabled,
                     created_at,
                     updated_at
@@ -329,13 +338,18 @@ def _seed_onedrive_storage(
                     'onedrive',
                     'connected',
                     'onedrive-folder-id',
+                    :managed_backup_enabled,
                     0,
                     :now,
                     :now
                 )
                 """
             ),
-            {"tenant_id": TENANT_ID, "now": now},
+            {
+                "tenant_id": TENANT_ID,
+                "managed_backup_enabled": int(managed_backup_enabled),
+                "now": now,
+            },
         )
         connection.execute(
             text(
@@ -610,6 +624,46 @@ def test_api_document_ingest_uses_google_drive_for_connected_tenant(tmp_path) ->
     assert row == ("google_drive:drive-file-id",)
 
 
+def test_api_document_ingest_dual_writes_managed_backup_for_google_drive_tenant(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "metadata.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    _seed_google_drive_storage(database_url, managed_backup_enabled=True)
+    google_client = FakeGoogleDriveClient()
+    app = create_app(
+        artifact_root=tmp_path / "artifacts",
+        database_url=database_url,
+        auth_required=False,
+        storage_credentials_secret="storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+    test_client = TestClient(app)
+
+    response = test_client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": PROJECT_ID,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"draft-tor").decode("ascii"),
+            "source_label": "ร่างขอบเขตของงาน",
+            "source_status_text": "เปิดรับฟังคำวิจารณ์",
+        },
+    )
+
+    assert response.status_code == 201
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "SELECT storage_key, managed_backup_storage_key FROM documents"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "google_drive:drive-file-id"
+    assert row[1] is not None
+    assert (tmp_path / "artifacts" / row[1]).read_bytes() == b"draft-tor"
+
+
 def test_worker_document_ingest_supports_supabase_storage_backend(tmp_path) -> None:
     database_path = tmp_path / "worker.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
@@ -729,3 +783,33 @@ def test_worker_document_ingest_uses_onedrive_for_connected_tenant(tmp_path) -> 
     assert result.document.storage_key == "onedrive:onedrive-item-id"
     assert onedrive_client.refresh_calls == ["onedrive-refresh-token"]
     assert onedrive_client.upload_calls[0]["folder_id"] == "onedrive-folder-id"
+
+
+def test_worker_document_ingest_dual_writes_managed_backup_for_onedrive_tenant(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "worker.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    _seed_onedrive_storage(database_url, managed_backup_enabled=True)
+    onedrive_client = FakeOneDriveClient()
+
+    result = ingest_document_artifact(
+        database_url=database_url,
+        artifact_root=tmp_path / "artifacts",
+        storage_credentials_secret="storage-secret",
+        onedrive_oauth_config=_onedrive_config(),
+        onedrive_client=onedrive_client,
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"worker-tor",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    assert result.created is True
+    assert result.document.storage_key == "onedrive:onedrive-item-id"
+    assert result.document.managed_backup_storage_key is not None
+    assert (
+        tmp_path / "artifacts" / result.document.managed_backup_storage_key
+    ).read_bytes() == b"worker-tor"

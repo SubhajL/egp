@@ -444,6 +444,7 @@ def _seed_support_storage_config(
     connection_status: str = "error",
     has_credentials: bool = False,
     managed_fallback_enabled: bool = True,
+    managed_backup_enabled: bool = False,
     last_validation_error: str | None = "google refresh token expired",
 ) -> None:
     now = datetime.now(UTC).isoformat()
@@ -462,6 +463,7 @@ def _seed_support_storage_config(
                     provider_folder_id,
                     provider_folder_url,
                     managed_fallback_enabled,
+                    managed_backup_enabled,
                     last_validated_at,
                     last_validation_error,
                     created_at,
@@ -477,6 +479,7 @@ def _seed_support_storage_config(
                     'provider-folder-id',
                     'https://example.com/provider-folder',
                     :managed_fallback_enabled,
+                    :managed_backup_enabled,
                     NULL,
                     :last_validation_error,
                     :created_at,
@@ -490,6 +493,7 @@ def _seed_support_storage_config(
                 "provider": provider,
                 "connection_status": connection_status,
                 "managed_fallback_enabled": managed_fallback_enabled,
+                "managed_backup_enabled": managed_backup_enabled,
                 "last_validation_error": last_validation_error,
                 "created_at": now,
                 "updated_at": now,
@@ -1092,6 +1096,7 @@ def test_storage_settings_default_to_managed_storage(tmp_path) -> None:
     assert body["folder_label"] is None
     assert body["folder_path_hint"] is None
     assert body["managed_fallback_enabled"] is False
+    assert body["managed_backup_enabled"] is False
     assert body["last_validated_at"] is None
     assert body["last_validation_error"] is None
 
@@ -1111,6 +1116,7 @@ def test_storage_settings_can_be_updated_and_written_to_audit_log(tmp_path) -> N
             "folder_label": "Acme Procurement TOR",
             "folder_path_hint": "Google Drive/Acme Procurement TOR",
             "managed_fallback_enabled": True,
+            "managed_backup_enabled": True,
             "last_validation_error": "OAuth connection required",
         },
     )
@@ -1123,6 +1129,7 @@ def test_storage_settings_can_be_updated_and_written_to_audit_log(tmp_path) -> N
     assert body["folder_label"] == "Acme Procurement TOR"
     assert body["folder_path_hint"] == "Google Drive/Acme Procurement TOR"
     assert body["managed_fallback_enabled"] is True
+    assert body["managed_backup_enabled"] is True
     assert body["last_validation_error"] == "OAuth connection required"
 
     fetched = client.get(
@@ -1162,6 +1169,7 @@ def test_storage_settings_switching_back_to_managed_clears_provider_metadata(
             "folder_label": "Acme Procurement TOR",
             "folder_path_hint": "Google Drive/Acme Procurement TOR",
             "managed_fallback_enabled": True,
+            "managed_backup_enabled": True,
             "last_validation_error": "OAuth connection required",
         },
     )
@@ -1178,6 +1186,7 @@ def test_storage_settings_switching_back_to_managed_clears_provider_metadata(
             "folder_label": "Should be cleared",
             "folder_path_hint": "Should be cleared",
             "managed_fallback_enabled": True,
+            "managed_backup_enabled": True,
             "last_validation_error": "Should be cleared",
         },
     )
@@ -1190,8 +1199,37 @@ def test_storage_settings_switching_back_to_managed_clears_provider_metadata(
     assert body["folder_label"] is None
     assert body["folder_path_hint"] is None
     assert body["managed_fallback_enabled"] is False
+    assert body["managed_backup_enabled"] is False
     assert body["last_validated_at"] is None
     assert body["last_validation_error"] is None
+
+
+def test_storage_settings_can_toggle_managed_backup(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    updated = client.patch(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "google_drive",
+            "connection_status": "pending_setup",
+            "managed_backup_enabled": True,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["managed_backup_enabled"] is True
+
+    fetched = client.get(
+        "/v1/admin/storage",
+        headers=_auth_headers(role="owner"),
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert fetched.status_code == 200
+    assert fetched.json()["managed_backup_enabled"] is True
 
 
 def test_storage_settings_reject_connected_status_before_real_validation_exists(
@@ -2307,7 +2345,7 @@ def test_admin_support_summary_includes_storage_diagnostics_and_alerts(
 ) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
-    _seed_support_storage_config(client)
+    _seed_support_storage_config(client, managed_backup_enabled=True)
 
     summary = client.get(f"/v1/admin/support/tenants/{TENANT_ID}/summary")
 
@@ -2320,6 +2358,7 @@ def test_admin_support_summary_includes_storage_diagnostics_and_alerts(
         "provider_folder_id": "provider-folder-id",
         "provider_folder_url": "https://example.com/provider-folder",
         "managed_fallback_enabled": True,
+        "managed_backup_enabled": True,
         "has_credentials": False,
         "last_validated_at": None,
         "last_validation_error": "google refresh token expired",

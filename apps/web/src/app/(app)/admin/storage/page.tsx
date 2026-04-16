@@ -59,6 +59,7 @@ export default function AdminStoragePage() {
   const [folderLabel, setFolderLabel] = useState("");
   const [folderPathHint, setFolderPathHint] = useState("");
   const [managedFallbackEnabled, setManagedFallbackEnabled] = useState(false);
+  const [managedBackupEnabled, setManagedBackupEnabled] = useState(false);
   const [credentialType, setCredentialType] = useState("oauth_tokens");
   const [accessToken, setAccessToken] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
@@ -75,6 +76,7 @@ export default function AdminStoragePage() {
     setFolderLabel(data.folder_label ?? "");
     setFolderPathHint(data.folder_path_hint ?? "");
     setManagedFallbackEnabled(data.managed_fallback_enabled);
+    setManagedBackupEnabled(data.managed_backup_enabled);
     setCredentialType(data.credential_type ?? "oauth_tokens");
     setProviderFolderId(data.provider_folder_id ?? "");
     setProviderFolderUrl(data.provider_folder_url ?? "");
@@ -116,6 +118,7 @@ export default function AdminStoragePage() {
         folder_label: trimmedFolderLabel,
         folder_path_hint: trimmedFolderPathHint,
         managed_fallback_enabled: managedFallbackEnabled,
+        managed_backup_enabled: managedBackupEnabled,
         last_validation_error: provider === "managed" ? "" : null,
       });
       await refreshStorageSettings();
@@ -172,6 +175,7 @@ export default function AdminStoragePage() {
           folder_label: folderLabel.trim(),
           folder_path_hint: folderPathHint.trim(),
           managed_fallback_enabled: managedFallbackEnabled,
+          managed_backup_enabled: managedBackupEnabled,
         });
       }
       const result = await startGoogleDriveOAuth();
@@ -218,6 +222,7 @@ export default function AdminStoragePage() {
           folder_label: folderLabel.trim(),
           folder_path_hint: folderPathHint.trim(),
           managed_fallback_enabled: managedFallbackEnabled,
+          managed_backup_enabled: managedBackupEnabled,
         });
       }
       const result = await startOneDriveOAuth();
@@ -350,6 +355,7 @@ export default function AdminStoragePage() {
                         setFolderLabel("");
                         setFolderPathHint("");
                         setManagedFallbackEnabled(false);
+                        setManagedBackupEnabled(false);
                       }
                     }}
                     className="h-12 w-full rounded-xl border border-[var(--border-default)] bg-transparent px-4 text-sm outline-none"
@@ -411,6 +417,19 @@ export default function AdminStoragePage() {
                   />
                   <span className="text-sm text-[var(--text-secondary)]">
                     อนุญาตให้ใช้ managed storage เป็น fallback ชั่วคราวหากปลายทางภายนอกมีปัญหา
+                  </span>
+                </label>
+
+                <label className="flex items-start gap-3 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
+                  <input
+                    type="checkbox"
+                    checked={managedBackupEnabled}
+                    onChange={(event) => setManagedBackupEnabled(event.target.checked)}
+                    disabled={!externalProviderSelected}
+                    className="mt-1 size-4 rounded border border-[var(--border-default)]"
+                  />
+                  <span className="text-sm text-[var(--text-secondary)]">
+                    เก็บสำเนา backup บน managed storage ของเราควบคู่กันไว้สำหรับดาวน์โหลดสำรองและงานภายใน
                   </span>
                 </label>
 
@@ -622,6 +641,9 @@ export default function AdminStoragePage() {
                       </p>
                       <p className="mt-1">
                         Provider folder URL: {data.provider_folder_url ?? "-"}
+                      </p>
+                      <p className="mt-1">
+                        Managed backup copy: {data.managed_backup_enabled ? "เปิด" : "ปิด"}
                       </p>
                       <p className="mt-1">
                         ตรวจสอบล่าสุด:{" "}

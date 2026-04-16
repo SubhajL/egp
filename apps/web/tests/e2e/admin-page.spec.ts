@@ -191,6 +191,7 @@ async function mockAdminApp(page: Page) {
             provider_folder_id: "provider-folder-id",
             provider_folder_url: "https://example.com/provider-folder",
             managed_fallback_enabled: true,
+            managed_backup_enabled: true,
             has_credentials: false,
             last_validated_at: null,
             last_validation_error: "google refresh token expired",

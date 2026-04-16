@@ -103,6 +103,13 @@ function supportStorageFallbackLabel(provider: string, managedFallbackEnabled: b
   return managedFallbackEnabled ? "เปิด" : "ปิด";
 }
 
+function supportStorageBackupLabel(provider: string, managedBackupEnabled: boolean): string {
+  if (provider === "managed") {
+    return "-";
+  }
+  return managedBackupEnabled ? "เปิด" : "ปิด";
+}
+
 function UserRow({
   user,
   onSave,
@@ -669,6 +676,13 @@ export default function AdminPage() {
                               {supportStorageFallbackLabel(
                                 supportSummaryData.storage_diagnostics.provider,
                                 supportSummaryData.storage_diagnostics.managed_fallback_enabled,
+                              )}
+                            </p>
+                            <p>
+                              Backup copy:{" "}
+                              {supportStorageBackupLabel(
+                                supportSummaryData.storage_diagnostics.provider,
+                                supportSummaryData.storage_diagnostics.managed_backup_enabled,
                               )}
                             </p>
                             <p>

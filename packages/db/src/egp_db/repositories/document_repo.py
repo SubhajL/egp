@@ -42,6 +42,7 @@ from egp_db.db_utils import (
 )
 from egp_db.tenant_storage_resolver import (
     ResolvedArtifactStore,
+    ResolvedDocumentWritePlan,
     TenantArtifactStoreResolver,
 )
 from egp_document_classifier.classifier import classify_document, derive_artifact_bucket
@@ -63,6 +64,7 @@ class DocumentRecord:
     file_name: str
     sha256: str
     storage_key: str
+    managed_backup_storage_key: str | None
     document_type: DocumentType
     document_phase: DocumentPhase
     source_label: str
@@ -136,6 +138,7 @@ DOCUMENTS_TABLE = Table(
     Column("file_name", String, nullable=False),
     Column("sha256", String, nullable=False),
     Column("storage_key", String, nullable=False),
+    Column("managed_backup_storage_key", String, nullable=True),
     Column("document_type", String, nullable=False),
     Column("document_phase", String, nullable=False),
     Column("source_label", String, nullable=False, default=""),
@@ -262,6 +265,12 @@ def _document_from_mapping(row: RowMapping) -> DocumentRecord:
         file_name=str(row["file_name"]),
         sha256=str(row["sha256"]),
         storage_key=str(row["storage_key"]),
+        managed_backup_storage_key=(
+            str(row["managed_backup_storage_key"])
+            if "managed_backup_storage_key" in row
+            and row["managed_backup_storage_key"] is not None
+            else None
+        ),
         document_type=DocumentType(str(row["document_type"])),
         document_phase=DocumentPhase(str(row["document_phase"])),
         source_label=str(row["source_label"] or ""),
@@ -361,6 +370,7 @@ def build_document_record(
     source_label: str,
     source_status_text: str,
     storage_key: str,
+    managed_backup_storage_key: str | None = None,
     source_page_text: str = "",
     project_state: str | None = None,
     document_id: str | None = None,
@@ -388,6 +398,7 @@ def build_document_record(
         file_name=file_name,
         sha256=sha256 or hash_file(file_bytes),
         storage_key=storage_key,
+        managed_backup_storage_key=managed_backup_storage_key,
         document_type=resolved_document_type,
         document_phase=resolved_document_phase,
         source_label=source_label,
@@ -432,6 +443,16 @@ class SqlDocumentRepository:
         if self._artifact_store_resolver is None:
             return ResolvedArtifactStore(provider="managed", store=self._artifact_store)
         return self._artifact_store_resolver.resolve_for_write(tenant_id=tenant_id)
+
+    def _resolve_document_write_plan(
+        self, *, tenant_id: str
+    ) -> ResolvedDocumentWritePlan:
+        if self._artifact_store_resolver is None:
+            primary = ResolvedArtifactStore(
+                provider="managed", store=self._artifact_store
+            )
+            return ResolvedDocumentWritePlan(primary=primary, managed_backup=None)
+        return self._artifact_store_resolver.resolve_write_plan(tenant_id=tenant_id)
 
     def _resolve_artifact_store_for_storage_key(
         self,
@@ -691,7 +712,10 @@ class SqlDocumentRepository:
         new_file_bytes: bytes,
         comparison_scope: ComparisonScope,
     ) -> DocumentDiffRecord:
-        old_file_bytes = self._artifact_store.get_bytes(comparison_target.storage_key)
+        old_file_bytes = self._get_document_bytes(
+            tenant_id=tenant_id,
+            document=comparison_target,
+        )
         diff_result = build_document_diff(
             old_document_type=comparison_target.document_type,
             old_document_phase=comparison_target.document_phase,
@@ -713,6 +737,17 @@ class SqlDocumentRepository:
             diff_type=diff_result.diff_type,
             summary_json=diff_result.summary_json,
             created_at=_now_iso(),
+        )
+
+    def _get_document_bytes(self, *, tenant_id: str, document: DocumentRecord) -> bytes:
+        if document.managed_backup_storage_key is not None:
+            return self._artifact_store.get_bytes(document.managed_backup_storage_key)
+        resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+            tenant_id=tenant_id,
+            storage_key=document.storage_key,
+        )
+        return resolved_artifact_store.store.get_bytes(
+            resolved_artifact_store.decode_storage_key(document.storage_key)
         )
 
     def store_document(
@@ -754,9 +789,7 @@ class SqlDocumentRepository:
         blob_key = f"tenants/{tenant_id}/projects/{project_id}/artifacts/{draft_document.sha256}/{safe_name}"
         content_type = mimetypes.guess_type(file_name)[0]
 
-        stored_key: str | None = None
-        cleanup_artifact_store: ArtifactStore | None = None
-        cleanup_storage_key: str | None = None
+        cleanup_targets: list[tuple[ArtifactStore, str]] = []
         try:
             with self._engine.begin() as connection:
                 existing = self._find_existing_document(
@@ -796,17 +829,26 @@ class SqlDocumentRepository:
                     if comparison_target is not None:
                         comparison_scope = "phase_transition"
 
-                resolved_artifact_store = self._resolve_artifact_store_for_write(
-                    tenant_id=tenant_id
-                )
-                raw_stored_key = resolved_artifact_store.store.put_bytes(
+                write_plan = self._resolve_document_write_plan(tenant_id=tenant_id)
+                raw_stored_key = write_plan.primary.store.put_bytes(
                     key=blob_key,
                     data=file_bytes,
                     content_type=content_type,
                 )
-                cleanup_artifact_store = resolved_artifact_store.store
-                cleanup_storage_key = raw_stored_key
-                stored_key = resolved_artifact_store.encode_storage_key(raw_stored_key)
+                cleanup_targets.append((write_plan.primary.store, raw_stored_key))
+                stored_key = write_plan.primary.encode_storage_key(raw_stored_key)
+                managed_backup_storage_key: str | None = None
+                if write_plan.managed_backup is not None:
+                    managed_backup_storage_key = (
+                        write_plan.managed_backup.store.put_bytes(
+                            key=blob_key,
+                            data=file_bytes,
+                            content_type=content_type,
+                        )
+                    )
+                    cleanup_targets.append(
+                        (write_plan.managed_backup.store, managed_backup_storage_key)
+                    )
                 stored_document = build_document_record(
                     project_id=project_id,
                     file_name=file_name,
@@ -814,6 +856,7 @@ class SqlDocumentRepository:
                     source_label=source_label,
                     source_status_text=source_status_text,
                     storage_key=stored_key,
+                    managed_backup_storage_key=managed_backup_storage_key,
                     source_page_text=source_page_text,
                     project_state=project_state,
                     supersedes_document_id=(
@@ -846,6 +889,7 @@ class SqlDocumentRepository:
                         file_name=stored_document.file_name,
                         sha256=stored_document.sha256,
                         storage_key=stored_document.storage_key,
+                        managed_backup_storage_key=stored_document.managed_backup_storage_key,
                         document_type=stored_document.document_type.value,
                         document_phase=stored_document.document_phase.value,
                         source_label=stored_document.source_label,
@@ -894,7 +938,9 @@ class SqlDocumentRepository:
                     diff_records=new_diff_records,
                 )
         except Exception:
-            if cleanup_artifact_store is not None and cleanup_storage_key is not None:
+            for cleanup_artifact_store, cleanup_storage_key in reversed(
+                cleanup_targets
+            ):
                 cleanup_artifact_store.delete(cleanup_storage_key)
             raise
 
@@ -1210,14 +1256,22 @@ class SqlDocumentRepository:
         document = self.get_document(tenant_id=tenant_id, document_id=document_id)
         if document is None:
             raise KeyError(document_id)
-        resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
-            tenant_id=tenant_id,
-            storage_key=document.storage_key,
-        )
-        return resolved_artifact_store.store.download_url(
-            resolved_artifact_store.decode_storage_key(document.storage_key),
-            expires_in=expires_in,
-        )
+        try:
+            resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+                tenant_id=tenant_id,
+                storage_key=document.storage_key,
+            )
+            return resolved_artifact_store.store.download_url(
+                resolved_artifact_store.decode_storage_key(document.storage_key),
+                expires_in=expires_in,
+            )
+        except Exception:
+            if document.managed_backup_storage_key is None:
+                raise
+            return self._artifact_store.download_url(
+                document.managed_backup_storage_key,
+                expires_in=expires_in,
+            )
 
 
 class FilesystemDocumentRepository(SqlDocumentRepository):

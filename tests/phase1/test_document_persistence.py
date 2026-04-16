@@ -3,7 +3,18 @@ from __future__ import annotations
 import sqlite3
 from unittest.mock import patch
 
-from egp_db.repositories.document_repo import FilesystemDocumentRepository
+from sqlalchemy import text
+
+from egp_api.main import create_app
+from egp_db.artifact_store import LocalArtifactStore
+from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.repositories.admin_repo import create_admin_repository
+from egp_db.repositories.document_repo import (
+    FilesystemDocumentRepository,
+    SqlDocumentRepository,
+)
+from egp_db.storage_credentials import StorageCredentialCipher
+from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
 from egp_shared_types.enums import (
     ArtifactBucket,
     DocumentPhase,
@@ -15,6 +26,206 @@ from egp_shared_types.enums import (
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROJECT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+class FakeGoogleDriveClient:
+    def __init__(self) -> None:
+        self.refresh_calls: list[str] = []
+        self.upload_calls: list[dict[str, object]] = []
+        self.delete_calls: list[str] = []
+        self.download_calls: list[str] = []
+        self.refresh_exception: Exception | None = None
+        self.download_exception: Exception | None = None
+
+    def refresh_access_token(
+        self,
+        *,
+        config: GoogleDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        self.refresh_calls.append(refresh_token)
+        if self.refresh_exception is not None:
+            raise self.refresh_exception
+        return {"access_token": f"access-for-{config.client_id}"}
+
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        folder_id: str | None,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        self.upload_calls.append(
+            {
+                "access_token": access_token,
+                "folder_id": folder_id,
+                "name": name,
+                "data": data,
+                "content_type": content_type,
+            }
+        )
+        return {"id": f"drive-file-{len(self.upload_calls)}"}
+
+    def download_file(self, *, access_token: str, file_id: str) -> bytes:
+        self.download_calls.append(file_id)
+        if self.download_exception is not None:
+            raise self.download_exception
+        return f"drive:{access_token}:{file_id}".encode("utf-8")
+
+    def delete_file(self, *, access_token: str, file_id: str) -> None:
+        self.delete_calls.append(file_id)
+
+    def download_url(self, *, file_id: str) -> str:
+        return f"https://drive.example/{file_id}"
+
+
+class FailingManagedArtifactStore(LocalArtifactStore):
+    def put_bytes(
+        self,
+        *,
+        key: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> str:
+        raise RuntimeError("managed backup write failed")
+
+
+def _google_config() -> GoogleDriveOAuthConfig:
+    return GoogleDriveOAuthConfig(
+        client_id="google-client-id",
+        client_secret="google-client-secret",
+        redirect_uri="https://api.example/v1/admin/storage/google-drive/oauth/callback",
+    )
+
+
+def _seed_google_drive_storage(
+    database_url: str,
+    *,
+    managed_backup_enabled: bool = False,
+    engine=None,
+) -> None:
+    repository = create_admin_repository(
+        database_url=database_url,
+        engine=engine,
+        bootstrap_schema=engine is None,
+    )
+    encrypted_payload = StorageCredentialCipher("storage-secret").encrypt_dict(
+        {"refresh_token": "google-refresh-token"}
+    )
+    with repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenants (
+                    id, name, slug, plan_code, is_active, created_at, updated_at
+                ) VALUES (
+                    :tenant_id, 'Acme', 'acme', 'monthly_membership', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"tenant_id": TENANT_ID},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_storage_configs (
+                    id,
+                    tenant_id,
+                    provider,
+                    connection_status,
+                    provider_folder_id,
+                    managed_fallback_enabled,
+                    managed_backup_enabled,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    '33333333-3333-3333-3333-333333333333',
+                    :tenant_id,
+                    'google_drive',
+                    'connected',
+                    'drive-folder-id',
+                    0,
+                    :managed_backup_enabled,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "managed_backup_enabled": int(managed_backup_enabled),
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_storage_credentials (
+                    id,
+                    tenant_id,
+                    provider,
+                    credential_type,
+                    encrypted_payload,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    '44444444-4444-4444-4444-444444444444',
+                    :tenant_id,
+                    'google_drive',
+                    'oauth_tokens',
+                    :encrypted_payload,
+                    CURRENT_TIMESTAMP,
+                    CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "encrypted_payload": encrypted_payload,
+            },
+        )
+
+
+def _google_repository(
+    tmp_path,
+    *,
+    managed_backup_enabled: bool = False,
+    artifact_store: LocalArtifactStore | None = None,
+    google_client: FakeGoogleDriveClient | None = None,
+) -> SqlDocumentRepository:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'dual-write.sqlite3'}"
+    app = create_app(
+        artifact_root=tmp_path / "managed-bootstrap",
+        database_url=database_url,
+        auth_required=False,
+    )
+    engine = app.state.db_engine
+    _seed_google_drive_storage(
+        database_url,
+        managed_backup_enabled=managed_backup_enabled,
+        engine=engine,
+    )
+    managed_store = artifact_store or LocalArtifactStore(tmp_path / "managed")
+    admin_repository = create_admin_repository(
+        database_url=database_url,
+        engine=engine,
+        bootstrap_schema=False,
+    )
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=admin_repository,
+        managed_artifact_store=managed_store,
+        credential_cipher=StorageCredentialCipher("storage-secret"),
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client or FakeGoogleDriveClient(),
+    )
+    return SqlDocumentRepository(
+        database_url=database_url,
+        engine=engine,
+        artifact_store=managed_store,
+        artifact_store_resolver=resolver,
+        bootstrap_schema=False,
+    )
 
 
 def test_store_document_persists_artifact_and_sql_metadata(tmp_path) -> None:
@@ -54,6 +265,125 @@ def test_store_document_persists_artifact_and_sql_metadata(tmp_path) -> None:
         stored.document.sha256,
         stored.document.storage_key,
     )
+
+
+def test_store_document_dual_writes_managed_backup_for_external_primary(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=True,
+        google_client=google_client,
+    )
+
+    stored = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"external-primary-with-backup",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    assert stored.created is True
+    assert stored.document.storage_key == "google_drive:drive-file-1"
+    assert stored.document.managed_backup_storage_key is not None
+    backup_path = tmp_path / "managed" / stored.document.managed_backup_storage_key
+    assert backup_path.read_bytes() == b"external-primary-with-backup"
+    assert google_client.upload_calls[0]["folder_id"] == "drive-folder-id"
+
+
+def test_store_document_cleans_up_primary_when_backup_write_fails(tmp_path) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=True,
+        artifact_store=FailingManagedArtifactStore(tmp_path / "managed"),
+        google_client=google_client,
+    )
+
+    try:
+        repository.store_document(
+            tenant_id=TENANT_ID,
+            project_id=PROJECT_ID,
+            file_name="tor.pdf",
+            file_bytes=b"must-clean-up",
+            source_label="ร่างขอบเขตของงาน",
+            source_status_text="เปิดรับฟังคำวิจารณ์",
+        )
+    except RuntimeError as exc:
+        assert "managed backup write failed" in str(exc)
+    else:
+        raise AssertionError("expected dual-write failure to abort the write")
+
+    assert google_client.delete_calls == ["drive-file-1"]
+
+
+def test_get_download_url_falls_back_to_managed_backup_when_primary_download_resolution_fails(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=True,
+        google_client=google_client,
+    )
+    stored = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"backup-download-source",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    google_client.refresh_exception = RuntimeError("google refresh failed")
+
+    download_url = repository.get_download_url(
+        tenant_id=TENANT_ID,
+        document_id=stored.document.id,
+    )
+
+    assert stored.document.managed_backup_storage_key is not None
+    assert download_url == str(
+        (tmp_path / "managed" / stored.document.managed_backup_storage_key).resolve()
+    )
+
+
+def test_store_document_uses_backup_copy_for_diff_reads_with_external_primary(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=True,
+        google_client=google_client,
+    )
+    first = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"version-one",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    google_client.download_exception = RuntimeError(
+        "provider download should not be needed"
+    )
+
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"version-two",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    assert first.created is True
+    assert second.created is True
+    assert len(second.diff_records) == 1
+    assert google_client.download_calls == []
 
 
 def test_store_document_dedupes_same_project_and_hash(tmp_path) -> None:
@@ -212,7 +542,10 @@ def test_get_artifact_bucket_prefers_current_final_tor(tmp_path) -> None:
         source_status_text="ประกาศเชิญชวน",
     )
 
-    assert repository.get_artifact_bucket(TENANT_ID, PROJECT_ID) is ArtifactBucket.FINAL_TOR_DOWNLOADED
+    assert (
+        repository.get_artifact_bucket(TENANT_ID, PROJECT_ID)
+        is ArtifactBucket.FINAL_TOR_DOWNLOADED
+    )
 
 
 def test_store_document_persists_diff_rows_in_sql_metadata(tmp_path) -> None:

@@ -71,6 +71,7 @@ TENANT_STORAGE_SETTINGS_TABLE = Table(
     Column("folder_label", String, nullable=True),
     Column("folder_path_hint", String, nullable=True),
     Column("managed_fallback_enabled", Boolean, nullable=False, default=False),
+    Column("managed_backup_enabled", Boolean, nullable=False, default=False),
     Column("last_validated_at", DateTime(timezone=True), nullable=True),
     Column("last_validation_error", String, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -99,6 +100,7 @@ TENANT_STORAGE_CONFIGS_TABLE = Table(
     Column("provider_folder_id", String, nullable=True),
     Column("provider_folder_url", String, nullable=True),
     Column("managed_fallback_enabled", Boolean, nullable=False, default=False),
+    Column("managed_backup_enabled", Boolean, nullable=False, default=False),
     Column("last_validated_at", DateTime(timezone=True), nullable=True),
     Column("last_validation_error", String, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -168,6 +170,7 @@ class TenantStorageSettingsRecord:
     provider_folder_id: str | None
     provider_folder_url: str | None
     managed_fallback_enabled: bool
+    managed_backup_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
     has_credentials: bool
@@ -187,6 +190,7 @@ class TenantStorageConfigRecord:
     provider_folder_id: str | None
     provider_folder_url: str | None
     managed_fallback_enabled: bool
+    managed_backup_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
     created_at: str | None
@@ -274,6 +278,9 @@ def _storage_settings_from_mapping(row) -> TenantStorageSettingsRecord:
             else None
         ),
         managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        managed_backup_enabled=bool(row["managed_backup_enabled"])
+        if "managed_backup_enabled" in row
+        else False,
         last_validated_at=_to_iso(row["last_validated_at"]),
         last_validation_error=(
             str(row["last_validation_error"])
@@ -321,6 +328,9 @@ def _storage_config_from_mapping(row) -> TenantStorageConfigRecord:
             else None
         ),
         managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        managed_backup_enabled=bool(row["managed_backup_enabled"])
+        if "managed_backup_enabled" in row
+        else False,
         last_validated_at=_to_iso(row["last_validated_at"]),
         last_validation_error=(
             str(row["last_validation_error"])
@@ -356,6 +366,7 @@ def _compose_storage_settings(
         provider_folder_id=config.provider_folder_id,
         provider_folder_url=config.provider_folder_url,
         managed_fallback_enabled=config.managed_fallback_enabled,
+        managed_backup_enabled=config.managed_backup_enabled,
         last_validated_at=config.last_validated_at,
         last_validation_error=config.last_validation_error,
         has_credentials=credential is not None,
@@ -601,6 +612,7 @@ class SqlAdminRepository:
                 provider_folder_id=None,
                 provider_folder_url=None,
                 managed_fallback_enabled=False,
+                managed_backup_enabled=False,
                 last_validated_at=None,
                 last_validation_error=None,
                 created_at=None,
@@ -620,6 +632,7 @@ class SqlAdminRepository:
         provider_folder_id: str | None = None,
         provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
+        managed_backup_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
     ) -> TenantStorageSettingsRecord:
@@ -633,6 +646,7 @@ class SqlAdminRepository:
             provider_folder_id=provider_folder_id,
             provider_folder_url=provider_folder_url,
             managed_fallback_enabled=managed_fallback_enabled,
+            managed_backup_enabled=managed_backup_enabled,
             last_validated_at=last_validated_at,
             last_validation_error=last_validation_error,
         )
@@ -650,6 +664,7 @@ class SqlAdminRepository:
         provider_folder_id: str | None = None,
         provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
+        managed_backup_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
     ) -> TenantStorageConfigRecord:
@@ -692,6 +707,11 @@ class SqlAdminRepository:
                             False
                             if managed_fallback_enabled is None
                             else bool(managed_fallback_enabled)
+                        ),
+                        managed_backup_enabled=(
+                            False
+                            if managed_backup_enabled is None
+                            else bool(managed_backup_enabled)
                         ),
                         last_validated_at=resolved_last_validated_at,
                         last_validation_error=normalized_last_validation_error,
@@ -739,6 +759,11 @@ class SqlAdminRepository:
                             existing["managed_fallback_enabled"]
                             if managed_fallback_enabled is None
                             else bool(managed_fallback_enabled)
+                        ),
+                        managed_backup_enabled=(
+                            existing["managed_backup_enabled"]
+                            if managed_backup_enabled is None
+                            else bool(managed_backup_enabled)
                         ),
                         last_validated_at=(
                             existing["last_validated_at"]

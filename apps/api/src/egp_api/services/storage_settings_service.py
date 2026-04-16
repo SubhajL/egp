@@ -69,6 +69,7 @@ class StorageSettingsService:
         provider_folder_id: str | None = None,
         provider_folder_url: str | None = None,
         managed_fallback_enabled: bool | None = None,
+        managed_backup_enabled: bool | None = None,
         last_validated_at: str | None = None,
         last_validation_error: str | None = None,
         actor_subject: str | None = None,
@@ -83,8 +84,10 @@ class StorageSettingsService:
         resolved_provider_folder_id = provider_folder_id
         resolved_provider_folder_url = provider_folder_url
         resolved_managed_fallback_enabled = managed_fallback_enabled
+        resolved_managed_backup_enabled = managed_backup_enabled
         resolved_last_validated_at = last_validated_at
         resolved_last_validation_error = last_validation_error
+        effective_provider = resolved_provider or previous.provider
 
         if resolved_provider == "managed":
             resolved_connection_status = "managed"
@@ -94,8 +97,11 @@ class StorageSettingsService:
             resolved_provider_folder_id = ""
             resolved_provider_folder_url = ""
             resolved_managed_fallback_enabled = False
+            resolved_managed_backup_enabled = False
             resolved_last_validated_at = ""
             resolved_last_validation_error = ""
+        elif effective_provider == "managed" and resolved_managed_backup_enabled is not None:
+            resolved_managed_backup_enabled = False
         elif resolved_connection_status in {"connected", "error"}:
             raise ValueError(
                 "connection_status values 'connected' and 'error' are reserved for validated integrations"
@@ -111,6 +117,7 @@ class StorageSettingsService:
             provider_folder_id=resolved_provider_folder_id,
             provider_folder_url=resolved_provider_folder_url,
             managed_fallback_enabled=resolved_managed_fallback_enabled,
+            managed_backup_enabled=resolved_managed_backup_enabled,
             last_validated_at=resolved_last_validated_at,
             last_validation_error=resolved_last_validation_error,
         )

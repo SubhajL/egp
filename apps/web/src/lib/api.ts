@@ -488,6 +488,7 @@ export type AdminTenantStorageSettings = {
   provider_folder_id: string | null;
   provider_folder_url: string | null;
   managed_fallback_enabled: boolean;
+  managed_backup_enabled: boolean;
   last_validated_at: string | null;
   last_validation_error: string | null;
   has_credentials: boolean;
@@ -648,6 +649,7 @@ export type SupportStorageDiagnostics = {
   provider_folder_id: string | null;
   provider_folder_url: string | null;
   managed_fallback_enabled: boolean;
+  managed_backup_enabled: boolean;
   has_credentials: boolean;
   last_validated_at: string | null;
   last_validation_error: string | null;
@@ -1262,6 +1264,7 @@ export type UpdateTenantStorageSettingsInput = {
   provider_folder_id?: string | null;
   provider_folder_url?: string | null;
   managed_fallback_enabled?: boolean;
+  managed_backup_enabled?: boolean;
   last_validated_at?: string | null;
   last_validation_error?: string | null;
 };
@@ -1731,6 +1734,7 @@ export async function updateTenantStorageSettings(
       provider_folder_id: payload.provider_folder_id,
       provider_folder_url: payload.provider_folder_url,
       managed_fallback_enabled: payload.managed_fallback_enabled,
+      managed_backup_enabled: payload.managed_backup_enabled,
       last_validated_at: payload.last_validated_at,
       last_validation_error: payload.last_validation_error,
     }),

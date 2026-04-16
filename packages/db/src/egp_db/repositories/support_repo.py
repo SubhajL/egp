@@ -114,6 +114,7 @@ class SupportStorageDiagnostics:
     provider_folder_id: str | None
     provider_folder_url: str | None
     managed_fallback_enabled: bool
+    managed_backup_enabled: bool
     has_credentials: bool
     last_validated_at: str | None
     last_validation_error: str | None
@@ -274,6 +275,7 @@ def _storage_diagnostics_from_mapping(
             provider_folder_id=None,
             provider_folder_url=None,
             managed_fallback_enabled=False,
+            managed_backup_enabled=False,
             has_credentials=False,
             last_validated_at=None,
             last_validation_error=None,
@@ -295,6 +297,7 @@ def _storage_diagnostics_from_mapping(
             else None
         ),
         managed_fallback_enabled=bool(row["managed_fallback_enabled"]),
+        managed_backup_enabled=bool(row["managed_backup_enabled"]),
         has_credentials=bool(row["has_credentials"]),
         last_validated_at=_to_iso(row["last_validated_at"]),
         last_validation_error=(
@@ -666,6 +669,7 @@ class SqlSupportRepository:
                         TENANT_STORAGE_CONFIGS_TABLE.c.provider_folder_id,
                         TENANT_STORAGE_CONFIGS_TABLE.c.provider_folder_url,
                         TENANT_STORAGE_CONFIGS_TABLE.c.managed_fallback_enabled,
+                        TENANT_STORAGE_CONFIGS_TABLE.c.managed_backup_enabled,
                         TENANT_STORAGE_CONFIGS_TABLE.c.last_validated_at,
                         TENANT_STORAGE_CONFIGS_TABLE.c.last_validation_error,
                         case(
