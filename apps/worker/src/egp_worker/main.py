@@ -36,6 +36,11 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             live=bool(payload.get("live", False)),
             profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
+            storage_credentials_secret=(
+                str(payload["storage_credentials_secret"])
+                if payload.get("storage_credentials_secret") is not None
+                else None
+            ),
         )
         response = {
             "command": command,
@@ -80,6 +85,11 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             supabase_service_role_key=(
                 str(payload["supabase_service_role_key"])
                 if payload.get("supabase_service_role_key") is not None
+                else None
+            ),
+            storage_credentials_secret=(
+                str(payload["storage_credentials_secret"])
+                if payload.get("storage_credentials_secret") is not None
                 else None
             ),
             tenant_id=str(payload["tenant_id"]),

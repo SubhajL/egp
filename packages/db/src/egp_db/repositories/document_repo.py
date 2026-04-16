@@ -40,6 +40,10 @@ from egp_db.db_utils import (
     normalize_database_url,
     normalize_uuid_string,
 )
+from egp_db.tenant_storage_resolver import (
+    ResolvedArtifactStore,
+    TenantArtifactStoreResolver,
+)
 from egp_document_classifier.classifier import classify_document, derive_artifact_bucket
 from egp_document_classifier.diff_engine import ComparisonScope, build_document_diff
 from egp_shared_types.enums import (
@@ -403,6 +407,7 @@ class SqlDocumentRepository:
         *,
         database_url: str | None = None,
         artifact_store: ArtifactStore,
+        artifact_store_resolver: TenantArtifactStoreResolver | None = None,
         engine: Engine | None = None,
         bootstrap_schema: bool = False,
     ) -> None:
@@ -413,12 +418,33 @@ class SqlDocumentRepository:
         )
         self._database_url = normalized_url
         self._artifact_store = artifact_store
+        self._artifact_store_resolver = artifact_store_resolver
         self._engine = engine or create_shared_engine(normalized_url or "")
         if bootstrap_schema:
             self._ensure_schema()
 
     def _ensure_schema(self) -> None:
         METADATA.create_all(self._engine)
+
+    def _resolve_artifact_store_for_write(
+        self, *, tenant_id: str
+    ) -> ResolvedArtifactStore:
+        if self._artifact_store_resolver is None:
+            return ResolvedArtifactStore(provider="managed", store=self._artifact_store)
+        return self._artifact_store_resolver.resolve_for_write(tenant_id=tenant_id)
+
+    def _resolve_artifact_store_for_storage_key(
+        self,
+        *,
+        tenant_id: str,
+        storage_key: str,
+    ) -> ResolvedArtifactStore:
+        if self._artifact_store_resolver is None:
+            return ResolvedArtifactStore(provider="managed", store=self._artifact_store)
+        return self._artifact_store_resolver.resolve_for_storage_key(
+            tenant_id=tenant_id,
+            storage_key=storage_key,
+        )
 
     def _append_review_event(
         self,
@@ -729,6 +755,8 @@ class SqlDocumentRepository:
         content_type = mimetypes.guess_type(file_name)[0]
 
         stored_key: str | None = None
+        cleanup_artifact_store: ArtifactStore | None = None
+        cleanup_storage_key: str | None = None
         try:
             with self._engine.begin() as connection:
                 existing = self._find_existing_document(
@@ -768,11 +796,17 @@ class SqlDocumentRepository:
                     if comparison_target is not None:
                         comparison_scope = "phase_transition"
 
-                stored_key = self._artifact_store.put_bytes(
+                resolved_artifact_store = self._resolve_artifact_store_for_write(
+                    tenant_id=tenant_id
+                )
+                raw_stored_key = resolved_artifact_store.store.put_bytes(
                     key=blob_key,
                     data=file_bytes,
                     content_type=content_type,
                 )
+                cleanup_artifact_store = resolved_artifact_store.store
+                cleanup_storage_key = raw_stored_key
+                stored_key = resolved_artifact_store.encode_storage_key(raw_stored_key)
                 stored_document = build_document_record(
                     project_id=project_id,
                     file_name=file_name,
@@ -860,8 +894,8 @@ class SqlDocumentRepository:
                     diff_records=new_diff_records,
                 )
         except Exception:
-            if stored_key is not None:
-                self._artifact_store.delete(stored_key)
+            if cleanup_artifact_store is not None and cleanup_storage_key is not None:
+                cleanup_artifact_store.delete(cleanup_storage_key)
             raise
 
     def list_documents(self, tenant_id: str, project_id: str) -> list[DocumentRecord]:
@@ -1176,8 +1210,13 @@ class SqlDocumentRepository:
         document = self.get_document(tenant_id=tenant_id, document_id=document_id)
         if document is None:
             raise KeyError(document_id)
-        return self._artifact_store.download_url(
-            document.storage_key, expires_in=expires_in
+        resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+            tenant_id=tenant_id,
+            storage_key=document.storage_key,
+        )
+        return resolved_artifact_store.store.download_url(
+            resolved_artifact_store.decode_storage_key(document.storage_key),
+            expires_in=expires_in,
         )
 
 
@@ -1205,16 +1244,47 @@ def create_document_repository(
     supabase_url: str | None = None,
     supabase_service_role_key: str | None = None,
     supabase_client=None,
+    artifact_store_resolver: TenantArtifactStoreResolver | None = None,
 ) -> SqlDocumentRepository:
+    artifact_store = create_artifact_store(
+        storage_backend=storage_backend,
+        artifact_root=artifact_root,
+        s3_bucket=s3_bucket,
+        s3_prefix=s3_prefix,
+        s3_client=s3_client,
+        supabase_url=supabase_url,
+        supabase_service_role_key=supabase_service_role_key,
+        supabase_client=supabase_client,
+    )
+    return SqlDocumentRepository(
+        database_url=database_url,
+        artifact_store=artifact_store,
+        artifact_store_resolver=artifact_store_resolver,
+        engine=engine,
+        bootstrap_schema=is_sqlite_url(database_url),
+    )
+
+
+def create_artifact_store(
+    *,
+    storage_backend: str = "local",
+    artifact_root: Path | str | None = None,
+    s3_bucket: str | None = None,
+    s3_prefix: str = "",
+    s3_client=None,
+    supabase_url: str | None = None,
+    supabase_service_role_key: str | None = None,
+    supabase_client=None,
+) -> ArtifactStore:
     normalized_backend = storage_backend.strip().lower()
     if normalized_backend == "local":
         if artifact_root is None:
             raise ValueError("artifact_root is required for local artifact storage")
-        artifact_store: ArtifactStore = LocalArtifactStore(artifact_root)
+        return LocalArtifactStore(artifact_root)
     elif normalized_backend == "s3":
         if not s3_bucket:
             raise ValueError("s3_bucket is required for s3 artifact storage")
-        artifact_store = S3ArtifactStore(
+        return S3ArtifactStore(
             bucket=s3_bucket,
             prefix=s3_prefix,
             client=s3_client,
@@ -1230,7 +1300,7 @@ def create_document_repository(
             raise ValueError(
                 "artifact_bucket is required for supabase artifact storage"
             )
-        artifact_store = SupabaseArtifactStore(
+        return SupabaseArtifactStore(
             project_url=supabase_url,
             service_role_key=supabase_service_role_key,
             bucket=s3_bucket,
@@ -1239,10 +1309,3 @@ def create_document_repository(
         )
     else:
         raise ValueError(f"Unsupported storage backend: {storage_backend}")
-
-    return SqlDocumentRepository(
-        database_url=database_url,
-        artifact_store=artifact_store,
-        engine=engine,
-        bootstrap_schema=is_sqlite_url(database_url),
-    )

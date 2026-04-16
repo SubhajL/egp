@@ -10,6 +10,7 @@ from egp_crawler_core.discovery_authorization import (
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
 )
+from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
@@ -91,6 +92,9 @@ def run_discover_workflow(
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
     artifact_root: Path | str = Path("artifacts"),
+    storage_credentials_secret: str | None = None,
+    google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+    google_drive_client: object | None = None,
 ) -> DiscoverWorkflowResult:
     if database_url is not None:
         _authorize_discovery(database_url=database_url, tenant_id=tenant_id, keyword=keyword)
@@ -165,6 +169,9 @@ def run_discover_workflow(
                 ingest_downloaded_documents(
                     artifact_root=artifact_root,
                     database_url=database_url,
+                    storage_credentials_secret=storage_credentials_secret,
+                    google_drive_oauth_config=google_drive_oauth_config,
+                    google_drive_client=google_drive_client,
                     tenant_id=tenant_id,
                     project_id=project.id,
                     downloaded_documents=downloaded_documents,

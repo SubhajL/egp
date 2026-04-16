@@ -93,13 +93,14 @@ from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
-from egp_db.repositories.document_repo import create_document_repository
+from egp_db.repositories.document_repo import create_artifact_store, create_document_repository
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
 from egp_db.repositories.support_repo import create_support_repository
+from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
 from egp_notifications.webhook_delivery import WebhookDeliveryProcessor, WebhookDeliveryService
@@ -443,9 +444,37 @@ def create_app(
     session_cookie_secure = get_session_cookie_secure(None)
     session_cookie_samesite = get_session_cookie_samesite(None)
     shared_engine = create_shared_engine(resolved_database_url)
+    admin_repository = create_admin_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
+    managed_artifact_store = create_artifact_store(
+        storage_backend=get_artifact_storage_backend(artifact_storage_backend),
+        artifact_root=resolved_artifact_root,
+        s3_bucket=get_artifact_bucket(artifact_bucket),
+        s3_prefix=get_artifact_prefix(artifact_prefix),
+        s3_client=s3_client,
+        supabase_url=get_supabase_url(supabase_url),
+        supabase_service_role_key=get_supabase_service_role_key(supabase_service_role_key),
+        supabase_client=supabase_client,
+    )
+    storage_credential_cipher = (
+        StorageCredentialCipher(resolved_storage_credentials_secret)
+        if resolved_storage_credentials_secret is not None
+        else None
+    )
+    resolved_google_drive_client = google_drive_client or GoogleDriveClient()
+    tenant_artifact_store_resolver = TenantArtifactStoreResolver(
+        admin_repository=admin_repository,
+        managed_artifact_store=managed_artifact_store,
+        credential_cipher=storage_credential_cipher,
+        google_drive_oauth_config=resolved_google_drive_oauth_config,
+        google_drive_client=resolved_google_drive_client,
+    )
     repository = create_document_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
+        artifact_store_resolver=tenant_artifact_store_resolver,
         storage_backend=get_artifact_storage_backend(artifact_storage_backend),
         artifact_root=resolved_artifact_root,
         s3_bucket=get_artifact_bucket(artifact_bucket),
@@ -460,10 +489,6 @@ def create_app(
         engine=shared_engine,
     )
     billing_repository = create_billing_repository(
-        database_url=resolved_database_url,
-        engine=shared_engine,
-    )
-    admin_repository = create_admin_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
@@ -540,14 +565,10 @@ def create_app(
     )
     storage_settings_service = StorageSettingsService(
         admin_repository,
-        credential_cipher=(
-            StorageCredentialCipher(resolved_storage_credentials_secret)
-            if resolved_storage_credentials_secret is not None
-            else None
-        ),
+        credential_cipher=storage_credential_cipher,
         audit_repository=audit_repository,
         google_drive_oauth_config=resolved_google_drive_oauth_config,
-        google_drive_client=google_drive_client or GoogleDriveClient(),
+        google_drive_client=resolved_google_drive_client,
     )
     app.state.db_engine = shared_engine
     app.state.admin_repository = admin_repository

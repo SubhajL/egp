@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from egp_db.google_drive import GoogleDriveOAuthConfig
+
 try:
     from playwright.sync_api import TimeoutError as PlaywrightTimeout
 except (
@@ -71,6 +73,9 @@ def ingest_downloaded_documents(
     tenant_id: str,
     project_id: str,
     downloaded_documents: list[dict[str, object]],
+    storage_credentials_secret: str | None = None,
+    google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+    google_drive_client: object | None = None,
 ) -> list:
     results = []
     for document in downloaded_documents:
@@ -78,6 +83,9 @@ def ingest_downloaded_documents(
             ingest_document_artifact(
                 artifact_root=artifact_root,
                 database_url=database_url,
+                storage_credentials_secret=storage_credentials_secret,
+                google_drive_oauth_config=google_drive_oauth_config,
+                google_drive_client=google_drive_client,
                 tenant_id=tenant_id,
                 project_id=project_id,
                 file_name=str(document["file_name"]),

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import base64
 import sqlite3
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from egp_api.main import create_app
+from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.repositories.admin_repo import create_admin_repository
+from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.workflows.document_ingest import ingest_document_artifact
@@ -93,6 +98,139 @@ class FakeSupabaseStorageClient:
 class FakeSupabaseClient:
     def __init__(self) -> None:
         self.storage = FakeSupabaseStorageClient()
+
+
+class FakeGoogleDriveClient:
+    def __init__(self) -> None:
+        self.refresh_calls: list[str] = []
+        self.upload_calls: list[dict[str, object]] = []
+
+    def refresh_access_token(
+        self,
+        *,
+        config: GoogleDriveOAuthConfig,
+        refresh_token: str,
+    ) -> dict[str, object]:
+        self.refresh_calls.append(refresh_token)
+        return {"access_token": f"access-for-{config.client_id}"}
+
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        folder_id: str | None,
+        name: str,
+        data: bytes,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        self.upload_calls.append(
+            {
+                "access_token": access_token,
+                "folder_id": folder_id,
+                "name": name,
+                "data": data,
+                "content_type": content_type,
+            }
+        )
+        return {"id": "drive-file-id"}
+
+    def download_file(self, *, access_token: str, file_id: str) -> bytes:
+        return f"download:{access_token}:{file_id}".encode("utf-8")
+
+    def delete_file(self, *, access_token: str, file_id: str) -> None:
+        return None
+
+    def download_url(self, *, file_id: str) -> str:
+        return f"https://drive.example/{file_id}"
+
+
+def _google_config() -> GoogleDriveOAuthConfig:
+    return GoogleDriveOAuthConfig(
+        client_id="google-client-id",
+        client_secret="google-client-secret",
+        redirect_uri="https://api.example/v1/admin/storage/google-drive/oauth/callback",
+    )
+
+
+def _seed_google_drive_storage(
+    database_url: str,
+    *,
+    storage_secret: str = "storage-secret",
+) -> None:
+    repository = create_admin_repository(
+        database_url=database_url, bootstrap_schema=True
+    )
+    now = datetime.now(UTC)
+    encrypted_payload = StorageCredentialCipher(storage_secret).encrypt_dict(
+        {"refresh_token": "google-refresh-token"}
+    )
+    with repository._engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenants (
+                    id, name, slug, plan_code, is_active, created_at, updated_at
+                ) VALUES (
+                    :tenant_id, 'Acme', 'acme', 'monthly_membership', 1, :now, :now
+                )
+                """
+            ),
+            {"tenant_id": TENANT_ID, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_storage_configs (
+                    id,
+                    tenant_id,
+                    provider,
+                    connection_status,
+                    provider_folder_id,
+                    managed_fallback_enabled,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    '33333333-3333-3333-3333-333333333333',
+                    :tenant_id,
+                    'google_drive',
+                    'connected',
+                    'drive-folder-id',
+                    0,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {"tenant_id": TENANT_ID, "now": now},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_storage_credentials (
+                    id,
+                    tenant_id,
+                    provider,
+                    credential_type,
+                    encrypted_payload,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    '44444444-4444-4444-4444-444444444444',
+                    :tenant_id,
+                    'google_drive',
+                    'oauth_tokens',
+                    :encrypted_payload,
+                    :now,
+                    :now
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "encrypted_payload": encrypted_payload,
+                "now": now,
+            },
+        )
 
 
 def test_create_app_uses_database_url_override_for_document_metadata(tmp_path) -> None:
@@ -303,6 +441,41 @@ def test_create_app_supports_supabase_storage_backend(tmp_path) -> None:
     assert row == (1,)
 
 
+def test_api_document_ingest_uses_google_drive_for_connected_tenant(tmp_path) -> None:
+    database_path = tmp_path / "metadata.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    _seed_google_drive_storage(database_url)
+    google_client = FakeGoogleDriveClient()
+    app = create_app(
+        artifact_root=tmp_path / "artifacts",
+        database_url=database_url,
+        auth_required=False,
+        storage_credentials_secret="storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+    test_client = TestClient(app)
+
+    response = test_client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": PROJECT_ID,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"draft-tor").decode("ascii"),
+            "source_label": "ร่างขอบเขตของงาน",
+            "source_status_text": "เปิดรับฟังคำวิจารณ์",
+        },
+    )
+
+    assert response.status_code == 201
+    assert google_client.refresh_calls == ["google-refresh-token"]
+    assert google_client.upload_calls[0]["folder_id"] == "drive-folder-id"
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute("SELECT storage_key FROM documents").fetchone()
+    assert row == ("google_drive:drive-file-id",)
+
+
 def test_worker_document_ingest_supports_supabase_storage_backend(tmp_path) -> None:
     database_path = tmp_path / "worker.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
@@ -333,3 +506,31 @@ def test_worker_document_ingest_supports_supabase_storage_backend(tmp_path) -> N
             (result.document.id,),
         ).fetchone()
     assert row == ("tor.pdf", result.document.storage_key)
+
+
+def test_worker_document_ingest_uses_google_drive_for_connected_tenant(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "worker.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    _seed_google_drive_storage(database_url)
+    google_client = FakeGoogleDriveClient()
+
+    result = ingest_document_artifact(
+        database_url=database_url,
+        artifact_root=tmp_path / "artifacts",
+        storage_credentials_secret="storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"worker-tor",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    assert result.created is True
+    assert result.document.storage_key == "google_drive:drive-file-id"
+    assert google_client.refresh_calls == ["google-refresh-token"]
+    assert google_client.upload_calls[0]["folder_id"] == "drive-folder-id"
