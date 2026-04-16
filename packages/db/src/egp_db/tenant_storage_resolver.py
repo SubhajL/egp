@@ -105,6 +105,12 @@ class ResolvedArtifactStore:
         return decoded
 
 
+@dataclass(frozen=True, slots=True)
+class ResolvedDocumentWritePlan:
+    primary: ResolvedArtifactStore
+    managed_backup: ResolvedArtifactStore | None
+
+
 class TenantArtifactStoreResolver:
     def __init__(
         self,
@@ -125,8 +131,25 @@ class TenantArtifactStoreResolver:
         self._onedrive_oauth_config = onedrive_oauth_config
         self._onedrive_client = onedrive_client
 
-    def resolve_for_write(self, *, tenant_id: str) -> ResolvedArtifactStore:
+    def resolve_write_plan(self, *, tenant_id: str) -> ResolvedDocumentWritePlan:
         config = self._admin_repository.get_tenant_storage_config(tenant_id=tenant_id)
+        primary = self._resolve_primary_for_config(tenant_id=tenant_id, config=config)
+        managed_backup = (
+            self._managed()
+            if config.managed_backup_enabled and primary.provider != "managed"
+            else None
+        )
+        return ResolvedDocumentWritePlan(
+            primary=primary,
+            managed_backup=managed_backup,
+        )
+
+    def resolve_for_write(self, *, tenant_id: str) -> ResolvedArtifactStore:
+        return self.resolve_write_plan(tenant_id=tenant_id).primary
+
+    def _resolve_primary_for_config(
+        self, *, tenant_id: str, config
+    ) -> ResolvedArtifactStore:
         if config.provider == "managed":
             return self._managed()
         if (

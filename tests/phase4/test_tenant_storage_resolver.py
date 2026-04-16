@@ -138,6 +138,7 @@ def _seed_tenant_storage(
     folder_id: str | None = "drive-folder-id",
     refresh_token: str | None = "google-refresh-token",
     fallback_enabled: bool = False,
+    managed_backup_enabled: bool = False,
 ) -> None:
     now = datetime.now(UTC)
     cipher = StorageCredentialCipher("resolver-secret")
@@ -164,6 +165,7 @@ def _seed_tenant_storage(
                     connection_status,
                     provider_folder_id,
                     managed_fallback_enabled,
+                    managed_backup_enabled,
                     created_at,
                     updated_at
                 ) VALUES (
@@ -173,6 +175,7 @@ def _seed_tenant_storage(
                     :connection_status,
                     :folder_id,
                     :fallback_enabled,
+                    :managed_backup_enabled,
                     :now,
                     :now
                 )
@@ -184,6 +187,7 @@ def _seed_tenant_storage(
                 "connection_status": connection_status,
                 "folder_id": folder_id,
                 "fallback_enabled": 1 if fallback_enabled else 0,
+                "managed_backup_enabled": 1 if managed_backup_enabled else 0,
                 "now": now,
             },
         )

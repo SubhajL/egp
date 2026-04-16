@@ -52,6 +52,7 @@ class AdminTenantStorageSettingsResponse(BaseModel):
     provider_folder_id: str | None
     provider_folder_url: str | None
     managed_fallback_enabled: bool
+    managed_backup_enabled: bool
     last_validated_at: str | None
     last_validation_error: str | None
     has_credentials: bool
@@ -216,6 +217,7 @@ class SupportStorageDiagnosticsResponse(BaseModel):
     provider_folder_id: str | None
     provider_folder_url: str | None
     managed_fallback_enabled: bool
+    managed_backup_enabled: bool
     has_credentials: bool
     last_validated_at: str | None
     last_validation_error: str | None
@@ -299,6 +301,7 @@ class UpdateTenantStorageSettingsRequest(BaseModel):
     provider_folder_id: str | None = None
     provider_folder_url: str | None = None
     managed_fallback_enabled: bool | None = None
+    managed_backup_enabled: bool | None = None
     last_validated_at: str | None = None
     last_validation_error: str | None = None
 
@@ -803,6 +806,7 @@ def update_tenant_storage_settings(
             provider_folder_id=payload.provider_folder_id,
             provider_folder_url=payload.provider_folder_url,
             managed_fallback_enabled=payload.managed_fallback_enabled,
+            managed_backup_enabled=payload.managed_backup_enabled,
             last_validated_at=payload.last_validated_at,
             last_validation_error=payload.last_validation_error,
             actor_subject=_actor_subject_from_request(request),

@@ -340,6 +340,7 @@ def seed_external_storage(
                     provider_folder_id,
                     provider_folder_url,
                     managed_fallback_enabled,
+                    managed_backup_enabled,
                     created_at,
                     updated_at
                 ) VALUES (
@@ -349,6 +350,7 @@ def seed_external_storage(
                     :connection_status,
                     :provider_folder_id,
                     :provider_folder_url,
+                    0,
                     0,
                     :now,
                     :now
