@@ -51,8 +51,11 @@ function LoginPageContent() {
 
   useEffect(() => {
     if (currentSession) {
+      const destination = currentSession.requires_billing_update
+        ? "/billing?notice=payment_overdue"
+        : nextPath;
       startTransition(() => {
-        router.replace(nextPath);
+        router.replace(destination);
       });
     }
   }, [currentSession, nextPath, router]);
@@ -69,9 +72,25 @@ function LoginPageContent() {
         mfa_code: requiresMfa ? mfaCode.trim() || undefined : undefined,
       });
       queryClient.setQueryData(["me"], currentSession);
+      if (currentSession.requires_billing_update) {
+        window.location.assign("/billing?notice=payment_overdue");
+        return;
+      }
       window.location.assign(nextPath);
     } catch (error) {
       if (error instanceof ApiError) {
+        if (error.code === "registration_required") {
+          const params = new URLSearchParams();
+          params.set("email", email.trim());
+          params.set("notice", "registration_required");
+          if (nextPath) {
+            params.set("next", nextPath);
+          }
+          startTransition(() => {
+            router.replace(`/signup?${params.toString()}`);
+          });
+          return;
+        }
         if (error.code === "workspace_slug_required") {
           setRequiresWorkspaceSlug(true);
         }

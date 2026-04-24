@@ -73,6 +73,7 @@ export type AuthTenant = {
 export type CurrentSessionResponse = {
   user: AuthenticatedUser;
   tenant: AuthTenant;
+  requires_billing_update: boolean;
 };
 
 export type ProjectListResponse = {
@@ -678,13 +679,22 @@ export type SupportSummaryResponse = {
 /*  Config                                                             */
 /* ------------------------------------------------------------------ */
 
-const DEFAULT_API_PORT = "8000";
+const DEFAULT_API_PORT = "8010";
 
 function isLoopbackHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1";
 }
 
 function readRuntimeEnv(name: string): string | undefined {
+  if (name === "NEXT_PUBLIC_EGP_API_BASE_URL") {
+    return typeof process !== "undefined" ? process.env.NEXT_PUBLIC_EGP_API_BASE_URL : undefined;
+  }
+  if (name === "NEXT_PUBLIC_EGP_TENANT_ID") {
+    return typeof process !== "undefined" ? process.env.NEXT_PUBLIC_EGP_TENANT_ID : undefined;
+  }
+  if (name === "NEXT_PUBLIC_SITE_URL") {
+    return typeof process !== "undefined" ? process.env.NEXT_PUBLIC_SITE_URL : undefined;
+  }
   if (typeof globalThis === "undefined") return undefined;
   const envSource = (globalThis as { process?: { env?: Record<string, string | undefined> } })
     .process?.env;
@@ -790,6 +800,7 @@ const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
   active_keyword_limit_exceeded: "จำนวนคำค้นเกินสิทธิ์ของแพ็กเกจปัจจุบัน",
   authentication_required: "กรุณาเข้าสู่ระบบก่อนใช้งาน",
   invalid_credentials: "อีเมลหรือรหัสผ่านไม่ถูกต้อง",
+  payment_overdue: "กรุณาอัปเดตการชำระเงินก่อนดำเนินการต่อ",
   invalid_email_verification_token: "ลิงก์ยืนยันอีเมลไม่ถูกต้องหรือหมดอายุแล้ว",
   invalid_invite_token: "ลิงก์คำเชิญไม่ถูกต้องหรือหมดอายุแล้ว",
   invalid_mfa_code: "รหัส MFA ไม่ถูกต้อง กรุณาลองอีกครั้ง",
@@ -797,6 +808,7 @@ const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
   keywords_required: "กรุณาใส่อย่างน้อย 1 คำค้น",
   mfa_code_required: "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน",
   profile_name_required: "กรุณาระบุชื่อโปรไฟล์",
+  registration_required: "ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน",
   unsupported_profile_type: "ประเภทโปรไฟล์ไม่รองรับ",
   validation_company_name_required: "กรุณาระบุชื่อบริษัท / องค์กร",
   validation_email_required: "กรุณาระบุอีเมล",
@@ -815,6 +827,8 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   // Auth
   { pattern: "authentication required", thai: "กรุณาเข้าสู่ระบบก่อนใช้งาน" },
   { pattern: "invalid credentials", thai: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" },
+  { pattern: "registration required", thai: "ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน" },
+  { pattern: "payment overdue", thai: "กรุณาอัปเดตการชำระเงินก่อนดำเนินการต่อ" },
   { pattern: "account already exists", thai: "อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบ" },
   { pattern: "registration failed", thai: "สมัครใช้งานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
   { pattern: "invalid token", thai: "ลิงก์ไม่ถูกต้องหรือหมดอายุแล้ว" },
@@ -1330,6 +1344,15 @@ export type CreateRuleProfileInput = {
   close_stale_after_days?: number;
 };
 
+export type TriggerManualRecrawlInput = {
+  tenant_id?: string;
+};
+
+export type TriggerManualRecrawlResponse = {
+  queued_job_count: number;
+  queued_keywords: string[];
+};
+
 export type CreateWebhookInput = {
   tenant_id?: string;
   name: string;
@@ -1375,6 +1398,18 @@ export async function createRuleProfile(
       max_pages_per_keyword: payload.max_pages_per_keyword,
       close_consulting_after_days: payload.close_consulting_after_days,
       close_stale_after_days: payload.close_stale_after_days,
+    }),
+  });
+}
+
+export async function triggerManualRecrawl(
+  payload: TriggerManualRecrawlInput = {},
+): Promise<TriggerManualRecrawlResponse> {
+  const url = buildUrl("/v1/rules/recrawl", {});
+  return apiJsonRequest<TriggerManualRecrawlResponse>(url, {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
     }),
   });
 }

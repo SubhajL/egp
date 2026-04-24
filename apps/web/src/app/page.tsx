@@ -191,7 +191,7 @@ const jsonLd = {
           name: "การแจ้งเตือนทำงานอย่างไร?",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "ระบบจะส่งอีเมลทันทีเมื่อพบโครงการใหม่ที่ตรงกับคำค้นที่คุณตั้งไว้ ความล่าช้าโดยเฉลี่ยน้อยกว่า 1 นาทีหลังข้อมูลปรากฏบน e-GP",
+            text: "สำหรับแพ็กเกจ One-Time Search Pack และ Monthly Membership ระบบจะส่งอีเมลทันทีเมื่อพบโครงการใหม่ที่ตรงกับคำค้นที่คุณตั้งไว้ ความล่าช้าโดยเฉลี่ยน้อยกว่า 1 นาทีหลังข้อมูลปรากฏบน e-GP",
           },
         },
         {
@@ -223,7 +223,7 @@ const jsonLd = {
           name: "สามารถดูเอกสาร TOR ได้หรือไม่?",
           acceptedAnswer: {
             "@type": "Answer",
-            text: "ได้ ระบบจะดาวน์โหลดและจัดเก็บเอกสาร TOR ทุกเวอร์ชัน พร้อม diff view เพื่อเปรียบเทียบการเปลี่ยนแปลงระหว่างเวอร์ชัน",
+            text: "ได้ สำหรับแพ็กเกจ One-Time และ Monthly ระบบจะดาวน์โหลดและจัดเก็บเอกสาร TOR ทุกเวอร์ชัน พร้อม diff view เพื่อเปรียบเทียบการเปลี่ยนแปลงระหว่างเวอร์ชัน แพ็กเกจ Free Trial จะเห็นข้อมูลเมตาโครงการแต่ไม่รองรับการดาวน์โหลดเอกสาร",
           },
         },
       ],
@@ -996,7 +996,6 @@ export default function LandingPage() {
                   {[
                     "1 คำค้น",
                     "ข้อมูล e-GP แบบเรียลไทม์",
-                    "แจ้งเตือนทางอีเมล",
                     "ดูรายการโครงการ",
                   ].map((f) => (
                     <li key={f} className="flex items-start gap-2 text-sm text-[var(--text-secondary)]">
@@ -1024,7 +1023,7 @@ export default function LandingPage() {
                     "ข้อมูล e-GP แบบเรียลไทม์",
                     "แจ้งเตือนทางอีเมล",
                     "ดาวน์โหลดเอกสาร TOR",
-                    "Export Excel / CSV",
+                    "Export Excel",
                   ].map((f) => (
                     <li key={f} className="flex items-start gap-2 text-sm text-[var(--text-secondary)]">
                       <CheckIcon />
@@ -1064,7 +1063,7 @@ export default function LandingPage() {
                     "ดาวน์โหลดเอกสาร TOR ทุกเวอร์ชัน",
                     "TOR Diff View",
                     "Analytics Dashboard",
-                    "Export Excel / CSV / PDF",
+                    "Export Excel",
                     "Project Lifecycle Tracking",
                   ].map((f) => (
                     <li key={f} className="flex items-start gap-2 text-sm text-indigo-100">
@@ -1126,7 +1125,7 @@ export default function LandingPage() {
                 },
                 {
                   q: "การแจ้งเตือนทำงานอย่างไร?",
-                  a: "ระบบจะส่งอีเมลทันทีเมื่อพบโครงการใหม่ที่ตรงกับคำค้นที่คุณตั้งไว้ ความล่าช้าโดยเฉลี่ยน้อยกว่า 1 นาทีหลังข้อมูลปรากฏบน e-GP",
+                  a: "สำหรับแพ็กเกจ One-Time Search Pack และ Monthly Membership ระบบจะส่งอีเมลทันทีเมื่อพบโครงการใหม่ที่ตรงกับคำค้นที่คุณตั้งไว้ ความล่าช้าโดยเฉลี่ยน้อยกว่า 1 นาทีหลังข้อมูลปรากฏบน e-GP",
                 },
                 {
                   q: "ทดลองใช้ฟรีได้นานแค่ไหน?",

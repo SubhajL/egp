@@ -42,6 +42,7 @@ class AuthenticatedUserView:
 class CurrentSessionView:
     user: AuthenticatedUserView
     tenant: TenantRecord
+    requires_billing_update: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +89,7 @@ class AuthService:
         else:
             candidates = self._repository.list_login_users_by_email(email=email)
             if not candidates:
-                raise PermissionError("invalid credentials")
+                raise PermissionError("registration required")
             if len(candidates) == 1:
                 user = candidates[0]
             else:
@@ -394,7 +395,13 @@ class AuthService:
                 ),
             ),
             tenant=tenant,
+            requires_billing_update=self._requires_billing_update(auth_context.tenant_id),
         )
+
+    def _requires_billing_update(self, tenant_id: str) -> bool:
+        if self._billing_service is None:
+            return False
+        return bool(self._billing_service.has_overdue_records(tenant_id=tenant_id))
 
     def _require_user(self, tenant_id: str, user_id: str) -> LoginUserRecord:
         user = self._repository.get_user_by_id(tenant_id=tenant_id, user_id=user_id)

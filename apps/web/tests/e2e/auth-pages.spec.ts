@@ -21,6 +21,81 @@ const CURRENT_SESSION = {
     created_at: "2026-04-06T00:00:00Z",
     updated_at: "2026-04-06T00:00:00Z",
   },
+  requires_billing_update: false,
+};
+
+const BILLING_RECORDS = {
+  records: [],
+  total: 0,
+  limit: 50,
+  offset: 0,
+  summary: {
+    open_records: 0,
+    awaiting_reconciliation: 0,
+    outstanding_amount: "0.00",
+    collected_amount: "0.00",
+  },
+};
+
+const BILLING_PLANS = {
+  plans: [
+    {
+      code: "monthly_membership",
+      label: "Monthly Membership",
+      description: "Monthly plan",
+      currency: "THB",
+      amount_due: "1500.00",
+      billing_interval: "monthly",
+      keyword_limit: 5,
+      duration_days: null,
+      duration_months: 1,
+    },
+  ],
+};
+
+const RULES_RESPONSE = {
+  profiles: [],
+  entitlements: {
+    plan_code: "monthly_membership",
+    plan_label: "Monthly Membership",
+    subscription_status: "active",
+    has_active_subscription: true,
+    keyword_limit: 5,
+    active_keyword_count: 1,
+    remaining_keyword_slots: 4,
+    active_keywords: ["example"],
+    over_keyword_limit: false,
+    runs_allowed: true,
+    exports_allowed: true,
+    document_download_allowed: true,
+    notifications_allowed: true,
+    source: "mock",
+  },
+  closure_rules: {
+    close_on_winner_status: true,
+    close_on_contract_status: true,
+    winner_status_terms: [],
+    contract_status_terms: [],
+    consulting_timeout_days: 14,
+    stale_no_tor_days: 7,
+    stale_eligible_states: [],
+    source: "mock",
+  },
+  notification_rules: {
+    supported_channels: [],
+    supported_types: [],
+    event_wiring_complete: true,
+    source: "mock",
+  },
+  schedule_rules: {
+    supported_trigger_types: [],
+    schedule_execution_supported: true,
+    editable_in_product: true,
+    tenant_crawl_interval_hours: 24,
+    default_crawl_interval_hours: 24,
+    effective_crawl_interval_hours: 24,
+    source: "mock",
+  },
 };
 
 const DASHBOARD_SUMMARY = {
@@ -114,6 +189,15 @@ async function mockApi(
         return;
       case "GET /v1/dashboard/summary":
         await fulfillJson(route, 200, DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, BILLING_RECORDS);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, BILLING_PLANS);
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, RULES_RESPONSE);
         return;
       case "POST /v1/auth/login":
         options.onLogin?.(request.postDataJSON());
@@ -258,6 +342,54 @@ test("login reveals workspace field after ambiguous email response and retries",
       password: "super-secret-password",
     },
   ]);
+});
+
+test("login redirects to signup when no registration record exists", async ({ page }) => {
+  await mockApi(page, {
+    loginResponses: [
+      {
+        status: 401,
+        body: {
+          detail: "registration required",
+          code: "registration_required",
+        },
+      },
+    ],
+  });
+
+  await page.goto("/login?next=%2Fsecurity");
+  await page.getByLabel("อีเมล").fill("new-user@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page).toHaveURL(/\/signup\?email=new-user%40example\.com/);
+  await expect(
+    page.getByText("ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน"),
+  ).toBeVisible();
+});
+
+test("login redirects overdue accounts to billing with a payment notice", async ({ page }) => {
+  await mockApi(page, {
+    loginResponses: [
+      {
+        status: 200,
+        body: {
+          ...CURRENT_SESSION,
+          requires_billing_update: true,
+        },
+      },
+    ],
+  });
+
+  await page.goto("/login?next=%2Fdashboard");
+  await page.getByLabel("อีเมล").fill("analyst@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page).toHaveURL(/\/billing\?notice=payment_overdue$/);
+  await expect(
+    page.getByText("กรุณาอัปเดตการชำระเงินก่อนดำเนินการต่อ", { exact: true }),
+  ).toBeVisible();
 });
 
 test("signup creates a workspace and continues to the requested page", async ({ page }) => {

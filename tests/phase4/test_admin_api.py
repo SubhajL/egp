@@ -19,6 +19,10 @@ OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 JWT_SECRET = "phase4-admin-secret"
 
 
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
+
+
 def _create_client(
     tmp_path,
     *,
@@ -89,7 +93,7 @@ def _seed_tenant(
 
 def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
     record_id = str(uuid4())
-    today = date.today()
+    today = _utc_today()
     now = datetime.now(UTC).isoformat()
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
@@ -182,7 +186,7 @@ def _seed_future_upgrade_chain(
     source_subscription_id = str(uuid4())
     upgrade_record_id = str(uuid4())
     upgrade_subscription_id = str(uuid4())
-    today = date.today()
+    today = _utc_today()
     future_start = today + timedelta(days=5)
     future_end = future_start + timedelta(days=29)
     now = datetime.now(UTC).isoformat()

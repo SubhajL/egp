@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, Landmark, ReceiptText } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
 
 import { PageHeader } from "@/components/layout/page-header";
@@ -275,10 +276,12 @@ function UpgradeCallout({
 }
 
 export default function BillingPage() {
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useBillingRecords();
   const { data: plansData } = useBillingPlans();
   const { data: rulesData } = useRules();
+  const notice = searchParams.get("notice");
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordNumber, setRecordNumber] = useState("");
   const [planCode, setPlanCode] = useState("monthly_membership");
@@ -553,6 +556,15 @@ export default function BillingPage() {
         title="บิลและชำระเงิน"
         subtitle="สร้างใบแจ้งหนี้ตามแพ็กเกจจริง ออกบิล ติดตามยอดชำระ และดูสถานะการเปิดสิทธิ์ใช้งาน"
       />
+
+      {notice === "payment_overdue" ? (
+        <div className="mt-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-[var(--shadow-soft)]">
+          <p className="font-semibold">กรุณาอัปเดตการชำระเงินก่อนดำเนินการต่อ</p>
+          <p className="mt-1">
+            ระบบพาคุณมายังหน้าชำระเงินแล้ว กรุณาตรวจสอบบิลที่เกินกำหนดและดำเนินการชำระก่อนกลับไปใช้งานส่วนอื่น
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <SummaryCard

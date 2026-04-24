@@ -26,6 +26,17 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     }
   }, [currentPath, currentSession, error, isLoading, router]);
 
+  useEffect(() => {
+    if (isLoading || !currentSession || pathname.startsWith("/billing")) {
+      return;
+    }
+    if (currentSession.requires_billing_update) {
+      startTransition(() => {
+        router.replace("/billing?notice=payment_overdue");
+      });
+    }
+  }, [currentSession, isLoading, pathname, router]);
+
   if (isLoading || (error instanceof ApiError && error.status === 401)) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg-page)] px-6">

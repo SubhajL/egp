@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -11,6 +11,10 @@ from egp_db.repositories.billing_repo import create_billing_repository
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
 
 
 def _create_client(tmp_path) -> TestClient:
@@ -123,7 +127,7 @@ def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscrip
     tmp_path,
 ) -> None:
     client = _create_client(tmp_path)
-    future_start = date.today() + timedelta(days=5)
+    future_start = _utc_today() + timedelta(days=5)
     future_end = future_start + timedelta(days=2)
 
     plans_response = client.get("/v1/billing/plans")
@@ -272,7 +276,7 @@ def test_monthly_membership_partial_payment_does_not_activate_subscription(
 
 def test_invoice_transitions_and_activation_remain_tenant_scoped(tmp_path) -> None:
     client = _create_client(tmp_path)
-    future_start = date.today() + timedelta(days=10)
+    future_start = _utc_today() + timedelta(days=10)
 
     created_response = client.post(
         "/v1/billing/records",
@@ -299,7 +303,7 @@ def test_invoice_transitions_and_activation_remain_tenant_scoped(tmp_path) -> No
 
 def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     trial_subscription_id = _seed_subscription(
         client,
         plan_code="free_trial",
@@ -327,7 +331,7 @@ def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> Non
 
 def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     one_time_subscription_id = _seed_subscription(
         client,
         plan_code="one_time_search_pack",
@@ -355,7 +359,7 @@ def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
 
 def test_monthly_membership_cannot_downgrade_via_upgrade_api(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     _seed_subscription(
         client,
         plan_code="monthly_membership",
@@ -379,7 +383,7 @@ def test_monthly_membership_cannot_downgrade_via_upgrade_api(tmp_path) -> None:
 
 def test_duplicate_in_flight_upgrade_is_rejected(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     _seed_subscription(
         client,
         plan_code="free_trial",
@@ -416,7 +420,7 @@ def test_duplicate_in_flight_upgrade_is_rejected(tmp_path) -> None:
 
 def test_upgrade_with_unknown_target_plan_returns_unsupported_upgrade(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     _seed_subscription(
         client,
         plan_code="free_trial",
@@ -440,7 +444,7 @@ def test_upgrade_with_unknown_target_plan_returns_unsupported_upgrade(tmp_path) 
 
 def test_future_start_upgrade_creates_replace_on_activation_record(tmp_path) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     source_subscription_id = _seed_subscription(
         client,
         plan_code="one_time_search_pack",
@@ -469,7 +473,7 @@ def test_future_start_upgrade_settlement_preserves_current_active_subscription(
     tmp_path,
 ) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     source_subscription_id = _seed_subscription(
         client,
         plan_code="one_time_search_pack",
@@ -535,7 +539,7 @@ def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(
     tmp_path,
 ) -> None:
     client = _create_client(tmp_path)
-    today = date.today()
+    today = _utc_today()
     source_subscription_id = _seed_subscription(
         client,
         plan_code="free_trial",
