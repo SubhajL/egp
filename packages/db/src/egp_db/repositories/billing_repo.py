@@ -1449,17 +1449,14 @@ class SqlBillingRepository:
     def has_overdue_billing_records(self, *, tenant_id: str) -> bool:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    select(BILLING_RECORDS_TABLE.c.id)
-                    .where(
-                        BILLING_RECORDS_TABLE.c.tenant_id == normalized_tenant_id,
-                        BILLING_RECORDS_TABLE.c.status == BillingRecordStatus.OVERDUE.value,
-                    )
-                    .limit(1)
+            row = connection.execute(
+                select(BILLING_RECORDS_TABLE.c.id)
+                .where(
+                    BILLING_RECORDS_TABLE.c.tenant_id == normalized_tenant_id,
+                    BILLING_RECORDS_TABLE.c.status == BillingRecordStatus.OVERDUE.value,
                 )
-                .first()
-            )
+                .limit(1)
+            ).first()
         return row is not None
 
     def create_payment_request(
