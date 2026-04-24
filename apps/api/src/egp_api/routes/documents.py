@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import io
+from urllib.parse import quote
+
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
@@ -74,10 +78,6 @@ class ListDocumentDiffsResponse(BaseModel):
 
 class DocumentDiffDetailResponse(BaseModel):
     diff: DocumentDiffResponse
-
-
-class DocumentDownloadResponse(BaseModel):
-    download_url: str
 
 
 class DocumentReviewEventResponse(BaseModel):
@@ -207,6 +207,15 @@ def _serialize_review_page(page: DocumentReviewPage) -> ListDocumentReviewsRespo
     )
 
 
+def _build_content_disposition(file_name: str) -> str:
+    safe_ascii = file_name.encode("ascii", errors="ignore").decode("ascii").strip()
+    safe_ascii = safe_ascii.replace("\\", "_").replace('"', "_") or "document.bin"
+    return (
+        f'attachment; filename="{safe_ascii}"; '
+        f"filename*=UTF-8''{quote(file_name or 'document.bin')}"
+    )
+
+
 @router.post("/ingest", response_model=StoreDocumentResponse)
 def ingest_document(payload: DocumentIngestRequest, request: Request, response: Response):
     service = _service_from_request(request)
@@ -325,20 +334,20 @@ def apply_document_review_action(
     return DocumentReviewActionResponse(review=_serialize_review(review))
 
 
-@router.get("/{document_id}/download", response_model=DocumentDownloadResponse)
-def get_document_download_url(
+@router.get("/{document_id}/download")
+def download_document(
     document_id: str,
     request: Request,
     tenant_id: str | None = None,
     expires_in: int = 300,
-) -> DocumentDownloadResponse:
+) -> StreamingResponse:
+    del expires_in
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
     try:
-        download_url = service.get_download_url(
+        document = service.download_document(
             tenant_id=resolved_tenant_id,
             document_id=document_id,
-            expires_in=expires_in,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="document not found") from exc
@@ -346,4 +355,10 @@ def get_document_download_url(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return DocumentDownloadResponse(download_url=download_url)
+    return StreamingResponse(
+        io.BytesIO(document.file_bytes),
+        media_type=document.content_type,
+        headers={
+            "Content-Disposition": _build_content_disposition(document.document.file_name)
+        },
+    )

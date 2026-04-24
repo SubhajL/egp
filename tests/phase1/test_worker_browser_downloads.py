@@ -18,6 +18,7 @@ from egp_worker.browser_downloads import (
     _save_from_content_page,
     _save_from_new_tab,
     is_final_tor_doc_label,
+    is_tor_file,
 )
 
 
@@ -374,6 +375,13 @@ def test_consulting_document_label_counts_as_final_tor() -> None:
 
 def test_scope_of_work_label_counts_as_final_tor() -> None:
     assert is_final_tor_doc_label("ขอบเขตของงาน") is True
+
+
+def test_budget_build_pdf_files_are_not_tor_files() -> None:
+    assert is_tor_file("pB1.pdf") is False
+    assert is_tor_file("B1.pdf") is False
+    assert is_tor_file("B12.PDF") is False
+    assert is_tor_file("tor-final.pdf") is True
 
 
 def test_invitation_popup_collects_final_tor(monkeypatch, tmp_path: Path) -> None:
