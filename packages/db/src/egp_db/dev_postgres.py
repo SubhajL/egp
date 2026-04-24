@@ -224,7 +224,9 @@ def ensure_local_dev_postgres_ready(
             text=True,
         )
     _create_database_if_missing(config)
-    apply_migrations(database_url=config.database_url, migrations_dir=Path(migrations_dir))
+    apply_migrations(
+        database_url=config.database_url, migrations_dir=Path(migrations_dir)
+    )
     status = get_local_dev_postgres_status(
         repo_root=repo_root,
         root_dir=config.root_dir,
