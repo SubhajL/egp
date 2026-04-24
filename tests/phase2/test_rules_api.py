@@ -94,6 +94,114 @@ def _seed_profile(
             )
 
 
+def _seed_active_subscription(
+    client: TestClient,
+    *,
+    plan_code: str,
+    keyword_limit: int,
+) -> None:
+    active_start = date.today() - timedelta(days=1)
+    active_end = date.today() + timedelta(days=6)
+    activated_at = f"{active_start.isoformat()}T00:00:00+00:00"
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    :plan_code,
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    :amount_due,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "record_number": f"INV-{plan_code.upper()}",
+                "plan_code": plan_code,
+                "billing_period_start": active_start.isoformat(),
+                "billing_period_end": active_end.isoformat(),
+                "amount_due": "0.00" if plan_code == "free_trial" else "1500.00",
+                "created_at": activated_at,
+                "updated_at": activated_at,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    :plan_code,
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    :keyword_limit,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": TENANT_ID,
+                "billing_record_id": connection.execute(
+                    text(
+                        """
+                        SELECT id
+                        FROM billing_records
+                        WHERE tenant_id = :tenant_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"tenant_id": TENANT_ID},
+                ).scalar_one(),
+                "plan_code": plan_code,
+                "billing_period_start": active_start.isoformat(),
+                "billing_period_end": active_end.isoformat(),
+                "keyword_limit": keyword_limit,
+                "activated_at": activated_at,
+                "created_at": activated_at,
+                "updated_at": activated_at,
+            },
+        )
+
+
 def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings(
     tmp_path,
 ) -> None:
@@ -581,6 +689,67 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
         response.json()["detail"] == "active keyword configuration exceeds plan limit"
     )
     assert response.json()["code"] == "active_keyword_limit_exceeded"
+
+
+def test_manual_recrawl_queues_and_dispatches_active_free_trial_keyword(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    spawned: list[tuple[str, str, str]] = []
+
+    client.app.state.discover_spawner = (
+        lambda *, tenant_id, profile_id, profile_type, keyword: spawned.append(
+            (profile_id, profile_type, keyword)
+        )
+    )
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        name="Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "queued_job_count": 1,
+        "queued_keywords": ["แพลตฟอร์ม"],
+    }
+    assert spawned == [
+        ("cccccccc-cccc-cccc-cccc-cccccccccccc", "custom", "แพลตฟอร์ม")
+    ]
+
+    with client.app.state.db_engine.connect() as connection:
+        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+    assert count == 1
+
+
+def test_manual_recrawl_requires_at_least_one_active_keyword(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-empty.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "at least one active keyword is required",
+        "code": "active_keywords_required",
+    }
 
 
 def test_profile_creation_with_blank_name_returns_structured_validation_code(

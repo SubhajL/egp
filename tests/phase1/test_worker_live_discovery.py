@@ -9,6 +9,11 @@ from egp_db.repositories.profile_repo import create_profile_repository
 from sqlalchemy import text
 
 from egp_shared_types.enums import ProjectState
+from egp_worker.browser_discovery import (
+    BrowserDiscoverySettings,
+    LiveDiscoveryPartialError,
+    SearchPageStateError,
+)
 from egp_worker.main import run_worker_job
 from egp_worker.scheduler import build_scheduled_discovery_jobs, run_scheduled_discovery
 from egp_worker.workflows.discover import run_discover_workflow
@@ -21,12 +26,21 @@ class FakeRunRepository:
     def __init__(self) -> None:
         self.tasks: list[dict[str, object]] = []
         self.started_run_id: str | None = None
+        self.created_profile_id: str | None = None
         self.finished_status: str | None = None
         self.finished_summary: dict[str, object] | None = None
         self.finished_error_count: int | None = None
 
-    def create_run(self, *, tenant_id: str, trigger_type: str):
-        return SimpleNamespace(id="run-1", tenant_id=tenant_id, trigger_type=trigger_type)
+    def create_run(
+        self, *, tenant_id: str, trigger_type: str, profile_id: str | None = None
+    ):
+        self.created_profile_id = profile_id
+        return SimpleNamespace(
+            id="run-1",
+            tenant_id=tenant_id,
+            trigger_type=trigger_type,
+            profile_id=profile_id,
+        )
 
     def mark_run_started(self, run_id: str) -> None:
         self.started_run_id = run_id
@@ -60,7 +74,9 @@ class FakeRunRepository:
                 return
         raise KeyError(task_id)
 
-    def mark_task_finished(self, task_id: str, *, status: str, result_json: dict[str, object]) -> None:
+    def mark_task_finished(
+        self, task_id: str, *, status: str, result_json: dict[str, object]
+    ) -> None:
         for task in self.tasks:
             if task["id"] == task_id:
                 task["status"] = status
@@ -82,7 +98,9 @@ class FakeRunRepository:
 
     def get_run_detail(self, *, tenant_id: str, run_id: str):
         return SimpleNamespace(
-            run=SimpleNamespace(id=run_id, tenant_id=tenant_id, status=self.finished_status),
+            run=SimpleNamespace(
+                id=run_id, tenant_id=tenant_id, status=self.finished_status
+            ),
             tasks=[
                 SimpleNamespace(
                     task_type=str(task["task_type"]),
@@ -101,7 +119,10 @@ class FakeProjectEventSink:
 
     def record_discovery(self, event):
         self.discovery_events.append(event)
-        return SimpleNamespace(id=f"project-{len(self.discovery_events)}", project_state=event.project_state)
+        return SimpleNamespace(
+            id=f"project-{len(self.discovery_events)}",
+            project_state=event.project_state,
+        )
 
 
 class FakeCloseProjectRepository:
@@ -168,7 +189,9 @@ def _seed_subscription(
     billing_period_start: date,
     billing_period_end: date,
 ) -> None:
-    repository = create_billing_repository(database_url=database_url, bootstrap_schema=True)
+    repository = create_billing_repository(
+        database_url=database_url, bootstrap_schema=True
+    )
     now = "2026-04-08T00:00:00+00:00"
     with repository._engine.begin() as connection:
         connection.execute(
@@ -250,8 +273,12 @@ def _seed_subscription(
         )
 
 
-def _seed_profile(*, database_url: str, keywords: list[str], is_active: bool = True) -> None:
-    repository = create_profile_repository(database_url=database_url, bootstrap_schema=True)
+def _seed_profile(
+    *, database_url: str, keywords: list[str], is_active: bool = True
+) -> None:
+    repository = create_profile_repository(
+        database_url=database_url, bootstrap_schema=True
+    )
     repository.create_profile(
         tenant_id=TENANT_ID,
         name="Watchlist",
@@ -297,7 +324,9 @@ def test_run_worker_job_discover_denies_when_keyword_not_entitled(tmp_path) -> N
     )
     _seed_profile(database_url=database_url, keywords=["analytics"])
 
-    with pytest.raises(PermissionError, match="discover keyword is not entitled for tenant"):
+    with pytest.raises(
+        PermissionError, match="discover keyword is not entitled for tenant"
+    ):
         run_worker_job(
             {
                 "command": "discover",
@@ -309,7 +338,9 @@ def test_run_worker_job_discover_denies_when_keyword_not_entitled(tmp_path) -> N
         )
 
 
-def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(tmp_path) -> None:
+def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-trial.sqlite3'}"
     today = date.today()
     _seed_subscription(
@@ -351,7 +382,9 @@ def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(tmp_p
 def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
     tmp_path,
 ) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-per-project-keyword.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'worker-per-project-keyword.sqlite3'}"
+    )
     today = date.today()
     _seed_subscription(
         database_url=database_url,
@@ -362,7 +395,9 @@ def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
     )
     _seed_profile(database_url=database_url, keywords=["analytics"])
 
-    with pytest.raises(PermissionError, match="discover keyword is not entitled for tenant"):
+    with pytest.raises(
+        PermissionError, match="discover keyword is not entitled for tenant"
+    ):
         run_discover_workflow(
             database_url=database_url,
             tenant_id=TENANT_ID,
@@ -384,8 +419,9 @@ def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
         )
 
 
-
-def test_run_discover_workflow_uses_live_discovery_source_when_projects_missing() -> None:
+def test_run_discover_workflow_uses_live_discovery_source_when_projects_missing() -> (
+    None
+):
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
     crawled_keywords: list[str] = []
@@ -428,6 +464,385 @@ def test_run_discover_workflow_uses_live_discovery_source_when_projects_missing(
     assert result.projects[0].id == "project-1"
 
 
+def test_run_discover_workflow_marks_run_started_before_live_discovery_begins() -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def crawl(keyword: str) -> list[dict[str, object]]:
+        assert keyword == "แพลตฟอร์ม"
+        assert run_repository.started_run_id == "run-1"
+        return []
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live_discovery=crawl,
+    )
+
+    assert result.run.run.id == "run-1"
+    assert run_repository.created_profile_id is None
+    assert run_repository.finished_status == "succeeded"
+    assert run_repository.finished_summary == {"projects_seen": 0}
+
+
+def test_run_discover_workflow_persists_profile_id_on_run() -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        profile_id="profile-123",
+        keyword="analytics",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+    )
+
+    assert result.run.run.id == "run-1"
+    assert run_repository.created_profile_id == "profile-123"
+
+
+def test_run_discover_workflow_marks_run_failed_when_live_discovery_crashes() -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def crawl(keyword: str) -> list[dict[str, object]]:
+        raise RuntimeError(f"crawl blew up for {keyword}")
+
+    with pytest.raises(RuntimeError, match="crawl blew up for analytics"):
+        run_discover_workflow(
+            tenant_id=TENANT_ID,
+            keyword="analytics",
+            discovered_projects=[],
+            run_repository=run_repository,
+            project_event_sink=sink,
+            live_discovery=crawl,
+        )
+
+    assert run_repository.started_run_id == "run-1"
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_summary == {
+        "projects_seen": 0,
+        "error": "crawl blew up for analytics",
+    }
+    assert run_repository.finished_error_count == 1
+
+
+def test_run_discover_workflow_uses_metadata_only_browser_discovery_for_live_runs(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+    captured: dict[str, object] = {}
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        payload = {
+            "keyword": "แพลตฟอร์ม",
+            "project_name": "ประกวดราคาแพลตฟอร์ม",
+            "organization_name": "กรมตัวอย่าง",
+            "search_name": "ประกวดราคาแพลตฟอร์ม",
+            "detail_name": "ประกวดราคาแพลตฟอร์ม",
+            "project_number": "EGP-PLATFORM",
+            "proposal_submission_date": "2026-05-02",
+            "budget_amount": "200000.00",
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "downloaded_documents": [],
+        }
+        kwargs["project_callback"](payload)
+        return [payload]
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        profile="tor",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert captured["keyword"] == "แพลตฟอร์ม"
+    assert captured["profile"] == "tor"
+    assert captured["include_documents"] is False
+    assert callable(captured["project_callback"])
+    assert result.projects[0].id == "project-1"
+    assert run_repository.finished_status == "succeeded"
+
+
+def test_run_discover_workflow_marks_live_browser_documents_deferred(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        payload = {
+            "keyword": "แพลตฟอร์ม",
+            "project_name": "ประกวดราคาแพลตฟอร์ม",
+            "organization_name": "กรมตัวอย่าง",
+            "search_name": "ประกวดราคาแพลตฟอร์ม",
+            "detail_name": "ประกวดราคาแพลตฟอร์ม",
+            "project_number": "EGP-PLATFORM",
+            "proposal_submission_date": "2026-05-02",
+            "budget_amount": "200000.00",
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "downloaded_documents": [],
+        }
+        kwargs["project_callback"](payload)
+        return [payload]
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert run_repository.tasks[0]["payload"]["document_collection_status"] == "deferred"
+    assert (
+        run_repository.tasks[0]["payload"]["document_collection_reason"]
+        == "live_discovery_metadata_first"
+    )
+    assert sink.discovery_events[0].raw_snapshot["document_collection_status"] == "deferred"
+
+
+def test_run_discover_workflow_can_opt_into_live_browser_document_downloads(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+    captured_crawl: dict[str, object] = {}
+    captured_ingest: dict[str, object] = {}
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        captured_crawl.update(kwargs)
+        payload = {
+            "keyword": "แพลตฟอร์ม",
+            "project_name": "ประกวดราคาแพลตฟอร์ม",
+            "organization_name": "กรมตัวอย่าง",
+            "search_name": "ประกวดราคาแพลตฟอร์ม",
+            "detail_name": "ประกวดราคาแพลตฟอร์ม",
+            "project_number": "EGP-PLATFORM",
+            "proposal_submission_date": "2026-05-02",
+            "budget_amount": "200000.00",
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "downloaded_documents": [
+                {
+                    "file_name": "tor.pdf",
+                    "file_bytes": b"tor-v1",
+                    "source_label": "ร่างเอกสารประกวดราคา",
+                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                }
+            ],
+        }
+        kwargs["project_callback"](payload)
+        return [payload]
+
+    def fake_ingest_downloaded_documents(**kwargs):
+        captured_ingest.update(kwargs)
+        return [SimpleNamespace(created=True)]
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.ingest_downloaded_documents",
+        fake_ingest_downloaded_documents,
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+        live_include_documents=True,
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    assert captured_crawl["include_documents"] is True
+    assert "document_collection_status" not in run_repository.tasks[0]["payload"]
+    assert run_repository.tasks[0]["payload"]["downloaded_documents"] == [
+        {
+            "file_name": "tor.pdf",
+            "source_label": "ร่างเอกสารประกวดราคา",
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "source_page_text": "",
+            "project_state": None,
+        }
+    ]
+    assert captured_ingest["artifact_root"] == tmp_path / "artifacts"
+    assert captured_ingest["project_id"] == "project-1"
+    assert captured_ingest["downloaded_documents"][0]["file_bytes"] == b"tor-v1"
+
+
+def test_run_discover_workflow_streams_live_browser_projects_before_later_crawl_error(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def project_payload(project_number: str) -> dict[str, object]:
+        return {
+            "keyword": "แพลตฟอร์ม",
+            "project_name": f"ประกวดราคาแพลตฟอร์ม {project_number}",
+            "organization_name": "กรมตัวอย่าง",
+            "search_name": f"ประกวดราคาแพลตฟอร์ม {project_number}",
+            "detail_name": f"ประกวดราคาแพลตฟอร์ม {project_number}",
+            "project_number": project_number,
+            "proposal_submission_date": "2026-05-02",
+            "budget_amount": "200000.00",
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "downloaded_documents": [],
+        }
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        project_callback = kwargs["project_callback"]
+        project_callback(project_payload("EGP-1"))
+        project_callback(project_payload("EGP-2"))
+        raise RuntimeError("page state drift after streamed projects")
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    with pytest.raises(RuntimeError, match="page state drift"):
+        run_discover_workflow(
+            tenant_id=TENANT_ID,
+            keyword="แพลตฟอร์ม",
+            discovered_projects=[],
+            run_repository=run_repository,
+            project_event_sink=sink,
+            live=True,
+        )
+
+    assert [event.project_number for event in sink.discovery_events] == ["EGP-1", "EGP-2"]
+    assert [task["status"] for task in run_repository.tasks] == ["succeeded", "succeeded"]
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_summary == {
+        "projects_seen": 2,
+        "error": "page state drift after streamed projects",
+    }
+
+
+def test_run_discover_workflow_marks_partial_for_live_pagination_site_error(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        kwargs["project_callback"](
+            {
+                "keyword": "แพลตฟอร์ม",
+                "project_name": "ประกวดราคาแพลตฟอร์ม",
+                "organization_name": "กรมตัวอย่าง",
+                "search_name": "ประกวดราคาแพลตฟอร์ม",
+                "detail_name": "ประกวดราคาแพลตฟอร์ม",
+                "project_number": "EGP-PARTIAL",
+                "proposal_submission_date": "2026-05-02",
+                "budget_amount": "200000.00",
+                "project_state": ProjectState.OPEN_INVITATION.value,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "downloaded_documents": [],
+            }
+        )
+        raise LiveDiscoveryPartialError("pagination site error at page 6")
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "partial"
+    assert run_repository.finished_status == "partial"
+    assert run_repository.finished_error_count == 1
+    assert run_repository.finished_summary == {
+        "projects_seen": 1,
+        "error": "pagination site error at page 6",
+    }
+
+
+def test_run_discover_workflow_marks_partial_for_live_search_page_state_error(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs) -> list[dict[str, object]]:
+        kwargs["project_callback"](
+            {
+                "keyword": "แพลตฟอร์ม",
+                "project_name": "ประกวดราคาแพลตฟอร์ม",
+                "organization_name": "กรมตัวอย่าง",
+                "search_name": "ประกวดราคาแพลตฟอร์ม",
+                "detail_name": "ประกวดราคาแพลตฟอร์ม",
+                "project_number": "EGP-STATE",
+                "proposal_submission_date": "2026-05-02",
+                "budget_amount": "200000.00",
+                "project_state": ProjectState.OPEN_INVITATION.value,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "downloaded_documents": [],
+            }
+        )
+        raise SearchPageStateError("e-GP site error after search results load")
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "partial"
+    assert run_repository.finished_status == "partial"
+    assert run_repository.finished_error_count == 1
+    assert run_repository.finished_summary == {
+        "projects_seen": 1,
+        "error": "e-GP site error after search results load",
+    }
+
+
 def test_run_worker_job_dispatches_live_discover_command(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -438,7 +853,9 @@ def test_run_worker_job_dispatches_live_discover_command(monkeypatch, tmp_path) 
             projects=[SimpleNamespace(id="project-1"), SimpleNamespace(id="project-2")],
         )
 
-    monkeypatch.setattr("egp_worker.main.run_discover_workflow", fake_run_discover_workflow)
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
 
     result = run_worker_job(
         {
@@ -466,7 +883,108 @@ def test_run_worker_job_dispatches_live_discover_command(monkeypatch, tmp_path) 
     assert captured["profile"] == "tor"
 
 
-def test_run_discover_workflow_uses_per_project_keyword_when_live_source_returns_it() -> None:
+def test_run_worker_job_forwards_browser_settings_to_discover_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_discover_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(run=SimpleNamespace(id="run-live", status="succeeded")),
+            projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-live.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "keyword": "แพลตฟอร์ม",
+            "live": True,
+            "browser_settings": {
+                "cdp_port": 9333,
+                "browser_profile_dir": str(tmp_path / "browser-profile"),
+            },
+        }
+    )
+
+    assert result["run_id"] == "run-live"
+    assert isinstance(captured["browser_settings"], BrowserDiscoverySettings)
+    assert captured["browser_settings"].cdp_port == 9333
+    assert captured["browser_settings"].browser_profile_dir == tmp_path / "browser-profile"
+
+
+def test_run_worker_job_forwards_live_include_documents_to_discover_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_discover_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(run=SimpleNamespace(id="run-live", status="succeeded")),
+            projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-live.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "keyword": "แพลตฟอร์ม",
+            "live": True,
+            "live_include_documents": True,
+        }
+    )
+
+    assert result["run_id"] == "run-live"
+    assert captured["live_include_documents"] is True
+
+
+def test_run_worker_job_forwards_profile_id_to_discover_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_discover_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(
+                run=SimpleNamespace(id="run-profile", status="succeeded")
+            ),
+            projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-profile.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "profile_id": "profile-123",
+            "keyword": "analytics",
+        }
+    )
+
+    assert result["run_id"] == "run-profile"
+    assert captured["profile_id"] == "profile-123"
+
+
+def test_run_discover_workflow_uses_per_project_keyword_when_live_source_returns_it() -> (
+    None
+):
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
 
@@ -574,19 +1092,191 @@ def test_run_discover_workflow_ingests_live_downloaded_documents_after_persist(
     ]
 
 
-def test_run_close_check_workflow_uses_live_observation_source_when_observations_missing() -> None:
+def test_run_discover_workflow_sanitizes_raw_snapshot_before_project_ingest(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.ingest_downloaded_documents",
+        lambda **kwargs: [],
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "search_name": "ระบบวิเคราะห์ข้อมูล",
+                "detail_name": "ระบบวิเคราะห์ข้อมูล",
+                "project_number": "EGP-ANALYTICS",
+                "proposal_submission_date": "2026-05-02",
+                "budget_amount": "200000.00",
+                "project_state": ProjectState.OPEN_INVITATION.value,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "downloaded_documents": [
+                    {
+                        "file_name": "tor.pdf",
+                        "file_bytes": b"tor-v1",
+                        "source_label": "ร่างขอบเขตของงาน",
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    }
+                ],
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=sink,
+    )
+
+    assert result.projects[0].id == "project-1"
+    raw_snapshot = sink.discovery_events[0].raw_snapshot
+    assert raw_snapshot is not None
+    assert raw_snapshot["downloaded_documents"] == [
+        {
+            "file_name": "tor.pdf",
+            "source_label": "ร่างขอบเขตของงาน",
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "source_page_text": "",
+            "project_state": None,
+        }
+    ]
+
+
+def test_run_discover_workflow_recursively_sanitizes_nested_bytes_before_project_ingest(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.ingest_downloaded_documents",
+        lambda **kwargs: [],
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "search_name": "ระบบวิเคราะห์ข้อมูล",
+                "detail_name": "ระบบวิเคราะห์ข้อมูล",
+                "project_number": "EGP-ANALYTICS",
+                "proposal_submission_date": "2026-05-02",
+                "budget_amount": "200000.00",
+                "project_state": ProjectState.OPEN_INVITATION.value,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "raw_snapshot": {
+                    "html_bytes": b"<html></html>",
+                    "nested": {"pdf_bytes": b"pdf-v1"},
+                    "items": [b"chunk-1", {"doc_bytes": b"chunk-2"}],
+                },
+                "downloaded_documents": [
+                    {
+                        "file_name": "tor.pdf",
+                        "file_bytes": b"tor-v1",
+                        "source_label": "ร่างขอบเขตของงาน",
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    }
+                ],
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=sink,
+    )
+
+    raw_snapshot = sink.discovery_events[0].raw_snapshot
+    assert raw_snapshot is not None
+    assert raw_snapshot["raw_snapshot"] == {
+        "html_bytes": "<bytes:13>",
+        "nested": {"pdf_bytes": "<bytes:6>"},
+        "items": ["<bytes:7>", {"doc_bytes": "<bytes:7>"}],
+    }
+
+
+def test_run_discover_workflow_records_run_error_when_task_creation_fails() -> None:
+    class CreateTaskFailsRunRepository(FakeRunRepository):
+        def create_task(self, **kwargs):
+            raise TypeError("Object of type bytes is not JSON serializable")
+
+    run_repository = CreateTaskFailsRunRepository()
+    sink = FakeProjectEventSink()
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=sink,
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.tasks == []
+    assert run_repository.finished_summary == {
+        "projects_seen": 0,
+        "error": "Object of type bytes is not JSON serializable",
+    }
+    assert run_repository.finished_error_count == 1
+
+
+def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error() -> None:
+    run_repository = FakeRunRepository()
+
+    class ExplodingSink:
+        def record_discovery(self, event):
+            raise RuntimeError("project ingest exploded")
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=ExplodingSink(),
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.finished_summary == {"projects_seen": 0}
+    assert run_repository.tasks[0]["status"] == "failed"
+    assert run_repository.tasks[0]["result_json"] == {"error": "project ingest exploded"}
+
+
+def test_run_close_check_workflow_uses_live_observation_source_when_observations_missing() -> (
+    None
+):
     run_repository = FakeRunRepository()
     close_events: list[object] = []
 
     class CloseSink:
         def record_close_check(self, event):
             close_events.append(event)
-            return SimpleNamespace(id=event.project_id, project_state=ProjectState.WINNER_ANNOUNCED)
+            return SimpleNamespace(
+                id=event.project_id, project_state=ProjectState.WINNER_ANNOUNCED
+            )
 
     observed_project_ids: list[str] = []
 
     def sweep(projects: list[dict[str, object]]) -> list[dict[str, object]]:
-        observed_project_ids.extend([str(project["project_id"]) for project in projects])
+        observed_project_ids.extend(
+            [str(project["project_id"]) for project in projects]
+        )
         return [
             {
                 "project_id": projects[0]["project_id"],
@@ -610,7 +1300,66 @@ def test_run_close_check_workflow_uses_live_observation_source_when_observations
     assert close_events[0].project_id == "project-1"
 
 
-def test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed() -> None:
+def test_run_close_check_workflow_records_run_error_when_task_creation_fails() -> None:
+    class CreateTaskFailsRunRepository(FakeRunRepository):
+        def create_task(self, **kwargs):
+            raise TypeError("Object of type bytes is not JSON serializable")
+
+    run_repository = CreateTaskFailsRunRepository()
+
+    class CloseSink:
+        def record_close_check(self, event):
+            raise AssertionError("task creation failure should stop before sink call")
+
+    result = run_close_check_workflow(
+        tenant_id=TENANT_ID,
+        observations=[
+            {
+                "project_id": "project-1",
+                "source_status_text": "ผู้ชนะการเสนอราคา",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=CloseSink(),
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.tasks == []
+    assert run_repository.finished_summary == {
+        "updated_projects": 0,
+        "error": "Object of type bytes is not JSON serializable",
+    }
+    assert run_repository.finished_error_count == 1
+
+
+def test_run_close_check_workflow_keeps_run_summary_clean_when_task_row_has_error() -> None:
+    run_repository = FakeRunRepository()
+
+    class CloseSink:
+        def record_close_check(self, event):
+            raise RuntimeError("close-check ingest exploded")
+
+    result = run_close_check_workflow(
+        tenant_id=TENANT_ID,
+        observations=[
+            {
+                "project_id": "project-1",
+                "source_status_text": "ผู้ชนะการเสนอราคา",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=CloseSink(),
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.finished_summary == {"updated_projects": 0}
+    assert run_repository.tasks[0]["status"] == "failed"
+    assert run_repository.tasks[0]["result_json"] == {"error": "close-check ingest exploded"}
+
+
+def test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed() -> (
+    None
+):
     run_repository = FakeRunRepository()
     observed_projects: list[dict[str, object]] = []
     close_events: list[object] = []
@@ -618,7 +1367,9 @@ def test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed
     class CloseSink:
         def record_close_check(self, event):
             close_events.append(event)
-            return SimpleNamespace(id=event.project_id, project_state=ProjectState.WINNER_ANNOUNCED)
+            return SimpleNamespace(
+                id=event.project_id, project_state=ProjectState.WINNER_ANNOUNCED
+            )
 
     def sweep(projects: list[dict[str, object]]) -> list[dict[str, object]]:
         observed_projects.extend(projects)
@@ -846,7 +1597,9 @@ def test_run_worker_job_executes_scheduled_discovery_jobs_through_worker_runner(
         executed_payloads.append(payload)
         return {"command": payload["command"], "run_id": "run-1"}
 
-    monkeypatch.setattr("egp_worker.main.run_scheduled_discovery", fake_run_scheduled_discovery)
+    monkeypatch.setattr(
+        "egp_worker.main.run_scheduled_discovery", fake_run_scheduled_discovery
+    )
     monkeypatch.setattr("egp_worker.main._run_discovery_job", fake_run_worker_job)
 
     result = run_worker_job(
@@ -940,17 +1693,23 @@ def test_run_discover_workflow_keeps_task_payload_json_safe_for_downloaded_docum
     ]
 
 
-def test_run_worker_job_dispatches_live_close_check_command(monkeypatch, tmp_path) -> None:
+def test_run_worker_job_dispatches_live_close_check_command(
+    monkeypatch, tmp_path
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_run_close_check_workflow(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            run=SimpleNamespace(run=SimpleNamespace(id="run-close", status="succeeded")),
+            run=SimpleNamespace(
+                run=SimpleNamespace(id="run-close", status="succeeded")
+            ),
             updated_projects=[SimpleNamespace(id="project-1")],
         )
 
-    monkeypatch.setattr("egp_worker.main.run_close_check_workflow", fake_run_close_check_workflow)
+    monkeypatch.setattr(
+        "egp_worker.main.run_close_check_workflow", fake_run_close_check_workflow
+    )
 
     result = run_worker_job(
         {
@@ -980,7 +1739,9 @@ def test_run_worker_job_dispatches_scheduled_discovery_command(monkeypatch) -> N
         captured.update(kwargs)
         return {"due_job_count": 2, "executed_job_count": 2}
 
-    monkeypatch.setattr("egp_worker.main.run_scheduled_discovery", fake_run_scheduled_discovery)
+    monkeypatch.setattr(
+        "egp_worker.main.run_scheduled_discovery", fake_run_scheduled_discovery
+    )
 
     result = run_worker_job(
         {

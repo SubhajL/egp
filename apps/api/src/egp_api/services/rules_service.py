@@ -17,6 +17,7 @@ from egp_api.services.entitlement_service import (
 
 if TYPE_CHECKING:
     from egp_db.repositories.admin_repo import SqlAdminRepository
+    from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
 
 
 DEFAULT_CRAWL_INTERVAL_HOURS = 24
@@ -77,6 +78,12 @@ class RulesSnapshot:
     schedule_rules: ScheduleRulesView
 
 
+@dataclass(frozen=True, slots=True)
+class ManualRecrawlRequest:
+    queued_job_count: int
+    queued_keywords: list[str]
+
+
 def _map_profile(detail: CrawlProfileDetail) -> RuleProfile:
     return RuleProfile(
         id=detail.profile.id,
@@ -100,11 +107,13 @@ class RulesService:
         entitlement_service: TenantEntitlementService | None = None,
         notification_event_wiring_complete: bool = True,
         admin_repository: SqlAdminRepository | None = None,
+        discovery_job_repository: SqlDiscoveryJobRepository | None = None,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
         self._notification_event_wiring_complete = notification_event_wiring_complete
         self._admin_repository = admin_repository
+        self._discovery_job_repository = discovery_job_repository
 
     def create_profile(
         self,
@@ -214,6 +223,60 @@ class RulesService:
                 effective_crawl_interval_hours=effective_crawl_interval_hours,
                 source="tenant_settings + default schedule policy",
             ),
+        )
+
+    def queue_active_discovery_jobs(self, *, tenant_id: str) -> ManualRecrawlRequest:
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="runs",
+            )
+        if self._discovery_job_repository is None:
+            raise RuntimeError("discovery job repository is not configured")
+
+        active_jobs: list[tuple[str, str, str]] = []
+        queued_keywords: list[str] = []
+        seen_keywords: set[str] = set()
+        for detail in self._repository.list_profiles_with_keywords(tenant_id=tenant_id):
+            if not detail.profile.is_active:
+                continue
+            for keyword in detail.keywords:
+                normalized_keyword = keyword.keyword.strip()
+                if not normalized_keyword:
+                    continue
+                if self._entitlement_service is not None:
+                    self._entitlement_service.require_discover_keyword(
+                        tenant_id=tenant_id,
+                        keyword=normalized_keyword,
+                    )
+                active_jobs.append(
+                    (
+                        detail.profile.id,
+                        detail.profile.profile_type,
+                        normalized_keyword,
+                    )
+                )
+                dedupe_key = normalized_keyword.casefold()
+                if dedupe_key not in seen_keywords:
+                    seen_keywords.add(dedupe_key)
+                    queued_keywords.append(normalized_keyword)
+
+        if not active_jobs:
+            raise ValueError("at least one active keyword is required")
+
+        for profile_id, profile_type, normalized_keyword in active_jobs:
+            self._discovery_job_repository.create_discovery_job(
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_type=profile_type,
+                keyword=normalized_keyword,
+                trigger_type="manual",
+                live=True,
+            )
+
+        return ManualRecrawlRequest(
+            queued_job_count=len(active_jobs),
+            queued_keywords=queued_keywords,
         )
 
 

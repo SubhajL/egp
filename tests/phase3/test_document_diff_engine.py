@@ -44,3 +44,24 @@ def test_build_document_diff_handles_missing_text_extraction() -> None:
     assert result.summary_json["text_extraction_status"] == "unavailable"
     assert result.summary_json["text_diff_available"] is False
     assert result.summary_json["comparison_scope"] == "same_phase_version"
+
+
+def test_build_document_diff_skips_similarity_for_changed_binary_payloads() -> None:
+    result = build_document_diff(
+        old_document_type=DocumentType.TOR,
+        old_document_phase=DocumentPhase.PUBLIC_HEARING,
+        old_file_name="draft.zip",
+        old_sha256="sha-one",
+        old_bytes=b"\xff" * 2_000_000,
+        new_document_type=DocumentType.TOR,
+        new_document_phase=DocumentPhase.PUBLIC_HEARING,
+        new_file_name="draft-v2.zip",
+        new_sha256="sha-two",
+        new_bytes=b"\xfe" * 2_000_000,
+        comparison_scope="same_phase_version",
+    )
+
+    assert result.diff_type == "changed"
+    assert result.summary_json["text_extraction_status"] == "unavailable"
+    assert result.summary_json["similarity_ratio"] is None
+    assert result.summary_json["binary_similarity_skipped"] is True

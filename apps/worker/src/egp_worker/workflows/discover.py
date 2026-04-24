@@ -18,7 +18,13 @@ from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
 from egp_worker.browser_downloads import ingest_downloaded_documents
-from egp_worker.browser_discovery import crawl_live_discovery
+from egp_worker.browser_discovery import (
+    BrowserDiscoverySettings,
+    LiveDiscoveryPartialError,
+    SearchPageStateError,
+    crawl_live_discovery,
+)
+from egp_worker.json_safety import make_json_safe
 from egp_worker.project_event_sink import (
     ProjectEventSink,
     create_project_event_sink,
@@ -35,6 +41,10 @@ if TYPE_CHECKING:
 class DiscoverWorkflowResult:
     run: CrawlRunDetail
     projects: list[ProjectRecord]
+
+
+LIVE_DOCUMENT_COLLECTION_STATUS = "deferred"
+LIVE_DOCUMENT_COLLECTION_REASON = "live_discovery_metadata_first"
 
 
 def _authorize_discovery(*, database_url: str, tenant_id: str, keyword: str) -> None:
@@ -58,7 +68,9 @@ def _authorize_discovery(*, database_url: str, tenant_id: str, keyword: str) -> 
 
 
 def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
-    safe_payload = dict(discovered)
+    safe_payload = make_json_safe(discovered)
+    if not isinstance(safe_payload, dict):
+        return {"value": safe_payload}
     downloaded_documents = list(discovered.get("downloaded_documents") or [])
     if downloaded_documents:
         safe_payload["downloaded_documents"] = [
@@ -78,9 +90,27 @@ def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
     return safe_payload
 
 
+def _mark_live_document_collection_deferred(
+    discovered: dict[str, object],
+) -> dict[str, object]:
+    marked = dict(discovered)
+    marked.setdefault("downloaded_documents", [])
+    marked["document_collection_status"] = LIVE_DOCUMENT_COLLECTION_STATUS
+    marked["document_collection_reason"] = LIVE_DOCUMENT_COLLECTION_REASON
+    raw_snapshot = marked.get("raw_snapshot")
+    if isinstance(raw_snapshot, dict):
+        marked["raw_snapshot"] = {
+            **raw_snapshot,
+            "document_collection_status": LIVE_DOCUMENT_COLLECTION_STATUS,
+            "document_collection_reason": LIVE_DOCUMENT_COLLECTION_REASON,
+        }
+    return marked
+
+
 def run_discover_workflow(
     *,
     tenant_id: str,
+    profile_id: str | None = None,
     keyword: str,
     discovered_projects: list[dict[str, object]],
     trigger_type: str = "manual",
@@ -92,6 +122,8 @@ def run_discover_workflow(
     live: bool = False,
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
+    browser_settings: BrowserDiscoverySettings | None = None,
+    live_include_documents: bool = False,
     artifact_root: Path | str = Path("artifacts"),
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
@@ -119,36 +151,41 @@ def run_discover_workflow(
                 notification_dispatcher=notification_dispatcher,
             )
 
-    resolved_projects = list(discovered_projects)
-    if live_discovery is not None and not resolved_projects:
-        resolved_projects = list(live_discovery(keyword))
-    elif live:
-        resolved_projects = crawl_live_discovery(
-            keyword=keyword,
-            profile=profile,
-            include_documents=True,
-        )
-
-    run = run_repository.create_run(tenant_id=tenant_id, trigger_type=trigger_type)
+    run = run_repository.create_run(
+        tenant_id=tenant_id,
+        trigger_type=trigger_type,
+        profile_id=profile_id,
+    )
     run_repository.mark_run_started(run.id)
     persisted_projects: list[ProjectRecord] = []
+    persisted_project_keys: set[str] = set()
     error_count = 0
+    run_level_error: str | None = None
 
-    for discovered in resolved_projects:
+    def _discovered_project_key(discovered: dict[str, object]) -> str:
+        return str(discovered.get("project_number") or discovered["project_name"]).casefold()
+
+    def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
+        nonlocal error_count, run_level_error
+        project_key = _discovered_project_key(discovered)
+        if project_key in persisted_project_keys:
+            return None
         task_keyword = str(discovered.get("keyword") or keyword)
+        safe_discovered = _task_safe_payload(discovered)
+        task = None
         if database_url is not None:
             _authorize_discovery(
                 database_url=database_url,
                 tenant_id=tenant_id,
                 keyword=task_keyword,
             )
-        task = run_repository.create_task(
-            run_id=run.id,
-            task_type="discover",
-            keyword=task_keyword,
-            payload=_task_safe_payload(discovered),
-        )
         try:
+            task = run_repository.create_task(
+                run_id=run.id,
+                task_type="discover",
+                keyword=task_keyword,
+                payload=safe_discovered,
+            )
             run_repository.mark_task_started(task.id)
             event = DiscoveredProjectEvent(
                 tenant_id=tenant_id,
@@ -164,7 +201,7 @@ def run_discover_workflow(
                 project_state=discovered.get("project_state", "discovered"),
                 run_id=run.id,
                 source_status_text=str(discovered.get("source_status_text") or ""),
-                raw_snapshot=discovered,
+                raw_snapshot=safe_discovered,
             )
             project = project_event_sink.record_discovery(event)
             downloaded_documents = list(discovered.get("downloaded_documents") or [])
@@ -184,21 +221,70 @@ def run_discover_workflow(
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
+            persisted_project_keys.add(project_key)
             persisted_projects.append(project)
+            return project
         except Exception as exc:
             error_count += 1
-            run_repository.mark_task_finished(
-                task.id,
-                status="failed",
-                result_json={"error": str(exc)},
-            )
+            if task is not None:
+                run_repository.mark_task_finished(
+                    task.id,
+                    status="failed",
+                    result_json={"error": str(exc)},
+                )
+            else:
+                run_level_error = str(exc)
+            return None
 
+    try:
+        resolved_projects = list(discovered_projects)
+        if live_discovery is not None and not resolved_projects:
+            resolved_projects = list(live_discovery(keyword))
+        elif live:
+            def _persist_live_project(discovered: dict[str, object]) -> None:
+                live_project = (
+                    discovered
+                    if live_include_documents
+                    else _mark_live_document_collection_deferred(discovered)
+                )
+                _persist_discovered_project(live_project)
+
+            crawl_live_discovery(
+                keyword=keyword,
+                profile=profile,
+                settings=browser_settings,
+                include_documents=live_include_documents,
+                project_callback=_persist_live_project,
+            )
+            resolved_projects = []
+
+        for discovered in resolved_projects:
+            _persist_discovered_project(discovered)
+    except (LiveDiscoveryPartialError, SearchPageStateError) as exc:
+        run_level_error = str(exc)
+        error_count += 1
+    except Exception as exc:
+        run_level_error = str(exc)
+        run_repository.mark_run_finished(
+            run.id,
+            status="failed",
+            summary_json={
+                "projects_seen": len(persisted_projects),
+                "error": run_level_error,
+            },
+            error_count=max(1, error_count),
+        )
+        raise
+
+    summary_json: dict[str, object] = {"projects_seen": len(persisted_projects)}
+    if run_level_error is not None:
+        summary_json["error"] = run_level_error
     run_repository.mark_run_finished(
         run.id,
         status="partial"
         if error_count and persisted_projects
         else ("failed" if error_count else "succeeded"),
-        summary_json={"projects_seen": len(persisted_projects)},
+        summary_json=summary_json,
         error_count=error_count,
     )
     detail = run_repository.get_run_detail(tenant_id=tenant_id, run_id=run.id)

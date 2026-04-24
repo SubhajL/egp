@@ -146,6 +146,14 @@ async def _run_discovery_dispatch_loop(
 _logger = logging.getLogger(__name__)
 
 
+def _discovery_dispatch_loop_enabled_for_database_url(database_url: str) -> bool:
+    return not is_sqlite_url(database_url)
+
+
+def _discovery_dispatch_route_kick_enabled(database_url: str) -> bool:
+    return not _discovery_dispatch_loop_enabled_for_database_url(database_url)
+
+
 VALIDATION_CODE_OVERRIDES: dict[tuple[str, str, str], str] = {
     ("/v1/auth/register", "password", "string_too_short"): "validation_password_too_short",
     ("/v1/auth/register", "email", "missing"): "validation_email_required",
@@ -235,8 +243,9 @@ def _make_discover_spawner(
                 "profile_id": profile_id,
                 "keyword": keyword,
                 "profile": profile_type,
-                "trigger_type": "profile_created",
+                "trigger_type": "manual",
                 "live": True,
+                "live_include_documents": True,
             },
             ensure_ascii=False,
         ).encode()
@@ -362,7 +371,9 @@ def create_app(
                     poll_interval_seconds=1.0,
                 )
             )
-        if discovery_processor is not None:
+        if discovery_processor is not None and getattr(
+            app.state, "discovery_dispatch_processor_enabled", False
+        ):
             discovery_stop_event = asyncio.Event()
             discovery_task = asyncio.create_task(
                 _run_discovery_dispatch_loop(
@@ -625,6 +636,12 @@ def create_app(
     app.state.notification_dispatcher = gated_notification_dispatcher
     app.state.webhook_delivery_processor = webhook_delivery_processor
     app.state.webhook_delivery_processor_enabled = not is_sqlite_url(resolved_database_url)
+    app.state.discovery_dispatch_processor_enabled = (
+        _discovery_dispatch_loop_enabled_for_database_url(resolved_database_url)
+    )
+    app.state.discovery_dispatch_route_kick_enabled = (
+        _discovery_dispatch_route_kick_enabled(resolved_database_url)
+    )
     app.state.support_service = SupportService(support_repository)
     app.state.webhook_service = WebhookService(
         admin_repository,
@@ -663,6 +680,7 @@ def create_app(
         entitlement_service=entitlement_service,
         notification_event_wiring_complete=True,
         admin_repository=admin_repository,
+        discovery_job_repository=discovery_job_repository,
     )
     app.state.export_service = ExportService(
         project_repository,

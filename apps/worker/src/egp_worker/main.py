@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from .browser_discovery import BrowserDiscoverySettings
 from .scheduler import run_scheduled_discovery
 from .workflows.close_check import run_close_check_workflow
 from .workflows.discover import run_discover_workflow
@@ -24,17 +26,63 @@ def _run_discovery_job(payload: dict[str, object]) -> dict[str, object]:
     return run_worker_job(payload)
 
 
+def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySettings | None:
+    raw_settings = payload.get("browser_settings")
+    settings_payload = dict(raw_settings) if isinstance(raw_settings, dict) else {}
+    flat_key_map = {
+        "browser_cdp_port": "cdp_port",
+        "browser_profile_dir": "browser_profile_dir",
+        "browser_nav_timeout_ms": "nav_timeout_ms",
+        "browser_cloudflare_timeout_ms": "cloudflare_timeout_ms",
+        "browser_cloudflare_reload_retries": "cloudflare_reload_retries",
+        "browser_search_page_recovery_retries": "search_page_recovery_retries",
+        "browser_max_pages_per_keyword": "max_pages_per_keyword",
+        "browser_project_detail_timeout_s": "project_detail_timeout_s",
+        "browser_chrome_path": "chrome_path",
+    }
+    for payload_key, setting_key in flat_key_map.items():
+        if payload.get(payload_key) is not None:
+            settings_payload[setting_key] = payload[payload_key]
+    if not settings_payload:
+        return None
+
+    updates: dict[str, object] = {}
+    int_fields = {
+        "cdp_port",
+        "nav_timeout_ms",
+        "cloudflare_timeout_ms",
+        "cloudflare_reload_retries",
+        "search_page_recovery_retries",
+        "max_pages_per_keyword",
+    }
+    for field in int_fields:
+        if settings_payload.get(field) is not None:
+            updates[field] = int(settings_payload[field])
+    if settings_payload.get("project_detail_timeout_s") is not None:
+        updates["project_detail_timeout_s"] = float(settings_payload["project_detail_timeout_s"])
+    if settings_payload.get("browser_profile_dir") is not None:
+        updates["browser_profile_dir"] = Path(str(settings_payload["browser_profile_dir"]))
+    if settings_payload.get("chrome_path") is not None:
+        updates["chrome_path"] = str(settings_payload["chrome_path"])
+    return replace(BrowserDiscoverySettings(), **updates)
+
+
 def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     command = str(payload.get("command") or "").strip()
     if command == "discover":
         result = run_discover_workflow(
             database_url=str(payload["database_url"]),
             tenant_id=str(payload["tenant_id"]),
+            profile_id=(
+                str(payload["profile_id"]) if payload.get("profile_id") is not None else None
+            ),
             keyword=str(payload.get("keyword") or ""),
             discovered_projects=list(payload.get("discovered_projects") or []),
             trigger_type=str(payload.get("trigger_type") or "manual"),
             live=bool(payload.get("live", False)),
             profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
+            browser_settings=_build_browser_settings(payload),
+            live_include_documents=bool(payload.get("live_include_documents", False)),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
             storage_credentials_secret=(
                 str(payload["storage_credentials_secret"])
@@ -168,3 +216,7 @@ def main(stdin_text: str | None = None) -> None:
         )
         raise SystemExit(1) from exc
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
