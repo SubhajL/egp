@@ -69,6 +69,9 @@ class BillingService:
             offset=offset,
         )
 
+    def has_overdue_records(self, *, tenant_id: str) -> bool:
+        return self._repository.has_overdue_billing_records(tenant_id=tenant_id)
+
     def create_record(
         self,
         *,

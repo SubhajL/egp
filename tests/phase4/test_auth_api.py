@@ -305,6 +305,40 @@ def test_login_returns_billing_update_flag_when_tenant_has_overdue_payment(
     assert me.json()["requires_billing_update"] is True
 
 
+def test_login_returns_billing_update_flag_when_older_overdue_record_falls_off_first_page(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_user(client)
+    _seed_overdue_billing_record(client, record_number="INV-OVERDUE-OLDER")
+
+    for idx in range(55):
+        client.app.state.billing_service.create_record(
+            tenant_id=TENANT_ID,
+            record_number=f"INV-PAID-{idx:03d}",
+            plan_code="monthly_membership",
+            status=BillingRecordStatus.PAID,
+            billing_period_start="2026-05-01",
+            billing_period_end="2026-05-31",
+            amount_due="25.00",
+            currency="THB",
+            actor_subject="test-suite",
+        )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "owner@acme.example",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json()["requires_billing_update"] is True
+
+
 def test_login_without_tenant_slug_requires_workspace_for_duplicate_email_across_tenants(
     tmp_path,
 ) -> None:

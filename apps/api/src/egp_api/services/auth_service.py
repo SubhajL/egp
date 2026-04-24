@@ -22,7 +22,7 @@ from egp_db.repositories.auth_repo import (
 )
 from egp_db.repositories.notification_repo import SqlNotificationRepository
 from egp_notifications.service import NotificationService
-from egp_shared_types.enums import BillingRecordStatus, UserRole
+from egp_shared_types.enums import UserRole
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,10 +401,7 @@ class AuthService:
     def _requires_billing_update(self, tenant_id: str) -> bool:
         if self._billing_service is None:
             return False
-        snapshot = self._billing_service.list_snapshot(tenant_id=tenant_id, limit=50, offset=0)
-        return any(
-            str(item.record.status) == BillingRecordStatus.OVERDUE.value for item in snapshot.items
-        )
+        return bool(self._billing_service.has_overdue_records(tenant_id=tenant_id))
 
     def _require_user(self, tenant_id: str, user_id: str) -> LoginUserRecord:
         user = self._repository.get_user_by_id(tenant_id=tenant_id, user_id=user_id)
