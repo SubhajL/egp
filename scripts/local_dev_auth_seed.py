@@ -6,6 +6,8 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from ipaddress import ip_address
+from urllib.parse import urlparse
 
 from sqlalchemy import select, update
 
@@ -24,6 +26,7 @@ DEFAULT_OWNER_PASSWORD = "DevPassword123!"
 DEFAULT_OWNER_NAME = "Local Dev Owner"
 DEFAULT_TENANT_NAME = "Local Dev Workspace"
 DEFAULT_TENANT_SLUG = "local-dev"
+LOCAL_POSTGRES_HOSTS = {"", "localhost", "127.0.0.1", "::1"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,27 @@ class LoginAccount:
     email_verified: bool
     mfa_enabled: bool
     user_id: str
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    normalized = hostname.strip().strip("[]").casefold()
+    if normalized in LOCAL_POSTGRES_HOSTS:
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _assert_local_only_database_url(database_url: str) -> None:
+    parsed = urlparse(str(database_url).strip())
+    if parsed.scheme in {"sqlite", "sqlite+pysqlite"}:
+        return
+    if parsed.scheme in {"postgresql", "postgresql+psycopg"} and _is_loopback_host(
+        parsed.hostname or ""
+    ):
+        return
+    raise ValueError("local-only database_url required for reset-passwords")
 
 
 def list_login_accounts(*, database_url: str) -> list[LoginAccount]:
@@ -80,6 +104,7 @@ def list_login_accounts(*, database_url: str) -> list[LoginAccount]:
 
 
 def reset_all_user_passwords(*, database_url: str, password: str) -> list[LoginAccount]:
+    _assert_local_only_database_url(database_url)
     engine = create_shared_engine(database_url)
     auth_repository = create_auth_repository(engine=engine)
     accounts = list_login_accounts(database_url=database_url)

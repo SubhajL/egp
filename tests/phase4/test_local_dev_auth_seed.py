@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
@@ -117,3 +118,11 @@ def test_reset_all_user_passwords_updates_existing_accounts(tmp_path) -> None:
         assert analyst_user.mfa_enabled is False
     finally:
         client.close()
+
+
+def test_reset_all_user_passwords_rejects_non_local_database_url() -> None:
+    with pytest.raises(ValueError, match="local-only"):
+        reset_all_user_passwords(
+            database_url="postgresql://egp:secret@db.example.com:5432/egp",
+            password="ResetPassword123!",
+        )
