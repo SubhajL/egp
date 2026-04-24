@@ -24,6 +24,11 @@ from egp_db.repositories.project_repo import (
 from egp_db.repositories.run_repo import create_run_repository
 from egp_shared_types.enums import ProcurementType, ProjectState
 
+DEFAULT_LOCAL_DEV_POSTGRES_HOST = "127.0.0.1"
+DEFAULT_LOCAL_DEV_POSTGRES_PORT = 55_432
+DEFAULT_LOCAL_DEV_POSTGRES_USER = "egp"
+DEFAULT_LOCAL_DEV_POSTGRES_DATABASE = "egp"
+
 
 def _find_binary(name: str) -> Path | None:
     resolved = shutil.which(name)
@@ -39,6 +44,241 @@ def _find_free_port() -> int:
         sock.bind(("127.0.0.1", 0))
         sock.listen(1)
         return int(sock.getsockname()[1])
+
+
+@dataclass(frozen=True, slots=True)
+class LocalDevPostgresConfig:
+    root_dir: Path
+    host: str = DEFAULT_LOCAL_DEV_POSTGRES_HOST
+    port: int = DEFAULT_LOCAL_DEV_POSTGRES_PORT
+    user: str = DEFAULT_LOCAL_DEV_POSTGRES_USER
+    database_name: str = DEFAULT_LOCAL_DEV_POSTGRES_DATABASE
+
+    @property
+    def data_dir(self) -> Path:
+        return self.root_dir / "data"
+
+    @property
+    def log_path(self) -> Path:
+        return self.root_dir / "postgres.log"
+
+    @property
+    def postgres_url(self) -> str:
+        return f"postgresql://{self.user}@{self.host}:{self.port}/postgres"
+
+    @property
+    def database_url(self) -> str:
+        return f"postgresql://{self.user}@{self.host}:{self.port}/{self.database_name}"
+
+
+def build_local_dev_postgres_config(
+    *,
+    repo_root: Path,
+    root_dir: Path | None = None,
+    host: str = DEFAULT_LOCAL_DEV_POSTGRES_HOST,
+    port: int = DEFAULT_LOCAL_DEV_POSTGRES_PORT,
+    user: str = DEFAULT_LOCAL_DEV_POSTGRES_USER,
+    database_name: str = DEFAULT_LOCAL_DEV_POSTGRES_DATABASE,
+) -> LocalDevPostgresConfig:
+    resolved_repo_root = Path(repo_root).resolve()
+    resolved_root_dir = (
+        Path(root_dir).resolve()
+        if root_dir is not None
+        else resolved_repo_root / ".data" / "local-postgres"
+    )
+    return LocalDevPostgresConfig(
+        root_dir=resolved_root_dir,
+        host=host,
+        port=port,
+        user=user,
+        database_name=database_name,
+    )
+
+
+def _persistent_cluster_initialized(config: LocalDevPostgresConfig) -> bool:
+    return (config.data_dir / "PG_VERSION").exists()
+
+
+def _persistent_cluster_running(config: LocalDevPostgresConfig) -> bool:
+    if not _persistent_cluster_initialized(config):
+        return False
+    pg_ctl = _find_binary("pg_ctl")
+    if pg_ctl is None:
+        return False
+    result = subprocess.run(
+        [str(pg_ctl), "-D", str(config.data_dir), "status"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def get_local_dev_postgres_status(
+    *,
+    repo_root: Path,
+    root_dir: Path | None = None,
+    host: str = DEFAULT_LOCAL_DEV_POSTGRES_HOST,
+    port: int = DEFAULT_LOCAL_DEV_POSTGRES_PORT,
+    user: str = DEFAULT_LOCAL_DEV_POSTGRES_USER,
+    database_name: str = DEFAULT_LOCAL_DEV_POSTGRES_DATABASE,
+) -> dict[str, object]:
+    config = build_local_dev_postgres_config(
+        repo_root=repo_root,
+        root_dir=root_dir,
+        host=host,
+        port=port,
+        user=user,
+        database_name=database_name,
+    )
+    return {
+        "root_dir": str(config.root_dir),
+        "data_dir": str(config.data_dir),
+        "log_path": str(config.log_path),
+        "host": config.host,
+        "port": config.port,
+        "user": config.user,
+        "database_name": config.database_name,
+        "postgres_url": config.postgres_url,
+        "database_url": config.database_url,
+        "initialized": _persistent_cluster_initialized(config),
+        "running": _persistent_cluster_running(config),
+    }
+
+
+def _require_postgres_binaries() -> None:
+    if not postgres_binaries_available():
+        raise RuntimeError(
+            "PostgreSQL binaries are required on PATH (expected initdb, pg_ctl, and psql)."
+        )
+
+
+def _create_database_if_missing(config: LocalDevPostgresConfig) -> None:
+    with connect(config.postgres_url) as connection:
+        connection.autocommit = True
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s",
+                (config.database_name,),
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(f'CREATE DATABASE "{config.database_name}"')
+
+
+def ensure_local_dev_postgres_ready(
+    *,
+    repo_root: Path,
+    migrations_dir: Path,
+    root_dir: Path | None = None,
+    host: str = DEFAULT_LOCAL_DEV_POSTGRES_HOST,
+    port: int = DEFAULT_LOCAL_DEV_POSTGRES_PORT,
+    user: str = DEFAULT_LOCAL_DEV_POSTGRES_USER,
+    database_name: str = DEFAULT_LOCAL_DEV_POSTGRES_DATABASE,
+) -> dict[str, object]:
+    _require_postgres_binaries()
+    config = build_local_dev_postgres_config(
+        repo_root=repo_root,
+        root_dir=root_dir,
+        host=host,
+        port=port,
+        user=user,
+        database_name=database_name,
+    )
+    config.root_dir.mkdir(parents=True, exist_ok=True)
+    if not _persistent_cluster_initialized(config):
+        subprocess.run(
+            [
+                str(_find_binary("initdb")),
+                "-D",
+                str(config.data_dir),
+                "-A",
+                "trust",
+                "-U",
+                config.user,
+                "--no-locale",
+                "-E",
+                "UTF8",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    if not _persistent_cluster_running(config):
+        subprocess.run(
+            [
+                str(_find_binary("pg_ctl")),
+                "-D",
+                str(config.data_dir),
+                "-l",
+                str(config.log_path),
+                "-o",
+                f"-F -p {config.port} -c listen_addresses={config.host}",
+                "-w",
+                "start",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    _create_database_if_missing(config)
+    apply_migrations(database_url=config.database_url, migrations_dir=Path(migrations_dir))
+    status = get_local_dev_postgres_status(
+        repo_root=repo_root,
+        root_dir=config.root_dir,
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        database_name=config.database_name,
+    )
+    status["migrations_dir"] = str(Path(migrations_dir))
+    return status
+
+
+def stop_local_dev_postgres(
+    *,
+    repo_root: Path,
+    root_dir: Path | None = None,
+    host: str = DEFAULT_LOCAL_DEV_POSTGRES_HOST,
+    port: int = DEFAULT_LOCAL_DEV_POSTGRES_PORT,
+    user: str = DEFAULT_LOCAL_DEV_POSTGRES_USER,
+    database_name: str = DEFAULT_LOCAL_DEV_POSTGRES_DATABASE,
+) -> dict[str, object]:
+    config = build_local_dev_postgres_config(
+        repo_root=repo_root,
+        root_dir=root_dir,
+        host=host,
+        port=port,
+        user=user,
+        database_name=database_name,
+    )
+    if _persistent_cluster_running(config):
+        _require_postgres_binaries()
+        subprocess.run(
+            [
+                str(_find_binary("pg_ctl")),
+                "-D",
+                str(config.data_dir),
+                "-w",
+                "stop",
+                "-m",
+                "fast",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    return get_local_dev_postgres_status(
+        repo_root=repo_root,
+        root_dir=config.root_dir,
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        database_name=config.database_name,
+    )
 
 
 @dataclass

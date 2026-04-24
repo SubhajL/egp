@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import argparse
 from datetime import UTC, datetime
+import os
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
+from egp_db.connection import create_shared_engine
 from egp_db.repositories.auth_repo import hash_password
 
 
-DATABASE_URL = "postgresql+psycopg://egp:egp_dev@localhost:5432/egp"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://egp:egp_dev@localhost:5432/egp"
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 USER_ID = "33333333-3333-3333-3333-333333333333"
 TENANT_NAME = "Acme Intelligence"
@@ -16,9 +19,18 @@ EMAIL = "owner@acme.example"
 PASSWORD = "correct horse battery staple"
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--database-url",
+        default=os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL),
+    )
+    return parser
+
+
+def seed_manual_test_user(*, database_url: str) -> None:
     now = datetime.now(UTC)
-    engine = create_engine(DATABASE_URL)
+    engine = create_shared_engine(database_url)
     password_hash = hash_password(PASSWORD)
     with engine.begin() as connection:
         connection.execute(
@@ -94,9 +106,15 @@ def main() -> None:
             },
         )
     print("Seeded manual test tenant/user")
+    print(f"database_url={database_url}")
     print(f"tenant_slug={TENANT_SLUG}")
     print(f"email={EMAIL}")
     print(f"password={PASSWORD}")
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    seed_manual_test_user(database_url=args.database_url)
 
 
 if __name__ == "__main__":
