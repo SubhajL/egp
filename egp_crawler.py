@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
+from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from egp_document_classifier import derive_artifact_bucket
@@ -775,8 +776,8 @@ def is_tor_file(filename: str) -> bool:
     lowered = filename.lower()
     if lowered.startswith("pricebuild"):
         return False
-    # pB0.pdf, pB1.pdf, etc. — individual price build-up pages
-    if re.match(r"^pb\d+\.pdf$", lowered):
+    # pB0.pdf, pB1.pdf, B1.pdf, etc. — individual price build-up pages
+    if re.match(r"^(?:p)?b\d+\.pdf$", lowered):
         return False
     return True
 
@@ -1491,6 +1492,49 @@ def connect_playwright_to_chrome(pw):
     context.set_default_timeout(NAV_TIMEOUT)
     page = context.pages[0] if context.pages else context.new_page()
     return browser, page
+
+
+def _goto_with_retries(
+    page: Any,
+    url: str,
+    *,
+    label: str,
+    attempts: int = 3,
+    timeout_ms: int = NAV_TIMEOUT,
+) -> None:
+    """Navigate with retries, then accept network commit if DOM readiness hangs."""
+    max_attempts = max(1, attempts)
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except PlaywrightTimeout as exc:
+            last_error = exc
+            print(
+                f"  WARNING: {label} navigation timed out "
+                f"({attempt}/{max_attempts})"
+            )
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"  WARNING: {label} navigation failed "
+                f"({attempt}/{max_attempts}): {exc}"
+            )
+
+        if attempt < max_attempts:
+            logged_sleep(3, f"retry {label} navigation")
+
+    try:
+        page.goto(url, wait_until="commit", timeout=min(timeout_ms, 15_000))
+        print(
+            f"  WARNING: {label} reached network commit after DOM timeout; continuing"
+        )
+    except Exception as exc:
+        if last_error is not None:
+            raise last_error from exc
+        raise
 
 
 def wait_for_local_tcp_listen(host: str, port: int, timeout_seconds: float) -> bool:
@@ -3448,13 +3492,13 @@ def main(profile: str = "tor") -> None:
     try:
         # Step 1: Go to main page first to warm up Cloudflare cookies
         print("Step 1: Opening main e-GP page...")
-        page.goto(MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        _goto_with_retries(page, MAIN_PAGE_URL, label="main e-GP page")
         logged_sleep(3)
         wait_for_cloudflare(page)
 
         # Step 2: Navigate to the search page
         print("\nStep 2: Opening search page...")
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        _goto_with_retries(page, SEARCH_URL, label="search page")
         logged_sleep(5)
         wait_for_cloudflare(page)
         print("Ready to search.\n")
@@ -3649,16 +3693,10 @@ def main(profile: str = "tor") -> None:
                     print("  Reconnected to Chrome.")
 
                     # Navigate to search page
-                    page.goto(
-                        MAIN_PAGE_URL,
-                        wait_until="domcontentloaded",
-                        timeout=NAV_TIMEOUT,
-                    )
+                    _goto_with_retries(page, MAIN_PAGE_URL, label="main e-GP page")
                     logged_sleep(3)
                     wait_for_cloudflare(page)
-                    page.goto(
-                        SEARCH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT
-                    )
+                    _goto_with_retries(page, SEARCH_URL, label="search page")
                     logged_sleep(5)
                     wait_for_cloudflare(page)
                     continue
@@ -3667,10 +3705,8 @@ def main(profile: str = "tor") -> None:
                     kw_idx += 1
                     # Non-crash error — try to navigate back to search
                     try:
-                        page.goto(
-                            SEARCH_URL,
-                            wait_until="domcontentloaded",
-                            timeout=NAV_TIMEOUT,
+                        _goto_with_retries(
+                            page, SEARCH_URL, label="search page recovery", attempts=2
                         )
                         logged_sleep(3)
                         wait_for_cloudflare(page)

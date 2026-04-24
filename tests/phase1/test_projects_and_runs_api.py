@@ -206,9 +206,79 @@ def test_projects_endpoints_list_and_detail_repository_backed(tmp_path) -> None:
     assert listed.json()["total"] == 1
     assert listed.json()["limit"] == 50
     assert listed.json()["offset"] == 0
+    assert listed.json()["projects"][0]["budget_amount"] == "1500000"
     assert detail.status_code == 200
     assert detail.json()["project"]["id"] == project.id
+    assert detail.json()["project"]["budget_amount"] == "1500000"
     assert detail.json()["aliases"][0]["alias_type"] == "project_number"
+
+
+def test_project_detail_endpoint_dedupes_status_timeline(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    repository = client.app.state.project_repository
+    project = repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-1002",
+            search_name="โครงการระบบข้อมูลกลาง",
+            detail_name="โครงการระบบข้อมูลกลาง",
+            project_name="โครงการระบบข้อมูลกลาง",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="ประกาศเชิญชวน",
+        observed_at="2026-05-01T00:00:00+00:00",
+    )
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO project_status_events (
+                    id,
+                    project_id,
+                    observed_status_text,
+                    normalized_status,
+                    observed_at,
+                    run_id,
+                    raw_snapshot,
+                    created_at
+                ) VALUES (
+                    :id,
+                    :project_id,
+                    :observed_status_text,
+                    :normalized_status,
+                    :observed_at,
+                    NULL,
+                    NULL,
+                    :created_at
+                )
+                """
+            ),
+            {
+                "id": "33333333-3333-3333-3333-333333333333",
+                "project_id": project.id,
+                "observed_status_text": "ประกาศเชิญชวน",
+                "normalized_status": ProjectState.OPEN_INVITATION.value,
+                "observed_at": "2026-05-02T00:00:00+00:00",
+                "created_at": "2026-05-02T00:00:00+00:00",
+            },
+        )
+
+    detail = client.get(f"/v1/projects/{project.id}", params={"tenant_id": TENANT_ID})
+
+    assert detail.status_code == 200
+    assert [event["observed_status_text"] for event in detail.json()["status_events"]] == [
+        "ประกาศเชิญชวน"
+    ]
 
 
 def test_runs_endpoints_create_list_and_return_tasks(tmp_path) -> None:

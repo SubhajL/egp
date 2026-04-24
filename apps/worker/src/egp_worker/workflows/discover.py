@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from egp_notifications.dispatcher import NotificationDispatcher
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +114,7 @@ def _mark_live_document_collection_deferred(
 def run_discover_workflow(
     *,
     tenant_id: str,
+    run_id: str | None = None,
     profile_id: str | None = None,
     keyword: str,
     discovered_projects: list[dict[str, object]],
@@ -151,16 +156,34 @@ def run_discover_workflow(
                 notification_dispatcher=notification_dispatcher,
             )
 
-    run = run_repository.create_run(
-        tenant_id=tenant_id,
-        trigger_type=trigger_type,
-        profile_id=profile_id,
-    )
-    run_repository.mark_run_started(run.id)
+    if run_id is None:
+        run = run_repository.create_run(
+            tenant_id=tenant_id,
+            trigger_type=trigger_type,
+            profile_id=profile_id,
+        )
+        run = run_repository.mark_run_started(run.id)
+    else:
+        run = run_repository.mark_run_started(run_id)
     persisted_projects: list[ProjectRecord] = []
     persisted_project_keys: set[str] = set()
     error_count = 0
     run_level_error: str | None = None
+    live_progress: dict[str, object] | None = None
+
+    def _current_summary() -> dict[str, object]:
+        summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
+        if live_progress is not None:
+            summary["live_progress"] = live_progress
+        return summary
+
+    def _record_live_progress(event: dict[str, object]) -> None:
+        nonlocal live_progress
+        live_progress = {
+            **event,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        run_repository.update_run_summary(run.id, summary_json=_current_summary())
 
     def _discovered_project_key(discovered: dict[str, object]) -> str:
         return str(discovered.get("project_number") or discovered["project_name"]).casefold()
@@ -206,6 +229,19 @@ def run_discover_workflow(
             project = project_event_sink.record_discovery(event)
             downloaded_documents = list(discovered.get("downloaded_documents") or [])
             if downloaded_documents:
+                logger.info(
+                    "Project document ingest started for %s",
+                    project.id,
+                    extra={
+                        "egp_event": "project_document_ingest_started",
+                        "tenant_id": tenant_id,
+                        "project_id": project.id,
+                        "task_id": task.id,
+                        "keyword": task_keyword,
+                        "project_key": project_key,
+                        "document_count": len(downloaded_documents),
+                    },
+                )
                 ingest_downloaded_documents(
                     artifact_root=artifact_root,
                     database_url=database_url,
@@ -223,9 +259,22 @@ def run_discover_workflow(
             )
             persisted_project_keys.add(project_key)
             persisted_projects.append(project)
+            run_repository.update_run_summary(run.id, summary_json=_current_summary())
             return project
         except Exception as exc:
             error_count += 1
+            logger.exception(
+                "Project persistence failed for %s",
+                project_key,
+                extra={
+                    "egp_event": "project_document_ingest_failed",
+                    "tenant_id": tenant_id,
+                    "task_id": task.id if task is not None else None,
+                    "keyword": task_keyword,
+                    "project_key": project_key,
+                    "document_count": len(discovered.get("downloaded_documents") or []),
+                },
+            )
             if task is not None:
                 run_repository.mark_task_finished(
                     task.id,
@@ -256,6 +305,7 @@ def run_discover_workflow(
                 settings=browser_settings,
                 include_documents=live_include_documents,
                 project_callback=_persist_live_project,
+                progress_callback=_record_live_progress,
             )
             resolved_projects = []
 
@@ -277,7 +327,7 @@ def run_discover_workflow(
         )
         raise
 
-    summary_json: dict[str, object] = {"projects_seen": len(persisted_projects)}
+    summary_json = _current_summary()
     if run_level_error is not None:
         summary_json["error"] = run_level_error
     run_repository.mark_run_finished(

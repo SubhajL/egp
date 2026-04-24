@@ -311,9 +311,10 @@ class SqlRunRepository:
         trigger_type: str,
         profile_id: str | None = None,
         summary_json: dict[str, object] | None = None,
+        run_id: str | None = None,
     ) -> CrawlRunRecord:
         now = _now()
-        run_id = str(uuid4())
+        normalized_run_id = normalize_uuid_string(run_id) if run_id else str(uuid4())
         normalized_profile_id = (
             normalize_uuid_string(profile_id) if profile_id else None
         )
@@ -321,7 +322,7 @@ class SqlRunRepository:
         with self._engine.begin() as connection:
             connection.execute(
                 insert(CRAWL_RUNS_TABLE).values(
-                    id=run_id,
+                    id=normalized_run_id,
                     tenant_id=normalize_uuid_string(tenant_id),
                     profile_id=normalized_profile_id,
                     trigger_type=normalized_trigger_type,
@@ -336,7 +337,7 @@ class SqlRunRepository:
             row = (
                 connection.execute(
                     select(CRAWL_RUNS_TABLE)
-                    .where(CRAWL_RUNS_TABLE.c.id == run_id)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
                     .limit(1)
                 )
                 .mappings()
@@ -396,6 +397,135 @@ class SqlRunRepository:
                 .one()
             )
         return _run_from_mapping(row)
+
+    def update_run_summary(
+        self,
+        run_id: str,
+        *,
+        summary_json: dict[str, object] | None,
+    ) -> CrawlRunRecord:
+        normalized_run_id = normalize_uuid_string(run_id)
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(CRAWL_RUNS_TABLE)
+                .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                .values(summary_json=summary_json)
+            )
+            row = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
+        return _run_from_mapping(row)
+
+    def fail_running_runs_started_since(
+        self,
+        *,
+        tenant_id: str,
+        profile_id: str,
+        started_since: datetime,
+        error: str,
+        failure_reason: str = "worker_timeout",
+    ) -> list[CrawlRunRecord]:
+        now = _now()
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_profile_id = normalize_uuid_string(profile_id)
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.profile_id == normalized_profile_id,
+                            CRAWL_RUNS_TABLE.c.status == CrawlRunStatus.RUNNING.value,
+                            CRAWL_RUNS_TABLE.c.started_at >= started_since,
+                        )
+                    )
+                    .order_by(CRAWL_RUNS_TABLE.c.started_at)
+                )
+                .mappings()
+                .all()
+            )
+            failed_rows = []
+            for row in rows:
+                summary = dict(row["summary_json"] or {})
+                summary["error"] = str(error)
+                summary["failure_reason"] = str(failure_reason)
+                connection.execute(
+                    update(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == row["id"])
+                    .values(
+                        status=CrawlRunStatus.FAILED.value,
+                        finished_at=now,
+                        summary_json=summary,
+                        error_count=max(1, int(row["error_count"])),
+                    )
+                )
+                failed_rows.append(
+                    connection.execute(
+                        select(CRAWL_RUNS_TABLE)
+                        .where(CRAWL_RUNS_TABLE.c.id == row["id"])
+                        .limit(1)
+                    )
+                    .mappings()
+                    .one()
+                )
+        return [_run_from_mapping(row) for row in failed_rows]
+
+    def fail_run_if_active(
+        self,
+        run_id: str,
+        *,
+        error: str,
+        failure_reason: str = "worker_timeout",
+    ) -> CrawlRunRecord | None:
+        now = _now()
+        normalized_run_id = normalize_uuid_string(run_id)
+        with self._engine.begin() as connection:
+            row = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            if str(row["status"]) not in {
+                CrawlRunStatus.QUEUED.value,
+                CrawlRunStatus.RUNNING.value,
+            }:
+                return None
+            summary = dict(row["summary_json"] or {})
+            summary["error"] = str(error)
+            summary["failure_reason"] = str(failure_reason)
+            connection.execute(
+                update(CRAWL_RUNS_TABLE)
+                .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                .values(
+                    status=CrawlRunStatus.FAILED.value,
+                    finished_at=now,
+                    summary_json=summary,
+                    error_count=max(1, int(row["error_count"])),
+                )
+            )
+            failed_row = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
+        return _run_from_mapping(failed_row)
 
     def create_task(
         self,

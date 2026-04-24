@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -73,6 +74,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
         result = run_discover_workflow(
             database_url=str(payload["database_url"]),
             tenant_id=str(payload["tenant_id"]),
+            run_id=(str(payload["run_id"]) if payload.get("run_id") is not None else None),
             profile_id=(
                 str(payload["profile_id"]) if payload.get("profile_id") is not None else None
             ),
@@ -198,6 +200,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
 
 
 def main(stdin_text: str | None = None) -> None:
+    logging.basicConfig(level=logging.INFO)
     raw_input = stdin_text if stdin_text is not None else sys.stdin.read()
     payload = json.loads(raw_input) if raw_input.strip() else {"command": "noop"}
     if payload.get("command") == "noop":

@@ -19,6 +19,7 @@ from egp_crawler import (
     KEYWORDS_TOE_DEFAULT,
     KEYWORDS_LUE_DEFAULT,
     PROFILE_DEFAULTS,
+    PlaywrightTimeout,
     SKIP_KEYWORDS_IN_PROJECT,
     SUBPAGE_DOWNLOAD_TIMEOUT,
     apply_profile_defaults,
@@ -43,6 +44,7 @@ from egp_crawler import (
     load_existing_projects,
     filename_from_content_disposition,
     get_results_page_marker,
+    _goto_with_retries,
     keywords_from_env,
     load_dotenv_file,
     pagination_button_is_disabled,
@@ -795,6 +797,8 @@ class TestIsTorFile:
     def test_pB_with_number_is_not_tor(self):
         assert is_tor_file("pB1.pdf") is False
         assert is_tor_file("pB12.pdf") is False
+        assert is_tor_file("B1.pdf") is False
+        assert is_tor_file("B12.PDF") is False
 
     def test_empty_filename_is_not_tor(self):
         assert is_tor_file("") is False
@@ -1133,6 +1137,87 @@ class TestWaitForLocalTcpListen:
             )
         finally:
             s.close()
+
+
+class _FakeNavigationPage:
+    def __init__(self, *, dom_timeouts: int, commit_timeout: bool = False) -> None:
+        self.dom_timeouts = dom_timeouts
+        self.commit_timeout = commit_timeout
+        self.goto_calls = []
+
+    def goto(self, url: str, wait_until=None, timeout=None):
+        self.goto_calls.append((url, wait_until, timeout))
+        if wait_until == "domcontentloaded" and self.dom_timeouts > 0:
+            self.dom_timeouts -= 1
+            raise PlaywrightTimeout("slow DOM")
+        if wait_until == "commit" and self.commit_timeout:
+            raise PlaywrightTimeout("slow commit")
+        return None
+
+
+class TestGotoWithRetries:
+    def test_retries_domcontentloaded_timeout(self, monkeypatch):
+        page = _FakeNavigationPage(dom_timeouts=1)
+        sleeps = []
+
+        monkeypatch.setattr(
+            "egp_crawler.logged_sleep",
+            lambda seconds, reason="": sleeps.append((seconds, reason)),
+        )
+
+        _goto_with_retries(
+            page,
+            "https://example.test/start",
+            label="startup",
+            attempts=2,
+            timeout_ms=123,
+        )
+
+        assert page.goto_calls == [
+            ("https://example.test/start", "domcontentloaded", 123),
+            ("https://example.test/start", "domcontentloaded", 123),
+        ]
+        assert sleeps == [(3, "retry startup navigation")]
+
+    def test_uses_commit_fallback_after_domcontentloaded_retries(self, monkeypatch):
+        page = _FakeNavigationPage(dom_timeouts=2)
+        sleeps = []
+
+        monkeypatch.setattr(
+            "egp_crawler.logged_sleep",
+            lambda seconds, reason="": sleeps.append((seconds, reason)),
+        )
+
+        _goto_with_retries(
+            page,
+            "https://example.test/start",
+            label="startup",
+            attempts=2,
+            timeout_ms=60_000,
+        )
+
+        assert page.goto_calls == [
+            ("https://example.test/start", "domcontentloaded", 60_000),
+            ("https://example.test/start", "domcontentloaded", 60_000),
+            ("https://example.test/start", "commit", 15_000),
+        ]
+        assert sleeps == [(3, "retry startup navigation")]
+
+    def test_raises_when_commit_fallback_times_out(self, monkeypatch):
+        import pytest
+
+        page = _FakeNavigationPage(dom_timeouts=1, commit_timeout=True)
+
+        monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
+
+        with pytest.raises(PlaywrightTimeout, match="slow DOM"):
+            _goto_with_retries(
+                page,
+                "https://example.test/start",
+                label="startup",
+                attempts=1,
+                timeout_ms=60_000,
+            )
 
 
 class _FakeTextElement:

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from egp_shared_types.enums import ArtifactBucket, ProjectState
+from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
 from egp_worker.browser_close_check import _find_matching_observation_on_page
 from egp_worker.browser_discovery import (
     BrowserClosedDuringKeyword,
@@ -20,6 +20,7 @@ from egp_worker.browser_discovery import (
     _run_project_extraction_with_timeout,
     _return_to_results,
     _goto_with_recovery,
+    _infer_procurement_type,
     build_results_debug_snapshot,
     click_search_button,
     connect_playwright_to_chrome,
@@ -2622,6 +2623,26 @@ def test_open_and_extract_project_rejects_error_detail_pages(monkeypatch) -> Non
 
     assert payload is None
     assert collect_calls == []
+
+
+def test_infer_procurement_type_returns_goods_for_purchase_terms() -> None:
+    procurement_type = _infer_procurement_type(
+        project_name="จัดซื้อ Smart TV เพื่อห้องประชุม",
+        organization_name="กรมตัวอย่าง",
+        procurement_method_text="ประกวดราคาอิเล็กทรอนิกส์ (e-bidding)",
+    )
+
+    assert procurement_type == ProcurementType.GOODS.value
+
+
+def test_infer_procurement_type_prefers_consulting_over_goods_terms() -> None:
+    procurement_type = _infer_procurement_type(
+        project_name="จัดจ้างที่ปรึกษาสำหรับระบบข้อมูลกลาง",
+        organization_name="กรมตัวอย่าง",
+        procurement_method_text="ประกวดราคาซื้ออุปกรณ์ประกอบโครงการ",
+    )
+
+    assert procurement_type == ProcurementType.CONSULTING.value
 
 
 def test_return_to_results_restores_keyword_and_page_after_navigation_fallback(

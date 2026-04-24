@@ -6,11 +6,13 @@ import asyncio
 import json
 import logging
 import re
+import signal
 import subprocess
 import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI, Response
 from fastapi.exceptions import RequestValidationError
@@ -115,6 +117,9 @@ from egp_notifications.service import EmailSender, NotificationService, SmtpConf
 from egp_notifications.webhook_delivery import WebhookDeliveryProcessor, WebhookDeliveryService
 
 
+DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
+
+
 async def _run_webhook_delivery_loop(
     *,
     processor: WebhookDeliveryProcessor,
@@ -180,6 +185,9 @@ def _validation_error_code(exc: RequestValidationError, *, path: str) -> str | N
 
 def _make_discover_spawner(
     database_url: str,
+    *,
+    artifact_root: Path,
+    run_repository,
 ) -> Callable[..., None]:
     """Return a function that spawns a worker subprocess for a single keyword.
 
@@ -228,6 +236,56 @@ def _make_discover_spawner(
     class _DiscoverSpawnError(RuntimeError):
         pass
 
+    def _mark_active_run_failed(
+        *,
+        run_id: str,
+        error: str,
+        failure_reason: str,
+    ) -> None:
+        try:
+            failed_run = run_repository.fail_run_if_active(
+                run_id,
+                error=error,
+                failure_reason=failure_reason,
+            )
+        except Exception:
+            _logger.warning(
+                "Failed to mark discover run failed (run_id=%s failure_reason=%s)",
+                run_id,
+                failure_reason,
+                exc_info=True,
+            )
+            return
+        if failed_run is not None:
+            _logger.warning(
+                "Marked discover run %s failed (%s)",
+                failed_run.id,
+                failure_reason,
+            )
+
+    def _worker_termination_error(
+        *,
+        returncode: int,
+        run_id: str,
+        keyword: str,
+    ) -> NonRetriableDiscoveryDispatchError | None:
+        if returncode >= 0:
+            return None
+        signal_number = abs(int(returncode))
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = f"SIG{signal_number}"
+        error_message = (
+            f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
+        )
+        _mark_active_run_failed(
+            run_id=run_id,
+            error=error_message,
+            failure_reason="worker_terminated",
+        )
+        return NonRetriableDiscoveryDispatchError(error_message)
+
     def spawn_discover(
         *,
         tenant_id: str,
@@ -235,11 +293,20 @@ def _make_discover_spawner(
         profile_type: str,
         keyword: str,
     ) -> None:
+        run_id = str(uuid4())
+        run_repository.create_run(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            trigger_type="manual",
+            run_id=run_id,
+        )
         payload = json.dumps(
             {
                 "command": "discover",
                 "database_url": database_url,
+                "artifact_root": str(artifact_root),
                 "tenant_id": tenant_id,
+                "run_id": run_id,
                 "profile_id": profile_id,
                 "keyword": keyword,
                 "profile": profile_type,
@@ -256,7 +323,7 @@ def _make_discover_spawner(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
-            _, stderr = proc.communicate(input=payload, timeout=600)
+            _, stderr = proc.communicate(input=payload, timeout=DISCOVER_WORKER_TIMEOUT_SECONDS)
             if proc.returncode not in {0, None}:
                 preview = _stderr_preview(stderr)
                 _logger.warning(
@@ -267,6 +334,13 @@ def _make_discover_spawner(
                     proc.returncode,
                     preview,
                 )
+                terminated = _worker_termination_error(
+                    returncode=int(proc.returncode),
+                    run_id=run_id,
+                    keyword=keyword,
+                )
+                if terminated is not None:
+                    raise terminated
                 non_retriable = _parse_non_retriable_error(stderr)
                 if non_retriable is not None:
                     raise non_retriable
@@ -277,6 +351,7 @@ def _make_discover_spawner(
             proc.kill()
             _, stderr = proc.communicate()
             preview = _stderr_preview(stderr or exc.stderr)
+            error_message = f"discover worker timed out for keyword {keyword!r}"
             _logger.warning(
                 "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
                 keyword,
@@ -285,7 +360,12 @@ def _make_discover_spawner(
                 exc.timeout,
                 preview,
             )
-            raise _DiscoverSpawnError(f"discover worker timed out for keyword {keyword!r}") from exc
+            _mark_active_run_failed(
+                run_id=run_id,
+                error=error_message,
+                failure_reason="worker_timeout",
+            )
+            raise _DiscoverSpawnError(error_message) from exc
         except _DiscoverSpawnError:
             raise
         except Exception:
@@ -698,7 +778,11 @@ def create_app(
 
     # Discover spawner: launches a worker subprocess per keyword after profile
     # creation.  Injected via app.state so tests can substitute a recorder.
-    app.state.discover_spawner = _make_discover_spawner(resolved_database_url)
+    app.state.discover_spawner = _make_discover_spawner(
+        resolved_database_url,
+        artifact_root=resolved_artifact_root,
+        run_repository=run_repository,
+    )
     app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
         repository=discovery_job_repository,
         dispatcher=_make_discovery_dispatcher(app),

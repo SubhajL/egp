@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from egp_worker.browser_discovery import (
     LiveDiscoveryPartialError,
     SearchPageStateError,
 )
+from egp_worker.main import main as worker_main
 from egp_worker.main import run_worker_job
 from egp_worker.scheduler import build_scheduled_discovery_jobs, run_scheduled_discovery
 from egp_worker.workflows.discover import run_discover_workflow
@@ -27,23 +29,43 @@ class FakeRunRepository:
         self.tasks: list[dict[str, object]] = []
         self.started_run_id: str | None = None
         self.created_profile_id: str | None = None
+        self.created_run_id: str | None = None
         self.finished_status: str | None = None
         self.finished_summary: dict[str, object] | None = None
         self.finished_error_count: int | None = None
+        self.summary_updates: list[dict[str, object] | None] = []
+        self._runs: dict[str, SimpleNamespace] = {}
 
     def create_run(
-        self, *, tenant_id: str, trigger_type: str, profile_id: str | None = None
+        self,
+        *,
+        tenant_id: str,
+        trigger_type: str,
+        profile_id: str | None = None,
+        run_id: str | None = None,
     ):
         self.created_profile_id = profile_id
-        return SimpleNamespace(
-            id="run-1",
+        created_run = SimpleNamespace(
+            id=run_id or "run-1",
             tenant_id=tenant_id,
             trigger_type=trigger_type,
             profile_id=profile_id,
         )
+        self.created_run_id = created_run.id
+        self._runs[created_run.id] = created_run
+        return created_run
 
-    def mark_run_started(self, run_id: str) -> None:
+    def mark_run_started(self, run_id: str):
         self.started_run_id = run_id
+        return self._runs.get(run_id) or SimpleNamespace(
+            id=run_id,
+            tenant_id=TENANT_ID,
+            trigger_type="manual",
+            profile_id=self.created_profile_id,
+        )
+
+    def update_run_summary(self, run_id: str, summary_json: dict[str, object]) -> None:
+        self.summary_updates.append(summary_json)
 
     def create_task(
         self,
@@ -464,6 +486,65 @@ def test_run_discover_workflow_uses_live_discovery_source_when_projects_missing(
     assert result.projects[0].id == "project-1"
 
 
+def test_run_discover_workflow_persists_live_progress(monkeypatch) -> None:
+    import egp_worker.workflows.discover as discover_module
+
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(
+            {
+                "stage": "page_scan_finished",
+                "keyword": "แพลตฟอร์ม",
+                "page_num": 2,
+                "eligible_count": 3,
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        discover_module,
+        "crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "succeeded"
+    latest_update = run_repository.summary_updates[-1]
+    assert latest_update is not None
+    assert latest_update["projects_seen"] == 0
+    assert latest_update["live_progress"] == {
+        **{
+            "stage": "page_scan_finished",
+            "keyword": "แพลตฟอร์ม",
+            "page_num": 2,
+            "eligible_count": 3,
+        },
+        "updated_at": latest_update["live_progress"]["updated_at"],
+    }
+    assert isinstance(latest_update["live_progress"]["updated_at"], str)
+    assert run_repository.finished_summary == {
+        "projects_seen": 0,
+        "live_progress": {
+            "stage": "page_scan_finished",
+            "keyword": "แพลตฟอร์ม",
+            "page_num": 2,
+            "eligible_count": 3,
+            "updated_at": latest_update["live_progress"]["updated_at"],
+        },
+    }
+
+
 def test_run_discover_workflow_marks_run_started_before_live_discovery_begins() -> None:
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
@@ -503,6 +584,31 @@ def test_run_discover_workflow_persists_profile_id_on_run() -> None:
 
     assert result.run.run.id == "run-1"
     assert run_repository.created_profile_id == "profile-123"
+
+
+def test_run_discover_workflow_uses_reserved_run_id_without_creating_another_run() -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+    run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="profile-123",
+        run_id="run-reserved",
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id="run-reserved",
+        profile_id="profile-123",
+        keyword="analytics",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+    )
+
+    assert result.run.run.id == "run-reserved"
+    assert run_repository.created_run_id == "run-reserved"
+    assert run_repository.started_run_id == "run-reserved"
 
 
 def test_run_discover_workflow_marks_run_failed_when_live_discovery_crashes() -> None:
@@ -982,6 +1088,38 @@ def test_run_worker_job_forwards_profile_id_to_discover_workflow(
     assert captured["profile_id"] == "profile-123"
 
 
+def test_run_worker_job_forwards_run_id_and_artifact_root_to_discover_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_discover_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(run=SimpleNamespace(id="run-reserved", status="succeeded")),
+            projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-reserved.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "run_id": "run-reserved",
+            "keyword": "analytics",
+            "artifact_root": str(tmp_path / "reserved-artifacts"),
+        }
+    )
+
+    assert result["run_id"] == "run-reserved"
+    assert captured["run_id"] == "run-reserved"
+    assert captured["artifact_root"] == tmp_path / "reserved-artifacts"
+
+
 def test_run_discover_workflow_uses_per_project_keyword_when_live_source_returns_it() -> (
     None
 ):
@@ -1256,6 +1394,70 @@ def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error()
     assert run_repository.finished_summary == {"projects_seen": 0}
     assert run_repository.tasks[0]["status"] == "failed"
     assert run_repository.tasks[0]["result_json"] == {"error": "project ingest exploded"}
+
+
+def test_run_discover_workflow_logs_document_ingest_failure_context(
+    monkeypatch, caplog
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+    caplog.set_level(logging.INFO, logger="egp_worker.workflows.discover")
+
+    def fake_ingest_downloaded_documents(**kwargs):
+        raise RuntimeError("document ingest exploded")
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.ingest_downloaded_documents",
+        fake_ingest_downloaded_documents,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "downloaded_documents": [
+                    {
+                        "file_name": "tor.pdf",
+                        "file_bytes": b"tor-v1",
+                        "source_label": "ร่างขอบเขตของงาน",
+                        "source_status_text": "เปิดรับฟังคำวิจารณ์",
+                    }
+                ],
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        artifact_root="artifacts",
+    )
+
+    failure_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "project_document_ingest_failed"
+    )
+    assert failure_event.keyword == "analytics"
+    assert failure_event.document_count == 1
+    assert failure_event.task_id == "task-1"
+    assert result.run.run.status == "failed"
+    assert run_repository.tasks[0]["result_json"] == {"error": "document ingest exploded"}
+
+
+def test_worker_main_initializes_info_logging(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_basic_config(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("egp_worker.main.logging.basicConfig", fake_basic_config)
+
+    worker_main('{"command":"noop"}')
+
+    assert captured == {"level": logging.INFO}
+    assert '"status": "idle"' in capsys.readouterr().out
 
 
 def test_run_close_check_workflow_uses_live_observation_source_when_observations_missing() -> (
