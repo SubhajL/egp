@@ -752,6 +752,62 @@ def test_manual_recrawl_requires_at_least_one_active_keyword(tmp_path) -> None:
     }
 
 
+def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-dedupe.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        name="Pending Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+
+    first = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+    second = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert first.status_code == 202
+    assert first.json() == {
+        "queued_job_count": 1,
+        "queued_keywords": ["แพลตฟอร์ม"],
+    }
+    assert second.status_code == 202
+    assert second.json() == {
+        "queued_job_count": 0,
+        "queued_keywords": [],
+    }
+
+    with client.app.state.db_engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT profile_id, keyword, job_status
+                FROM discovery_jobs
+                WHERE tenant_id = :tenant_id
+                """
+            ),
+            {"tenant_id": TENANT_ID},
+        ).mappings().all()
+
+    assert rows == [
+        {
+            "profile_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            "keyword": "แพลตฟอร์ม",
+            "job_status": "pending",
+        }
+    ]
+
+
 def test_profile_creation_with_blank_name_returns_structured_validation_code(
     tmp_path,
 ) -> None:

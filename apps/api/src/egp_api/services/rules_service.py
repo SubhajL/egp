@@ -236,6 +236,7 @@ class RulesService:
 
         active_jobs: list[tuple[str, str, str]] = []
         queued_keywords: list[str] = []
+        queued_job_count = 0
         seen_keywords: set[str] = set()
         for detail in self._repository.list_profiles_with_keywords(tenant_id=tenant_id):
             if not detail.profile.is_active:
@@ -256,16 +257,12 @@ class RulesService:
                         normalized_keyword,
                     )
                 )
-                dedupe_key = normalized_keyword.casefold()
-                if dedupe_key not in seen_keywords:
-                    seen_keywords.add(dedupe_key)
-                    queued_keywords.append(normalized_keyword)
 
         if not active_jobs:
             raise ValueError("at least one active keyword is required")
 
         for profile_id, profile_type, normalized_keyword in active_jobs:
-            self._discovery_job_repository.create_discovery_job(
+            enqueue_result = self._discovery_job_repository.create_pending_discovery_job_if_absent(
                 tenant_id=tenant_id,
                 profile_id=profile_id,
                 profile_type=profile_type,
@@ -273,9 +270,16 @@ class RulesService:
                 trigger_type="manual",
                 live=True,
             )
+            if not enqueue_result.created:
+                continue
+            queued_job_count += 1
+            dedupe_key = normalized_keyword.casefold()
+            if dedupe_key not in seen_keywords:
+                seen_keywords.add(dedupe_key)
+                queued_keywords.append(normalized_keyword)
 
         return ManualRecrawlRequest(
-            queued_job_count=len(active_jobs),
+            queued_job_count=queued_job_count,
             queued_keywords=queued_keywords,
         )
 
