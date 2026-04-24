@@ -8,10 +8,20 @@ import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { useProjects, useRules } from "@/lib/hooks";
-import { formatBudget, formatRelativeTime } from "@/lib/utils";
+import { useProjects, useRules, useRuns } from "@/lib/hooks";
+import {
+  getActiveRuns,
+  getRunActivitySnapshot,
+  getRunDiscoveredCount,
+} from "@/lib/run-progress";
+import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
 import { fetchProjectExport, localizeApiError, triggerManualRecrawl } from "@/lib/api";
-import type { ExportProjectsParams, FetchProjectsParams, ProjectSummary } from "@/lib/api";
+import type {
+  ExportProjectsParams,
+  FetchProjectsParams,
+  ProjectSummary,
+  RunDetailResponse,
+} from "@/lib/api";
 
 type StatusFilter = {
   key: string;
@@ -38,6 +48,25 @@ type ProjectRow = {
   hasWinner: boolean;
   hasChangedTor: boolean;
 };
+
+type ManualRecrawlTracking = {
+  queuedJobCount: number;
+  queuedKeywords: string[];
+  requestedAt: number;
+  timedOut: boolean;
+};
+
+type ActiveRunCard = {
+  id: string;
+  displayId: string;
+  status: string;
+  triggerLabel: string;
+  detail: string;
+  updatedAt: string | null;
+  discoveredCount: number;
+};
+
+const MANUAL_RECRAWL_RUN_WAIT_MS = 90_000;
 
 const ACTIVE_STATES = [
   "discovered",
@@ -125,6 +154,34 @@ function buildProjectRows(projects: ProjectSummary[]): ProjectRow[] {
   }));
 }
 
+function formatRunTriggerLabel(triggerType: string): string {
+  switch (triggerType) {
+    case "schedule":
+      return "กำหนดเวลา";
+    case "manual":
+      return "ด้วยตนเอง";
+    case "retry":
+      return "ลองใหม่";
+    case "backfill":
+      return "ย้อนเก็บข้อมูล";
+    default:
+      return triggerType;
+  }
+}
+
+function buildActiveRunCard(runDetail: RunDetailResponse): ActiveRunCard {
+  const activity = getRunActivitySnapshot(runDetail);
+  return {
+    id: runDetail.run.id,
+    displayId: runDetail.run.id.slice(0, 12),
+    status: runDetail.run.status,
+    triggerLabel: formatRunTriggerLabel(runDetail.run.trigger_type),
+    detail: activity.detail ?? "worker เริ่ม run แล้ว แต่ยังไม่มีสถานะล่าสุดให้แสดง",
+    updatedAt: activity.updatedAt,
+    discoveredCount: getRunDiscoveredCount(runDetail.run),
+  };
+}
+
 export default function ProjectsPage() {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
@@ -141,6 +198,8 @@ export default function ProjectsPage() {
   const [isRecrawling, setIsRecrawling] = useState(false);
   const [recrawlError, setRecrawlError] = useState<string | null>(null);
   const [recrawlNotice, setRecrawlNotice] = useState<string | null>(null);
+  const [manualRecrawlTracking, setManualRecrawlTracking] =
+    useState<ManualRecrawlTracking | null>(null);
   const rowsPerPage = 50;
   const { data: rulesData, isLoading: isRulesLoading } = useRules();
 
@@ -183,17 +242,72 @@ export default function ProjectsPage() {
   };
 
   const { data, isLoading, isError, error } = useProjects(projectQuery);
+  const {
+    data: runsData,
+    error: runsError,
+    isError: isRunsError,
+    refetch: refetchRuns,
+  } = useRuns({ limit: 10, offset: 0 });
   const apiProjects = data?.projects ?? [];
   const totalProjects = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(Math.max(totalProjects, 1) / rowsPerPage));
   const displayProjects = buildProjectRows(apiProjects);
   const rangeStart = totalProjects === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
   const rangeEnd = totalProjects === 0 ? 0 : rangeStart + displayProjects.length - 1;
+  const activeRuns = getActiveRuns(runsData?.runs ?? []);
+  const activeRunCards = activeRuns.slice(0, 3).map(buildActiveRunCard);
+  const runningRunCount = activeRuns.filter((detail) => detail.run.status === "running").length;
+  const queuedRunCount = activeRuns.filter((detail) => detail.run.status === "queued").length;
+  const waitingForManualRun =
+    manualRecrawlTracking !== null &&
+    !manualRecrawlTracking.timedOut &&
+    activeRuns.length === 0;
+  const shouldShowRunActivity =
+    activeRuns.length > 0 ||
+    manualRecrawlTracking !== null ||
+    (recrawlNotice !== null && isRunsError);
   const tabs = [
     { key: "all" as const, label: "ทั้งหมด" },
     { key: "active" as const, label: "ใช้งานอยู่" },
     { key: "closed" as const, label: "ปิดแล้ว" },
   ];
+
+  useEffect(() => {
+    if (activeRuns.length === 0 || manualRecrawlTracking === null) {
+      return;
+    }
+    setManualRecrawlTracking(null);
+  }, [activeRuns.length, manualRecrawlTracking]);
+
+  useEffect(() => {
+    if (!waitingForManualRun && activeRuns.length === 0) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void refetchRuns();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [activeRuns.length, refetchRuns, waitingForManualRun]);
+
+  useEffect(() => {
+    if (!waitingForManualRun || manualRecrawlTracking === null) {
+      return;
+    }
+    const remainingMs =
+      MANUAL_RECRAWL_RUN_WAIT_MS - (Date.now() - manualRecrawlTracking.requestedAt);
+    if (remainingMs <= 0) {
+      setManualRecrawlTracking((current) =>
+        current ? { ...current, timedOut: true } : current,
+      );
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setManualRecrawlTracking((current) =>
+        current ? { ...current, timedOut: true } : current,
+      );
+    }, remainingMs);
+    return () => window.clearTimeout(timeout);
+  }, [manualRecrawlTracking, waitingForManualRun]);
 
   function toggleStatusFilter(key: string) {
     setStatusFilters((previous) =>
@@ -248,12 +362,21 @@ export default function ProjectsPage() {
     setIsRecrawling(true);
     setRecrawlError(null);
     setRecrawlNotice(null);
+    setManualRecrawlTracking(null);
     try {
       const result = await triggerManualRecrawl();
       const keywordCount = result.queued_keywords.length;
       setRecrawlNotice(
         `เริ่ม crawl ${result.queued_job_count} งานจาก ${keywordCount} คำค้นแล้ว`,
       );
+      if (result.queued_job_count > 0) {
+        setManualRecrawlTracking({
+          queuedJobCount: result.queued_job_count,
+          queuedKeywords: result.queued_keywords,
+          requestedAt: Date.now(),
+          timedOut: false,
+        });
+      }
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["rules"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
@@ -309,6 +432,99 @@ export default function ProjectsPage() {
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           {recrawlNotice}
         </div>
+      ) : null}
+
+      {shouldShowRunActivity ? (
+        <section className="mb-4 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-soft)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                สถานะการ crawl ล่าสุด
+              </h2>
+              <p className="mt-1 text-sm text-[var(--text-muted)]">
+                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิวหรือกำลังทำอะไรอยู่
+              </p>
+            </div>
+            <Link
+              href="/runs"
+              className="text-sm font-medium text-[var(--color-primary)] hover:underline"
+            >
+              ดูหน้าการทำงานทั้งหมด
+            </Link>
+          </div>
+
+          {activeRuns.length > 0 ? (
+            <>
+              <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                <span className="rounded-full bg-[var(--badge-indigo-bg)] px-3 py-1 font-medium text-[var(--badge-indigo-text)]">
+                  กำลังทำงาน {runningRunCount} งาน
+                </span>
+                <span className="rounded-full bg-[var(--badge-amber-bg)] px-3 py-1 font-medium text-[var(--badge-amber-text)]">
+                  รอคิว {queuedRunCount} งาน
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {activeRunCards.map((run) => (
+                  <article
+                    key={run.id}
+                    className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4"
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge state={run.status} variant="run" />
+                        <span className="font-mono text-sm text-[var(--text-primary)]">
+                          {run.displayId}
+                        </span>
+                        <span className="text-sm text-[var(--text-muted)]">
+                          ทริกเกอร์: {run.triggerLabel}
+                        </span>
+                      </div>
+                      <span className="text-sm text-[var(--text-muted)]">
+                        ค้นพบแล้ว {run.discoveredCount} โครงการ
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm text-[var(--text-secondary)]">{run.detail}</p>
+                    {run.updatedAt ? (
+                      <p className="mt-2 text-xs text-[var(--text-muted)]">
+                        อัปเดตล่าสุด {formatThaiDate(run.updatedAt)}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : manualRecrawlTracking ? (
+            <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
+              <p className="font-medium text-[var(--text-primary)]">
+                {manualRecrawlTracking.timedOut
+                  ? "ระบบรับคำสั่ง crawl แล้ว แต่ยังไม่พบ run ที่ worker เริ่มทำงาน"
+                  : "ระบบรับคำสั่ง crawl แล้ว กำลังรอ worker สร้าง run แรก"}
+              </p>
+              <p className="mt-2">
+                {manualRecrawlTracking.queuedJobCount} งาน /{" "}
+                {manualRecrawlTracking.queuedKeywords.length} คำค้น
+              </p>
+              {manualRecrawlTracking.queuedKeywords.length > 0 ? (
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  คำค้นที่ส่งแล้ว: {manualRecrawlTracking.queuedKeywords.join(", ")}
+                </p>
+              ) : null}
+              {manualRecrawlTracking.timedOut ? (
+                <p className="mt-2 text-xs text-[var(--badge-amber-text)]">
+                  หาก worker เริ่มช้ากว่านี้ ให้รีเฟรชอีกครั้งหรือเปิดหน้าการทำงานเพื่อตรวจสอบ
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-[var(--text-muted)]">
+                  ระบบจะดึงสถานะใหม่ทุก 5 วินาทีจนกว่าจะเห็นงานเริ่มทำงานจริง
+                </p>
+              )}
+            </div>
+          ) : isRunsError ? (
+            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {localizeApiError(runsError, "ไม่สามารถโหลดสถานะการ crawl ล่าสุดได้")}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       {exportError ? (

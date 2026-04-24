@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Archive, AlertTriangle, CheckCircle, XCircle, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { DailyDiscoveryChart, ProjectStateChart } from "@/components/ui/dashboard-charts";
@@ -80,6 +81,17 @@ function formatRunDuration(startedAt: string | null, finishedAt: string | null, 
   return "—";
 }
 
+function formatDateTime(value: string | null): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat("th-TH", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 /* ------------------------------------------------------------------ */
 /*  Stat Card Components                                               */
 /* ------------------------------------------------------------------ */
@@ -119,11 +131,22 @@ function SmallStatCard({
 /* ------------------------------------------------------------------ */
 
 export default function DashboardPage() {
-  const { data, error, isLoading } = useDashboardSummary();
+  const { data, error, isLoading, refetch, isFetching } = useDashboardSummary();
   const summary = data ?? EMPTY_DASHBOARD_SUMMARY;
   const kpis = summary.kpis;
   const crawlSuccessRate = `${kpis.crawl_success_rate_percent.toFixed(1)}%`;
   const costSummary = summary.cost_summary;
+  const hasActiveRuns = summary.recent_runs.some(
+    (run) => run.status === "running" || run.status === "queued",
+  );
+
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    const interval = window.setInterval(() => {
+      void refetch();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveRuns, refetch]);
 
   return (
     <>
@@ -289,9 +312,18 @@ export default function DashboardPage() {
       <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-12">
         {/* Recent Runs */}
         <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] md:col-span-7">
-          <h3 className="mb-4 text-sm font-semibold text-[var(--text-primary)]">
-            การทำงานล่าสุด
-          </h3>
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">การทำงานล่าสุด</h3>
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                {hasActiveRuns
+                  ? isFetching
+                    ? "กำลังรีเฟรชสถานะล่าสุด..."
+                    : "รีเฟรชอัตโนมัติทุก 5 วินาทีขณะมี run ที่กำลังทำงาน"
+                  : "แสดงเวลาของ run ล่าสุดตามข้อมูลจากระบบ"}
+              </p>
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -304,6 +336,9 @@ export default function DashboardPage() {
                   </th>
                   <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-[var(--text-muted)]">
                     สถานะ
+                  </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase text-[var(--text-muted)]">
+                    เวลา
                   </th>
                   <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-[var(--text-muted)]">
                     ระยะเวลา
@@ -328,6 +363,9 @@ export default function DashboardPage() {
                     <td className="px-3 py-2">
                       <StatusBadge state={run.status} variant="run" />
                     </td>
+                    <td className="px-3 py-2 text-xs text-[var(--text-secondary)]">
+                      {formatDateTime(run.started_at ?? run.created_at)}
+                    </td>
                     <td className="px-3 py-2 text-right font-mono text-xs tabular-nums text-[var(--text-muted)]">
                       {formatRunDuration(run.started_at, run.finished_at, run.status)}
                     </td>
@@ -337,7 +375,7 @@ export default function DashboardPage() {
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={5} className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                    <td colSpan={6} className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">
                       {isLoading ? "กำลังโหลดการทำงานล่าสุด..." : "ยังไม่มีประวัติการทำงาน"}
                     </td>
                   </tr>

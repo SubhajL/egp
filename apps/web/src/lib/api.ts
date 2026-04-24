@@ -103,8 +103,9 @@ export type DocumentListResponse = {
   documents: DocumentSummary[];
 };
 
-export type DocumentDownloadResponse = {
-  download_url: string;
+export type DocumentDownloadFileResponse = {
+  blob: Blob;
+  filename: string;
 };
 
 export type ProjectCrawlEvidence = {
@@ -1004,8 +1005,11 @@ async function apiEmptyRequest(url: string, init: RequestInit): Promise<void> {
   }
 }
 
-function parseDownloadFilename(contentDisposition: string | null): string {
-  if (!contentDisposition) return "egp_projects.xlsx";
+function parseDownloadFilename(
+  contentDisposition: string | null,
+  fallback = "download.bin",
+): string {
+  if (!contentDisposition) return fallback;
 
   const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
   if (encodedMatch?.[1]) {
@@ -1017,7 +1021,7 @@ function parseDownloadFilename(contentDisposition: string | null): string {
     return plainMatch[1];
   }
 
-  return "egp_projects.xlsx";
+  return fallback;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1088,7 +1092,10 @@ export async function fetchProjectExport(
   }
   return {
     blob: await response.blob(),
-    filename: parseDownloadFilename(response.headers.get("content-disposition")),
+    filename: parseDownloadFilename(
+      response.headers.get("content-disposition"),
+      "egp_projects.xlsx",
+    ),
   };
 }
 
@@ -1106,11 +1113,25 @@ export async function fetchDocuments(
   return apiFetch<DocumentListResponse>(url);
 }
 
-export async function fetchDocumentDownloadUrl(
+export async function fetchDocumentDownloadFile(
   documentId: string,
-): Promise<DocumentDownloadResponse> {
+) : Promise<DocumentDownloadFileResponse> {
   const url = buildUrl(`/v1/documents/${encodeURIComponent(documentId)}/download`, {});
-  return apiFetch<DocumentDownloadResponse>(url);
+  const response = await fetch(url, {
+    headers: getApiHeaders("application/octet-stream"),
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    await throwApiError(response);
+  }
+  return {
+    blob: await response.blob(),
+    filename: parseDownloadFilename(
+      response.headers.get("content-disposition"),
+      "document.bin",
+    ),
+  };
 }
 
 export async function fetchProjectCrawlEvidence(
