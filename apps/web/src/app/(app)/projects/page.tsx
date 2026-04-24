@@ -2,14 +2,15 @@
 
 import { useDeferredValue, useEffect, useState } from "react";
 import Link from "next/link";
+import { useQueryClient } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { useProjects } from "@/lib/hooks";
+import { useProjects, useRules } from "@/lib/hooks";
 import { formatBudget, formatRelativeTime } from "@/lib/utils";
-import { fetchProjectExport, localizeApiError } from "@/lib/api";
+import { fetchProjectExport, localizeApiError, triggerManualRecrawl } from "@/lib/api";
 import type { ExportProjectsParams, FetchProjectsParams, ProjectSummary } from "@/lib/api";
 
 type StatusFilter = {
@@ -125,6 +126,7 @@ function buildProjectRows(projects: ProjectSummary[]): ProjectRow[] {
 }
 
 export default function ProjectsPage() {
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"all" | "active" | "closed">("all");
   const [statusFilters, setStatusFilters] = useState(INITIAL_STATUS_FILTERS);
@@ -136,7 +138,11 @@ export default function ProjectsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [isRecrawling, setIsRecrawling] = useState(false);
+  const [recrawlError, setRecrawlError] = useState<string | null>(null);
+  const [recrawlNotice, setRecrawlNotice] = useState<string | null>(null);
   const rowsPerPage = 50;
+  const { data: rulesData, isLoading: isRulesLoading } = useRules();
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const selectedStatusKeys = statusFilters.filter((filter) => filter.checked).map((filter) => filter.key);
@@ -238,6 +244,33 @@ export default function ProjectsPage() {
     }
   }
 
+  async function handleRecrawl() {
+    setIsRecrawling(true);
+    setRecrawlError(null);
+    setRecrawlNotice(null);
+    try {
+      const result = await triggerManualRecrawl();
+      const keywordCount = result.queued_keywords.length;
+      setRecrawlNotice(
+        `เริ่ม crawl ${result.queued_job_count} งานจาก ${keywordCount} คำค้นแล้ว`,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+      ]);
+    } catch (error) {
+      setRecrawlError(
+        localizeApiError(error, "ยังไม่สามารถเริ่ม crawl ใหม่ได้"),
+      );
+    } finally {
+      setIsRecrawling(false);
+    }
+  }
+
+  const canRecrawl =
+    !!rulesData?.entitlements.runs_allowed &&
+    (rulesData?.entitlements.active_keyword_count ?? 0) > 0;
+
   return (
     <>
       <PageHeader
@@ -256,13 +289,27 @@ export default function ProjectsPage() {
             </button>
             <button
               type="button"
-              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover"
+              onClick={() => void handleRecrawl()}
+              disabled={isRecrawling || isLoading || isRulesLoading || !canRecrawl}
+              className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Crawl ใหม่
+              {isRecrawling ? "กำลังเริ่ม crawl..." : "Crawl ใหม่"}
             </button>
           </div>
         }
       />
+
+      {recrawlError ? (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {recrawlError}
+        </div>
+      ) : null}
+
+      {recrawlNotice ? (
+        <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {recrawlNotice}
+        </div>
+      ) : null}
 
       {exportError ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -431,7 +478,19 @@ export default function ProjectsPage() {
           >
             <div className="overflow-hidden rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)]">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[1200px]">
+                <table className="w-full min-w-[1320px] table-fixed">
+                  <colgroup>
+                    <col className="w-[22rem]" />
+                    <col className="w-[16rem]" />
+                    <col className="w-[10rem]" />
+                    <col className="w-[7rem]" />
+                    <col className="w-[8rem]" />
+                    <col className="w-[10rem]" />
+                    <col className="w-[14rem]" />
+                    <col className="w-[6rem]" />
+                    <col className="w-[5rem]" />
+                    <col className="w-[6rem]" />
+                  </colgroup>
                   <thead>
                     <tr className="bg-[var(--bg-surface-secondary)]">
                       <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -449,7 +508,7 @@ export default function ProjectsPage() {
                       <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                         สถานะ
                       </th>
-                      <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                      <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] whitespace-nowrap">
                         งบประมาณ
                       </th>
                       <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -475,14 +534,17 @@ export default function ProjectsPage() {
                         <td className="px-3 py-2 text-[13px]">
                           <Link
                             href={`/projects/${project.id}`}
-                            className="line-clamp-1 font-medium text-[var(--color-primary)] hover:underline"
+                            className="line-clamp-2 font-medium text-[var(--color-primary)] hover:underline"
                             title={project.name}
                           >
                             {project.name}
                           </Link>
                         </td>
-                        <td className="px-3 py-2 text-[13px] text-[var(--text-secondary)]">
-                          {project.agency}
+                        <td
+                          className="px-3 py-2 text-[13px] text-[var(--text-secondary)]"
+                          title={project.agency}
+                        >
+                          <span className="line-clamp-2">{project.agency}</span>
                         </td>
                         <td className="px-3 py-2 font-mono text-[13px] text-[var(--text-secondary)]">
                           {project.projectNumber}
@@ -493,11 +555,17 @@ export default function ProjectsPage() {
                         <td className="px-3 py-2">
                           <StatusBadge state={project.state} />
                         </td>
-                        <td className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-[var(--text-primary)]">
+                        <td
+                          className="px-3 py-2 text-right font-mono text-[13px] tabular-nums text-[var(--text-primary)] whitespace-nowrap"
+                          title={formatBudget(project.budgetAmount)}
+                        >
                           {formatBudget(project.budgetAmount)}
                         </td>
-                        <td className="px-3 py-2 text-[13px] text-[var(--text-secondary)]">
-                          {project.latestStatus}
+                        <td
+                          className="px-3 py-2 text-[13px] text-[var(--text-secondary)]"
+                          title={project.latestStatus}
+                        >
+                          <span className="line-clamp-2">{project.latestStatus}</span>
                         </td>
                         <td className="px-3 py-2 text-[13px] text-[var(--text-muted)]">
                           {project.lastSeen}

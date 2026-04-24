@@ -25,6 +25,7 @@ type DisplayTask = {
   status: string;
   attempts: number;
   duration: string;
+  errorDetail: string | null;
 };
 
 type DisplayRun = {
@@ -39,6 +40,7 @@ type DisplayRun = {
   updated: number;
   closed: number;
   errors: number;
+  errorDetail: string | null;
   tasks: DisplayTask[];
 };
 
@@ -115,8 +117,29 @@ function readNumericSummary(
   return 0;
 }
 
+function readStringSummary(
+  summary: Record<string, unknown> | null,
+  keys: string[],
+): string | null {
+  if (!summary) return null;
+  for (const key of keys) {
+    const value = summary[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 function formatProfileLabel(profileId: string | null): string {
   return profileId ? profileId.slice(0, 8).toUpperCase() : "—";
+}
+
+function readTaskError(task: TaskSummary): string | null {
+  const result = task.result_json;
+  if (!result) return null;
+  const error = result.error;
+  return typeof error === "string" && error.trim() !== "" ? error.trim() : null;
 }
 
 function buildDisplayTask(task: TaskSummary): DisplayTask {
@@ -128,10 +151,20 @@ function buildDisplayTask(task: TaskSummary): DisplayTask {
     status: task.status,
     attempts: task.attempts,
     duration: formatDuration(task.started_at, task.finished_at, task.status),
+    errorDetail: readTaskError(task),
   };
 }
 
 function buildDisplayRun(runDetail: RunDetailResponse): DisplayRun {
+  const tasks = runDetail.tasks.map(buildDisplayTask);
+  const runLevelError = readStringSummary(runDetail.run.summary_json, ["error"]);
+  const taskLevelError = tasks.find((task) => task.errorDetail)?.errorDetail ?? null;
+  const errorDetail =
+    runLevelError ??
+    taskLevelError ??
+    (runDetail.run.status === "failed" && runDetail.run.error_count > 0
+      ? "Run นี้ล้มเหลวก่อนระบบบันทึกข้อความผิดพลาดแบบละเอียด"
+      : null);
   return {
     id: runDetail.run.id,
     displayId: runDetail.run.id.slice(0, 12),
@@ -160,7 +193,8 @@ function buildDisplayRun(runDetail: RunDetailResponse): DisplayRun {
       "closed_projects",
     ]),
     errors: runDetail.run.error_count,
-    tasks: runDetail.tasks.map(buildDisplayTask),
+    errorDetail,
+    tasks,
   };
 }
 
@@ -362,6 +396,14 @@ export default function RunsPage() {
                           <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                             Tasks ใน {run.displayId}
                           </p>
+                          {run.errorDetail ? (
+                            <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                              <p className="font-semibold">สาเหตุที่บันทึกได้ล่าสุด</p>
+                              <p className="mt-1 whitespace-pre-wrap break-words">
+                                {run.errorDetail}
+                              </p>
+                            </div>
+                          ) : null}
                           {run.tasks.length === 0 ? (
                             <div className="rounded-xl border border-dashed border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-6 text-sm text-[var(--text-muted)]">
                               ยังไม่มี task ที่บันทึกไว้สำหรับ run นี้
@@ -395,21 +437,36 @@ export default function RunsPage() {
                               </thead>
                               <tbody>
                                 {run.tasks.map((task) => (
-                                  <tr key={task.id} className="border-b border-[var(--border-light)]">
-                                    <td className="px-3 py-1.5 font-mono">{task.id}</td>
-                                    <td className="px-3 py-1.5">{task.type}</td>
-                                    <td className="px-3 py-1.5">{task.keyword}</td>
-                                    <td className="px-3 py-1.5 font-mono">{task.project}</td>
-                                    <td className="px-3 py-1.5">
-                                      <StatusBadge state={task.status} variant="task" />
-                                    </td>
-                                    <td className="px-3 py-1.5 text-right font-mono tabular-nums">
-                                      {task.attempts}
-                                    </td>
-                                    <td className="px-3 py-1.5 font-mono tabular-nums">
-                                      {task.duration}
-                                    </td>
-                                  </tr>
+                                  <Fragment key={task.id}>
+                                    <tr className="border-b border-[var(--border-light)]">
+                                      <td className="px-3 py-1.5 font-mono">{task.id}</td>
+                                      <td className="px-3 py-1.5">{task.type}</td>
+                                      <td className="px-3 py-1.5">{task.keyword}</td>
+                                      <td className="px-3 py-1.5 font-mono">{task.project}</td>
+                                      <td className="px-3 py-1.5">
+                                        <StatusBadge state={task.status} variant="task" />
+                                      </td>
+                                      <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                                        {task.attempts}
+                                      </td>
+                                      <td className="px-3 py-1.5 font-mono tabular-nums">
+                                        {task.duration}
+                                      </td>
+                                    </tr>
+                                    {task.errorDetail ? (
+                                      <tr className="border-b border-[var(--border-light)] bg-red-50/70">
+                                        <td
+                                          colSpan={7}
+                                          className="px-3 py-2 text-sm text-red-800"
+                                        >
+                                          <span className="font-semibold">ข้อผิดพลาด:</span>{" "}
+                                          <span className="whitespace-pre-wrap break-words">
+                                            {task.errorDetail}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ) : null}
+                                  </Fragment>
                                 ))}
                               </tbody>
                             </table>

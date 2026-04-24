@@ -253,7 +253,9 @@ def _now_iso() -> str:
 
 
 def _sanitize_file_name(file_name: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", file_name.strip())
+    sanitized = str(file_name or "").replace("\n", " ").replace("\r", " ").strip()
+    sanitized = re.sub(r'[\\/*?:"<>|]+', "_", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip().rstrip(".")
     return sanitized or "artifact.bin"
 
 

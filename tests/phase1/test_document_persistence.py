@@ -267,6 +267,24 @@ def test_store_document_persists_artifact_and_sql_metadata(tmp_path) -> None:
     )
 
 
+def test_store_document_preserves_unicode_file_name_in_storage_key(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+
+    stored = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="ประกาศเชิญชวน.pdf",
+        file_bytes=b"invite-pdf",
+        source_label="ประกาศเชิญชวน",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    assert stored.created is True
+    assert stored.document.storage_key.endswith("/ประกาศเชิญชวน.pdf")
+    assert "/_.pdf" not in stored.document.storage_key
+    assert (tmp_path / stored.document.storage_key).read_bytes() == b"invite-pdf"
+
+
 def test_store_document_dual_writes_managed_backup_for_external_primary(
     tmp_path,
 ) -> None:

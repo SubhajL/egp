@@ -23,6 +23,7 @@ RULES_ERROR_CODES = {
     "profile name is required": "profile_name_required",
     "unsupported profile type": "unsupported_profile_type",
     "at least one keyword is required": "keywords_required",
+    "at least one active keyword is required": "active_keywords_required",
     "active keyword configuration exceeds plan limit": "active_keyword_limit_exceeded",
 }
 
@@ -111,6 +112,15 @@ class CreateRuleProfileRequest(BaseModel):
     close_stale_after_days: int = Field(default=45, ge=1, le=365)
 
 
+class ManualRecrawlRequest(BaseModel):
+    tenant_id: str | None = None
+
+
+class ManualRecrawlResponse(BaseModel):
+    queued_job_count: int
+    queued_keywords: list[str]
+
+
 def _service_from_request(request: Request) -> RulesService:
     return request.app.state.rules_service
 
@@ -163,7 +173,10 @@ def create_rule_profile(
 
     # Best-effort: spawn a discover worker for each new keyword.
     processor = getattr(request.app.state, "discovery_dispatch_processor", None)
-    if processor is not None and profile.keywords:
+    route_kick_enabled = bool(
+        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
+    )
+    if processor is not None and route_kick_enabled and profile.keywords:
         logger.info(
             "Scheduled %d immediate discover jobs for profile %s",
             len(profile.keywords),
@@ -173,3 +186,33 @@ def create_rule_profile(
 
     response.status_code = status.HTTP_201_CREATED
     return RuleProfileResponse(**asdict(profile))
+
+
+@router.post("/recrawl", response_model=ManualRecrawlResponse)
+def recrawl_active_keywords(
+    payload: ManualRecrawlRequest,
+    request: Request,
+    response: Response,
+    background_tasks: BackgroundTasks,
+) -> ManualRecrawlResponse:
+    require_admin_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        queued = service.queue_active_discovery_jobs(tenant_id=resolved_tenant_id)
+    except EntitlementError as exc:
+        detail = str(exc)
+        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
+    except ValueError as exc:
+        detail = str(exc)
+        return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
+
+    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
+    route_kick_enabled = bool(
+        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
+    )
+    if processor is not None and route_kick_enabled and queued.queued_job_count > 0:
+        background_tasks.add_task(processor.process_pending)
+
+    response.status_code = status.HTTP_202_ACCEPTED
+    return ManualRecrawlResponse(**asdict(queued))

@@ -59,6 +59,20 @@ def _count_line_changes(old_text: str, new_text: str) -> tuple[int, int, int]:
     )
 
 
+def _calculate_similarity_ratio(
+    *,
+    old_bytes: bytes,
+    new_bytes: bytes,
+    old_text: str | None,
+    new_text: str | None,
+) -> tuple[float | None, bool]:
+    if old_bytes == new_bytes:
+        return 1.0, False
+    if old_text is None or new_text is None:
+        return None, True
+    return round(SequenceMatcher(a=old_text, b=new_text).ratio(), 4), False
+
+
 def build_document_diff(
     *,
     old_document_type: DocumentType,
@@ -92,7 +106,12 @@ def build_document_diff(
         ) = _count_line_changes(old_text, new_text)
 
     diff_type = "identical" if old_bytes == new_bytes else "changed"
-    similarity_ratio = round(SequenceMatcher(a=old_bytes, b=new_bytes).ratio(), 4)
+    similarity_ratio, binary_similarity_skipped = _calculate_similarity_ratio(
+        old_bytes=old_bytes,
+        new_bytes=new_bytes,
+        old_text=old_text,
+        new_text=new_text,
+    )
     summary_json: dict[str, object] = {
         "summary_version": 1,
         "comparison_scope": normalized_scope,
@@ -114,4 +133,6 @@ def build_document_diff(
         "old_text_preview": _build_text_preview(old_text),
         "new_text_preview": _build_text_preview(new_text),
     }
+    if binary_similarity_skipped:
+        summary_json["binary_similarity_skipped"] = True
     return DocumentDiffResult(diff_type=diff_type, summary_json=summary_json)

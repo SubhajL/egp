@@ -81,6 +81,12 @@ class DiscoveryJobRecord:
     updated_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryJobEnqueueResult:
+    job: DiscoveryJobRecord
+    created: bool
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -182,6 +188,58 @@ class SqlDiscoveryJobRepository:
         with self._engine.begin() as connection:
             connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
         return self.get_discovery_job(tenant_id=tenant_id, job_id=str(values["id"]))
+
+    def create_pending_discovery_job_if_absent(
+        self,
+        *,
+        tenant_id: str,
+        profile_id: str,
+        profile_type: str,
+        keyword: str,
+        trigger_type: str = "profile_created",
+        live: bool = True,
+    ) -> DiscoveryJobEnqueueResult:
+        values = build_discovery_job_values(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            profile_type=profile_type,
+            keyword=keyword,
+            trigger_type=trigger_type,
+            live=live,
+        )
+        with self._engine.begin() as connection:
+            existing = (
+                connection.execute(
+                    select(DISCOVERY_JOBS_TABLE)
+                    .where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id == values["tenant_id"],
+                            DISCOVERY_JOBS_TABLE.c.profile_id == values["profile_id"],
+                            DISCOVERY_JOBS_TABLE.c.keyword == values["keyword"],
+                            DISCOVERY_JOBS_TABLE.c.trigger_type
+                            == values["trigger_type"],
+                            DISCOVERY_JOBS_TABLE.c.live == values["live"],
+                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                        )
+                    )
+                    .order_by(
+                        DISCOVERY_JOBS_TABLE.c.created_at.desc(),
+                        DISCOVERY_JOBS_TABLE.c.id.desc(),
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                return DiscoveryJobEnqueueResult(
+                    job=_job_from_mapping(existing), created=False
+                )
+            connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
+        return DiscoveryJobEnqueueResult(
+            job=self.get_discovery_job(tenant_id=tenant_id, job_id=str(values["id"])),
+            created=True,
+        )
 
     def get_discovery_job(self, *, tenant_id: str, job_id: str) -> DiscoveryJobRecord:
         normalized_tenant_id = normalize_uuid_string(tenant_id)

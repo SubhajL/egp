@@ -11,6 +11,7 @@ from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, creat
 from egp_shared_types.enums import ProjectState
 from egp_shared_types.project_events import CloseCheckProjectEvent
 from egp_worker.browser_close_check import crawl_live_close_check
+from egp_worker.json_safety import make_json_safe
 from egp_worker.project_event_sink import (
     ProjectEventSink,
     create_project_event_sink,
@@ -27,6 +28,13 @@ if TYPE_CHECKING:
 class CloseCheckWorkflowResult:
     run: CrawlRunDetail
     updated_projects: list[ProjectRecord]
+
+
+def _task_safe_payload(observation: dict[str, object]) -> dict[str, object]:
+    safe_payload = make_json_safe(observation)
+    if isinstance(safe_payload, dict):
+        return safe_payload
+    return {"value": safe_payload}
 
 
 def run_close_check_workflow(
@@ -96,52 +104,80 @@ def run_close_check_workflow(
     run_repository.mark_run_started(run.id)
     updated_projects: list[ProjectRecord] = []
     error_count = 0
+    run_level_error: str | None = None
 
-    for observation in resolved_observations:
-        task = run_repository.create_task(
-            run_id=run.id,
-            task_type="close_check",
-            project_id=str(observation["project_id"]),
-            payload=observation,
-        )
-        try:
-            run_repository.mark_task_started(task.id)
-            closed_reason = check_winner_closure(str(observation.get("source_status_text") or ""))
-            if closed_reason is None:
-                run_repository.mark_task_finished(
-                    task.id, status="skipped", result_json={"matched": False}
-                )
-                continue
-            project = project_event_sink.record_close_check(
-                CloseCheckProjectEvent(
-                    tenant_id=tenant_id,
-                    project_id=str(observation["project_id"]),
-                    closed_reason=closed_reason,
-                    source_status_text=str(observation.get("source_status_text") or ""),
+    try:
+        for observation in resolved_observations:
+            safe_observation = _task_safe_payload(observation)
+            task = None
+            try:
+                task = run_repository.create_task(
                     run_id=run.id,
-                    raw_snapshot=observation,
+                    task_type="close_check",
+                    project_id=str(observation["project_id"]),
+                    payload=safe_observation,
                 )
-            )
-            run_repository.mark_task_finished(
-                task.id,
-                status="succeeded",
-                result_json={"project_id": project.id, "next_state": project.project_state.value},
-            )
-            updated_projects.append(project)
-        except Exception as exc:
-            error_count += 1
-            run_repository.mark_task_finished(
-                task.id,
-                status="failed",
-                result_json={"error": str(exc)},
-            )
+                run_repository.mark_task_started(task.id)
+                closed_reason = check_winner_closure(
+                    str(observation.get("source_status_text") or "")
+                )
+                if closed_reason is None:
+                    run_repository.mark_task_finished(
+                        task.id, status="skipped", result_json={"matched": False}
+                    )
+                    continue
+                project = project_event_sink.record_close_check(
+                    CloseCheckProjectEvent(
+                        tenant_id=tenant_id,
+                        project_id=str(observation["project_id"]),
+                        closed_reason=closed_reason,
+                        source_status_text=str(observation.get("source_status_text") or ""),
+                        run_id=run.id,
+                        raw_snapshot=safe_observation,
+                    )
+                )
+                run_repository.mark_task_finished(
+                    task.id,
+                    status="succeeded",
+                    result_json={
+                        "project_id": project.id,
+                        "next_state": project.project_state.value,
+                    },
+                )
+                updated_projects.append(project)
+            except Exception as exc:
+                error_count += 1
+                if task is not None:
+                    run_repository.mark_task_finished(
+                        task.id,
+                        status="failed",
+                        result_json={"error": str(exc)},
+                    )
+                else:
+                    run_level_error = str(exc)
+    except Exception as exc:
+        run_level_error = str(exc)
+        run_repository.mark_run_finished(
+            run.id,
+            status="failed",
+            summary_json={
+                "updated_projects": len(updated_projects),
+                "error": run_level_error,
+            },
+            error_count=max(1, error_count),
+        )
+        raise
+
+    summary_json: dict[str, object] = {"updated_projects": len(updated_projects)}
+    if run_level_error is not None:
+        summary_json["error"] = run_level_error
 
     run_repository.mark_run_finished(
         run.id,
         status="partial"
         if error_count and updated_projects
         else ("failed" if error_count else "succeeded"),
-        summary_json={"updated_projects": len(updated_projects)},
+        summary_json=summary_json,
         error_count=error_count,
     )
     detail = run_repository.get_run_detail(tenant_id=tenant_id, run_id=run.id)

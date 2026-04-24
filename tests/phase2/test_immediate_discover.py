@@ -8,6 +8,7 @@ subprocess; in tests we inject a simple recorder.
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 from datetime import date, timedelta
@@ -16,7 +17,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from egp_api.main import _logger, _make_discover_spawner, create_app
+from egp_api.main import (
+    _discovery_dispatch_loop_enabled_for_database_url,
+    _discovery_dispatch_route_kick_enabled,
+    _logger,
+    _make_discover_spawner,
+    create_app,
+)
 from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -303,7 +310,9 @@ def _seed_subscription(
         )
 
 
-def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispatch(tmp_path):
+def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispatch(
+    tmp_path,
+):
     spawned: list[dict] = []
 
     def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
@@ -334,7 +343,9 @@ def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispat
     assert spawned == []
 
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert count == 0
 
 
@@ -369,7 +380,9 @@ def test_active_free_trial_profile_creation_still_enqueues_and_dispatches(tmp_pa
     assert spawned == ["analytics"]
 
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert count == 1
 
 
@@ -523,3 +536,41 @@ def test_make_discover_spawner_forwards_profile_id_in_worker_payload(
     assert captured["timeout"] == 600
     payload = captured["payload"].decode()
     assert '"profile_id": "profile-123"' in payload
+    assert '"trigger_type": "manual"' in payload
+
+
+def test_make_discover_spawner_enables_live_document_collection_in_worker_payload(
+    tmp_path, monkeypatch
+):
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        def communicate(self, *, input=None, timeout=None):
+            captured["payload"] = input
+            return (None, b"")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+
+    spawner(
+        tenant_id=TENANT_ID,
+        profile_id="profile-123",
+        profile_type="custom",
+        keyword="analytics",
+    )
+
+    payload = json.loads(captured["payload"].decode())
+    assert payload["live_include_documents"] is True
+
+
+def test_discovery_dispatch_runtime_uses_single_dispatch_path_per_database_backend():
+    sqlite_url = "sqlite+pysqlite:///test.sqlite3"
+    postgres_url = "postgresql://egp:egp_dev@localhost:5432/egp"
+
+    assert _discovery_dispatch_loop_enabled_for_database_url(sqlite_url) is False
+    assert _discovery_dispatch_route_kick_enabled(sqlite_url) is True
+
+    assert _discovery_dispatch_loop_enabled_for_database_url(postgres_url) is True
+    assert _discovery_dispatch_route_kick_enabled(postgres_url) is False

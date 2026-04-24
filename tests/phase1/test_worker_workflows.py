@@ -28,6 +28,7 @@ from egp_worker.workflows.discover import run_discover_workflow
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 INTERNAL_WORKER_TOKEN = "phase1-internal-worker-token"
+SEEDED_PROFILE_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
 def _seed_subscription(
@@ -137,7 +138,7 @@ def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
                     created_at,
                     updated_at
                 ) VALUES (
-                    'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                    :profile_id,
                     :tenant_id,
                     'Watchlist',
                     'custom',
@@ -150,7 +151,11 @@ def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
                 )
                 """
             ),
-            {"tenant_id": TENANT_ID, "now": "2026-04-08T00:00:00+00:00"},
+            {
+                "profile_id": SEEDED_PROFILE_ID,
+                "tenant_id": TENANT_ID,
+                "now": "2026-04-08T00:00:00+00:00",
+            },
         )
         for index, keyword in enumerate(keywords, start=1):
             connection.execute(
@@ -164,7 +169,7 @@ def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
                         created_at
                     ) VALUES (
                         :id,
-                        'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                        :profile_id,
                         :keyword,
                         :position,
                         :created_at
@@ -173,6 +178,7 @@ def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
                 ),
                 {
                     "id": str(uuid4()),
+                    "profile_id": SEEDED_PROFILE_ID,
                     "keyword": keyword,
                     "position": index,
                     "created_at": "2026-04-08T00:00:00+00:00",
@@ -620,14 +626,14 @@ def test_run_worker_job_preserves_profile_id_in_discover_result(tmp_path) -> Non
             "command": "discover",
             "database_url": database_url,
             "tenant_id": TENANT_ID,
-            "profile_id": "profile-123",
+            "profile_id": SEEDED_PROFILE_ID,
             "keyword": "โรงพยาบาล",
             "discovered_projects": [],
         }
     )
 
     assert result["command"] == "discover"
-    assert result["profile_id"] == "profile-123"
+    assert result["profile_id"] == SEEDED_PROFILE_ID
 
 
 def test_run_worker_job_dispatches_timeout_evaluation() -> None:
