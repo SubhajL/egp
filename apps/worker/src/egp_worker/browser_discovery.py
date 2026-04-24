@@ -288,7 +288,9 @@ def _collect_keyword_projects(
                         keyword=keyword,
                         timeout_s=settings.project_detail_timeout_s,
                     )
-                _log_live_progress("project_open_finished", keyword=keyword, row_marker=payload or row_info)
+                _log_live_progress(
+                    "project_open_finished", keyword=keyword, row_marker=payload or row_info
+                )
                 if payload is None:
                     seen_keys.add(
                         str(row_info.get("project_number") or row_info["project_name"]).casefold()
@@ -301,7 +303,9 @@ def _collect_keyword_projects(
                         row_marker=row_info,
                     )
                     continue
-                dedupe_key = str(payload.get("project_number") or payload["project_name"]).casefold()
+                dedupe_key = str(
+                    payload.get("project_number") or payload["project_name"]
+                ).casefold()
                 if dedupe_key not in seen_keys:
                     seen_keys.add(dedupe_key)
                     results.append(payload)
@@ -454,7 +458,9 @@ def _raise_browser_closed(exc: Exception, page_num: int) -> None:
 def _mark_row_seen(seen_keys: set[str], row_info: dict[str, object] | None) -> None:
     if not row_info:
         return
-    seen_keys.add(str(row_info.get("project_number") or row_info.get("project_name") or "").casefold())
+    seen_keys.add(
+        str(row_info.get("project_number") or row_info.get("project_name") or "").casefold()
+    )
 
 
 def _is_recovery_browser_error(exc: Exception) -> bool:
@@ -578,9 +584,8 @@ def _row_marker_matches(current: dict[str, str], expected: dict[str, object]) ->
     if current_signature and expected_signature:
         return current_signature == expected_signature
     return (
-        _compact_visible_text(current.get("organization_name")) == _compact_visible_text(
-            str(expected.get("organization_name") or "")
-        )
+        _compact_visible_text(current.get("organization_name"))
+        == _compact_visible_text(str(expected.get("organization_name") or ""))
         and _compact_visible_text(current.get("project_name"))
         == _compact_visible_text(str(expected.get("project_name") or ""))
         and _compact_visible_text(current.get("source_status_text"))
@@ -796,7 +801,9 @@ def open_and_extract_project(
         "organization_name": str(organization_name),
         "project_number": str(detail.get("project_number") or ""),
     }
-    _log_live_progress("project_detail_extract_finished", keyword=keyword, row_marker=project_marker)
+    _log_live_progress(
+        "project_detail_extract_finished", keyword=keyword, row_marker=project_marker
+    )
     proposal_submission_date = _normalize_buddhist_date(detail.get("proposal_submission_date"))
     budget_amount = _normalize_budget(detail.get("budget"))
     project_state = _infer_project_state(
@@ -874,7 +881,9 @@ def open_and_extract_project(
     }
 
 
-def _document_snapshot_list(downloaded_documents: list[dict[str, object]]) -> list[dict[str, object]]:
+def _document_snapshot_list(
+    downloaded_documents: list[dict[str, object]],
+) -> list[dict[str, object]]:
     return [
         {
             "file_name": document.get("file_name"),
@@ -1040,7 +1049,11 @@ def _detail_page_is_invalid(page, detail: dict[str, str]) -> bool:
     project_name = str(detail.get("project_name") or "").strip()
     organization = str(detail.get("organization") or "").strip()
     project_number = str(detail.get("project_number") or "").strip()
-    if project_name in invalid_values or organization in invalid_values or project_number in invalid_values:
+    if (
+        project_name in invalid_values
+        or organization in invalid_values
+        or project_number in invalid_values
+    ):
         return True
     if project_name and _compact_visible_text(project_name) in {
         _compact_visible_text("วงเงินงบประมาณ (บาท) สถานะโครงการ ดูข้อมูล"),
@@ -1190,9 +1203,7 @@ def _raise_on_site_error_toast(page, *, action: str) -> None:
     if not has_site_error_toast(page):
         return
     clear_site_error_toast(page)
-    raise SearchPageStateError(
-        f"e-GP site error after {action}: ระบบเกิดข้อผิดพลาด กรุณาตรวจสอบ"
-    )
+    raise SearchPageStateError(f"e-GP site error after {action}: ระบบเกิดข้อผิดพลาด กรุณาตรวจสอบ")
 
 
 def _compact_visible_text(value: str | None) -> str:
@@ -1262,7 +1273,9 @@ def _results_row_is_no_results_placeholder(row) -> bool:
     if not text:
         return False
     compact = _compact_visible_text(text)
-    return len(cells) <= 1 and any(_compact_visible_text(marker) in compact for marker in NO_RESULTS_MARKERS)
+    return len(cells) <= 1 and any(
+        _compact_visible_text(marker) in compact for marker in NO_RESULTS_MARKERS
+    )
 
 
 def find_search_input(page, search_btn):
@@ -1410,7 +1423,10 @@ def _search_controls_ready(page) -> bool:
     except Exception:
         return False
     try:
-        if hasattr(search_input, "get_attribute") and search_input.get_attribute("disabled") is not None:
+        if (
+            hasattr(search_input, "get_attribute")
+            and search_input.get_attribute("disabled") is not None
+        ):
             return False
     except Exception:
         pass
@@ -1583,12 +1599,9 @@ def search_keyword(
         and not is_no_results_page(page)
         and not results_page_marker_changed(previous_marker, current_marker)
     ):
-        if (
-            settings.search_page_recovery_retries > 0
-            and (
-                _compact_visible_text(previous_search_value) == _compact_visible_text(keyword)
-                or _results_marker_matches_keyword(current_marker, keyword)
-            )
+        if settings.search_page_recovery_retries > 0 and (
+            _compact_visible_text(previous_search_value) == _compact_visible_text(keyword)
+            or _results_marker_matches_keyword(current_marker, keyword)
         ):
             return
         if settings.search_page_recovery_retries > 0:

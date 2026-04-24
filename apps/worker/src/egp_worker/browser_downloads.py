@@ -359,12 +359,9 @@ def _iter_detail_page_fallback_candidates(page) -> list[tuple[str, object]]:
                 continue
             download_button = None
             for cell in reversed(cells):
-                download_button = (
-                    cell.query_selector(
-                        "a[href], a[onclick], button:not([disabled]), [role='button']"
-                    )
-                    or cell.query_selector("a, button, [role='button']")
-                )
+                download_button = cell.query_selector(
+                    "a[href], a[onclick], button:not([disabled]), [role='button']"
+                ) or cell.query_selector("a, button, [role='button']")
                 if download_button is not None:
                     break
             if download_button is None:
@@ -403,8 +400,7 @@ def _is_detail_page_fallback_row(cell_texts: list[str]) -> bool:
     if any(term in combined for term in DETAIL_PAGE_LINK_FALLBACK_TERMS):
         return True
     return any(
-        re.search(r"\.(?:zip|pdf|docx?|xlsx?)\b", text, flags=re.IGNORECASE)
-        for text in cell_texts
+        re.search(r"\.(?:zip|pdf|docx?|xlsx?)\b", text, flags=re.IGNORECASE) for text in cell_texts
     )
 
 
@@ -1237,7 +1233,9 @@ def _actionable_new_pages(
     except Exception:
         return []
     if pages_before is not None:
-        new_pages = [current_page for current_page in current_pages if current_page not in pages_before]
+        new_pages = [
+            current_page for current_page in current_pages if current_page not in pages_before
+        ]
     elif pages_before_count is not None:
         new_pages = current_pages[max(0, int(pages_before_count)) :]
     else:
@@ -1360,7 +1358,9 @@ def _should_prefer_followup_capture(
     tag = str((click_meta or {}).get("tag") or "").strip().casefold()
     if "แผนการจัดซื้อ" in lowered_name or "procurement plan" in lowered_name:
         return True
-    if document_type is DocumentType.INVITATION and _is_consulting_document_context(document_context):
+    if document_type is DocumentType.INVITATION and _is_consulting_document_context(
+        document_context
+    ):
         return True
     return not href and tag == "a" and _is_consulting_document_context(document_context)
 
@@ -1388,7 +1388,9 @@ def _followup_timeout_for_document(
     lowered_name = str(doc_name or "").strip().casefold()
     href = str((click_meta or {}).get("href") or "").strip()
     tag = str((click_meta or {}).get("tag") or "").strip().casefold()
-    if document_type is DocumentType.INVITATION and _is_consulting_document_context(document_context):
+    if document_type is DocumentType.INVITATION and _is_consulting_document_context(
+        document_context
+    ):
         return 4.0
     if "แผนการจัดซื้อ" in lowered_name or "procurement plan" in lowered_name:
         return 4.0
@@ -1574,7 +1576,9 @@ def _find_known_missing_file_modal(page) -> dict[str, object] | None:
             continue
         text = _normalize_modal_text(_read_element_text(modal))
         compact_text = _compact_modal_text(text)
-        if not any(_compact_modal_text(marker) in compact_text for marker in MISSING_FILE_MODAL_MARKERS):
+        if not any(
+            _compact_modal_text(marker) in compact_text for marker in MISSING_FILE_MODAL_MARKERS
+        ):
             continue
         code_match = re.search(r"\bE\d{4,}\b", text)
         return {
@@ -2070,10 +2074,7 @@ def _infer_document_url_from_page(page) -> str | None:
             if not resolved or not is_allowed_download_url(resolved):
                 continue
             lowered = resolved.lower()
-            if any(
-                marker in lowered
-                for marker in (".pdf", ".zip", "download", "file=", "dl=")
-            ):
+            if any(marker in lowered for marker in (".pdf", ".zip", "download", "file=", "dl=")):
                 return resolved
     except Exception:
         pass
@@ -2094,10 +2095,7 @@ def is_tor_doc_label(label: str) -> bool:
 
 def is_draft_tor_doc_label(label: str) -> bool:
     document_type, document_phase = classify_document(label=label)
-    return (
-        document_type is DocumentType.TOR
-        and document_phase is DocumentPhase.PUBLIC_HEARING
-    )
+    return document_type is DocumentType.TOR and document_phase is DocumentPhase.PUBLIC_HEARING
 
 
 def is_final_tor_doc_label(label: str) -> bool:

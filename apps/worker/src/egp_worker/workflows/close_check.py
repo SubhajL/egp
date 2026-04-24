@@ -139,7 +139,10 @@ def run_close_check_workflow(
                 run_repository.mark_task_finished(
                     task.id,
                     status="succeeded",
-                    result_json={"project_id": project.id, "next_state": project.project_state.value},
+                    result_json={
+                        "project_id": project.id,
+                        "next_state": project.project_state.value,
+                    },
                 )
                 updated_projects.append(project)
             except Exception as exc:

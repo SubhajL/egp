@@ -639,8 +639,8 @@ def create_app(
     app.state.discovery_dispatch_processor_enabled = (
         _discovery_dispatch_loop_enabled_for_database_url(resolved_database_url)
     )
-    app.state.discovery_dispatch_route_kick_enabled = (
-        _discovery_dispatch_route_kick_enabled(resolved_database_url)
+    app.state.discovery_dispatch_route_kick_enabled = _discovery_dispatch_route_kick_enabled(
+        resolved_database_url
     )
     app.state.support_service = SupportService(support_repository)
     app.state.webhook_service = WebhookService(

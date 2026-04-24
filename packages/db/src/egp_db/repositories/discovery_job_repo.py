@@ -216,7 +216,8 @@ class SqlDiscoveryJobRepository:
                             DISCOVERY_JOBS_TABLE.c.tenant_id == values["tenant_id"],
                             DISCOVERY_JOBS_TABLE.c.profile_id == values["profile_id"],
                             DISCOVERY_JOBS_TABLE.c.keyword == values["keyword"],
-                            DISCOVERY_JOBS_TABLE.c.trigger_type == values["trigger_type"],
+                            DISCOVERY_JOBS_TABLE.c.trigger_type
+                            == values["trigger_type"],
                             DISCOVERY_JOBS_TABLE.c.live == values["live"],
                             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
                         )
@@ -231,7 +232,9 @@ class SqlDiscoveryJobRepository:
                 .first()
             )
             if existing is not None:
-                return DiscoveryJobEnqueueResult(job=_job_from_mapping(existing), created=False)
+                return DiscoveryJobEnqueueResult(
+                    job=_job_from_mapping(existing), created=False
+                )
             connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
         return DiscoveryJobEnqueueResult(
             job=self.get_discovery_job(tenant_id=tenant_id, job_id=str(values["id"])),

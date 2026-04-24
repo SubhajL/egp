@@ -241,6 +241,7 @@ def run_discover_workflow(
         if live_discovery is not None and not resolved_projects:
             resolved_projects = list(live_discovery(keyword))
         elif live:
+
             def _persist_live_project(discovered: dict[str, object]) -> None:
                 live_project = (
                     discovered
