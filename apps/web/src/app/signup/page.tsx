@@ -17,18 +17,31 @@ function SignupPageContent() {
   const queryClient = useQueryClient();
   const { data: currentSession, isLoading: sessionLoading } = useMe();
   const nextPath = normalizeNextPath(searchParams.get("next"));
+  const prefilledEmail = searchParams.get("email")?.trim() ?? "";
+  const notice = searchParams.get("notice");
   const [companyName, setCompanyName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(prefilledEmail);
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showLoginLink, setShowLoginLink] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const loginHref = `/login?email=${encodeURIComponent(email.trim())}`;
+  const noticeMessage =
+    notice === "registration_required"
+      ? "ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน"
+      : null;
+
+  useEffect(() => {
+    setEmail(prefilledEmail);
+  }, [prefilledEmail]);
 
   useEffect(() => {
     if (currentSession) {
+      const destination = currentSession.requires_billing_update
+        ? "/billing?notice=payment_overdue"
+        : nextPath;
       startTransition(() => {
-        router.replace(nextPath);
+        router.replace(destination);
       });
     }
   }, [currentSession, nextPath, router]);
@@ -132,6 +145,12 @@ function SignupPageContent() {
               สร้างบัญชีใหม่และเริ่มใช้งานได้ทันทีโดยไม่ต้องรอแอดมินสร้างผู้ใช้
             </p>
           </div>
+
+          {noticeMessage ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              {noticeMessage}
+            </div>
+          ) : null}
 
           {errorMessage ? (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

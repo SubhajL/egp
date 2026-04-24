@@ -20,6 +20,7 @@ router = APIRouter(tags=["auth"])
 
 AUTH_ERROR_CODES = {
     "invalid credentials": "invalid_credentials",
+    "registration required": "registration_required",
     "account is not active": "account_not_active",
     "mfa code required": "mfa_code_required",
     "invalid mfa code": "invalid_mfa_code",
@@ -83,6 +84,7 @@ class AuthTenantResponse(BaseModel):
 class CurrentSessionResponse(BaseModel):
     user: AuthenticatedUserResponse
     tenant: AuthTenantResponse
+    requires_billing_update: bool
 
 
 class ActionStatusResponse(BaseModel):
@@ -123,6 +125,7 @@ def _serialize_current(view: CurrentSessionView) -> CurrentSessionResponse:
     return CurrentSessionResponse(
         user=AuthenticatedUserResponse(**asdict(view.user)),
         tenant=AuthTenantResponse(**asdict(view.tenant)),
+        requires_billing_update=view.requires_billing_update,
     )
 
 

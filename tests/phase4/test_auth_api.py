@@ -13,6 +13,7 @@ from jose import jwt
 from sqlalchemy import text
 
 from egp_api.main import create_app
+from egp_shared_types.enums import BillingRecordStatus
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
@@ -171,6 +172,32 @@ def _bearer_headers(
     return {"Authorization": f"Bearer {token}"}
 
 
+def _seed_overdue_billing_record(
+    client: TestClient,
+    *,
+    tenant_id: str = TENANT_ID,
+    record_number: str = "INV-OVERDUE-001",
+) -> None:
+    detail = client.app.state.billing_service.create_record(
+        tenant_id=tenant_id,
+        record_number=record_number,
+        plan_code="monthly_membership",
+        status=BillingRecordStatus.AWAITING_PAYMENT,
+        billing_period_start="2026-04-01",
+        billing_period_end="2026-04-30",
+        amount_due="25.00",
+        currency="THB",
+        actor_subject="test-suite",
+    )
+    client.app.state.billing_service.transition_record(
+        tenant_id=tenant_id,
+        billing_record_id=detail.record.id,
+        status=BillingRecordStatus.OVERDUE,
+        note="Invoice is past due",
+        actor_subject="test-suite",
+    )
+
+
 def test_login_requires_valid_tenant_slug_email_and_password(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
@@ -229,6 +256,53 @@ def test_login_accepts_email_and_password_without_tenant_slug(tmp_path) -> None:
 
     assert login.status_code == 200
     assert login.json()["user"]["email"] == "owner@acme.example"
+    assert login.json()["requires_billing_update"] is False
+
+
+def test_login_without_registration_record_returns_structured_registration_code(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "missing@example.com",
+            "password": PASSWORD,
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "detail": "registration required",
+        "code": "registration_required",
+    }
+
+
+def test_login_returns_billing_update_flag_when_tenant_has_overdue_payment(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_user(client)
+    _seed_overdue_billing_record(client)
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "owner@acme.example",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 200
+    assert login.json()["requires_billing_update"] is True
+
+    me = client.get("/v1/me")
+
+    assert me.status_code == 200
+    assert me.json()["requires_billing_update"] is True
 
 
 def test_login_without_tenant_slug_requires_workspace_for_duplicate_email_across_tenants(

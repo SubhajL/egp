@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
@@ -21,6 +21,10 @@ from egp_shared_types.enums import (
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
 
 
 class FailingPaymentProvider:
@@ -493,7 +497,7 @@ def test_opn_webhook_rejects_missing_signature(tmp_path) -> None:
 def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_path) -> None:
     provider = StubOpnProvider()
     client = _create_client(tmp_path, payment_provider=provider)
-    future_start = date.today() + timedelta(days=1)
+    future_start = _utc_today() + timedelta(days=1)
     created_response = client.post(
         "/v1/billing/records",
         json={
@@ -536,7 +540,7 @@ def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_p
 def test_opn_webhook_settles_upgrade_record_and_supersedes_trial(tmp_path) -> None:
     provider = StubOpnProvider()
     client = _create_client(tmp_path, payment_provider=provider)
-    today = date.today()
+    today = _utc_today()
 
     trial_response = client.post(
         "/v1/billing/trial/start",

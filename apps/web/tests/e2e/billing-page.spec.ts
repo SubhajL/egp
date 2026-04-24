@@ -68,6 +68,10 @@ const EMPTY_DASHBOARD_SUMMARY = {
   },
 };
 
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function buildPlansResponse() {
   return {
     plans: [
@@ -389,7 +393,7 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
 
   expect(mocks.getUpgradePayload()).toEqual({
     target_plan_code: "monthly_membership",
-    billing_period_start: "2026-04-08",
+    billing_period_start: todayIsoDate(),
   });
   expect(mocks.getPaymentRequestPayload()).toEqual({
     provider: "opn",
