@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from egp_shared_types.enums import ArtifactBucket, ProjectState
+from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
 from egp_worker.browser_close_check import _find_matching_observation_on_page
 from egp_worker.browser_discovery import (
     BrowserClosedDuringKeyword,
@@ -20,6 +20,7 @@ from egp_worker.browser_discovery import (
     _run_project_extraction_with_timeout,
     _return_to_results,
     _goto_with_recovery,
+    _infer_procurement_type,
     build_results_debug_snapshot,
     click_search_button,
     connect_playwright_to_chrome,
@@ -143,9 +144,7 @@ class FakeSearchPage:
 class FakeSearchRecoveryPage:
     def __init__(self) -> None:
         self.goto_calls: list[tuple[str, str | None, int | None]] = []
-        self.url = (
-            "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail"
-        )
+        self.url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail"
         self._button = object()
 
     def query_selector(self, selector: str):
@@ -157,7 +156,9 @@ class FakeSearchRecoveryPage:
         if "button:has-text('ค้นหา')" not in selector:
             raise AssertionError(f"unexpected selector: {selector}")
         if not self.url.endswith("/announcement"):
-            raise AssertionError("search button wait attempted before returning to search page")
+            raise AssertionError(
+                "search button wait attempted before returning to search page"
+            )
         return self._button
 
     def goto(self, url: str, wait_until=None, timeout=None):
@@ -370,15 +371,15 @@ class FakeReturnToResultsPage:
 
 class FakeDetailReturnPage:
     def __init__(self) -> None:
-        self.url = (
-            "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail"
-        )
+        self.url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail"
         self.go_back_calls = 0
         self.main_back_clicks = 0
 
     def go_back(self, wait_until=None, timeout=None) -> None:
         self.go_back_calls += 1
-        raise AssertionError("history back should not be used when main-back button is available")
+        raise AssertionError(
+            "history back should not be used when main-back button is available"
+        )
 
     def evaluate(self, script, arg=None):
         if "กลับหน้าหลัก" in script:
@@ -629,7 +630,9 @@ def test_search_keyword_preserves_clean_page_retry_after_cloudflare_recovery(
     assert search_input.values == ["", "แพลตฟอร์ม", "", "แพลตฟอร์ม"]
 
 
-def test_search_keyword_waits_for_controls_to_settle_after_cloudflare(monkeypatch) -> None:
+def test_search_keyword_waits_for_controls_to_settle_after_cloudflare(
+    monkeypatch,
+) -> None:
     page = FakeSearchPage()
     search_input = FakeSearchInput()
     call_order: list[str] = []
@@ -1302,7 +1305,9 @@ def test_navigate_to_project_by_row_uses_results_table_only() -> None:
     assert expected_click.click_calls == 1
 
 
-def test_navigate_to_project_by_row_prefers_anchor_target_over_cell_fallback(monkeypatch) -> None:
+def test_navigate_to_project_by_row_prefers_anchor_target_over_cell_fallback(
+    monkeypatch,
+) -> None:
     anchor_click = FakeClickTarget(
         navigate_url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/abc"
     )
@@ -1436,7 +1441,9 @@ def test_collect_keyword_projects_reopens_reordered_row_by_marker(
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         nonlocal restore_calls
         restore_calls += 1
         if restore_calls == 1:
@@ -1511,7 +1518,9 @@ def test_collect_keyword_projects_raises_when_marker_missing_after_restore(
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         nonlocal restore_calls
         restore_calls += 1
         if restore_calls == 1:
@@ -1582,13 +1591,19 @@ def test_collect_keyword_projects_continues_after_marker_missing_when_results_pa
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         nonlocal restore_calls
         restore_calls += 1
         if restore_calls == 1:
             page._tables[0]._rows = [
-                _results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A"),
-                _results_row(index="3", organization="หน่วยงาน C", project_name="โครงการ C"),
+                _results_row(
+                    index="1", organization="หน่วยงาน A", project_name="โครงการ A"
+                ),
+                _results_row(
+                    index="3", organization="หน่วยงาน C", project_name="โครงการ C"
+                ),
             ]
 
     monkeypatch.setattr(
@@ -1647,7 +1662,9 @@ def test_collect_keyword_projects_continues_after_project_level_restore_error_wh
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         nonlocal restore_calls
         restore_calls += 1
         if restore_calls == 1:
@@ -1716,7 +1733,9 @@ def test_collect_keyword_projects_continues_after_row_level_site_state_error_whe
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         restore_markers.append(str((row_marker or {}).get("project_name") or ""))
 
     monkeypatch.setattr(
@@ -1782,7 +1801,9 @@ def test_collect_keyword_projects_skips_timed_out_project_and_restores_results(
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         restore_markers.append(str((row_marker or {}).get("project_name") or ""))
 
     monkeypatch.setattr(
@@ -1863,8 +1884,8 @@ def test_collect_keyword_projects_keeps_metadata_when_document_collection_times_
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
-        lambda page, settings, keyword, target_page_num, row_marker=None: restore_markers.append(
-            str((row_marker or {}).get("project_name") or "")
+        lambda page, settings, keyword, target_page_num, row_marker=None: (
+            restore_markers.append(str((row_marker or {}).get("project_name") or ""))
         ),
     )
     monkeypatch.setattr(
@@ -1875,7 +1896,9 @@ def test_collect_keyword_projects_keeps_metadata_when_document_collection_times_
     results = _collect_keyword_projects(
         page=page,
         keyword="ที่ปรึกษา",
-        settings=BrowserDiscoverySettings(max_pages_per_keyword=1, project_detail_timeout_s=5),
+        settings=BrowserDiscoverySettings(
+            max_pages_per_keyword=1, project_detail_timeout_s=5
+        ),
         seen_keys=set(),
         include_documents=True,
     )
@@ -1990,7 +2013,9 @@ def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_e
             "source_status_text": source_status_text,
         }
 
-    def fake_return_to_results(page, settings, keyword, target_page_num, row_marker=None) -> None:
+    def fake_return_to_results(
+        page, settings, keyword, target_page_num, row_marker=None
+    ) -> None:
         page._active_page = str(target_page_num)
 
     def fake_wait_for_results_page_change(page, previous_marker, timeout_ms):
@@ -2122,7 +2147,9 @@ def test_collect_keyword_projects_restarts_browser_when_restore_hits_site_error(
         ]
     )
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", lambda **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -2376,15 +2403,23 @@ def test_resolve_results_row_index_rejects_project_name_only_match() -> None:
     assert resolved is None
 
 
-def test_build_results_debug_snapshot_includes_expected_marker_and_candidate_rows() -> None:
+def test_build_results_debug_snapshot_includes_expected_marker_and_candidate_rows() -> (
+    None
+):
     page = FakeResultsPage(
         [
             FakeTable(
                 _results_headers(),
                 [
-                    _results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A"),
-                    _results_row(index="2", organization="หน่วยงาน B", project_name="โครงการ B"),
-                    _results_row(index="3", organization="หน่วยงาน C", project_name="โครงการ C"),
+                    _results_row(
+                        index="1", organization="หน่วยงาน A", project_name="โครงการ A"
+                    ),
+                    _results_row(
+                        index="2", organization="หน่วยงาน B", project_name="โครงการ B"
+                    ),
+                    _results_row(
+                        index="3", organization="หน่วยงาน C", project_name="โครงการ C"
+                    ),
                 ],
             )
         ],
@@ -2409,7 +2444,9 @@ def test_build_results_debug_snapshot_includes_expected_marker_and_candidate_row
     assert snapshot["expected_marker"]["project_name"] == "โครงการ B"
     assert snapshot["expected_marker"]["organization_name"] == "หน่วยงาน B"
     assert snapshot["candidate_rows"][0]["project_name"] == "โครงการ B"
-    assert snapshot["candidate_rows"][0]["score"] >= snapshot["candidate_rows"][1]["score"]
+    assert (
+        snapshot["candidate_rows"][0]["score"] >= snapshot["candidate_rows"][1]["score"]
+    )
 
 
 def test_log_results_debug_snapshot_prints_expected_marker_and_candidate_rows(
@@ -2420,8 +2457,12 @@ def test_log_results_debug_snapshot_prints_expected_marker_and_candidate_rows(
             FakeTable(
                 _results_headers(),
                 [
-                    _results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A"),
-                    _results_row(index="2", organization="หน่วยงาน B", project_name="โครงการ B"),
+                    _results_row(
+                        index="1", organization="หน่วยงาน A", project_name="โครงการ A"
+                    ),
+                    _results_row(
+                        index="2", organization="หน่วยงาน B", project_name="โครงการ B"
+                    ),
                 ],
             )
         ]
@@ -2583,7 +2624,9 @@ def test_open_and_extract_project_preserves_exact_row_status_text(monkeypatch) -
 def test_open_and_extract_project_rejects_error_detail_pages(monkeypatch) -> None:
     page = SimpleNamespace(
         url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/bad",
-        inner_text=lambda selector: "ข้อมูลโครงการ\nข้อความปฎิเสธ : E1530 : ค้นหาข้อมูลในฐานข้อมูลไม่พบ",
+        inner_text=lambda selector: (
+            "ข้อมูลโครงการ\nข้อความปฎิเสธ : E1530 : ค้นหาข้อมูลในฐานข้อมูลไม่พบ"
+        ),
     )
 
     monkeypatch.setattr(
@@ -2622,6 +2665,26 @@ def test_open_and_extract_project_rejects_error_detail_pages(monkeypatch) -> Non
 
     assert payload is None
     assert collect_calls == []
+
+
+def test_infer_procurement_type_returns_goods_for_purchase_terms() -> None:
+    procurement_type = _infer_procurement_type(
+        project_name="จัดซื้อ Smart TV เพื่อห้องประชุม",
+        organization_name="กรมตัวอย่าง",
+        procurement_method_text="ประกวดราคาอิเล็กทรอนิกส์ (e-bidding)",
+    )
+
+    assert procurement_type == ProcurementType.GOODS.value
+
+
+def test_infer_procurement_type_prefers_consulting_over_goods_terms() -> None:
+    procurement_type = _infer_procurement_type(
+        project_name="จัดจ้างที่ปรึกษาสำหรับระบบข้อมูลกลาง",
+        organization_name="กรมตัวอย่าง",
+        procurement_method_text="ประกวดราคาซื้ออุปกรณ์ประกอบโครงการ",
+    )
+
+    assert procurement_type == ProcurementType.CONSULTING.value
 
 
 def test_return_to_results_restores_keyword_and_page_after_navigation_fallback(
@@ -2681,7 +2744,9 @@ def test_collect_keyword_projects_raises_partial_on_pagination_site_error_toast(
     page = FakeNextPage(pages_to_advance=2)
     wait_calls: list[object] = []
 
-    monkeypatch.setattr("egp_worker.browser_discovery.get_results_rows", lambda page: [])
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_rows", lambda page: []
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.get_results_page_marker",
         lambda page: {"active_page": "1", "row_count": 0, "row_sample": ""},

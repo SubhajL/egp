@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import sqlite3
 
 import pytest
@@ -172,6 +173,106 @@ def test_project_repository_persists_alias_and_status_event_rows(tmp_path) -> No
     assert status_event == ("เปิดรับฟังคำวิจารณ์", "open_consulting")
 
 
+def test_upsert_project_dedupes_repeated_status_events(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlProjectRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+
+    record = build_project_upsert_record(
+        tenant_id=TENANT_ID,
+        project_number="EGP-2026-0100",
+        search_name="โครงการจัดซื้ออุปกรณ์เครือข่าย",
+        detail_name="โครงการจัดซื้ออุปกรณ์เครือข่าย",
+        project_name="โครงการจัดซื้ออุปกรณ์เครือข่าย",
+        organization_name="กรมตัวอย่าง",
+        proposal_submission_date="2026-05-10",
+        budget_amount="9000",
+        procurement_type=ProcurementType.GOODS,
+        project_state=ProjectState.OPEN_INVITATION,
+    )
+
+    repository.upsert_project(
+        record,
+        source_status_text="ประกาศเชิญชวน",
+        observed_at="2026-05-10T00:00:00+00:00",
+    )
+    repository.upsert_project(
+        record,
+        source_status_text="ประกาศเชิญชวน",
+        observed_at="2026-05-11T00:00:00+00:00",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        status_event_count = connection.execute(
+            "SELECT COUNT(*) FROM project_status_events"
+        ).fetchone()[0]
+
+    assert status_event_count == 1
+
+
+def test_get_project_detail_dedupes_historical_duplicate_status_events(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlProjectRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+
+    project = repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-0102",
+            search_name="โครงการระบบข้อมูลกลาง",
+            detail_name="โครงการระบบข้อมูลกลาง",
+            project_name="โครงการระบบข้อมูลกลาง",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1000",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="ประกาศเชิญชวน",
+        observed_at="2026-05-01T00:00:00+00:00",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO project_status_events (
+                id,
+                project_id,
+                observed_status_text,
+                normalized_status,
+                observed_at,
+                run_id,
+                raw_snapshot,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "22222222-2222-2222-2222-222222222222",
+                project.id,
+                "ประกาศเชิญชวน",
+                "open_invitation",
+                "2026-05-02T00:00:00+00:00",
+                None,
+                None,
+                "2026-05-02T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+
+    detail = repository.get_project_detail(tenant_id=TENANT_ID, project_id=project.id)
+
+    assert detail is not None
+    assert [event.observed_status_text for event in detail.status_events] == [
+        "ประกาศเชิญชวน"
+    ]
+
+
 def test_projects_with_same_display_name_but_different_fingerprint_do_not_merge(
     tmp_path,
 ) -> None:
@@ -289,6 +390,166 @@ def test_run_repository_tracks_runs_and_tasks(tmp_path) -> None:
     assert detail.tasks[0].keyword == "โรงพยาบาล"
     assert detail.tasks[0].status == "succeeded"
     assert detail.tasks[0].result_json == {"count": 3}
+
+
+def test_run_repository_updates_running_summary(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+
+    run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(run.id)
+
+    updated = repository.update_run_summary(
+        run.id,
+        summary_json={
+            "projects_seen": 2,
+            "live_progress": {"stage": "page_scan_finished", "keyword": "แพลตฟอร์ม"},
+        },
+    )
+
+    assert updated.status is CrawlRunStatus.RUNNING
+    assert updated.summary_json == {
+        "projects_seen": 2,
+        "live_progress": {"stage": "page_scan_finished", "keyword": "แพลตฟอร์ม"},
+    }
+
+
+def test_run_repository_fails_running_runs_started_since(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    started_since = datetime.now(UTC) - timedelta(seconds=1)
+    matching = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    other_profile = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+    )
+    repository.mark_run_started(matching.id)
+    repository.update_run_summary(matching.id, summary_json={"projects_seen": 4})
+    repository.mark_run_started(other_profile.id)
+
+    failed = repository.fail_running_runs_started_since(
+        tenant_id=TENANT_ID,
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        started_since=started_since,
+        error="discover worker timed out for keyword 'แพลตฟอร์ม'",
+    )
+
+    assert [run.id for run in failed] == [matching.id]
+    assert failed[0].status is CrawlRunStatus.FAILED
+    assert failed[0].error_count == 1
+    assert failed[0].summary_json == {
+        "projects_seen": 4,
+        "error": "discover worker timed out for keyword 'แพลตฟอร์ม'",
+        "failure_reason": "worker_timeout",
+    }
+    assert repository.find_run_by_id(other_profile.id).status is CrawlRunStatus.RUNNING
+
+
+def test_run_repository_fails_running_runs_with_custom_failure_reason(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    started_since = datetime.now(UTC) - timedelta(seconds=1)
+    matching = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    repository.mark_run_started(matching.id)
+
+    failed = repository.fail_running_runs_started_since(
+        tenant_id=TENANT_ID,
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        started_since=started_since,
+        error="discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'",
+        failure_reason="worker_terminated",
+    )
+
+    assert [run.id for run in failed] == [matching.id]
+    assert failed[0].summary_json == {
+        "error": "discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'",
+        "failure_reason": "worker_terminated",
+    }
+
+
+def test_run_repository_fails_only_the_target_active_run(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    matching = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    sibling = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+    repository.mark_run_started(matching.id)
+    repository.mark_run_started(sibling.id)
+    repository.update_run_summary(sibling.id, summary_json={"projects_seen": 2})
+
+    failed = repository.fail_run_if_active(
+        matching.id,
+        error="discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'",
+        failure_reason="worker_terminated",
+    )
+
+    assert failed is not None
+    assert failed.id == matching.id
+    assert failed.status is CrawlRunStatus.FAILED
+    assert failed.summary_json == {
+        "error": "discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'",
+        "failure_reason": "worker_terminated",
+    }
+    sibling_run = repository.find_run_by_id(sibling.id)
+    assert sibling_run is not None
+    assert sibling_run.status is CrawlRunStatus.RUNNING
+    assert sibling_run.summary_json == {"projects_seen": 2}
+
+
+def test_run_repository_fails_reserved_queued_run_before_worker_starts(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    reserved = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+    )
+
+    failed = repository.fail_run_if_active(
+        reserved.id,
+        error="discover worker timed out for keyword 'แพลตฟอร์ม'",
+    )
+
+    assert failed is not None
+    assert failed.id == reserved.id
+    assert failed.status is CrawlRunStatus.FAILED
+    assert failed.summary_json == {
+        "error": "discover worker timed out for keyword 'แพลตฟอร์ม'",
+        "failure_reason": "worker_timeout",
+    }
 
 
 def test_run_repository_rejects_invalid_trigger_and_task_type(tmp_path) -> None:

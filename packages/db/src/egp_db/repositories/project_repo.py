@@ -412,9 +412,9 @@ def _project_from_mapping(row: RowMapping) -> ProjectRecord:
 
     budget_amount = row["budget_amount"]
     if isinstance(budget_amount, Decimal):
-        normalized_budget_amount = (
-            format(budget_amount.normalize(), "f").rstrip("0").rstrip(".")
-        )
+        normalized_budget_amount = format(budget_amount, "f")
+        if "." in normalized_budget_amount:
+            normalized_budget_amount = normalized_budget_amount.rstrip("0").rstrip(".")
     else:
         normalized_budget_amount = _normalize_optional_text(budget_amount)
 
@@ -480,6 +480,34 @@ def _status_event_from_mapping(row: RowMapping) -> ProjectStatusEventRecord:
         if isinstance(created_at, datetime)
         else str(created_at),
     )
+
+
+def _status_event_signature(
+    *,
+    observed_status_text: str | None,
+    normalized_status: str | None,
+) -> tuple[str | None, str | None]:
+    return (
+        _normalize_optional_text(observed_status_text),
+        _normalize_optional_text(normalized_status),
+    )
+
+
+def _dedupe_status_events(
+    events: list[ProjectStatusEventRecord],
+) -> list[ProjectStatusEventRecord]:
+    deduped: list[ProjectStatusEventRecord] = []
+    previous_signature: tuple[str | None, str | None] | None = None
+    for event in events:
+        signature = _status_event_signature(
+            observed_status_text=event.observed_status_text,
+            normalized_status=event.normalized_status,
+        )
+        if signature == previous_signature:
+            continue
+        deduped.append(event)
+        previous_signature = signature
+    return deduped
 
 
 def build_project_upsert_record(
@@ -651,6 +679,32 @@ class SqlProjectRepository:
         run_id: str | None,
         raw_snapshot: dict[str, object] | None,
     ) -> None:
+        latest_row = (
+            connection.execute(
+                select(PROJECT_STATUS_EVENTS_TABLE)
+                .where(PROJECT_STATUS_EVENTS_TABLE.c.project_id == project_id)
+                .order_by(
+                    desc(PROJECT_STATUS_EVENTS_TABLE.c.observed_at),
+                    desc(PROJECT_STATUS_EVENTS_TABLE.c.created_at),
+                )
+                .limit(1)
+            )
+            .mappings()
+            .first()
+        )
+        if latest_row is not None:
+            latest_signature = _status_event_signature(
+                observed_status_text=str(latest_row["observed_status_text"]),
+                normalized_status=_normalize_optional_text(
+                    latest_row["normalized_status"]
+                ),
+            )
+            next_signature = _status_event_signature(
+                observed_status_text=observed_status_text,
+                normalized_status=normalized_status,
+            )
+            if latest_signature == next_signature:
+                return
         connection.execute(
             insert(PROJECT_STATUS_EVENTS_TABLE).values(
                 id=str(uuid4()),
@@ -984,7 +1038,9 @@ class SqlProjectRepository:
         return ProjectDetail(
             project=project,
             aliases=[_alias_from_mapping(alias) for alias in aliases],
-            status_events=[_status_event_from_mapping(row) for row in status_events],
+            status_events=_dedupe_status_events(
+                [_status_event_from_mapping(row) for row in status_events]
+            ),
         )
 
     def list_projects(

@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -135,6 +136,11 @@ DOCUMENT_COLLECTION_FAILED = "failed"
 DOCUMENT_COLLECTION_TIMEOUT_REASON = "document_collection_timeout"
 DOCUMENT_COLLECTION_FAILED_REASON = "document_collection_failed"
 DOCUMENT_COLLECTION_TIMEOUT_CAP_S = 45.0
+LiveProgressCallback = Callable[[dict[str, object]], None]
+_LIVE_PROGRESS_CALLBACK: ContextVar[LiveProgressCallback | None] = ContextVar(
+    "live_progress_callback",
+    default=None,
+)
 
 
 def crawl_live_discovery(
@@ -144,6 +150,7 @@ def crawl_live_discovery(
     settings: BrowserDiscoverySettings | None = None,
     include_documents: bool = False,
     project_callback: Callable[[dict[str, object]], None] | None = None,
+    progress_callback: LiveProgressCallback | None = None,
 ) -> list[dict[str, object]]:
     resolved_settings = settings or BrowserDiscoverySettings()
     keywords = resolve_profile_keywords(profile=profile, keyword=keyword)
@@ -155,6 +162,7 @@ def crawl_live_discovery(
     discovered: list[dict[str, object]] = []
     seen_keys: set[str] = set()
 
+    progress_token = _LIVE_PROGRESS_CALLBACK.set(progress_callback)
     try:
         chrome_proc = launch_real_chrome(resolved_settings)
         pw = sync_playwright().start()
@@ -171,6 +179,14 @@ def crawl_live_discovery(
         while keyword_index < len(keywords):
             active_keyword = keywords[keyword_index]
             try:
+                _log_live_progress(
+                    "keyword_start",
+                    keyword=active_keyword,
+                    extra={
+                        "keyword_index": keyword_index + 1,
+                        "keyword_count": len(keywords),
+                    },
+                )
                 if resume_state is not None and resume_state.keyword_index == keyword_index:
                     restore_results_page(
                         page,
@@ -183,18 +199,35 @@ def crawl_live_discovery(
                         clear_search(page, resolved_settings)
                     search_keyword(page, active_keyword, resolved_settings)
                     if is_no_results_page(page):
+                        _log_live_progress(
+                            "keyword_no_results",
+                            keyword=active_keyword,
+                            extra={
+                                "keyword_index": keyword_index + 1,
+                                "keyword_count": len(keywords),
+                            },
+                        )
                         keyword_index += 1
                         resume_state = None
                         continue
-                discovered.extend(
-                    _collect_keyword_projects(
-                        page=page,
-                        keyword=active_keyword,
-                        settings=resolved_settings,
-                        seen_keys=seen_keys,
-                        include_documents=include_documents,
-                        project_callback=project_callback,
-                    )
+                keyword_projects = _collect_keyword_projects(
+                    page=page,
+                    keyword=active_keyword,
+                    settings=resolved_settings,
+                    seen_keys=seen_keys,
+                    include_documents=include_documents,
+                    project_callback=project_callback,
+                )
+                discovered.extend(keyword_projects)
+                _log_live_progress(
+                    "keyword_finished",
+                    keyword=active_keyword,
+                    extra={
+                        "keyword_index": keyword_index + 1,
+                        "keyword_count": len(keywords),
+                        "keyword_project_count": len(keyword_projects),
+                        "total_project_count": len(discovered),
+                    },
                 )
                 keyword_index += 1
                 resume_state = None
@@ -216,6 +249,7 @@ def crawl_live_discovery(
                 wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
         return discovered
     finally:
+        _LIVE_PROGRESS_CALLBACK.reset(progress_token)
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
 
 
@@ -257,6 +291,16 @@ def _collect_keyword_projects(
                     "row_marker": row_payload["row_marker"],
                 }
             )
+        _log_live_progress(
+            "page_scan_finished",
+            keyword=keyword,
+            extra={
+                "page_num": page_num,
+                "row_count": len(rows),
+                "eligible_count": len(eligible_rows),
+                "max_pages_per_keyword": settings.max_pages_per_keyword,
+            },
+        )
 
         for row_info in eligible_rows:
             try:
@@ -422,6 +466,11 @@ def _collect_keyword_projects(
             state.get("className"),
         ):
             break
+        _log_live_progress(
+            "pagination_next_start",
+            keyword=keyword,
+            extra={"page_num": page_num, "next_page_num": page_num + 1},
+        )
         try:
             page.evaluate("(el) => el.click()", next_btn)
         except Exception:
@@ -447,6 +496,11 @@ def _collect_keyword_projects(
         if is_no_results_page(page):
             break
         page_num += 1
+        _log_live_progress(
+            "pagination_next_finished",
+            keyword=keyword,
+            extra={"page_num": page_num},
+        )
     return results
 
 
@@ -806,8 +860,11 @@ def open_and_extract_project(
     )
     proposal_submission_date = _normalize_buddhist_date(detail.get("proposal_submission_date"))
     budget_amount = _normalize_budget(detail.get("budget"))
+    procurement_method_text = str(detail.get("procurement_method") or "")
     project_state = _infer_project_state(
-        project_name=project_name, organization_name=organization_name
+        project_name=project_name,
+        organization_name=organization_name,
+        procurement_method_text=procurement_method_text,
     )
     source_page_text = _build_source_page_text(page)
     if include_documents:
@@ -848,6 +905,7 @@ def open_and_extract_project(
         "procurement_type": _infer_procurement_type(
             project_name=project_name,
             organization_name=organization_name,
+            procurement_method_text=procurement_method_text,
         ),
         "project_state": project_state,
         "artifact_bucket": artifact_bucket.value,
@@ -863,8 +921,10 @@ def open_and_extract_project(
             "procurement_type": _infer_procurement_type(
                 project_name=project_name,
                 organization_name=organization_name,
+                procurement_method_text=procurement_method_text,
             ),
             "project_state": project_state,
+            "procurement_method": procurement_method_text,
             "artifact_bucket": artifact_bucket.value,
             "downloaded_documents": [
                 {
@@ -1703,6 +1763,7 @@ def extract_project_info(page) -> dict[str, str]:
         "project_number": "",
         "budget": "",
         "proposal_submission_date": "",
+        "procurement_method": "",
     }
     body_text = page.inner_text("body")
     name_match = re.search(r"ชื่อโครงการ\s*[:\s]\s*(.+?)(?:\n|เลขที่)", body_text, re.DOTALL)
@@ -1727,6 +1788,13 @@ def extract_project_info(page) -> dict[str, str]:
     )
     if date_match:
         info["proposal_submission_date"] = date_match.group(1).strip()
+    procurement_method_match = re.search(
+        r"วิธีการจัด(?:ซื้|ชื้)อจัดจ้าง\s*[:\s]\s*(.+?)(?:\n|วงเงิน|เลขที่|วันที่ยื่นข้อเสนอ|ชื่อโครงการ)",
+        body_text,
+        re.DOTALL,
+    )
+    if procurement_method_match:
+        info["procurement_method"] = procurement_method_match.group(1).strip()
     return info
 
 
@@ -1767,17 +1835,44 @@ def _build_source_page_text(page, *, max_lines: int = 20, max_chars: int = 2_000
     return compact[:max_chars]
 
 
-def _infer_procurement_type(*, project_name: str, organization_name: str) -> str:
-    combined = f"{project_name} {organization_name}"
+_GOODS_KEYWORDS = (
+    "จัดซื้อ",
+    "ซื้อ",
+    "ครุภัณฑ์",
+    "วัสดุ",
+    "เวชภัณฑ์",
+    "อุปกรณ์",
+)
+
+
+def _infer_procurement_type(
+    *,
+    project_name: str,
+    organization_name: str,
+    procurement_method_text: str = "",
+) -> str:
+    combined = " ".join(
+        part.strip().lower()
+        for part in (project_name, organization_name, procurement_method_text)
+        if part and part.strip()
+    )
     if "ที่ปรึกษา" in combined:
         return ProcurementType.CONSULTING.value
+    if any(keyword in combined for keyword in _GOODS_KEYWORDS):
+        return ProcurementType.GOODS.value
     return ProcurementType.SERVICES.value
 
 
-def _infer_project_state(*, project_name: str, organization_name: str) -> str:
+def _infer_project_state(
+    *,
+    project_name: str,
+    organization_name: str,
+    procurement_method_text: str = "",
+) -> str:
     procurement_type = _infer_procurement_type(
         project_name=project_name,
         organization_name=organization_name,
+        procurement_method_text=procurement_method_text,
     )
     if procurement_type == ProcurementType.CONSULTING.value:
         return ProjectState.OPEN_CONSULTING.value
@@ -1923,6 +2018,7 @@ def _log_live_progress(
     extra: dict[str, object] | None = None,
 ) -> None:
     fields: list[str] = [f"stage={stage}", f"keyword={keyword}"]
+    event: dict[str, object] = {"stage": stage, "keyword": keyword}
     marker = row_marker or {}
     for key in (
         "row_index",
@@ -1934,11 +2030,20 @@ def _log_live_progress(
         value = str(marker.get(key) or "").strip()
         if value:
             fields.append(f"{key}={value}")
+            event[key] = value
     for key, value in (extra or {}).items():
         rendered = str(value).replace("\n", " ").strip()
         if rendered:
             fields.append(f"{key}={rendered}")
+            event[key] = value
     print(f"LIVE_PROGRESS {' | '.join(fields)}", flush=True)
+    callback = _LIVE_PROGRESS_CALLBACK.get()
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception as exc:
+        print(f"LIVE_PROGRESS_CALLBACK_ERROR error={str(exc).strip()}", flush=True)
 
 
 def _results_page_available(page, *, allow_no_results: bool = True) -> bool:

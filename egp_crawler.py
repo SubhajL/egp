@@ -55,10 +55,16 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
+from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from egp_document_classifier import derive_artifact_bucket
-from egp_shared_types.enums import ArtifactBucket, ClosedReason, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    ArtifactBucket,
+    ClosedReason,
+    ProcurementType,
+    ProjectState,
+)
 from openpyxl import Workbook, load_workbook
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -775,8 +781,8 @@ def is_tor_file(filename: str) -> bool:
     lowered = filename.lower()
     if lowered.startswith("pricebuild"):
         return False
-    # pB0.pdf, pB1.pdf, etc. — individual price build-up pages
-    if re.match(r"^pb\d+\.pdf$", lowered):
+    # pB0.pdf, pB1.pdf, B1.pdf, etc. — individual price build-up pages
+    if re.match(r"^(?:p)?b\d+\.pdf$", lowered):
         return False
     return True
 
@@ -856,7 +862,9 @@ def is_terminal_tracking_status(value: str | None) -> bool:
     return False
 
 
-def infer_procurement_type(project_name: str, organization: str = "") -> ProcurementType:
+def infer_procurement_type(
+    project_name: str, organization: str = ""
+) -> ProcurementType:
     combined = f"{project_name} {organization}"
     if "ที่ปรึกษา" in combined:
         return ProcurementType.CONSULTING
@@ -903,7 +911,9 @@ def write_project_manifest(
         "closed_reason": closed_reason.value if closed_reason is not None else None,
         "artifact_bucket": artifact_bucket.value,
         "saved_files": sorted(
-            path.name for path in project_dir.iterdir() if path.is_file() and path.name != manifest_path.name
+            path.name
+            for path in project_dir.iterdir()
+            if path.is_file() and path.name != manifest_path.name
         ),
         "written_at": datetime.now().isoformat(timespec="seconds"),
         "saved_by": "crawler",
@@ -1366,7 +1376,11 @@ def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
                 and not str(existing_number or "").strip()
             ):
                 continue
-            if existing_search_name and search_name and str(existing_search_name).strip() != search_name:
+            if (
+                existing_search_name
+                and search_name
+                and str(existing_search_name).strip() != search_name
+            ):
                 continue
             _update_row(row_idx)
             wb.save(excel_path)
@@ -1491,6 +1505,46 @@ def connect_playwright_to_chrome(pw):
     context.set_default_timeout(NAV_TIMEOUT)
     page = context.pages[0] if context.pages else context.new_page()
     return browser, page
+
+
+def _goto_with_retries(
+    page: Any,
+    url: str,
+    *,
+    label: str,
+    attempts: int = 3,
+    timeout_ms: int = NAV_TIMEOUT,
+) -> None:
+    """Navigate with retries, then accept network commit if DOM readiness hangs."""
+    max_attempts = max(1, attempts)
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except PlaywrightTimeout as exc:
+            last_error = exc
+            print(f"  WARNING: {label} navigation timed out ({attempt}/{max_attempts})")
+        except Exception as exc:
+            last_error = exc
+            print(
+                f"  WARNING: {label} navigation failed "
+                f"({attempt}/{max_attempts}): {exc}"
+            )
+
+        if attempt < max_attempts:
+            logged_sleep(3, f"retry {label} navigation")
+
+    try:
+        page.goto(url, wait_until="commit", timeout=min(timeout_ms, 15_000))
+        print(
+            f"  WARNING: {label} reached network commit after DOM timeout; continuing"
+        )
+    except Exception as exc:
+        if last_error is not None:
+            raise last_error from exc
+        raise
 
 
 def wait_for_local_tcp_listen(host: str, port: int, timeout_seconds: float) -> bool:
@@ -1664,7 +1718,9 @@ def get_results_page_marker(page) -> dict[str, str | int]:
         except Exception:
             continue
     try:
-        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active = page.query_selector(
+            "li.page-item.active, li.active, .pagination .active"
+        )
         active_page = active.inner_text().strip() if active else ""
     except Exception:
         active_page = ""
@@ -1691,7 +1747,11 @@ def results_page_marker_changed(
 
 def _table_matches_results_headers(table) -> bool:
     """Return True when a table looks like the main procurement results table."""
-    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    header_selectors = (
+        "thead th, thead td",
+        "th",
+        "tr:first-child th, tr:first-child td",
+    )
     headers: list[str] = []
     for selector in header_selectors:
         try:
@@ -1878,7 +1938,9 @@ def wait_for_results_page_change(
             return True
         logged_sleep(0.5, "wait page change")
     current_marker = get_results_page_marker(page)
-    return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
+    return results_page_marker_changed(
+        previous_marker, current_marker
+    ) or is_no_results_page(page)
 
 
 def search_keyword(
@@ -1977,14 +2039,20 @@ def build_results_debug_snapshot(page, sample_limit: int = 3) -> dict[str, objec
 
     table = find_results_table(page)
     if table:
-        header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+        header_selectors = (
+            "thead th, thead td",
+            "th",
+            "tr:first-child th, tr:first-child td",
+        )
         headers: list[str] = []
         for selector in header_selectors:
             try:
                 header_els = table.query_selector_all(selector)
             except Exception:
                 header_els = []
-            headers = [h.inner_text().strip() for h in header_els if h.inner_text().strip()]
+            headers = [
+                h.inner_text().strip() for h in header_els if h.inner_text().strip()
+            ]
             if headers:
                 break
         snapshot["results_headers"] = headers
@@ -2002,7 +2070,9 @@ def build_results_debug_snapshot(page, sample_limit: int = 3) -> dict[str, objec
         snapshot["results_row_samples"] = samples
 
     try:
-        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active = page.query_selector(
+            "li.page-item.active, li.active, .pagination .active"
+        )
         snapshot["active_page"] = active.inner_text().strip() if active else ""
     except Exception:
         pass
@@ -2356,7 +2426,9 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> list[str
                 include_label=lambda label: is_tor_file(label),
             )
 
-        saved_name = _handle_direct_or_page_download(page, clickable, project_dir, doc_name)
+        saved_name = _handle_direct_or_page_download(
+            page, clickable, project_dir, doc_name
+        )
         if saved_name:
             if target_doc == "ประกาศเชิญชวน":
                 return [doc_name]
@@ -2370,8 +2442,9 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> list[str
             return _download_documents_from_current_view(
                 page,
                 project_dir,
-                include_label=lambda label: "ประกาศเชิญชวน" in label
-                or is_final_tor_doc_label(label),
+                include_label=lambda label: (
+                    "ประกาศเชิญชวน" in label or is_final_tor_doc_label(label)
+                ),
             )
 
         if is_final_tor_target:
@@ -2961,7 +3034,9 @@ def _handle_subpage_download(page, btn, project_dir: Path, include_label) -> lis
     )
 
 
-def _download_documents_from_current_view(page, project_dir: Path, include_label) -> list[str]:
+def _download_documents_from_current_view(
+    page, project_dir: Path, include_label
+) -> list[str]:
     """Download matching files from the current modal or related-documents page."""
 
     # Many TOR downloads open a modal popup (bootstrap) with a file list.
@@ -3448,13 +3523,13 @@ def main(profile: str = "tor") -> None:
     try:
         # Step 1: Go to main page first to warm up Cloudflare cookies
         print("Step 1: Opening main e-GP page...")
-        page.goto(MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        _goto_with_retries(page, MAIN_PAGE_URL, label="main e-GP page")
         logged_sleep(3)
         wait_for_cloudflare(page)
 
         # Step 2: Navigate to the search page
         print("\nStep 2: Opening search page...")
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
+        _goto_with_retries(page, SEARCH_URL, label="search page")
         logged_sleep(5)
         wait_for_cloudflare(page)
         print("Ready to search.\n")
@@ -3649,16 +3724,10 @@ def main(profile: str = "tor") -> None:
                     print("  Reconnected to Chrome.")
 
                     # Navigate to search page
-                    page.goto(
-                        MAIN_PAGE_URL,
-                        wait_until="domcontentloaded",
-                        timeout=NAV_TIMEOUT,
-                    )
+                    _goto_with_retries(page, MAIN_PAGE_URL, label="main e-GP page")
                     logged_sleep(3)
                     wait_for_cloudflare(page)
-                    page.goto(
-                        SEARCH_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT
-                    )
+                    _goto_with_retries(page, SEARCH_URL, label="search page")
                     logged_sleep(5)
                     wait_for_cloudflare(page)
                     continue
@@ -3667,10 +3736,8 @@ def main(profile: str = "tor") -> None:
                     kw_idx += 1
                     # Non-crash error — try to navigate back to search
                     try:
-                        page.goto(
-                            SEARCH_URL,
-                            wait_until="domcontentloaded",
-                            timeout=NAV_TIMEOUT,
+                        _goto_with_retries(
+                            page, SEARCH_URL, label="search page recovery", attempts=2
                         )
                         logged_sleep(3)
                         wait_for_cloudflare(page)
