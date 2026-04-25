@@ -103,7 +103,6 @@ class DocumentContentResult:
     content_type: str
 
 
-
 @dataclass(frozen=True, slots=True)
 class DocumentReviewEventRecord:
     id: str
@@ -1029,7 +1028,9 @@ class SqlDocumentRepository:
                     "document_phase": draft_document.document_phase.value,
                     "blob_key": blob_key,
                     "primary_provider": (
-                        write_plan.primary.provider if write_plan is not None else "unresolved"
+                        write_plan.primary.provider
+                        if write_plan is not None
+                        else "unresolved"
                     ),
                     "managed_backup_enabled": (
                         write_plan.managed_backup is not None

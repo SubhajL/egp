@@ -191,9 +191,7 @@ def ingest_downloaded_documents(
         source_status_text = str(document.get("source_status_text") or "")
         source_page_text = str(document.get("source_page_text") or "")
         project_state = (
-            str(document["project_state"])
-            if document.get("project_state") is not None
-            else None
+            str(document["project_state"]) if document.get("project_state") is not None else None
         )
         logger.info(
             "Document ingest started for %s",

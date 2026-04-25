@@ -991,6 +991,7 @@ def test_document_download_endpoint_streams_local_artifact_bytes(tmp_path) -> No
     assert "attachment;" in response.headers["content-disposition"]
     assert "tor.pdf" in response.headers["content-disposition"]
 
+
 def test_document_download_endpoint_streams_supabase_backed_bytes(tmp_path) -> None:
     supabase_client = FakeSupabaseClient()
     client = create_test_client(

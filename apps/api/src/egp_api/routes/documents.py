@@ -358,7 +358,5 @@ def download_document(
     return StreamingResponse(
         io.BytesIO(document.file_bytes),
         media_type=document.content_type,
-        headers={
-            "Content-Disposition": _build_content_disposition(document.document.file_name)
-        },
+        headers={"Content-Disposition": _build_content_disposition(document.document.file_name)},
     )
