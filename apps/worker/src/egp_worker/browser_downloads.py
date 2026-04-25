@@ -184,9 +184,31 @@ def ingest_downloaded_documents(
     onedrive_client: object | None = None,
 ) -> list:
     results = []
-    for document in downloaded_documents:
-        results.append(
-            ingest_document_artifact(
+    document_count = len(downloaded_documents)
+    for index, document in enumerate(downloaded_documents, start=1):
+        file_name = str(document["file_name"])
+        source_label = str(document.get("source_label") or "")
+        source_status_text = str(document.get("source_status_text") or "")
+        source_page_text = str(document.get("source_page_text") or "")
+        project_state = (
+            str(document["project_state"]) if document.get("project_state") is not None else None
+        )
+        logger.info(
+            "Document ingest started for %s",
+            file_name,
+            extra={
+                "egp_event": "document_ingest_started",
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "file_name": file_name,
+                "source_label": source_label,
+                "source_status_text": source_status_text,
+                "document_index": index,
+                "document_count": document_count,
+            },
+        )
+        try:
+            result = ingest_document_artifact(
                 artifact_root=artifact_root,
                 database_url=database_url,
                 storage_credentials_secret=storage_credentials_secret,
@@ -196,18 +218,51 @@ def ingest_downloaded_documents(
                 onedrive_client=onedrive_client,
                 tenant_id=tenant_id,
                 project_id=project_id,
-                file_name=str(document["file_name"]),
+                file_name=file_name,
                 file_bytes=bytes(document["file_bytes"]),
-                source_label=str(document.get("source_label") or ""),
-                source_status_text=str(document.get("source_status_text") or ""),
-                source_page_text=str(document.get("source_page_text") or ""),
-                project_state=(
-                    str(document["project_state"])
-                    if document.get("project_state") is not None
-                    else None
-                ),
+                source_label=source_label,
+                source_status_text=source_status_text,
+                source_page_text=source_page_text,
+                project_state=project_state,
             )
+        except Exception:
+            logger.exception(
+                "Document ingest failed for %s",
+                file_name,
+                extra={
+                    "egp_event": "document_ingest_failed",
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "file_name": file_name,
+                    "source_label": source_label,
+                    "source_status_text": source_status_text,
+                    "document_index": index,
+                    "document_count": document_count,
+                },
+            )
+            raise
+        logger.info(
+            "Document ingest succeeded for %s",
+            file_name,
+            extra={
+                "egp_event": "document_ingest_succeeded",
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "file_name": file_name,
+                "source_label": source_label,
+                "source_status_text": source_status_text,
+                "document_index": index,
+                "document_count": document_count,
+                "document_created": result.created,
+                "document_id": result.document.id,
+                "document_sha256": result.document.sha256,
+                "document_type": result.document.document_type.value,
+                "document_phase": result.document.document_phase.value,
+                "storage_key": result.document.storage_key,
+                "managed_backup_storage_key": result.document.managed_backup_storage_key,
+            },
         )
+        results.append(result)
     return results
 
 
@@ -2085,7 +2140,7 @@ def is_tor_file(filename: str) -> bool:
     lowered = filename.lower()
     if lowered.startswith("pricebuild"):
         return False
-    return re.match(r"^pb\d+\.pdf$", lowered) is None
+    return re.match(r"^(?:p)?b\d+\.pdf$", lowered) is None
 
 
 def is_tor_doc_label(label: str) -> bool:

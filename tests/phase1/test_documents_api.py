@@ -30,16 +30,22 @@ class FakeSupabaseBucket:
         self.bucket_name = bucket_name
         self.upload_calls: list[dict[str, object]] = []
         self.sign_calls: list[dict[str, object]] = []
+        self.files: dict[str, bytes] = {}
 
     def upload(self, path: str, file, file_options: dict[str, object] | None = None):
+        payload = file if isinstance(file, bytes) else bytes(file)
+        self.files[path] = payload
         self.upload_calls.append(
             {
                 "path": path,
-                "file": file,
+                "file": payload,
                 "file_options": file_options or {},
             }
         )
         return {"path": path}
+
+    def download(self, path: str):
+        return self.files[path]
 
     def create_signed_url(
         self,
@@ -81,11 +87,18 @@ class FakeSupabaseClient:
 
 class FakeGoogleDriveDownloadClient:
     def __init__(
-        self, *, download_url: str = "https://drive.example/drive-file-id"
+        self,
+        *,
+        download_url: str = "https://drive.example/drive-file-id",
+        download_bytes: bytes = b"drive-bytes",
+        download_exception: Exception | None = None,
     ) -> None:
         self.download_url_value = download_url
+        self.download_bytes_value = download_bytes
+        self.download_exception = download_exception
         self.refresh_calls: list[str] = []
         self.download_url_calls: list[str] = []
+        self.download_file_calls: list[str] = []
 
     def refresh_access_token(
         self,
@@ -100,14 +113,25 @@ class FakeGoogleDriveDownloadClient:
         self.download_url_calls.append(file_id)
         return self.download_url_value
 
+    def download_file(self, *, access_token: str, file_id: str) -> bytes:
+        self.download_file_calls.append(file_id)
+        if self.download_exception is not None:
+            raise self.download_exception
+        return self.download_bytes_value
+
 
 class FakeOneDriveDownloadClient:
     def __init__(
-        self, *, download_url: str = "https://onedrive.example/onedrive-item-id"
+        self,
+        *,
+        download_url: str = "https://onedrive.example/onedrive-item-id",
+        download_bytes: bytes = b"onedrive-bytes",
     ) -> None:
         self.download_url_value = download_url
+        self.download_bytes_value = download_bytes
         self.refresh_calls: list[str] = []
         self.download_url_calls: list[str] = []
+        self.download_file_calls: list[str] = []
 
     def refresh_access_token(
         self,
@@ -121,6 +145,10 @@ class FakeOneDriveDownloadClient:
     def download_url(self, *, access_token: str, file_id: str) -> str:
         self.download_url_calls.append(file_id)
         return self.download_url_value
+
+    def download_file(self, *, access_token: str, file_id: str) -> bytes:
+        self.download_file_calls.append(file_id)
+        return self.download_bytes_value
 
 
 def _google_config() -> GoogleDriveOAuthConfig:
@@ -409,6 +437,25 @@ def set_document_storage_key(
                 "UPDATE documents SET storage_key = :storage_key WHERE id = :document_id"
             ),
             {"storage_key": storage_key, "document_id": document_id},
+        )
+
+
+def set_managed_backup_storage_key(
+    client: TestClient, *, document_id: str, managed_backup_storage_key: str | None
+) -> None:
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE documents
+                SET managed_backup_storage_key = :managed_backup_storage_key
+                WHERE id = :document_id
+                """
+            ),
+            {
+                "managed_backup_storage_key": managed_backup_storage_key,
+                "document_id": document_id,
+            },
         )
 
 
@@ -917,7 +964,7 @@ def test_document_diff_endpoints_surface_project_change_alerts(tmp_path) -> None
     )
 
 
-def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None:
+def test_document_download_endpoint_streams_local_artifact_bytes(tmp_path) -> None:
     client = create_test_client(tmp_path)
     project_id = seed_project(client)
     ingest_response = client.post(
@@ -932,7 +979,6 @@ def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None
         },
     )
     document_id = ingest_response.json()["document"]["id"]
-    storage_key = ingest_response.json()["document"]["storage_key"]
 
     response = client.get(
         f"/v1/documents/{document_id}/download",
@@ -940,10 +986,13 @@ def test_document_download_endpoint_returns_storage_backed_url(tmp_path) -> None
     )
 
     assert response.status_code == 200
-    assert response.json()["download_url"] == str((tmp_path / storage_key).resolve())
+    assert response.content == b"tor-bytes"
+    assert response.headers["content-type"] == "application/pdf"
+    assert "attachment;" in response.headers["content-disposition"]
+    assert "tor.pdf" in response.headers["content-disposition"]
 
 
-def test_document_download_endpoint_returns_supabase_signed_url(tmp_path) -> None:
+def test_document_download_endpoint_streams_supabase_backed_bytes(tmp_path) -> None:
     supabase_client = FakeSupabaseClient()
     client = create_test_client(
         tmp_path,
@@ -966,7 +1015,6 @@ def test_document_download_endpoint_returns_supabase_signed_url(tmp_path) -> Non
         },
     )
     document_id = ingest_response.json()["document"]["id"]
-    storage_key = ingest_response.json()["document"]["storage_key"]
 
     response = client.get(
         f"/v1/documents/{document_id}/download",
@@ -974,15 +1022,15 @@ def test_document_download_endpoint_returns_supabase_signed_url(tmp_path) -> Non
     )
 
     assert response.status_code == 200
-    assert response.json()["download_url"] == (
-        f"https://project.supabase.co/storage/v1/object/sign/egp-documents/{storage_key}"
-    )
+    assert response.content == b"tor-bytes"
+    assert response.headers["content-type"] == "application/pdf"
+    assert "tor.pdf" in response.headers["content-disposition"]
 
 
-def test_document_download_endpoint_returns_google_drive_url_for_prefixed_storage_key(
+def test_document_download_endpoint_streams_google_drive_bytes_for_prefixed_storage_key(
     tmp_path,
 ) -> None:
-    google_client = FakeGoogleDriveDownloadClient()
+    google_client = FakeGoogleDriveDownloadClient(download_bytes=b"drive-pdf-bytes")
     client = create_test_client(
         tmp_path,
         storage_credentials_secret="phase1-storage-secret",
@@ -1013,15 +1061,15 @@ def test_document_download_endpoint_returns_google_drive_url_for_prefixed_storag
     )
 
     assert response.status_code == 200
-    assert response.json()["download_url"] == "https://drive.example/drive-file-id"
+    assert response.content == b"drive-pdf-bytes"
     assert google_client.refresh_calls == ["provider-refresh-token"]
-    assert google_client.download_url_calls == ["drive-file-id"]
+    assert google_client.download_file_calls == ["drive-file-id"]
 
 
-def test_document_download_endpoint_returns_onedrive_url_for_prefixed_storage_key(
+def test_document_download_endpoint_streams_onedrive_bytes_for_prefixed_storage_key(
     tmp_path,
 ) -> None:
-    onedrive_client = FakeOneDriveDownloadClient()
+    onedrive_client = FakeOneDriveDownloadClient(download_bytes=b"onedrive-pdf-bytes")
     client = create_test_client(
         tmp_path,
         storage_credentials_secret="phase1-storage-secret",
@@ -1052,11 +1100,55 @@ def test_document_download_endpoint_returns_onedrive_url_for_prefixed_storage_ke
     )
 
     assert response.status_code == 200
-    assert (
-        response.json()["download_url"] == "https://onedrive.example/onedrive-item-id"
-    )
+    assert response.content == b"onedrive-pdf-bytes"
     assert onedrive_client.refresh_calls == ["provider-refresh-token"]
-    assert onedrive_client.download_url_calls == ["onedrive-item-id"]
+    assert onedrive_client.download_file_calls == ["onedrive-item-id"]
+
+
+def test_document_download_endpoint_streams_managed_backup_when_provider_read_fails(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveDownloadClient(
+        download_exception=RuntimeError("provider read failed")
+    )
+    client = create_test_client(
+        tmp_path,
+        storage_credentials_secret="phase1-storage-secret",
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"backup-tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+    storage_key = ingest_response.json()["document"]["storage_key"]
+    seed_external_storage(client, provider="google_drive")
+    set_document_storage_key(
+        client, document_id=document_id, storage_key="google_drive:drive-file-id"
+    )
+    set_managed_backup_storage_key(
+        client,
+        document_id=document_id,
+        managed_backup_storage_key=storage_key,
+    )
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"backup-tor-bytes"
+    assert google_client.download_file_calls == ["drive-file-id"]
 
 
 def test_document_download_endpoint_returns_422_when_external_provider_download_is_misconfigured(

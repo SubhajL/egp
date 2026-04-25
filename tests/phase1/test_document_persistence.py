@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import text
 
 from egp_api.main import create_app
@@ -336,6 +338,66 @@ def test_store_document_cleans_up_primary_when_backup_write_fails(tmp_path) -> N
         raise AssertionError("expected dual-write failure to abort the write")
 
     assert google_client.delete_calls == ["drive-file-1"]
+
+
+def test_store_document_logs_resolved_write_plan_for_managed_storage(
+    tmp_path, caplog
+) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    caplog.set_level(logging.INFO, logger="egp_db.repositories.document_repo")
+
+    stored = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"draft-tor",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    write_plan_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "document_store_write_plan_resolved"
+    )
+    assert write_plan_event.primary_provider == "managed"
+    assert write_plan_event.managed_backup_enabled is False
+    assert write_plan_event.file_name == "tor.pdf"
+    assert write_plan_event.document_sha256 == stored.document.sha256
+    assert write_plan_event.blob_key == stored.document.storage_key
+
+
+def test_store_document_logs_cleanup_context_before_reraising_write_failure(
+    tmp_path, caplog
+) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=True,
+        artifact_store=FailingManagedArtifactStore(tmp_path / "managed"),
+        google_client=google_client,
+    )
+    caplog.set_level(logging.INFO, logger="egp_db.repositories.document_repo")
+
+    with pytest.raises(RuntimeError, match="managed backup write failed"):
+        repository.store_document(
+            tenant_id=TENANT_ID,
+            project_id=PROJECT_ID,
+            file_name="tor.pdf",
+            file_bytes=b"must-clean-up",
+            source_label="ร่างขอบเขตของงาน",
+            source_status_text="เปิดรับฟังคำวิจารณ์",
+        )
+
+    failure_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "document_store_failed_before_cleanup"
+    )
+    assert failure_event.primary_provider == "google_drive"
+    assert failure_event.managed_backup_enabled is True
+    assert failure_event.cleanup_target_count == 1
+    assert failure_event.file_name == "tor.pdf"
 
 
 def test_get_download_url_falls_back_to_managed_backup_when_primary_download_resolution_fails(

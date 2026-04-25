@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import logging
 import sqlite3
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
+import pytest
 from sqlalchemy import text
 
 from egp_api.main import create_app
@@ -469,6 +471,82 @@ def test_ingest_downloaded_documents_persists_multiple_downloads(tmp_path) -> No
     with sqlite3.connect(database_path) as connection:
         row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
     assert row == (2,)
+
+
+def test_ingest_downloaded_documents_logs_start_and_success(tmp_path, caplog) -> None:
+    database_path = tmp_path / "downloaded.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    artifact_root = tmp_path / "artifacts"
+    caplog.set_level(logging.INFO, logger="egp_worker.browser_downloads")
+
+    results = ingest_downloaded_documents(
+        database_url=database_url,
+        artifact_root=artifact_root,
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        downloaded_documents=[
+            {
+                "file_name": "tor.pdf",
+                "file_bytes": b"tor-v1",
+                "source_label": "ร่างขอบเขตของงาน",
+                "source_status_text": "เปิดรับฟังคำวิจารณ์",
+            }
+        ],
+    )
+
+    assert len(results) == 1
+    events = [record for record in caplog.records if hasattr(record, "egp_event")]
+    start_event = next(
+        record for record in events if record.egp_event == "document_ingest_started"
+    )
+    success_event = next(
+        record for record in events if record.egp_event == "document_ingest_succeeded"
+    )
+    assert start_event.file_name == "tor.pdf"
+    assert start_event.document_index == 1
+    assert start_event.document_count == 1
+    assert success_event.file_name == "tor.pdf"
+    assert success_event.document_created is True
+    assert success_event.document_id == results[0].document.id
+
+
+def test_ingest_downloaded_documents_logs_failure_before_reraise(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    caplog.set_level(logging.INFO, logger="egp_worker.browser_downloads")
+
+    def fake_ingest_document_artifact(**kwargs):
+        raise RuntimeError(f"boom:{kwargs['file_name']}")
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.ingest_document_artifact",
+        fake_ingest_document_artifact,
+    )
+
+    with pytest.raises(RuntimeError, match="boom:tor.pdf"):
+        ingest_downloaded_documents(
+            database_url=None,
+            artifact_root=tmp_path / "artifacts",
+            tenant_id=TENANT_ID,
+            project_id=PROJECT_ID,
+            downloaded_documents=[
+                {
+                    "file_name": "tor.pdf",
+                    "file_bytes": b"tor-v1",
+                    "source_label": "ร่างขอบเขตของงาน",
+                    "source_status_text": "เปิดรับฟังคำวิจารณ์",
+                }
+            ],
+        )
+
+    failure_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "document_ingest_failed"
+    )
+    assert failure_event.file_name == "tor.pdf"
+    assert failure_event.document_index == 1
+    assert failure_event.document_count == 1
 
 
 def test_s3_artifact_store_puts_prefixed_key_and_presigns_download_url() -> None:

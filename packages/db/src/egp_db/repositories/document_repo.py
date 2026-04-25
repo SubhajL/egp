@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import logging
 import mimetypes
 from pathlib import Path
 import re
@@ -56,6 +57,8 @@ from egp_shared_types.enums import (
     DocumentType,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
@@ -91,6 +94,13 @@ class StoreDocumentResult:
     created: bool
     document: DocumentRecord
     diff_records: list[DocumentDiffRecord]
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentContentResult:
+    document: DocumentRecord
+    file_bytes: bytes
+    content_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +372,11 @@ def _normalize_review_action(value: DocumentReviewAction | str) -> DocumentRevie
         if isinstance(value, DocumentReviewAction)
         else DocumentReviewAction(str(value))
     )
+
+
+def _guess_content_type(file_name: str) -> str:
+    guessed, _ = mimetypes.guess_type(file_name)
+    return guessed or "application/octet-stream"
 
 
 def build_document_record(
@@ -791,7 +806,8 @@ class SqlDocumentRepository:
         blob_key = f"tenants/{tenant_id}/projects/{project_id}/artifacts/{draft_document.sha256}/{safe_name}"
         content_type = mimetypes.guess_type(file_name)[0]
 
-        cleanup_targets: list[tuple[ArtifactStore, str]] = []
+        cleanup_targets: list[tuple[str, ArtifactStore, str]] = []
+        write_plan: ResolvedDocumentWritePlan | None = None
         try:
             with self._engine.begin() as connection:
                 existing = self._find_existing_document(
@@ -832,13 +848,54 @@ class SqlDocumentRepository:
                         comparison_scope = "phase_transition"
 
                 write_plan = self._resolve_document_write_plan(tenant_id=tenant_id)
+                logger.info(
+                    "Resolved document write plan for %s",
+                    file_name,
+                    extra={
+                        "egp_event": "document_store_write_plan_resolved",
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "file_name": file_name,
+                        "document_sha256": draft_document.sha256,
+                        "document_type": draft_document.document_type.value,
+                        "document_phase": draft_document.document_phase.value,
+                        "blob_key": blob_key,
+                        "primary_provider": write_plan.primary.provider,
+                        "managed_backup_enabled": write_plan.managed_backup is not None,
+                        "managed_backup_provider": (
+                            write_plan.managed_backup.provider
+                            if write_plan.managed_backup is not None
+                            else None
+                        ),
+                    },
+                )
                 raw_stored_key = write_plan.primary.store.put_bytes(
                     key=blob_key,
                     data=file_bytes,
                     content_type=content_type,
                 )
-                cleanup_targets.append((write_plan.primary.store, raw_stored_key))
+                cleanup_targets.append(
+                    (
+                        write_plan.primary.provider,
+                        write_plan.primary.store,
+                        raw_stored_key,
+                    )
+                )
                 stored_key = write_plan.primary.encode_storage_key(raw_stored_key)
+                logger.info(
+                    "Primary document write succeeded for %s",
+                    file_name,
+                    extra={
+                        "egp_event": "document_store_primary_write_succeeded",
+                        "tenant_id": tenant_id,
+                        "project_id": project_id,
+                        "file_name": file_name,
+                        "blob_key": blob_key,
+                        "primary_provider": write_plan.primary.provider,
+                        "raw_storage_key": raw_stored_key,
+                        "storage_key": stored_key,
+                    },
+                )
                 managed_backup_storage_key: str | None = None
                 if write_plan.managed_backup is not None:
                     managed_backup_storage_key = (
@@ -849,7 +906,25 @@ class SqlDocumentRepository:
                         )
                     )
                     cleanup_targets.append(
-                        (write_plan.managed_backup.store, managed_backup_storage_key)
+                        (
+                            write_plan.managed_backup.provider,
+                            write_plan.managed_backup.store,
+                            managed_backup_storage_key,
+                        )
+                    )
+                    logger.info(
+                        "Managed backup write succeeded for %s",
+                        file_name,
+                        extra={
+                            "egp_event": "document_store_backup_write_succeeded",
+                            "tenant_id": tenant_id,
+                            "project_id": project_id,
+                            "file_name": file_name,
+                            "blob_key": blob_key,
+                            "primary_provider": write_plan.primary.provider,
+                            "managed_backup_provider": write_plan.managed_backup.provider,
+                            "managed_backup_storage_key": managed_backup_storage_key,
+                        },
                     )
                 stored_document = build_document_record(
                     project_id=project_id,
@@ -940,7 +1015,39 @@ class SqlDocumentRepository:
                     diff_records=new_diff_records,
                 )
         except Exception:
-            for cleanup_artifact_store, cleanup_storage_key in reversed(
+            logger.exception(
+                "Document store failed before cleanup for %s",
+                file_name,
+                extra={
+                    "egp_event": "document_store_failed_before_cleanup",
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "file_name": file_name,
+                    "document_sha256": draft_document.sha256,
+                    "document_type": draft_document.document_type.value,
+                    "document_phase": draft_document.document_phase.value,
+                    "blob_key": blob_key,
+                    "primary_provider": (
+                        write_plan.primary.provider
+                        if write_plan is not None
+                        else "unresolved"
+                    ),
+                    "managed_backup_enabled": (
+                        write_plan.managed_backup is not None
+                        if write_plan is not None
+                        else False
+                    ),
+                    "cleanup_target_count": len(cleanup_targets),
+                    "cleanup_storage_keys": [
+                        cleanup_storage_key
+                        for _, _, cleanup_storage_key in cleanup_targets
+                    ],
+                    "cleanup_providers": [
+                        cleanup_provider for cleanup_provider, _, _ in cleanup_targets
+                    ],
+                },
+            )
+            for _, cleanup_artifact_store, cleanup_storage_key in reversed(
                 cleanup_targets
             ):
                 cleanup_artifact_store.delete(cleanup_storage_key)
@@ -1274,6 +1381,32 @@ class SqlDocumentRepository:
                 document.managed_backup_storage_key,
                 expires_in=expires_in,
             )
+
+    def get_document_content(
+        self, *, tenant_id: str, document_id: str
+    ) -> DocumentContentResult:
+        document = self.get_document(tenant_id=tenant_id, document_id=document_id)
+        if document is None:
+            raise KeyError(document_id)
+        try:
+            resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+                tenant_id=tenant_id,
+                storage_key=document.storage_key,
+            )
+            file_bytes = resolved_artifact_store.store.get_bytes(
+                resolved_artifact_store.decode_storage_key(document.storage_key)
+            )
+        except Exception:
+            if document.managed_backup_storage_key is None:
+                raise
+            file_bytes = self._artifact_store.get_bytes(
+                document.managed_backup_storage_key
+            )
+        return DocumentContentResult(
+            document=document,
+            file_bytes=file_bytes,
+            content_type=_guess_content_type(document.file_name),
+        )
 
 
 class FilesystemDocumentRepository(SqlDocumentRepository):

@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.audit_repo import SqlAuditRepository
-from egp_db.repositories.document_repo import SqlDocumentRepository, StoreDocumentResult
+from egp_db.repositories.document_repo import (
+    DocumentContentResult,
+    SqlDocumentRepository,
+    StoreDocumentResult,
+)
 from egp_shared_types.enums import (
     DocumentReviewAction,
     DocumentReviewEventType,
@@ -224,4 +228,20 @@ class DocumentIngestService:
             tenant_id=tenant_id,
             document_id=document_id,
             expires_in=expires_in,
+        )
+
+    def download_document(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+    ) -> DocumentContentResult:
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="document downloads",
+            )
+        return self._repository.get_document_content(
+            tenant_id=tenant_id,
+            document_id=document_id,
         )
