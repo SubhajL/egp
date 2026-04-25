@@ -8,7 +8,12 @@ from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
-from egp_shared_types.enums import CrawlRunStatus, NotificationType, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    CrawlRunStatus,
+    NotificationType,
+    ProcurementType,
+    ProjectState,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 INTERNAL_WORKER_TOKEN = "phase1-internal-worker-token"
@@ -276,9 +281,9 @@ def test_project_detail_endpoint_dedupes_status_timeline(tmp_path) -> None:
     detail = client.get(f"/v1/projects/{project.id}", params={"tenant_id": TENANT_ID})
 
     assert detail.status_code == 200
-    assert [event["observed_status_text"] for event in detail.json()["status_events"]] == [
-        "ประกาศเชิญชวน"
-    ]
+    assert [
+        event["observed_status_text"] for event in detail.json()["status_events"]
+    ] == ["ประกาศเชิญชวน"]
 
 
 def test_runs_endpoints_create_list_and_return_tasks(tmp_path) -> None:
@@ -416,7 +421,9 @@ def test_finish_run_failed_emits_run_failed_notification(tmp_path) -> None:
     assert notifications[0].notification_type is NotificationType.RUN_FAILED
 
 
-def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(tmp_path) -> None:
+def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(
+    tmp_path,
+) -> None:
     sent: list[str] = []
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest.sqlite3'}"
     client = TestClient(
@@ -461,14 +468,19 @@ def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(tmp_
 
     assert created.status_code == 201
     assert created.json()["created"] is True
-    assert created.json()["project"]["canonical_project_id"] == "project-number:EGP-2026-3101"
+    assert (
+        created.json()["project"]["canonical_project_id"]
+        == "project-number:EGP-2026-3101"
+    )
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
     assert sent == ["owner@example.com"]
     assert notifications[0].notification_type is NotificationType.NEW_PROJECT
 
 
-def test_project_ingest_close_check_endpoint_transitions_project_state(tmp_path) -> None:
+def test_project_ingest_close_check_endpoint_transitions_project_state(
+    tmp_path,
+) -> None:
     sent: list[str] = []
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-close.sqlite3'}"
     client = TestClient(
@@ -520,7 +532,10 @@ def test_project_ingest_close_check_endpoint_transitions_project_state(tmp_path)
     notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
 
     assert updated.status_code == 200
-    assert updated.json()["project"]["project_state"] == ProjectState.WINNER_ANNOUNCED.value
+    assert (
+        updated.json()["project"]["project_state"]
+        == ProjectState.WINNER_ANNOUNCED.value
+    )
     assert detail.status_code == 200
     assert detail.json()["project"]["closed_reason"] == "winner_announced"
     assert sent == ["owner@example.com"]
@@ -528,7 +543,9 @@ def test_project_ingest_close_check_endpoint_transitions_project_state(tmp_path)
 
 
 def test_internal_worker_project_ingest_rejects_missing_worker_token(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest-auth.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest-auth.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path,

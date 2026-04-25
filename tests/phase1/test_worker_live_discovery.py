@@ -586,7 +586,9 @@ def test_run_discover_workflow_persists_profile_id_on_run() -> None:
     assert run_repository.created_profile_id == "profile-123"
 
 
-def test_run_discover_workflow_uses_reserved_run_id_without_creating_another_run() -> None:
+def test_run_discover_workflow_uses_reserved_run_id_without_creating_another_run() -> (
+    None
+):
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
     run_repository.create_run(
@@ -722,12 +724,17 @@ def test_run_discover_workflow_marks_live_browser_documents_deferred(
         live=True,
     )
 
-    assert run_repository.tasks[0]["payload"]["document_collection_status"] == "deferred"
+    assert (
+        run_repository.tasks[0]["payload"]["document_collection_status"] == "deferred"
+    )
     assert (
         run_repository.tasks[0]["payload"]["document_collection_reason"]
         == "live_discovery_metadata_first"
     )
-    assert sink.discovery_events[0].raw_snapshot["document_collection_status"] == "deferred"
+    assert (
+        sink.discovery_events[0].raw_snapshot["document_collection_status"]
+        == "deferred"
+    )
 
 
 def test_run_discover_workflow_can_opt_into_live_browser_document_downloads(
@@ -846,8 +853,14 @@ def test_run_discover_workflow_streams_live_browser_projects_before_later_crawl_
             live=True,
         )
 
-    assert [event.project_number for event in sink.discovery_events] == ["EGP-1", "EGP-2"]
-    assert [task["status"] for task in run_repository.tasks] == ["succeeded", "succeeded"]
+    assert [event.project_number for event in sink.discovery_events] == [
+        "EGP-1",
+        "EGP-2",
+    ]
+    assert [task["status"] for task in run_repository.tasks] == [
+        "succeeded",
+        "succeeded",
+    ]
     assert run_repository.finished_status == "failed"
     assert run_repository.finished_summary == {
         "projects_seen": 2,
@@ -1022,7 +1035,9 @@ def test_run_worker_job_forwards_browser_settings_to_discover_workflow(
     assert result["run_id"] == "run-live"
     assert isinstance(captured["browser_settings"], BrowserDiscoverySettings)
     assert captured["browser_settings"].cdp_port == 9333
-    assert captured["browser_settings"].browser_profile_dir == tmp_path / "browser-profile"
+    assert (
+        captured["browser_settings"].browser_profile_dir == tmp_path / "browser-profile"
+    )
 
 
 def test_run_worker_job_forwards_live_include_documents_to_discover_workflow(
@@ -1096,7 +1111,9 @@ def test_run_worker_job_forwards_run_id_and_artifact_root_to_discover_workflow(
     def fake_run_discover_workflow(**kwargs):
         captured.update(kwargs)
         return SimpleNamespace(
-            run=SimpleNamespace(run=SimpleNamespace(id="run-reserved", status="succeeded")),
+            run=SimpleNamespace(
+                run=SimpleNamespace(id="run-reserved", status="succeeded")
+            ),
             projects=[],
         )
 
@@ -1369,7 +1386,9 @@ def test_run_discover_workflow_records_run_error_when_task_creation_fails() -> N
     assert run_repository.finished_error_count == 1
 
 
-def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error() -> None:
+def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error() -> (
+    None
+):
     run_repository = FakeRunRepository()
 
     class ExplodingSink:
@@ -1393,7 +1412,9 @@ def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error()
     assert result.run.run.status == "failed"
     assert run_repository.finished_summary == {"projects_seen": 0}
     assert run_repository.tasks[0]["status"] == "failed"
-    assert run_repository.tasks[0]["result_json"] == {"error": "project ingest exploded"}
+    assert run_repository.tasks[0]["result_json"] == {
+        "error": "project ingest exploded"
+    }
 
 
 def test_run_discover_workflow_logs_document_ingest_failure_context(
@@ -1443,7 +1464,9 @@ def test_run_discover_workflow_logs_document_ingest_failure_context(
     assert failure_event.document_count == 1
     assert failure_event.task_id == "task-1"
     assert result.run.run.status == "failed"
-    assert run_repository.tasks[0]["result_json"] == {"error": "document ingest exploded"}
+    assert run_repository.tasks[0]["result_json"] == {
+        "error": "document ingest exploded"
+    }
 
 
 def test_worker_main_initializes_info_logging(monkeypatch, capsys) -> None:
@@ -1534,7 +1557,9 @@ def test_run_close_check_workflow_records_run_error_when_task_creation_fails() -
     assert run_repository.finished_error_count == 1
 
 
-def test_run_close_check_workflow_keeps_run_summary_clean_when_task_row_has_error() -> None:
+def test_run_close_check_workflow_keeps_run_summary_clean_when_task_row_has_error() -> (
+    None
+):
     run_repository = FakeRunRepository()
 
     class CloseSink:
@@ -1556,7 +1581,9 @@ def test_run_close_check_workflow_keeps_run_summary_clean_when_task_row_has_erro
     assert result.run.run.status == "failed"
     assert run_repository.finished_summary == {"updated_projects": 0}
     assert run_repository.tasks[0]["status"] == "failed"
-    assert run_repository.tasks[0]["result_json"] == {"error": "close-check ingest exploded"}
+    assert run_repository.tasks[0]["result_json"] == {
+        "error": "close-check ingest exploded"
+    }
 
 
 def test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed() -> (

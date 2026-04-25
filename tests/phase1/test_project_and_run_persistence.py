@@ -212,7 +212,9 @@ def test_upsert_project_dedupes_repeated_status_events(tmp_path) -> None:
     assert status_event_count == 1
 
 
-def test_get_project_detail_dedupes_historical_duplicate_status_events(tmp_path) -> None:
+def test_get_project_detail_dedupes_historical_duplicate_status_events(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "phase1.sqlite3"
     repository = SqlProjectRepository(
         database_url=f"sqlite+pysqlite:///{database_path}",
@@ -522,7 +524,9 @@ def test_run_repository_fails_only_the_target_active_run(tmp_path) -> None:
     assert sibling_run.summary_json == {"projects_seen": 2}
 
 
-def test_run_repository_fails_reserved_queued_run_before_worker_starts(tmp_path) -> None:
+def test_run_repository_fails_reserved_queued_run_before_worker_starts(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "phase1.sqlite3"
     repository = SqlRunRepository(
         database_url=f"sqlite+pysqlite:///{database_path}",
