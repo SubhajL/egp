@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
+    CrawlRunRecord,
     CrawlTaskRecord,
     ProjectCrawlEvidencePage,
     SqlRunRepository,
@@ -31,10 +33,12 @@ class RunService:
         self,
         repository: SqlRunRepository,
         *,
+        artifact_root: Path | None = None,
         entitlement_service: TenantEntitlementService | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
         self._repository = repository
+        self._artifact_root = artifact_root
         self._entitlement_service = entitlement_service
         self._notification_dispatcher = notification_dispatcher
 
@@ -160,3 +164,27 @@ class RunService:
             limit=limit,
             offset=offset,
         )
+
+    def get_run_log(self, *, tenant_id: str, run_id: str) -> str | None:
+        run = self._repository.find_run_by_id(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if run.tenant_id != tenant_id:
+            raise PermissionError(run_id)
+        if self._artifact_root is None:
+            return None
+        raw_path = (run.summary_json or {}).get("worker_log_path")
+        expected_log_path = (
+            self._artifact_root / "tenants" / tenant_id / "runs" / run_id / "worker.log"
+        ).resolve()
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        log_path = Path(raw_path).resolve()
+        if log_path != expected_log_path:
+            return None
+        if not log_path.is_file():
+            return None
+        return log_path.read_text(encoding="utf-8", errors="replace")
+
+    def reconcile_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]:
+        return self._repository.fail_runs_with_missing_workers(owner_pid=owner_pid)

@@ -1413,7 +1413,12 @@ def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error()
     assert run_repository.finished_summary == {"projects_seen": 0}
     assert run_repository.tasks[0]["status"] == "failed"
     assert run_repository.tasks[0]["result_json"] == {
-        "error": "project ingest exploded"
+        "artifact_root": "artifacts",
+        "error": "project ingest exploded",
+        "error_type": "RuntimeError",
+        "project_key": "ระบบวิเคราะห์ข้อมูล",
+        "run_id": "run-1",
+        "task_keyword": "analytics",
     }
 
 
@@ -1465,7 +1470,12 @@ def test_run_discover_workflow_logs_document_ingest_failure_context(
     assert failure_event.task_id == "task-1"
     assert result.run.run.status == "failed"
     assert run_repository.tasks[0]["result_json"] == {
-        "error": "document ingest exploded"
+        "artifact_root": "artifacts",
+        "error": "document ingest exploded",
+        "error_type": "RuntimeError",
+        "project_key": "ระบบวิเคราะห์ข้อมูล",
+        "run_id": "run-1",
+        "task_keyword": "analytics",
     }
 
 

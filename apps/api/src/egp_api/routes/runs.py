@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
@@ -205,3 +206,25 @@ def list_runs(
         limit=page.limit,
         offset=page.offset,
     )
+
+
+@router.get("/{run_id}/log", response_class=PlainTextResponse)
+def get_run_log(
+    run_id: str,
+    request: Request,
+    tenant_id: str | None = None,
+) -> PlainTextResponse:
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    try:
+        log_text = service.get_run_log(
+            tenant_id=resolved_tenant_id,
+            run_id=run_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run not found") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="run not found for tenant") from exc
+    if log_text is None:
+        raise HTTPException(status_code=404, detail="run log not found")
+    return PlainTextResponse(log_text)

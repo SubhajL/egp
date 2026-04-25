@@ -13,7 +13,7 @@ import {
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useRuns } from "@/lib/hooks";
+import { useRunLog, useRuns } from "@/lib/hooks";
 import { buildRunLogText } from "@/lib/run-log";
 import { formatRunProgress, isActiveRunStatus } from "@/lib/run-progress";
 import { formatThaiDate } from "@/lib/utils";
@@ -255,7 +255,14 @@ export default function RunsPage() {
 
   const displayRuns = (data?.runs ?? []).map(buildDisplayRun);
   const latestRunDetail = latestRunData?.runs[0] ?? null;
-  const latestRunLogText = buildRunLogText(latestRunDetail);
+  const latestRunId = latestRunDetail?.run.id ?? "";
+  const {
+    data: latestRunLogData,
+    isLoading: isLatestRunLogLoading,
+    refetch: refetchLatestRunLog,
+    isFetching: isLatestRunLogFetching,
+  } = useRunLog(latestRunId);
+  const latestRunLogText = latestRunLogData ?? buildRunLogText(latestRunDetail);
   const totalRunCount = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(Math.max(totalRunCount, 1) / rowsPerPage));
   const rangeStart = totalRunCount === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
@@ -281,9 +288,10 @@ export default function RunsPage() {
     const interval = window.setInterval(() => {
       void refetch();
       void refetchLatestRun();
+      void refetchLatestRunLog();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [hasActiveRuns, refetch, refetchLatestRun]);
+  }, [hasActiveRuns, refetch, refetchLatestRun, refetchLatestRunLog]);
 
   return (
     <>
@@ -296,12 +304,17 @@ export default function RunsPage() {
             onClick={() => {
               void refetch();
               void refetchLatestRun();
+              void refetchLatestRunLog();
             }}
-            disabled={isFetching || isLatestRunFetching}
+            disabled={isFetching || isLatestRunFetching || isLatestRunLogFetching}
             className="flex items-center gap-1.5 rounded-xl border border-[var(--border-default)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
             <RotateCcw
-              className={`size-4 ${isFetching || isLatestRunFetching ? "animate-spin" : ""}`}
+              className={`size-4 ${
+                isFetching || isLatestRunFetching || isLatestRunLogFetching
+                  ? "animate-spin"
+                  : ""
+              }`}
             />
             รีเฟรช
           </button>
@@ -314,11 +327,11 @@ export default function RunsPage() {
             Transcript ของ Run ล่าสุด
           </h2>
           <p className="mt-1 text-sm text-[var(--text-muted)]">
-            แสดงข้อความที่สรุปจากข้อมูล run/task ที่บันทึกไว้ ไม่ใช่ stdout/stderr ดิบของ worker
+            แสดง worker log จริงเมื่อมี และ fallback เป็น transcript ที่สังเคราะห์จากข้อมูล run/task
           </p>
         </div>
         <div className="p-6">
-          {isLatestRunLoading ? (
+          {isLatestRunLoading || (!!latestRunId && isLatestRunLogLoading) ? (
             <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-4 py-6 text-sm text-[var(--text-muted)]">
               กำลังโหลด transcript ของ run ล่าสุด...
             </div>

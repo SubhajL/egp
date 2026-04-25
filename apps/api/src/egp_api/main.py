@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import signal
 import subprocess
@@ -139,9 +140,14 @@ async def _run_discovery_dispatch_loop(
     processor: DiscoveryDispatchProcessor,
     stop_event: asyncio.Event,
     poll_interval_seconds: float,
+    tick_callback: Callable[[], None] | None = None,
 ) -> None:
     while not stop_event.is_set():
+        if tick_callback is not None:
+            tick_callback()
         processor.process_pending()
+        if tick_callback is not None:
+            tick_callback()
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
         except TimeoutError:
@@ -204,6 +210,9 @@ def _make_discover_spawner(
             del args, kwargs
             return None
 
+        def update_run_summary(self, run_id: str, *, summary_json: dict[str, object] | None):
+            del run_id, summary_json
+
     resolved_artifact_root = artifact_root or Path("artifacts")
     resolved_run_repository = run_repository or _NoopRunRepository()
 
@@ -246,6 +255,31 @@ def _make_discover_spawner(
 
     class _DiscoverSpawnError(RuntimeError):
         pass
+
+    def _safe_update_run_summary(
+        *,
+        run_id: str,
+        summary_json: dict[str, object],
+    ) -> None:
+        try:
+            resolved_run_repository.update_run_summary(
+                run_id,
+                summary_json=summary_json,
+            )
+        except Exception:
+            _logger.warning(
+                "Failed to persist discover run summary metadata (run_id=%s)",
+                run_id,
+                exc_info=True,
+            )
+
+    def _read_log_tail(log_path: Path | None, *, limit: int = 8192) -> str | None:
+        if log_path is None or not log_path.is_file():
+            return None
+        data = log_path.read_bytes()
+        if len(data) > limit:
+            data = data[-limit:]
+        return data.decode("utf-8", errors="replace")
 
     def _mark_active_run_failed(
         *,
@@ -311,6 +345,19 @@ def _make_discover_spawner(
             trigger_type="manual",
             run_id=run_id,
         )
+        log_path = resolved_artifact_root / "tenants" / tenant_id / "runs" / run_id / "worker.log"
+        log_handle = None
+        if resolved_artifact_root is not None:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_handle = log_path.open("ab")
+            except Exception:
+                _logger.warning(
+                    "Failed to create discover worker log file (run_id=%s)",
+                    run_id,
+                    exc_info=True,
+                )
+                log_path = None
         payload = json.dumps(
             {
                 "command": "discover",
@@ -331,12 +378,27 @@ def _make_discover_spawner(
             proc = subprocess.Popen(
                 [sys.executable, "-m", "egp_worker.main"],
                 stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=log_handle or subprocess.DEVNULL,
+                stderr=log_handle or subprocess.PIPE,
+            )
+            _safe_update_run_summary(
+                run_id=run_id,
+                summary_json={
+                    **({"worker_log_path": str(log_path)} if log_path is not None else {}),
+                    "worker_owner_pid": os.getpid(),
+                    **(
+                        {"worker_pid": proc.pid}
+                        if isinstance(getattr(proc, "pid", None), int)
+                        else {}
+                    ),
+                },
             )
             _, stderr = proc.communicate(input=payload, timeout=DISCOVER_WORKER_TIMEOUT_SECONDS)
+            if log_handle is not None:
+                log_handle.flush()
+            stderr_text = (_read_log_tail(log_path) if log_path is not None else None) or stderr
             if proc.returncode not in {0, None}:
-                preview = _stderr_preview(stderr)
+                preview = _stderr_preview(stderr_text)
                 _logger.warning(
                     "Discover worker exited non-zero for keyword %r (tenant_id=%s profile_id=%s returncode=%s stderr=%r)",
                     keyword,
@@ -352,7 +414,7 @@ def _make_discover_spawner(
                 )
                 if terminated is not None:
                     raise terminated
-                non_retriable = _parse_non_retriable_error(stderr)
+                non_retriable = _parse_non_retriable_error(stderr_text)
                 if non_retriable is not None:
                     raise non_retriable
                 raise _DiscoverSpawnError(
@@ -361,7 +423,12 @@ def _make_discover_spawner(
         except subprocess.TimeoutExpired as exc:
             proc.kill()
             _, stderr = proc.communicate()
-            preview = _stderr_preview(stderr or exc.stderr)
+            if log_handle is not None:
+                log_handle.flush()
+            stderr_text = (_read_log_tail(log_path) if log_path is not None else None) or (
+                stderr or exc.stderr
+            )
+            preview = _stderr_preview(stderr_text)
             error_message = f"discover worker timed out for keyword {keyword!r}"
             _logger.warning(
                 "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
@@ -388,6 +455,9 @@ def _make_discover_spawner(
                 exc_info=True,
             )
             raise
+        finally:
+            if log_handle is not None:
+                log_handle.close()
 
     return spawn_discover
 
@@ -465,12 +535,31 @@ def create_app(
         if discovery_processor is not None and getattr(
             app.state, "discovery_dispatch_processor_enabled", False
         ):
+
+            def _reconcile_missing_workers() -> None:
+                try:
+                    failed_runs = app.state.run_service.reconcile_missing_workers(
+                        owner_pid=os.getpid()
+                    )
+                except Exception:
+                    _logger.warning(
+                        "Failed to reconcile missing discover workers",
+                        exc_info=True,
+                    )
+                    return
+                for failed_run in failed_runs:
+                    _logger.warning(
+                        "Marked discover run %s failed (worker_lost)",
+                        failed_run.id,
+                    )
+
             discovery_stop_event = asyncio.Event()
             discovery_task = asyncio.create_task(
                 _run_discovery_dispatch_loop(
                     processor=discovery_processor,
                     stop_event=discovery_stop_event,
                     poll_interval_seconds=1.0,
+                    tick_callback=_reconcile_missing_workers,
                 )
             )
         try:
@@ -758,6 +847,7 @@ def create_app(
     app.state.run_repository = run_repository
     app.state.run_service = RunService(
         run_repository,
+        artifact_root=resolved_artifact_root,
         entitlement_service=entitlement_service,
         notification_dispatcher=gated_notification_dispatcher,
     )
