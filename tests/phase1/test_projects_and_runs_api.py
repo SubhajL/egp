@@ -421,6 +421,66 @@ def test_finish_run_failed_emits_run_failed_notification(tmp_path) -> None:
     assert notifications[0].notification_type is NotificationType.RUN_FAILED
 
 
+def test_run_log_endpoint_returns_worker_log_contents(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+    repository = client.app.state.run_repository
+    run_id = str(uuid4())
+    log_path = tmp_path / "tenants" / TENANT_ID / "runs" / run_id / "worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("worker line 1\nworker line 2\n", encoding="utf-8")
+
+    run = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        run_id=run_id,
+        summary_json={"worker_log_path": str(log_path)},
+    )
+
+    response = client.get(
+        f"/v1/runs/{run.id}/log",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "worker line 1\nworker line 2\n"
+
+
+def test_run_log_endpoint_rejects_noncanonical_log_path(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+    repository = client.app.state.run_repository
+    outside_log_path = tmp_path / "logs" / "worker.log"
+    outside_log_path.parent.mkdir(parents=True, exist_ok=True)
+    outside_log_path.write_text("secret\n", encoding="utf-8")
+
+    run = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={"worker_log_path": str(outside_log_path)},
+    )
+
+    response = client.get(
+        f"/v1/runs/{run.id}/log",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run log not found"
+
+
 def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(
     tmp_path,
 ) -> None:

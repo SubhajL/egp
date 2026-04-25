@@ -111,6 +111,34 @@ def _mark_live_document_collection_deferred(
     return marked
 
 
+def _build_discover_task_failure_result(
+    *,
+    exc: Exception,
+    artifact_root: Path | str,
+    run_id: str,
+    task_keyword: str,
+    project_key: str,
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "artifact_root": str(artifact_root),
+        "error": str(exc),
+        "error_type": exc.__class__.__name__,
+        "project_key": project_key,
+        "run_id": run_id,
+        "task_keyword": task_keyword,
+    }
+    for field_name in (
+        "document_id",
+        "storage_key",
+        "managed_backup_storage_key",
+        "provider",
+    ):
+        field_value = getattr(exc, field_name, None)
+        if field_value is not None:
+            result[field_name] = field_value
+    return result
+
+
 def run_discover_workflow(
     *,
     tenant_id: str,
@@ -279,7 +307,13 @@ def run_discover_workflow(
                 run_repository.mark_task_finished(
                     task.id,
                     status="failed",
-                    result_json={"error": str(exc)},
+                    result_json=_build_discover_task_failure_result(
+                        exc=exc,
+                        artifact_root=artifact_root,
+                        run_id=run.id,
+                        task_keyword=task_keyword,
+                        project_key=project_key,
+                    ),
                 )
             else:
                 run_level_error = str(exc)

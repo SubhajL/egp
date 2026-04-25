@@ -13,6 +13,7 @@ import {
   fetchDocuments,
   fetchMe,
   fetchRules,
+  fetchRunLog,
   fetchRuns,
   fetchTenantStorageSettings,
   fetchSupportSummary,
@@ -72,6 +73,14 @@ export function useRuns(params: FetchRunsParams = {}) {
   return useQuery({
     queryKey: ["runs", params],
     queryFn: () => fetchRuns(params),
+  });
+}
+
+export function useRunLog(runId: string) {
+  return useQuery({
+    queryKey: ["run-log", runId],
+    queryFn: () => fetchRunLog(runId),
+    enabled: !!runId,
   });
 }
 

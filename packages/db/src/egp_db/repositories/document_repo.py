@@ -103,6 +103,26 @@ class DocumentContentResult:
     content_type: str
 
 
+class DocumentArtifactReadError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        document_id: str,
+        storage_key: str,
+        managed_backup_storage_key: str | None,
+        provider: str,
+        cause: Exception,
+    ) -> None:
+        self.document_id = document_id
+        self.storage_key = storage_key
+        self.managed_backup_storage_key = managed_backup_storage_key
+        self.provider = provider
+        self.cause = cause
+        super().__init__(
+            f"failed to read document artifact {document_id} from {provider}: {cause}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentReviewEventRecord:
     id: str
@@ -729,10 +749,56 @@ class SqlDocumentRepository:
         new_file_bytes: bytes,
         comparison_scope: ComparisonScope,
     ) -> DocumentDiffRecord:
-        old_file_bytes = self._get_document_bytes(
-            tenant_id=tenant_id,
-            document=comparison_target,
-        )
+        try:
+            old_file_bytes = self._get_document_bytes(
+                tenant_id=tenant_id,
+                document=comparison_target,
+            )
+        except DocumentArtifactReadError as exc:
+            logger.warning(
+                "Previous document artifact missing during diff build",
+                extra={
+                    "egp_event": "document_diff_previous_artifact_missing",
+                    "tenant_id": tenant_id,
+                    "project_id": project_id,
+                    "old_document_id": comparison_target.id,
+                    "new_document_id": stored_document.id,
+                    "previous_storage_key": comparison_target.storage_key,
+                    "previous_provider": exc.provider,
+                },
+            )
+            return DocumentDiffRecord(
+                id=str(uuid4()),
+                project_id=project_id,
+                old_document_id=comparison_target.id,
+                new_document_id=stored_document.id,
+                diff_type="changed",
+                summary_json={
+                    "summary_version": 1,
+                    "comparison_scope": comparison_scope,
+                    "text_extraction_status": "previous_artifact_missing",
+                    "text_diff_available": False,
+                    "old_document_phase": comparison_target.document_phase.value,
+                    "new_document_phase": stored_document.document_phase.value,
+                    "old_sha256": comparison_target.sha256,
+                    "new_sha256": stored_document.sha256,
+                    "old_size_bytes": comparison_target.size_bytes,
+                    "new_size_bytes": stored_document.size_bytes,
+                    "size_delta_bytes": (
+                        stored_document.size_bytes - comparison_target.size_bytes
+                    ),
+                    "old_file_name": comparison_target.file_name,
+                    "new_file_name": stored_document.file_name,
+                    "previous_artifact_missing": True,
+                    "previous_storage_key": comparison_target.storage_key,
+                    "previous_managed_backup_storage_key": (
+                        comparison_target.managed_backup_storage_key
+                    ),
+                    "previous_provider": exc.provider,
+                    "previous_read_error": str(exc.cause),
+                },
+                created_at=_now_iso(),
+            )
         diff_result = build_document_diff(
             old_document_type=comparison_target.document_type,
             old_document_phase=comparison_target.document_phase,
@@ -756,16 +822,51 @@ class SqlDocumentRepository:
             created_at=_now_iso(),
         )
 
+    def _build_document_read_error(
+        self,
+        *,
+        document: DocumentRecord,
+        provider: str,
+        cause: Exception,
+    ) -> DocumentArtifactReadError:
+        return DocumentArtifactReadError(
+            document_id=document.id,
+            storage_key=document.storage_key,
+            managed_backup_storage_key=document.managed_backup_storage_key,
+            provider=provider,
+            cause=cause,
+        )
+
     def _get_document_bytes(self, *, tenant_id: str, document: DocumentRecord) -> bytes:
         if document.managed_backup_storage_key is not None:
-            return self._artifact_store.get_bytes(document.managed_backup_storage_key)
-        resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
-            tenant_id=tenant_id,
-            storage_key=document.storage_key,
-        )
-        return resolved_artifact_store.store.get_bytes(
-            resolved_artifact_store.decode_storage_key(document.storage_key)
-        )
+            try:
+                return self._artifact_store.get_bytes(
+                    document.managed_backup_storage_key
+                )
+            except Exception as exc:
+                raise self._build_document_read_error(
+                    document=document,
+                    provider="managed",
+                    cause=exc,
+                ) from exc
+        try:
+            resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+                tenant_id=tenant_id,
+                storage_key=document.storage_key,
+            )
+            return resolved_artifact_store.store.get_bytes(
+                resolved_artifact_store.decode_storage_key(document.storage_key)
+            )
+        except Exception as exc:
+            raise self._build_document_read_error(
+                document=document,
+                provider=(
+                    resolved_artifact_store.provider
+                    if "resolved_artifact_store" in locals()
+                    else "unresolved"
+                ),
+                cause=exc,
+            ) from exc
 
     def store_document(
         self,
@@ -1396,12 +1497,28 @@ class SqlDocumentRepository:
             file_bytes = resolved_artifact_store.store.get_bytes(
                 resolved_artifact_store.decode_storage_key(document.storage_key)
             )
-        except Exception:
-            if document.managed_backup_storage_key is None:
-                raise
-            file_bytes = self._artifact_store.get_bytes(
-                document.managed_backup_storage_key
+        except Exception as exc:
+            primary_error = self._build_document_read_error(
+                document=document,
+                provider=(
+                    resolved_artifact_store.provider
+                    if "resolved_artifact_store" in locals()
+                    else "unresolved"
+                ),
+                cause=exc,
             )
+            if document.managed_backup_storage_key is None:
+                raise primary_error from exc
+            try:
+                file_bytes = self._artifact_store.get_bytes(
+                    document.managed_backup_storage_key
+                )
+            except Exception as backup_exc:
+                raise self._build_document_read_error(
+                    document=document,
+                    provider="managed",
+                    cause=backup_exc,
+                ) from backup_exc
         return DocumentContentResult(
             document=document,
             file_bytes=file_bytes,

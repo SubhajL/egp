@@ -1392,6 +1392,22 @@ export async function fetchRuns(
   return apiFetch<RunListResponse>(url);
 }
 
+export async function fetchRunLog(runId: string): Promise<string | null> {
+  const url = buildUrl(`/v1/runs/${runId}/log`, {});
+  const response = await fetch(url, {
+    headers: getApiHeaders("text/plain"),
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    await throwApiError(response);
+  }
+  return response.text();
+}
+
 export async function fetchDashboardSummary(
   params: FetchDashboardSummaryParams = {},
 ): Promise<DashboardSummaryResponse> {

@@ -568,6 +568,57 @@ def test_run_repository_rejects_invalid_trigger_and_task_type(tmp_path) -> None:
         repository.create_task(run_id=run.id, task_type="bogus-task")
 
 
+def test_fail_runs_with_missing_worker_process_marks_worker_lost(
+    tmp_path, monkeypatch
+) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    missing = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    other_owner = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(missing.id)
+    repository.mark_run_started(other_owner.id)
+    repository.update_run_summary(
+        missing.id,
+        summary_json={
+            "worker_owner_pid": 99901,
+            "worker_pid": 99902,
+            "worker_log_path": str(tmp_path / "worker.log"),
+        },
+    )
+    repository.update_run_summary(
+        other_owner.id,
+        summary_json={
+            "worker_owner_pid": 99955,
+            "worker_pid": 99956,
+        },
+    )
+
+    def fake_kill(pid: int, sig: int) -> None:
+        del sig
+        if pid == 99902:
+            raise ProcessLookupError(pid)
+
+    monkeypatch.setattr("egp_db.repositories.run_repo.os.kill", fake_kill)
+
+    failed = repository.fail_runs_with_missing_workers(owner_pid=99901)
+
+    assert [run.id for run in failed] == [missing.id]
+    assert failed[0].status is CrawlRunStatus.FAILED
+    assert failed[0].summary_json == {
+        "worker_owner_pid": 99901,
+        "worker_pid": 99902,
+        "worker_log_path": str(tmp_path / "worker.log"),
+        "error": "discover worker process 99902 disappeared before completion",
+        "failure_reason": "worker_lost",
+    }
+    untouched = repository.find_run_by_id(other_owner.id)
+    assert untouched is not None
+    assert untouched.status is CrawlRunStatus.RUNNING
+
+
 def test_project_and_run_listing_supports_limit_and_offset(tmp_path) -> None:
     database_path = tmp_path / "phase1.sqlite3"
     project_repository = SqlProjectRepository(

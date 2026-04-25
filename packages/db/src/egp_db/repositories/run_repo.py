@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -282,6 +283,27 @@ def _summary_projects_seen(summary_json: dict[str, object] | None) -> int:
         return 0
 
 
+def _merge_summary_json(
+    current: dict[str, object] | None,
+    update_value: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if current is None and update_value is None:
+        return None
+    merged = dict(current or {})
+    merged.update(update_value or {})
+    return merged
+
+
+def _summary_int(summary_json: dict[str, object] | None, key: str) -> int | None:
+    if not isinstance(summary_json, dict):
+        return None
+    raw_value = summary_json.get(key)
+    try:
+        return int(raw_value) if raw_value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 class SqlRunRepository:
     """Relational crawl run repository."""
 
@@ -377,13 +399,25 @@ class SqlRunRepository:
         normalized_run_id = normalize_uuid_string(run_id)
         normalized_status = _validate_run_status(status)
         with self._engine.begin() as connection:
+            current = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
                 .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
                 .values(
                     status=normalized_status,
                     finished_at=now,
-                    summary_json=summary_json,
+                    summary_json=_merge_summary_json(
+                        current["summary_json"],
+                        summary_json,
+                    ),
                     error_count=error_count,
                 )
             )
@@ -406,10 +440,24 @@ class SqlRunRepository:
     ) -> CrawlRunRecord:
         normalized_run_id = normalize_uuid_string(run_id)
         with self._engine.begin() as connection:
+            current = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
                 .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
-                .values(summary_json=summary_json)
+                .values(
+                    summary_json=_merge_summary_json(
+                        current["summary_json"],
+                        summary_json,
+                    )
+                )
             )
             row = (
                 connection.execute(
@@ -526,6 +574,61 @@ class SqlRunRepository:
                 .one()
             )
         return _run_from_mapping(failed_row)
+
+    def fail_runs_with_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]:
+        now = _now()
+        failed_rows = []
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE).where(
+                        CRAWL_RUNS_TABLE.c.status.in_(
+                            [
+                                CrawlRunStatus.QUEUED.value,
+                                CrawlRunStatus.RUNNING.value,
+                            ]
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                summary = dict(row["summary_json"] or {})
+                if _summary_int(summary, "worker_owner_pid") != int(owner_pid):
+                    continue
+                worker_pid = _summary_int(summary, "worker_pid")
+                if worker_pid is None:
+                    continue
+                try:
+                    os.kill(worker_pid, 0)
+                except PermissionError:
+                    continue
+                except ProcessLookupError:
+                    summary["error"] = (
+                        f"discover worker process {worker_pid} disappeared before completion"
+                    )
+                    summary["failure_reason"] = "worker_lost"
+                    connection.execute(
+                        update(CRAWL_RUNS_TABLE)
+                        .where(CRAWL_RUNS_TABLE.c.id == row["id"])
+                        .values(
+                            status=CrawlRunStatus.FAILED.value,
+                            finished_at=now,
+                            summary_json=summary,
+                            error_count=max(1, int(row["error_count"])),
+                        )
+                    )
+                    failed_rows.append(
+                        connection.execute(
+                            select(CRAWL_RUNS_TABLE)
+                            .where(CRAWL_RUNS_TABLE.c.id == row["id"])
+                            .limit(1)
+                        )
+                        .mappings()
+                        .one()
+                    )
+        return [_run_from_mapping(row) for row in failed_rows]
 
     def create_task(
         self,

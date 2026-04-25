@@ -12,6 +12,7 @@ from egp_db.artifact_store import LocalArtifactStore
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.document_repo import (
+    DocumentArtifactReadError,
     FilesystemDocumentRepository,
     SqlDocumentRepository,
 )
@@ -464,6 +465,67 @@ def test_store_document_uses_backup_copy_for_diff_reads_with_external_primary(
     assert second.created is True
     assert len(second.diff_records) == 1
     assert google_client.download_calls == []
+
+
+def test_store_document_records_missing_previous_artifact_warning_summary(
+    tmp_path,
+) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    first = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v1.pdf",
+        file_bytes=b"version-one",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+    (tmp_path / first.document.storage_key).unlink()
+
+    second = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-v2.pdf",
+        file_bytes=b"version-two",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    assert second.created is True
+    assert len(second.diff_records) == 1
+    assert second.diff_records[0].diff_type == "changed"
+    assert second.diff_records[0].summary_json is not None
+    assert second.diff_records[0].summary_json["previous_artifact_missing"] is True
+    assert (
+        second.diff_records[0].summary_json["previous_storage_key"]
+        == first.document.storage_key
+    )
+    assert (
+        second.diff_records[0].summary_json["comparison_scope"] == "same_phase_version"
+    )
+
+
+def test_get_document_content_raises_contextual_error_without_backup(tmp_path) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    stored = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"draft-tor",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    (tmp_path / stored.document.storage_key).unlink()
+
+    with pytest.raises(DocumentArtifactReadError) as exc_info:
+        repository.get_document_content(
+            tenant_id=TENANT_ID,
+            document_id=stored.document.id,
+        )
+
+    assert exc_info.value.document_id == stored.document.id
+    assert exc_info.value.storage_key == stored.document.storage_key
+    assert exc_info.value.managed_backup_storage_key is None
+    assert exc_info.value.provider == "managed"
 
 
 def test_store_document_dedupes_same_project_and_hash(tmp_path) -> None:
