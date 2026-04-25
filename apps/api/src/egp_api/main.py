@@ -186,8 +186,8 @@ def _validation_error_code(exc: RequestValidationError, *, path: str) -> str | N
 def _make_discover_spawner(
     database_url: str,
     *,
-    artifact_root: Path,
-    run_repository,
+    artifact_root: Path | None = None,
+    run_repository=None,
 ) -> Callable[..., None]:
     """Return a function that spawns a worker subprocess for a single keyword.
 
@@ -195,6 +195,17 @@ def _make_discover_spawner(
     payload to stdin, and waits for it to finish (inside a BackgroundTask
     thread so the API response is not blocked).
     """
+
+    class _NoopRunRepository:
+        def create_run(self, **kwargs) -> None:
+            del kwargs
+
+        def fail_run_if_active(self, *args, **kwargs) -> None:
+            del args, kwargs
+            return None
+
+    resolved_artifact_root = artifact_root or Path("artifacts")
+    resolved_run_repository = run_repository or _NoopRunRepository()
 
     def _stderr_preview(stderr: bytes | str | None, *, limit: int = 500) -> str | None:
         if stderr is None:
@@ -243,7 +254,7 @@ def _make_discover_spawner(
         failure_reason: str,
     ) -> None:
         try:
-            failed_run = run_repository.fail_run_if_active(
+            failed_run = resolved_run_repository.fail_run_if_active(
                 run_id,
                 error=error,
                 failure_reason=failure_reason,
@@ -294,7 +305,7 @@ def _make_discover_spawner(
         keyword: str,
     ) -> None:
         run_id = str(uuid4())
-        run_repository.create_run(
+        resolved_run_repository.create_run(
             tenant_id=tenant_id,
             profile_id=profile_id,
             trigger_type="manual",
@@ -304,7 +315,7 @@ def _make_discover_spawner(
             {
                 "command": "discover",
                 "database_url": database_url,
-                "artifact_root": str(artifact_root),
+                "artifact_root": str(resolved_artifact_root),
                 "tenant_id": tenant_id,
                 "run_id": run_id,
                 "profile_id": profile_id,

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from egp_api.main import (
+    DISCOVER_WORKER_TIMEOUT_SECONDS,
     _discovery_dispatch_loop_enabled_for_database_url,
     _discovery_dispatch_route_kick_enabled,
     _logger,
@@ -533,7 +534,7 @@ def test_make_discover_spawner_forwards_profile_id_in_worker_payload(
         keyword="analytics",
     )
 
-    assert captured["timeout"] == 600
+    assert captured["timeout"] == DISCOVER_WORKER_TIMEOUT_SECONDS
     payload = captured["payload"].decode()
     assert '"profile_id": "profile-123"' in payload
     assert '"trigger_type": "manual"' in payload
