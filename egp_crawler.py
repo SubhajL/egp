@@ -59,7 +59,12 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from egp_document_classifier import derive_artifact_bucket
-from egp_shared_types.enums import ArtifactBucket, ClosedReason, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    ArtifactBucket,
+    ClosedReason,
+    ProcurementType,
+    ProjectState,
+)
 from openpyxl import Workbook, load_workbook
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -857,7 +862,9 @@ def is_terminal_tracking_status(value: str | None) -> bool:
     return False
 
 
-def infer_procurement_type(project_name: str, organization: str = "") -> ProcurementType:
+def infer_procurement_type(
+    project_name: str, organization: str = ""
+) -> ProcurementType:
     combined = f"{project_name} {organization}"
     if "ที่ปรึกษา" in combined:
         return ProcurementType.CONSULTING
@@ -904,7 +911,9 @@ def write_project_manifest(
         "closed_reason": closed_reason.value if closed_reason is not None else None,
         "artifact_bucket": artifact_bucket.value,
         "saved_files": sorted(
-            path.name for path in project_dir.iterdir() if path.is_file() and path.name != manifest_path.name
+            path.name
+            for path in project_dir.iterdir()
+            if path.is_file() and path.name != manifest_path.name
         ),
         "written_at": datetime.now().isoformat(timespec="seconds"),
         "saved_by": "crawler",
@@ -1367,7 +1376,11 @@ def update_excel(project_info: dict, excel_path: Path | None = None) -> None:
                 and not str(existing_number or "").strip()
             ):
                 continue
-            if existing_search_name and search_name and str(existing_search_name).strip() != search_name:
+            if (
+                existing_search_name
+                and search_name
+                and str(existing_search_name).strip() != search_name
+            ):
                 continue
             _update_row(row_idx)
             wb.save(excel_path)
@@ -1512,10 +1525,7 @@ def _goto_with_retries(
             return
         except PlaywrightTimeout as exc:
             last_error = exc
-            print(
-                f"  WARNING: {label} navigation timed out "
-                f"({attempt}/{max_attempts})"
-            )
+            print(f"  WARNING: {label} navigation timed out ({attempt}/{max_attempts})")
         except Exception as exc:
             last_error = exc
             print(
@@ -1708,7 +1718,9 @@ def get_results_page_marker(page) -> dict[str, str | int]:
         except Exception:
             continue
     try:
-        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active = page.query_selector(
+            "li.page-item.active, li.active, .pagination .active"
+        )
         active_page = active.inner_text().strip() if active else ""
     except Exception:
         active_page = ""
@@ -1735,7 +1747,11 @@ def results_page_marker_changed(
 
 def _table_matches_results_headers(table) -> bool:
     """Return True when a table looks like the main procurement results table."""
-    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    header_selectors = (
+        "thead th, thead td",
+        "th",
+        "tr:first-child th, tr:first-child td",
+    )
     headers: list[str] = []
     for selector in header_selectors:
         try:
@@ -1922,7 +1938,9 @@ def wait_for_results_page_change(
             return True
         logged_sleep(0.5, "wait page change")
     current_marker = get_results_page_marker(page)
-    return results_page_marker_changed(previous_marker, current_marker) or is_no_results_page(page)
+    return results_page_marker_changed(
+        previous_marker, current_marker
+    ) or is_no_results_page(page)
 
 
 def search_keyword(
@@ -2021,14 +2039,20 @@ def build_results_debug_snapshot(page, sample_limit: int = 3) -> dict[str, objec
 
     table = find_results_table(page)
     if table:
-        header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+        header_selectors = (
+            "thead th, thead td",
+            "th",
+            "tr:first-child th, tr:first-child td",
+        )
         headers: list[str] = []
         for selector in header_selectors:
             try:
                 header_els = table.query_selector_all(selector)
             except Exception:
                 header_els = []
-            headers = [h.inner_text().strip() for h in header_els if h.inner_text().strip()]
+            headers = [
+                h.inner_text().strip() for h in header_els if h.inner_text().strip()
+            ]
             if headers:
                 break
         snapshot["results_headers"] = headers
@@ -2046,7 +2070,9 @@ def build_results_debug_snapshot(page, sample_limit: int = 3) -> dict[str, objec
         snapshot["results_row_samples"] = samples
 
     try:
-        active = page.query_selector("li.page-item.active, li.active, .pagination .active")
+        active = page.query_selector(
+            "li.page-item.active, li.active, .pagination .active"
+        )
         snapshot["active_page"] = active.inner_text().strip() if active else ""
     except Exception:
         pass
@@ -2400,7 +2426,9 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> list[str
                 include_label=lambda label: is_tor_file(label),
             )
 
-        saved_name = _handle_direct_or_page_download(page, clickable, project_dir, doc_name)
+        saved_name = _handle_direct_or_page_download(
+            page, clickable, project_dir, doc_name
+        )
         if saved_name:
             if target_doc == "ประกาศเชิญชวน":
                 return [doc_name]
@@ -2414,8 +2442,9 @@ def _download_one_document(page, target_doc: str, project_dir: Path) -> list[str
             return _download_documents_from_current_view(
                 page,
                 project_dir,
-                include_label=lambda label: "ประกาศเชิญชวน" in label
-                or is_final_tor_doc_label(label),
+                include_label=lambda label: (
+                    "ประกาศเชิญชวน" in label or is_final_tor_doc_label(label)
+                ),
             )
 
         if is_final_tor_target:
@@ -3005,7 +3034,9 @@ def _handle_subpage_download(page, btn, project_dir: Path, include_label) -> lis
     )
 
 
-def _download_documents_from_current_view(page, project_dir: Path, include_label) -> list[str]:
+def _download_documents_from_current_view(
+    page, project_dir: Path, include_label
+) -> list[str]:
     """Download matching files from the current modal or related-documents page."""
 
     # Many TOR downloads open a modal popup (bootstrap) with a file list.

@@ -302,7 +302,9 @@ class TestUpdateExcel:
         assert ws.cell(2, 8).value == "Yes"
         assert ws.cell(2, 10).value == "From results table"
 
-    def test_reannouncement_with_same_name_but_new_project_number_appends(self, tmp_path):
+    def test_reannouncement_with_same_name_but_new_project_number_appends(
+        self, tmp_path
+    ):
         excel_path = tmp_path / "reannounce.xlsx"
         update_excel(
             {
@@ -1271,7 +1273,11 @@ class _FakeTable:
         self._rows = rows
 
     def query_selector_all(self, selector: str):
-        if selector in ("thead th, thead td", "th", "tr:first-child th, tr:first-child td"):
+        if selector in (
+            "thead th, thead td",
+            "th",
+            "tr:first-child th, tr:first-child td",
+        ):
             return [_FakeTextElement(h) for h in self._headers]
         if selector == "tbody tr":
             return self._rows
@@ -1310,7 +1316,14 @@ class _FakeResultsPage:
 class TestResultsDebugSnapshot:
     def test_includes_results_headers_rows_and_body_snippet(self):
         results_table = _FakeTable(
-            ["ลำดับ", "หน่วยจัดซื้อ", "ชื่อโครงการ", "วงเงินงบประมาณ (บาท)", "สถานะโครงการ", "ดูข้อมูล"],
+            [
+                "ลำดับ",
+                "หน่วยจัดซื้อ",
+                "ชื่อโครงการ",
+                "วงเงินงบประมาณ (บาท)",
+                "สถานะโครงการ",
+                "ดูข้อมูล",
+            ],
             [
                 _FakeRow(
                     [
@@ -1359,7 +1372,14 @@ class TestResultsDebugSnapshot:
 class TestResultsPageMarker:
     def test_captures_active_page_and_row_sample(self):
         results_table = _FakeTable(
-            ["ลำดับ", "หน่วยจัดซื้อ", "ชื่อโครงการ", "วงเงินงบประมาณ (บาท)", "สถานะโครงการ", "ดูข้อมูล"],
+            [
+                "ลำดับ",
+                "หน่วยจัดซื้อ",
+                "ชื่อโครงการ",
+                "วงเงินงบประมาณ (บาท)",
+                "สถานะโครงการ",
+                "ดูข้อมูล",
+            ],
             [
                 _FakeRow(
                     [
@@ -1558,8 +1578,12 @@ class TestSearchKeyword:
             "egp_crawler.wait_for_cloudflare",
             lambda page, timeout_ms=None, reload_retries=None: next(cloudflare_results),
         )
-        monkeypatch.setattr("egp_crawler.find_search_input", lambda page, btn: search_input)
-        monkeypatch.setattr("egp_crawler.click_search_button", lambda page, btn=None: None)
+        monkeypatch.setattr(
+            "egp_crawler.find_search_input", lambda page, btn: search_input
+        )
+        monkeypatch.setattr(
+            "egp_crawler.click_search_button", lambda page, btn=None: None
+        )
         monkeypatch.setattr("egp_crawler.wait_for_results_ready", lambda page: None)
         monkeypatch.setattr("egp_crawler.get_results_rows", lambda page: [])
         monkeypatch.setattr(
@@ -1572,9 +1596,7 @@ class TestSearchKeyword:
         assert page.goto_calls == [(SEARCH_URL, "domcontentloaded", 60_000)]
         assert search_input.values == ["", "ธรรมาภิบาลข้อมูล"]
 
-    def test_waits_for_full_row_stabilization_before_reporting_count(
-        self, monkeypatch
-    ):
+    def test_waits_for_full_row_stabilization_before_reporting_count(self, monkeypatch):
         page = _FakeSearchPage()
         search_input = _FakeSearchInput()
         waits = []
@@ -1582,7 +1604,9 @@ class TestSearchKeyword:
         printed = []
 
         monkeypatch.setattr("egp_crawler.wait_for_cloudflare", lambda page: None)
-        monkeypatch.setattr("egp_crawler.find_search_input", lambda page, btn: search_input)
+        monkeypatch.setattr(
+            "egp_crawler.find_search_input", lambda page, btn: search_input
+        )
         monkeypatch.setattr("egp_crawler.wait_for_results_ready", lambda page: None)
         monkeypatch.setattr(
             "egp_crawler.get_results_rows",
@@ -1592,12 +1616,16 @@ class TestSearchKeyword:
             "egp_crawler.logged_sleep",
             lambda seconds, reason="": waits.append((seconds, reason)),
         )
-        monkeypatch.setattr("egp_crawler.print", lambda *args, **kwargs: printed.append(args))
+        monkeypatch.setattr(
+            "egp_crawler.print", lambda *args, **kwargs: printed.append(args)
+        )
 
         search_keyword(page, "ระบบวิเคราะห์")
 
         assert search_input.values == ["", "ระบบวิเคราะห์"]
-        assert any("rows: 10" in " ".join(str(part) for part in line) for line in printed)
+        assert any(
+            "rows: 10" in " ".join(str(part) for part in line) for line in printed
+        )
 
     def test_restore_results_page_replays_search_and_advances_pages(self, monkeypatch):
         page = _FakeRestorePage(pages_to_advance=2)
@@ -1618,7 +1646,8 @@ class TestSearchKeyword:
             "egp_crawler.get_results_page_marker", lambda page: next(marker_values)
         )
         monkeypatch.setattr(
-            "egp_crawler.wait_for_results_page_change", lambda page, previous_marker: True
+            "egp_crawler.wait_for_results_page_change",
+            lambda page, previous_marker: True,
         )
         monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
 
@@ -1652,6 +1681,7 @@ class TestParseCliArgs:
 
     def test_invalid_profile_raises(self):
         import pytest
+
         with pytest.raises(SystemExit):
             parse_cli_args(["--profile", "invalid"])
 
@@ -1742,11 +1772,20 @@ class TestProfileDefaults:
         assert len(KEYWORDS_LUE_DEFAULT) == 5
 
     def test_profiles_use_different_dirs(self):
-        assert PROFILE_DEFAULTS["tor"]["download_dir"] != PROFILE_DEFAULTS["toe"]["download_dir"]
+        assert (
+            PROFILE_DEFAULTS["tor"]["download_dir"]
+            != PROFILE_DEFAULTS["toe"]["download_dir"]
+        )
 
     def test_lue_dir_differs_from_tor_and_toe(self):
-        assert PROFILE_DEFAULTS["lue"]["download_dir"] != PROFILE_DEFAULTS["tor"]["download_dir"]
-        assert PROFILE_DEFAULTS["lue"]["download_dir"] != PROFILE_DEFAULTS["toe"]["download_dir"]
+        assert (
+            PROFILE_DEFAULTS["lue"]["download_dir"]
+            != PROFILE_DEFAULTS["tor"]["download_dir"]
+        )
+        assert (
+            PROFILE_DEFAULTS["lue"]["download_dir"]
+            != PROFILE_DEFAULTS["toe"]["download_dir"]
+        )
 
     def test_toe_download_dir_ends_with_toe(self):
         assert str(PROFILE_DEFAULTS["toe"]["download_dir"]).endswith("TOE")
@@ -1844,7 +1883,9 @@ class TestProjectDocumentDownloads:
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes, *, headers: dict[str, str] | None = None, ok: bool = True):
+    def __init__(
+        self, body: bytes, *, headers: dict[str, str] | None = None, ok: bool = True
+    ):
         self._body = body
         self.headers = headers or {}
         self.ok = ok
@@ -1883,13 +1924,19 @@ class _FakeViewerPage:
         return None
 
     def evaluate(self, script: str):
-        if "embed[src]" in script or "iframe[src]" in script or "object[data]" in script:
+        if (
+            "embed[src]" in script
+            or "iframe[src]" in script
+            or "object[data]" in script
+        ):
             return self._embedded_src
         return None
 
 
 class TestNewTabFallback:
-    def test_save_from_new_tab_uses_request_for_blob_viewer(self, monkeypatch, tmp_path):
+    def test_save_from_new_tab_uses_request_for_blob_viewer(
+        self, monkeypatch, tmp_path
+    ):
         viewer_page = _FakeViewerPage(
             url="blob:https://process5.gprocurement.go.th/example-blob",
             embedded_src="https://process5.gprocurement.go.th/egp-download/final-tor.zip",
@@ -1900,7 +1947,12 @@ class TestNewTabFallback:
         )
 
         monkeypatch.setattr("egp_crawler.logged_sleep", lambda *args, **kwargs: None)
-        monkeypatch.setattr("egp_crawler.run_with_toast_recovery", lambda *args, **kwargs: (_ for _ in ()).throw(Exception("no download event")))
+        monkeypatch.setattr(
+            "egp_crawler.run_with_toast_recovery",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                Exception("no download event")
+            ),
+        )
         monkeypatch.setattr("egp_crawler._cancel_pending_downloads", lambda page: None)
 
         saved_name = _save_from_new_tab(viewer_page, tmp_path, "ประกาศเชิญชวน")
