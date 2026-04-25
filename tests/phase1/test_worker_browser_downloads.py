@@ -58,7 +58,9 @@ class FakeRow:
 
 
 class FakeTable:
-    def __init__(self, headers: list[str], rows: list[FakeRow], *, has_tbody: bool = True) -> None:
+    def __init__(
+        self, headers: list[str], rows: list[FakeRow], *, has_tbody: bool = True
+    ) -> None:
         self._headers = headers
         self._rows = rows
         self._has_tbody = has_tbody
@@ -104,7 +106,9 @@ class FakePage:
 
 class FakeNoDownloadWaitPage(FakePage):
     def expect_download(self, timeout=None):
-        raise AssertionError("should not enter expect_download for immediate E4514 modal")
+        raise AssertionError(
+            "should not enter expect_download for immediate E4514 modal"
+        )
 
 
 class FakeResponse:
@@ -180,7 +184,11 @@ class FakeBlobOnlyViewerPage(FakeViewerPage):
         self._mime_type = mime_type
 
     def evaluate(self, script: str):
-        if "embed[src]" in script or "iframe[src]" in script or "object[data]" in script:
+        if (
+            "embed[src]" in script
+            or "iframe[src]" in script
+            or "object[data]" in script
+        ):
             return None
         if "fetch(window.location.href)" in script:
             return {
@@ -202,7 +210,11 @@ class FakeAnchorOnlyViewerPage(FakeViewerPage):
     def evaluate(self, script: str):
         if "document.querySelectorAll('a[href]')" in script:
             return self._link_urls
-        if "embed[src]" in script or "iframe[src]" in script or "object[data]" in script:
+        if (
+            "embed[src]" in script
+            or "iframe[src]" in script
+            or "object[data]" in script
+        ):
             return None
         return None
 
@@ -269,7 +281,9 @@ class FakeModalPage:
 
 class FakeNoDownloadWaitModalPage(FakeModalPage):
     def expect_download(self, timeout=None):
-        raise AssertionError("should not enter expect_download for immediate E4514 modal")
+        raise AssertionError(
+            "should not enter expect_download for immediate E4514 modal"
+        )
 
 
 class FakeModal:
@@ -518,18 +532,20 @@ def test_collect_downloaded_documents_preserves_provenance_fields(monkeypatch) -
     monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
     monkeypatch.setattr(
         "egp_worker.browser_downloads._download_one_document",
-        lambda page, target_doc, document_context=None: [
-            {
-                "file_name": f"{target_doc}.pdf",
-                "file_bytes": target_doc.encode("utf-8"),
-                "source_label": target_doc,
-                "source_status_text": "",
-                "source_page_text": "",
-                "project_state": None,
-            }
-        ]
-        if target_doc == "ประกาศเชิญชวน"
-        else [],
+        lambda page, target_doc, document_context=None: (
+            [
+                {
+                    "file_name": f"{target_doc}.pdf",
+                    "file_bytes": target_doc.encode("utf-8"),
+                    "source_label": target_doc,
+                    "source_status_text": "",
+                    "source_page_text": "",
+                    "project_state": None,
+                }
+            ]
+            if target_doc == "ประกาศเชิญชวน"
+            else []
+        ),
     )
 
     downloaded = collect_downloaded_documents(
@@ -551,7 +567,9 @@ def test_collect_downloaded_documents_preserves_provenance_fields(monkeypatch) -
     ]
 
 
-def test_click_back_or_exit_prefers_modal_local_exit_before_page_back(monkeypatch) -> None:
+def test_click_back_or_exit_prefers_modal_local_exit_before_page_back(
+    monkeypatch,
+) -> None:
     class FakeExitPage:
         def __init__(self) -> None:
             self.keyboard = FakeKeyboard()
@@ -564,7 +582,9 @@ def test_click_back_or_exit_prefers_modal_local_exit_before_page_back(monkeypatc
                 return True
             if "document.querySelectorAll('button')" in script:
                 self.page_back_attempts += 1
-                raise AssertionError("page-level back should not run after modal-local exit")
+                raise AssertionError(
+                    "page-level back should not run after modal-local exit"
+                )
             return False
 
     page = FakeExitPage()
@@ -606,7 +626,9 @@ def test_collect_downloaded_documents_continues_after_single_target_timeout(
         return []
 
     monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._download_one_document",
         fake_download_one_document,
@@ -633,10 +655,10 @@ def test_collect_downloaded_documents_continues_after_single_target_timeout(
 def test_collect_downloaded_documents_restores_project_detail_after_subpage_flow(
     monkeypatch,
 ) -> None:
-    detail_url = (
-        "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail/123"
+    detail_url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail/123"
+    subpage_url = (
+        "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/list"
     )
-    subpage_url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/list"
     page = FakeDetailFlowPage(url=detail_url)
     exit_clicks: list[str] = []
 
@@ -691,11 +713,13 @@ def test_collect_downloaded_documents_restores_project_detail_after_subpage_flow
 def test_collect_downloaded_documents_keeps_exiting_until_original_detail_page(
     monkeypatch,
 ) -> None:
-    detail_url = (
-        "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail/123"
+    detail_url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail/123"
+    popup_url = (
+        "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/popup"
     )
-    popup_url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/popup"
-    file_list_url = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/list"
+    file_list_url = (
+        "https://process5.gprocurement.go.th/egp-agpc01-web/announcement/document/list"
+    )
     page = FakeDetailFlowPage(url=detail_url)
     exit_clicks: list[str] = []
 
@@ -1045,7 +1069,9 @@ def test_collect_downloaded_documents_dedupes_table_and_standalone_anchor_candid
 def test_collect_downloaded_documents_falls_back_to_plain_table_anchor_without_tbody(
     monkeypatch,
 ) -> None:
-    plan_label = "P69020016424 - การศึกษารูปแบบการทำงานของระบบสนับสนุนการแลกเปลี่ยนข้อมูลด้านการค้าดิจิทัล"
+    plan_label = (
+        "P69020016424 - การศึกษารูปแบบการทำงานของระบบสนับสนุนการแลกเปลี่ยนข้อมูลด้านการค้าดิจิทัล"
+    )
     clickable = FakeClickable(
         {
             "href": None,
@@ -1298,7 +1324,9 @@ def test_handle_direct_or_page_download_skips_expect_download_for_modal_buttons(
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads.run_with_toast_recovery",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -1341,7 +1369,9 @@ def test_handle_direct_or_page_download_modal_button_captures_online_viewer_tab(
         if sleep_state["count"] >= 2 and not delayed_viewer.closed:
             delayed_viewer.url = "blob:https://process5.gprocurement.go.th/invitation"
 
-    def fake_save_from_new_tab(new_page, file_label, fallback_url=None, document_context=None):
+    def fake_save_from_new_tab(
+        new_page, file_label, fallback_url=None, document_context=None
+    ):
         assert new_page is delayed_viewer
         return [
             {
@@ -1370,7 +1400,9 @@ def test_handle_direct_or_page_download_modal_button_captures_online_viewer_tab(
     monkeypatch.setattr(
         "egp_worker.browser_downloads.run_with_toast_recovery",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("modal-looking online viewer should not wait for download event")
+            AssertionError(
+                "modal-looking online viewer should not wait for download event"
+            )
         ),
     )
 
@@ -1427,7 +1459,9 @@ def test_download_documents_from_current_view_handles_modal_button_popup_without
         ]
     )
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads.run_with_toast_recovery",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -1471,7 +1505,9 @@ def test_capture_followup_skips_known_missing_file_modal(monkeypatch, caplog) ->
     missing_modal = FakeMissingFileModal()
     page._modal = missing_modal
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     caplog.set_level(logging.INFO, logger="egp_worker.browser_downloads")
 
     downloaded = _capture_followup_after_click(
@@ -1486,7 +1522,9 @@ def test_capture_followup_skips_known_missing_file_modal(monkeypatch, caplog) ->
     assert downloaded == []
     assert missing_modal.dismissed is True
     event = next(
-        record for record in caplog.records if record.egp_event == "document_unavailable_on_source"
+        record
+        for record in caplog.records
+        if record.egp_event == "document_unavailable_on_source"
     )
     assert event.source_doc_label == "ประกาศเชิญชวน"
     assert event.inner_file_label == "เอกสารประกวดราคา"
@@ -1510,18 +1548,16 @@ def test_capture_followup_collects_download_modal_after_plain_link_click(
         ]
     )
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._find_modal_with_downloads",
         lambda page: modal,
     )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._download_documents_from_current_view",
-        lambda page,
-        include_label,
-        source_doc_label="",
-        document_context=None,
-        current_modal_signature=None: [
+        lambda page, include_label, source_doc_label="", document_context=None, current_modal_signature=None: [
             {
                 "file_name": "procurement-plan.pdf",
                 "file_bytes": b"plan",
@@ -1600,7 +1636,9 @@ def test_download_documents_from_current_view_does_not_recurse_when_modal_reopen
     page._modal = modal
 
     monkeypatch.setattr("egp_worker.browser_downloads._sleep", fake_sleep)
-    monkeypatch.setattr("egp_worker.browser_downloads.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.time.monotonic", lambda: clock["now"]
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._skip_known_missing_file_modal",
         lambda *args, **kwargs: False,
@@ -1670,11 +1708,7 @@ def test_capture_followup_ignores_blank_new_tab_until_modal_appears(
     )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._download_documents_from_current_view",
-        lambda page,
-        include_label,
-        source_doc_label="",
-        document_context=None,
-        current_modal_signature=None: [
+        lambda page, include_label, source_doc_label="", document_context=None, current_modal_signature=None: [
             {
                 "file_name": "procurement-plan.pdf",
                 "file_bytes": b"plan",
@@ -1718,7 +1752,10 @@ def test_capture_followup_keeps_blank_tab_until_it_becomes_blob_viewer(
 ) -> None:
     page = FakePage([])
     delayed_viewer = FakeContextPageRecord("about:blank")
-    page.context.pages = [FakeContextPageRecord("chrome://new-tab-page/"), delayed_viewer]
+    page.context.pages = [
+        FakeContextPageRecord("chrome://new-tab-page/"),
+        delayed_viewer,
+    ]
     sleep_state = {"count": 0}
 
     def fake_sleep(*args, **kwargs) -> None:
@@ -1782,27 +1819,38 @@ def test_capture_followup_closes_surplus_new_tabs_before_processing_latest(
 ) -> None:
     page = FakePage([])
     first_tab = FakeContextPageRecord("blob:https://process5.gprocurement.go.th/first")
-    latest_tab = FakeContextPageRecord("blob:https://process5.gprocurement.go.th/latest")
-    page.context.pages = [FakeContextPageRecord("chrome://new-tab-page/"), first_tab, latest_tab]
+    latest_tab = FakeContextPageRecord(
+        "blob:https://process5.gprocurement.go.th/latest"
+    )
+    page.context.pages = [
+        FakeContextPageRecord("chrome://new-tab-page/"),
+        first_tab,
+        latest_tab,
+    ]
     captured_pages: list[FakeContextPageRecord] = []
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._find_modal_with_downloads",
         lambda page: None,
     )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._save_from_new_tab",
-        lambda new_page, file_label, document_context=None: captured_pages.append(new_page) or [
-            {
-                "file_name": "invite.pdf",
-                "file_bytes": b"invite",
-                "source_label": file_label,
-                "source_status_text": document_context["source_status_text"],
-                "source_page_text": document_context["source_page_text"],
-                "project_state": document_context["project_state"],
-            }
-        ],
+        lambda new_page, file_label, document_context=None: (
+            captured_pages.append(new_page)
+            or [
+                {
+                    "file_name": "invite.pdf",
+                    "file_bytes": b"invite",
+                    "source_label": file_label,
+                    "source_status_text": document_context["source_status_text"],
+                    "source_page_text": document_context["source_page_text"],
+                    "project_state": document_context["project_state"],
+                }
+            ]
+        ),
     )
 
     downloaded = _capture_followup_after_click(
@@ -1839,7 +1887,9 @@ def test_capture_followup_detects_same_page_inline_viewer(
 ) -> None:
     page = FakePage([])
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._find_modal_with_downloads",
         lambda page: None,
@@ -1905,7 +1955,9 @@ def test_handle_direct_or_page_download_uses_followup_after_plain_link_click(
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
 
     def fake_immediate(page, click_action, **kwargs):
         click_action()
@@ -1972,14 +2024,18 @@ def test_handle_direct_or_page_download_closes_surplus_new_tabs_for_consulting_i
         }
     )
     first_tab = FakeContextPageRecord("blob:https://process5.gprocurement.go.th/first")
-    latest_tab = FakeContextPageRecord("blob:https://process5.gprocurement.go.th/latest")
+    latest_tab = FakeContextPageRecord(
+        "blob:https://process5.gprocurement.go.th/latest"
+    )
     captured_pages: list[FakeContextPageRecord] = []
 
     monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
 
     def fake_immediate(page, click_action, **kwargs):
         click_action()
@@ -1992,18 +2048,18 @@ def test_handle_direct_or_page_download_closes_surplus_new_tabs_for_consulting_i
     )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._save_from_new_tab",
-        lambda new_page, file_label, fallback_url=None, document_context=None: captured_pages.append(
-            new_page
-        )
-        or [
-            {
-                "file_name": "invite.pdf",
-                "file_bytes": b"invite",
-                "source_label": file_label,
-                "source_status_text": "",
-                "source_page_text": "",
-            }
-        ],
+        lambda new_page, file_label, fallback_url=None, document_context=None: (
+            captured_pages.append(new_page)
+            or [
+                {
+                    "file_name": "invite.pdf",
+                    "file_bytes": b"invite",
+                    "source_label": file_label,
+                    "source_status_text": "",
+                    "source_page_text": "",
+                }
+            ]
+        ),
     )
 
     downloaded = _handle_direct_or_page_download(
@@ -2045,7 +2101,9 @@ def test_handle_direct_or_page_download_uses_longer_followup_for_consulting_invi
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
 
     def fake_immediate(page, click_action, **kwargs):
         click_action()
@@ -2060,7 +2118,9 @@ def test_handle_direct_or_page_download_uses_longer_followup_for_consulting_invi
         captured_timeouts.append(float(kwargs["timeout_s"]))
         return []
 
-    monkeypatch.setattr("egp_worker.browser_downloads._capture_followup_after_click", fake_followup)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._capture_followup_after_click", fake_followup
+    )
 
     downloaded = _handle_direct_or_page_download(
         page,
@@ -2093,17 +2153,23 @@ def test_handle_direct_or_page_download_standard_invitation_skips_probe_click(
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._click_and_capture_immediate_download_or_missing_modal",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("standard invitation path should not pre-click before expect_download")
+            AssertionError(
+                "standard invitation path should not pre-click before expect_download"
+            )
         ),
     )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._capture_followup_after_click",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("standard invitation path should not prefer followup capture")
+            AssertionError(
+                "standard invitation path should not prefer followup capture"
+            )
         ),
     )
     monkeypatch.setattr(
@@ -2159,9 +2225,13 @@ def test_handle_direct_or_page_download_waits_for_delayed_online_viewer_after_ti
         if delayed_viewer in page.context.pages:
             sleep_state["after_viewer_added"] += 1
             if sleep_state["after_viewer_added"] >= 2 and not delayed_viewer.closed:
-                delayed_viewer.url = "blob:https://process5.gprocurement.go.th/invitation"
+                delayed_viewer.url = (
+                    "blob:https://process5.gprocurement.go.th/invitation"
+                )
 
-    def fake_save_from_new_tab(new_page, file_label, fallback_url=None, document_context=None):
+    def fake_save_from_new_tab(
+        new_page, file_label, fallback_url=None, document_context=None
+    ):
         assert new_page is delayed_viewer
         assert delayed_viewer.closed is False
         return [
@@ -2244,7 +2314,9 @@ def test_handle_direct_or_page_download_skips_known_missing_file_modal(
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads.run_with_toast_recovery",
         fake_download_attempt,
@@ -2281,7 +2353,9 @@ def test_handle_direct_or_page_download_consulting_path_checks_immediate_missing
     monkeypatch.setattr(
         "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
 
     downloaded = _handle_direct_or_page_download(
         page,
@@ -2325,7 +2399,9 @@ def test_download_documents_from_current_view_checks_immediate_missing_modal_bef
         ]
     )
 
-    monkeypatch.setattr("egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_downloads._click_back_or_exit", lambda page: None
     )

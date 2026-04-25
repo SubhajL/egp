@@ -562,7 +562,9 @@ def run_phase1_postgres_smoke(
         return {
             "status_code": ingest_response.status_code,
             "listed_documents": len(listed.json()["documents"]),
-            "download_url": download.json()["download_url"],
+            "download_status_code": download.status_code,
+            "download_content_type": download.headers.get("content-type"),
+            "download_size": len(download.content),
             "tenant_id": tenant_id,
             "project_id": project_id,
             "database_url": database_url,

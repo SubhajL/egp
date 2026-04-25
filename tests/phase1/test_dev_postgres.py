@@ -27,7 +27,9 @@ def test_run_phase1_postgres_smoke_round_trips_document_metadata_and_blob(
 
     assert result["status_code"] == 201
     assert result["listed_documents"] == 1
-    assert result["download_url"]
+    assert result["download_status_code"] == 200
+    assert result["download_content_type"] == "application/pdf"
+    assert result["download_size"] == len(b"smoke-tor")
 
 
 def test_run_phase1_postgres_project_and_run_smoke_round_trips_repositories() -> None:
