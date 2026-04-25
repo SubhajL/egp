@@ -695,7 +695,9 @@ class SqlProjectRepository:
         if latest_row is not None:
             latest_signature = _status_event_signature(
                 observed_status_text=str(latest_row["observed_status_text"]),
-                normalized_status=_normalize_optional_text(latest_row["normalized_status"]),
+                normalized_status=_normalize_optional_text(
+                    latest_row["normalized_status"]
+                ),
             )
             next_signature = _status_event_signature(
                 observed_status_text=observed_status_text,

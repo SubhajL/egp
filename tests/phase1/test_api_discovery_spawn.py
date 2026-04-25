@@ -21,7 +21,9 @@ class _FakeProcess:
         return (b"", b"")
 
 
-def test_discover_spawner_reserves_run_and_forwards_artifact_root(monkeypatch, tmp_path) -> None:
+def test_discover_spawner_reserves_run_and_forwards_artifact_root(
+    monkeypatch, tmp_path
+) -> None:
     captured: dict[str, object] = {}
     process = _FakeProcess(returncode=0)
 
@@ -71,7 +73,9 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(monkeypatch, t
     assert payload["live_include_documents"] is True
 
 
-def test_discover_spawner_treats_terminated_worker_as_non_retriable(monkeypatch) -> None:
+def test_discover_spawner_treats_terminated_worker_as_non_retriable(
+    monkeypatch,
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeRunRepository:
@@ -124,4 +128,7 @@ def test_discover_spawner_treats_terminated_worker_as_non_retriable(monkeypatch)
 
     assert captured["failed_run_id"] == captured["created_run_id"]
     assert captured["failure_reason"] == "worker_terminated"
-    assert captured["error"] == "discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'"
+    assert (
+        captured["error"]
+        == "discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'"
+    )
