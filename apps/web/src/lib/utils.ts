@@ -9,11 +9,14 @@ export function formatBudget(value: string | null): string {
   if (!value) return "—";
   const amount = Number(value);
   if (!Number.isFinite(amount)) return value;
-  return new Intl.NumberFormat("th-TH", {
-    style: "currency",
-    currency: "THB",
+
+  // Safari/WebKit can render THB currency formatting inconsistently for large
+  // values in some locales. Keep the display explicit and stable.
+  const grouped = new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
   }).format(amount);
+  return `฿${grouped}`;
 }
 
 export function formatThaiDate(value: string | null): string {

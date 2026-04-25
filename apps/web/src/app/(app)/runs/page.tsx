@@ -14,6 +14,8 @@ import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useRuns } from "@/lib/hooks";
+import { buildRunLogText } from "@/lib/run-log";
+import { formatRunProgress, isActiveRunStatus } from "@/lib/run-progress";
 import { formatThaiDate } from "@/lib/utils";
 import type { RunDetailResponse, TaskSummary } from "@/lib/api";
 
@@ -41,6 +43,8 @@ type DisplayRun = {
   closed: number;
   errors: number;
   errorDetail: string | null;
+  progressDetail: string | null;
+  progressUpdatedAt: string | null;
   tasks: DisplayTask[];
 };
 
@@ -157,6 +161,7 @@ function buildDisplayTask(task: TaskSummary): DisplayTask {
 
 function buildDisplayRun(runDetail: RunDetailResponse): DisplayRun {
   const tasks = runDetail.tasks.map(buildDisplayTask);
+  const progress = formatRunProgress(runDetail.run.summary_json);
   const runLevelError = readStringSummary(runDetail.run.summary_json, ["error"]);
   const taskLevelError = tasks.find((task) => task.errorDetail)?.errorDetail ?? null;
   const errorDetail =
@@ -194,6 +199,8 @@ function buildDisplayRun(runDetail: RunDetailResponse): DisplayRun {
     ]),
     errors: runDetail.run.error_count,
     errorDetail,
+    progressDetail: progress.detail,
+    progressUpdatedAt: progress.updatedAt ? formatThaiDate(progress.updatedAt) : null,
     tasks,
   };
 }
@@ -234,12 +241,28 @@ export default function RunsPage() {
     limit: rowsPerPage,
     offset: (currentPage - 1) * rowsPerPage,
   });
+  const {
+    data: latestRunData,
+    isLoading: isLatestRunLoading,
+    isError: isLatestRunError,
+    error: latestRunError,
+    refetch: refetchLatestRun,
+    isFetching: isLatestRunFetching,
+  } = useRuns({
+    limit: 1,
+    offset: 0,
+  });
 
   const displayRuns = (data?.runs ?? []).map(buildDisplayRun);
+  const latestRunDetail = latestRunData?.runs[0] ?? null;
+  const latestRunLogText = buildRunLogText(latestRunDetail);
   const totalRunCount = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(Math.max(totalRunCount, 1) / rowsPerPage));
   const rangeStart = totalRunCount === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
   const rangeEnd = totalRunCount === 0 ? 0 : rangeStart + displayRuns.length - 1;
+  const hasActiveRuns =
+    displayRuns.some((run) => isActiveRunStatus(run.status)) ||
+    (latestRunDetail ? isActiveRunStatus(latestRunDetail.run.status) : false);
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -253,6 +276,15 @@ export default function RunsPage() {
     }
   }, [displayRuns, expandedRun]);
 
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    const interval = window.setInterval(() => {
+      void refetch();
+      void refetchLatestRun();
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [hasActiveRuns, refetch, refetchLatestRun]);
+
   return (
     <>
       <PageHeader
@@ -261,15 +293,51 @@ export default function RunsPage() {
         actions={
           <button
             type="button"
-            onClick={() => void refetch()}
-            disabled={isFetching}
+            onClick={() => {
+              void refetch();
+              void refetchLatestRun();
+            }}
+            disabled={isFetching || isLatestRunFetching}
             className="flex items-center gap-1.5 rounded-xl border border-[var(--border-default)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
           >
-            <RotateCcw className={`size-4 ${isFetching ? "animate-spin" : ""}`} />
+            <RotateCcw
+              className={`size-4 ${isFetching || isLatestRunFetching ? "animate-spin" : ""}`}
+            />
             รีเฟรช
           </button>
         }
       />
+
+      <div className="mt-6 rounded-2xl bg-[var(--bg-surface)] shadow-[var(--shadow-soft)]">
+        <div className="border-b border-[var(--border-default)] px-6 py-4">
+          <h2 className="text-lg font-bold text-[var(--text-primary)]">
+            Transcript ของ Run ล่าสุด
+          </h2>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            แสดงข้อความที่สรุปจากข้อมูล run/task ที่บันทึกไว้ ไม่ใช่ stdout/stderr ดิบของ worker
+          </p>
+        </div>
+        <div className="p-6">
+          {isLatestRunLoading ? (
+            <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-4 py-6 text-sm text-[var(--text-muted)]">
+              กำลังโหลด transcript ของ run ล่าสุด...
+            </div>
+          ) : isLatestRunError ? (
+            <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-800">
+              {latestRunError instanceof Error
+                ? latestRunError.message
+                : "ไม่สามารถโหลด transcript ของ run ล่าสุดได้"}
+            </div>
+          ) : (
+            <textarea
+              readOnly
+              value={latestRunLogText}
+              spellCheck={false}
+              className="h-[28rem] w-full resize-none rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-4 py-4 font-mono text-xs leading-6 text-[var(--text-primary)] outline-none"
+            />
+          )}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-4">
         <StatCard
@@ -336,6 +404,9 @@ export default function RunsPage() {
                   <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     ระยะเวลา
                   </th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                    ความคืบหน้าล่าสุด
+                  </th>
                   <th className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                     ค้นพบ
                   </th>
@@ -372,6 +443,9 @@ export default function RunsPage() {
                       </td>
                       <td className="px-3 py-2 text-[var(--text-muted)]">{run.startedAt}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">{run.duration}</td>
+                      <td className="max-w-[320px] truncate px-3 py-2 text-[var(--text-muted)]">
+                        {run.progressDetail ?? "—"}
+                      </td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">
                         {run.discovered}
                       </td>
@@ -390,9 +464,22 @@ export default function RunsPage() {
                     {expandedRun === run.id && (
                       <tr>
                         <td
-                          colSpan={11}
+                          colSpan={12}
                           className="bg-[var(--bg-surface-secondary)] px-6 py-4"
                         >
+                          {run.progressDetail ? (
+                            <div className="mb-4 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                              <p className="font-semibold text-[var(--text-primary)]">
+                                สถานะ crawl ล่าสุด
+                              </p>
+                              <p className="mt-1">{run.progressDetail}</p>
+                              {run.progressUpdatedAt ? (
+                                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                                  อัปเดตล่าสุด {run.progressUpdatedAt}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
                           <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                             Tasks ใน {run.displayId}
                           </p>

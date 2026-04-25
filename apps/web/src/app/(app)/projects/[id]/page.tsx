@@ -6,7 +6,7 @@ import { AlertTriangle, ChevronRight, Download, FileText } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { STATE_BADGE_CONFIG, PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { fetchDocumentDownloadUrl, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
+import { fetchDocumentDownloadFile, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
 import { useProjectDetail, useDocuments, useProjectCrawlEvidence } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
@@ -158,12 +158,15 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setDownloadError(null);
     setDownloadingDocumentId(documentId);
     try {
-      const { download_url } = await fetchDocumentDownloadUrl(documentId);
+      const { blob, filename } = await fetchDocumentDownloadFile(documentId);
+      const objectUrl = window.URL.createObjectURL(blob);
       const link = document.createElement("a");
-      link.href = download_url;
-      link.target = "_blank";
-      link.rel = "noreferrer";
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
       link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
     } catch (downloadException) {
       const message = localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้");
       setDownloadError(message);

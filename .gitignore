@@ -28,6 +28,7 @@ test-results/
 # Local artifacts
 egp_crawler_runtime.log
 project_list.xlsx
+apps/web/artifacts/
 
 # Environment
 .env
