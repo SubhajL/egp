@@ -69,6 +69,12 @@ export const PROCUREMENT_TYPE_LABELS: Record<string, string> = {
   unknown: "ไม่ระบุ",
 };
 
+export const DOCUMENT_PHASE_LABELS: Record<string, string> = {
+  public_hearing: "รับฟังความเห็น",
+  final: "ฉบับจริง",
+  unknown: "ไม่ระบุ",
+};
+
 export type NavItem = {
   label: string;
   href: string;

@@ -5,7 +5,11 @@ import Link from "next/link";
 import { AlertTriangle, ChevronRight, Download, FileText } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
-import { STATE_BADGE_CONFIG, PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
+import {
+  DOCUMENT_PHASE_LABELS,
+  STATE_BADGE_CONFIG,
+  PROCUREMENT_TYPE_LABELS,
+} from "@/lib/constants";
 import { fetchDocumentDownloadFile, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
 import { useProjectDetail, useDocuments, useProjectCrawlEvidence } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
@@ -380,7 +384,9 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                             {document.source_label || document.file_name}
                           </p>
                           <p className="text-xs text-[var(--text-muted)]">
-                            {document.document_phase} • {formatBytes(document.size_bytes)} •{" "}
+                            {(DOCUMENT_PHASE_LABELS[document.document_phase] ??
+                              document.document_phase)}{" "}
+                            • {formatBytes(document.size_bytes)} •{" "}
                             {formatDateTime(document.created_at)}
                           </p>
                           <div className="mt-1 flex gap-1.5">
