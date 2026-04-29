@@ -93,6 +93,7 @@ def collect_downloaded_documents(
 ) -> list[dict[str, object]]:
     downloaded_documents: list[dict[str, object]] = []
     seen_files: set[tuple[str, str]] = set()
+    target_collection_failed = False
     detail_url = _get_page_url(page)
     document_context = _build_document_context(
         source_status_text=source_status_text,
@@ -113,6 +114,7 @@ def collect_downloaded_documents(
                 page, target_doc, document_context=document_context
             )
         except Exception as exc:
+            target_collection_failed = True
             logger.warning(
                 "e-GP document target collection failed; continuing",
                 extra={
@@ -146,6 +148,13 @@ def collect_downloaded_documents(
             elapsed_ms=int((time.monotonic() - started_at) * 1000),
         )
         _ensure_project_detail_page(page, detail_url=detail_url)
+    if downloaded_documents and not target_collection_failed:
+        _trace_document_progress(
+            "fallback_skipped",
+            reason="targeted_downloads_succeeded",
+            document_count=len(downloaded_documents),
+        )
+        return downloaded_documents
     fallback_started_at = time.monotonic()
     _trace_document_progress("fallback_start", detail_url=detail_url)
     for document in _collect_detail_page_link_documents(

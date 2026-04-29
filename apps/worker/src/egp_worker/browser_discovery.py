@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import inspect
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -120,6 +121,7 @@ class LiveDiscoveryPartialError(RuntimeError):
 
 DOCUMENT_COLLECTION_SUCCEEDED = "succeeded"
 DOCUMENT_COLLECTION_TIMEOUT = "timeout"
+DOCUMENT_COLLECTION_NO_DOCUMENTS = "no_documents"
 
 RECOVERY_BROWSER_ERROR_MARKERS = (
     "ERR_CONNECTION_TIMED_OUT",
@@ -133,6 +135,7 @@ RECOVERY_BROWSER_ERROR_MARKERS = (
     "has been closed",
 )
 DOCUMENT_COLLECTION_FAILED = "failed"
+DOCUMENT_COLLECTION_EMPTY_REASON = "document_collection_empty"
 DOCUMENT_COLLECTION_TIMEOUT_REASON = "document_collection_timeout"
 DOCUMENT_COLLECTION_FAILED_REASON = "document_collection_failed"
 DOCUMENT_COLLECTION_TIMEOUT_CAP_S = 45.0
@@ -285,6 +288,7 @@ def _collect_keyword_projects(
             eligible_rows.append(
                 {
                     "project_name": row_payload["project_name"],
+                    "search_name": row_payload.get("search_name"),
                     "organization_name": row_payload["organization_name"],
                     "project_number": row_payload.get("project_number"),
                     "source_status_text": row_payload["source_status_text"],
@@ -313,14 +317,18 @@ def _collect_keyword_projects(
                         reason="results row marker missing on current page",
                     )
                 _log_live_progress("project_open_start", keyword=keyword, row_marker=row_info)
+                open_project = open_and_extract_project
+                open_project_kwargs = {
+                    "page": page,
+                    "row_index": resolved_row_index,
+                    "keyword": keyword,
+                    "include_documents": False if include_documents else include_documents,
+                    "source_status_text": str(row_info["source_status_text"]),
+                }
+                if _callable_accepts_argument(open_project, "search_name"):
+                    open_project_kwargs["search_name"] = str(row_info.get("search_name") or "")
                 payload = _run_project_extraction_with_timeout(
-                    lambda: open_and_extract_project(
-                        page=page,
-                        row_index=resolved_row_index,
-                        keyword=keyword,
-                        include_documents=False if include_documents else include_documents,
-                        source_status_text=str(row_info["source_status_text"]),
-                    ),
+                    lambda: open_project(**open_project_kwargs),
                     timeout_s=settings.project_detail_timeout_s,
                     keyword=keyword,
                     row_marker=row_info,
@@ -507,6 +515,19 @@ def _collect_keyword_projects(
 def _raise_browser_closed(exc: Exception, page_num: int) -> None:
     if "has been closed" in str(exc):
         raise BrowserClosedDuringKeyword(page_num=page_num) from exc
+
+
+def _callable_accepts_argument(func: Callable[..., object], argument_name: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    if argument_name in signature.parameters:
+        return True
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 def _mark_row_seen(seen_keys: set[str], row_info: dict[str, object] | None) -> None:
@@ -786,6 +807,7 @@ def open_and_extract_project(
     page,
     row_index: int,
     keyword: str,
+    search_name: str | None = None,
     include_documents: bool = False,
     source_status_text: str = TARGET_STATUS,
 ) -> dict[str, object] | None:
@@ -807,7 +829,7 @@ def open_and_extract_project(
         row_marker={"row_index": row_index, "source_status_text": source_status_text},
     )
     _logged_sleep(2)
-    if check_has_preliminary_pricing(page):
+    if status_indicates_preliminary_pricing(source_status_text):
         _log_live_progress(
             "project_detail_skipped_preliminary_pricing",
             keyword=keyword,
@@ -879,12 +901,25 @@ def open_and_extract_project(
         if include_documents
         else []
     )
+    document_collection_status, document_collection_reason = (
+        _resolve_document_collection_outcome(downloaded_documents)
+        if include_documents
+        else (None, None)
+    )
     if include_documents:
         _log_live_progress(
             "project_documents_finished",
             keyword=keyword,
             row_marker=project_marker,
-            extra={"document_count": len(downloaded_documents)},
+            extra={
+                "document_count": len(downloaded_documents),
+                "document_collection_status": document_collection_status,
+                **(
+                    {"document_collection_reason": document_collection_reason}
+                    if document_collection_reason is not None
+                    else {}
+                ),
+            },
         )
     artifact_bucket = derive_artifact_bucket(
         labels=[str(document.get("source_label") or "") for document in downloaded_documents]
@@ -893,12 +928,13 @@ def open_and_extract_project(
         project_state = ProjectState.TOR_DOWNLOADED.value
     elif artifact_bucket is ArtifactBucket.DRAFT_PLUS_PRICING:
         project_state = ProjectState.OPEN_PUBLIC_HEARING.value
-    return {
+    resolved_search_name = str(search_name or "").strip() or project_name
+    payload = {
         "keyword": keyword,
         "project_name": project_name,
         "organization_name": organization_name,
         "project_number": detail.get("project_number") or None,
-        "search_name": project_name,
+        "search_name": resolved_search_name,
         "detail_name": project_name,
         "proposal_submission_date": proposal_submission_date,
         "budget_amount": budget_amount,
@@ -914,6 +950,8 @@ def open_and_extract_project(
         "raw_snapshot": {
             "keyword": keyword,
             "project_name": project_name,
+            "search_name": resolved_search_name,
+            "detail_name": project_name,
             "organization_name": organization_name,
             "project_number": detail.get("project_number") or None,
             "proposal_submission_date": proposal_submission_date,
@@ -939,6 +977,13 @@ def open_and_extract_project(
             "source_status_text": source_status_text,
         },
     }
+    if include_documents and document_collection_status is not None:
+        payload = _mark_document_collection_status(
+            payload,
+            status=document_collection_status,
+            reason=document_collection_reason,
+        )
+    return payload
 
 
 def _document_snapshot_list(
@@ -954,6 +999,14 @@ def _document_snapshot_list(
         }
         for document in downloaded_documents
     ]
+
+
+def _resolve_document_collection_outcome(
+    downloaded_documents: list[dict[str, object]],
+) -> tuple[str, str | None]:
+    if downloaded_documents:
+        return DOCUMENT_COLLECTION_SUCCEEDED, None
+    return DOCUMENT_COLLECTION_NO_DOCUMENTS, DOCUMENT_COLLECTION_EMPTY_REASON
 
 
 def _mark_document_collection_status(
@@ -1074,9 +1127,13 @@ def _collect_documents_for_payload(
 
     elapsed_ms = int((time.monotonic() - started_at) * 1000)
     updated_payload = _apply_downloaded_documents_to_payload(payload, downloaded_documents)
+    document_collection_status, document_collection_reason = _resolve_document_collection_outcome(
+        downloaded_documents
+    )
     updated_payload = _mark_document_collection_status(
         updated_payload,
-        status=DOCUMENT_COLLECTION_SUCCEEDED,
+        status=document_collection_status,
+        reason=document_collection_reason,
     )
     _log_live_progress(
         "project_documents_finished",
@@ -1084,7 +1141,12 @@ def _collect_documents_for_payload(
         row_marker=project_marker,
         extra={
             "document_count": len(downloaded_documents),
-            "document_collection_status": DOCUMENT_COLLECTION_SUCCEEDED,
+            "document_collection_status": document_collection_status,
+            **(
+                {"document_collection_reason": document_collection_reason}
+                if document_collection_reason is not None
+                else {}
+            ),
             "elapsed_ms": elapsed_ms,
         },
     )
@@ -1272,6 +1334,10 @@ def _compact_visible_text(value: str | None) -> str:
 
 def status_matches_target(status_text: str) -> bool:
     return _compact_visible_text(TARGET_STATUS) in _compact_visible_text(status_text)
+
+
+def status_indicates_preliminary_pricing(status_text: str) -> bool:
+    return _compact_visible_text("สรุปข้อมูลการเสนอราคาเบื้องต้น") in _compact_visible_text(status_text)
 
 
 def _table_matches_results_headers(table) -> bool:

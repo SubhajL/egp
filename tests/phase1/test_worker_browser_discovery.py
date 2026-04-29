@@ -1376,7 +1376,7 @@ def test_collect_keyword_projects_processes_all_eligible_rows_on_mixed_status_pa
 
     monkeypatch.setattr(
         "egp_worker.browser_discovery.open_and_extract_project",
-        lambda *, page, row_index, keyword, include_documents, source_status_text: (
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: (
             opened_rows.append(row_index)
             or {
                 "project_name": f"row-{row_index}",
@@ -1425,7 +1425,7 @@ def test_collect_keyword_projects_reopens_reordered_row_by_marker(
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1503,7 +1503,7 @@ def test_collect_keyword_projects_raises_when_marker_missing_after_restore(
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1575,7 +1575,7 @@ def test_collect_keyword_projects_continues_after_marker_missing_when_results_pa
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1646,7 +1646,7 @@ def test_collect_keyword_projects_continues_after_project_level_restore_error_wh
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1715,7 +1715,7 @@ def test_collect_keyword_projects_continues_after_row_level_site_state_error_whe
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1783,7 +1783,7 @@ def test_collect_keyword_projects_skips_timed_out_project_and_restores_results(
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1846,7 +1846,7 @@ def test_collect_keyword_projects_keeps_metadata_when_document_collection_times_
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         include_document_flags.append(include_documents)
         return {
@@ -1970,6 +1970,48 @@ def test_collect_documents_for_payload_does_not_use_signal_timeout_wrapper(
     ]
 
 
+def test_collect_documents_for_payload_marks_zero_documents_as_no_documents(
+    monkeypatch,
+) -> None:
+    page = SimpleNamespace(inner_text=lambda selector: "รายละเอียดโครงการ")
+    payload = {
+        "keyword": "แพลตฟอร์ม",
+        "project_name": "โครงการ A",
+        "organization_name": "หน่วยงาน A",
+        "project_number": "EGP-A",
+        "project_state": ProjectState.OPEN_INVITATION.value,
+        "artifact_bucket": ArtifactBucket.NO_ARTIFACT_EVIDENCE.value,
+        "downloaded_documents": [],
+        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+        "raw_snapshot": {
+            "project_name": "โครงการ A",
+            "organization_name": "หน่วยงาน A",
+            "project_number": "EGP-A",
+            "project_state": ProjectState.OPEN_INVITATION.value,
+            "artifact_bucket": ArtifactBucket.NO_ARTIFACT_EVIDENCE.value,
+            "downloaded_documents": [],
+        },
+    }
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.collect_downloaded_documents",
+        lambda page, source_status_text, source_page_text, project_state: [],
+    )
+
+    updated = _collect_documents_for_payload(
+        page,
+        payload=payload,
+        keyword="แพลตฟอร์ม",
+        timeout_s=5,
+    )
+
+    assert updated["document_collection_status"] == "no_documents"
+    assert updated["document_collection_reason"] == "document_collection_empty"
+    assert updated["downloaded_documents"] == []
+    assert updated["raw_snapshot"]["document_collection_status"] == "no_documents"
+    assert updated["raw_snapshot"]["document_collection_reason"] == "document_collection_empty"
+
+
 def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_error(
     monkeypatch,
 ) -> None:
@@ -1999,7 +2041,7 @@ def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_e
         }
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, include_documents, source_status_text
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
     ) -> dict[str, object]:
         active_page = getattr(page, "_active_page", "1")
         row = rows_by_page[active_page][row_index]
@@ -2619,6 +2661,172 @@ def test_open_and_extract_project_preserves_exact_row_status_text(monkeypatch) -
 
     assert payload is not None
     assert payload["source_status_text"] == "หนังสือเชิญชวน /\n ประกาศเชิญชวน"
+
+
+def test_open_and_extract_project_marks_zero_documents_as_no_documents(
+    monkeypatch,
+) -> None:
+    page = object()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info",
+        lambda page: {
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization": "กรมตัวอย่าง",
+            "project_number": "69010000001",
+            "proposal_submission_date": "10/04/2569",
+            "budget": "1,000,000.00",
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.collect_downloaded_documents",
+        lambda page, source_status_text, source_page_text, project_state: [],
+    )
+
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="ระบบสารสนเทศ",
+        include_documents=True,
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+
+    assert payload is not None
+    assert payload["document_collection_status"] == "no_documents"
+    assert payload["document_collection_reason"] == "document_collection_empty"
+    assert payload["raw_snapshot"]["document_collection_status"] == "no_documents"
+    assert payload["raw_snapshot"]["document_collection_reason"] == "document_collection_empty"
+
+
+def test_open_and_extract_project_preserves_row_search_name_when_detail_title_differs(
+    monkeypatch,
+) -> None:
+    page = object()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info",
+        lambda page: {
+            "project_name": "รายละเอียดแพลตฟอร์มข้อมูลสุขภาพ",
+            "organization": "กรมตัวอย่าง",
+            "project_number": "69010000009",
+            "proposal_submission_date": "10/04/2569",
+            "budget": "1,000,000.00",
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.collect_downloaded_documents",
+        lambda page, source_status_text, source_page_text, project_state: [],
+    )
+
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="แพลตฟอร์ม",
+        search_name="แพลตฟอร์มข้อมูลสุขภาพ",
+        include_documents=True,
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+
+    assert payload is not None
+    assert payload["project_name"] == "รายละเอียดแพลตฟอร์มข้อมูลสุขภาพ"
+    assert payload["detail_name"] == "รายละเอียดแพลตฟอร์มข้อมูลสุขภาพ"
+    assert payload["search_name"] == "แพลตฟอร์มข้อมูลสุขภาพ"
+
+
+def test_open_and_extract_project_skips_preliminary_pricing_from_source_status(
+    monkeypatch,
+) -> None:
+    page = object()
+    extract_calls: list[object] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info",
+        lambda page: extract_calls.append(page)
+        or {
+            "project_name": "ควรไม่ถูกอ่าน",
+            "organization": "กรมตัวอย่าง",
+            "project_number": "69010000010",
+            "proposal_submission_date": "10/04/2569",
+            "budget": "1,000,000.00",
+        },
+    )
+
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="แพลตฟอร์ม",
+        include_documents=True,
+        source_status_text="สรุปข้อมูลการเสนอราคาเบื้องต้น",
+    )
+
+    assert payload is None
+    assert extract_calls == []
+
+
+def test_open_and_extract_project_ignores_detail_page_preliminary_pricing_text_when_row_status_matches_target(
+    monkeypatch,
+) -> None:
+    page = SimpleNamespace(content=lambda: "สรุปข้อมูลการเสนอราคาเบื้องต้น")
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info",
+        lambda page: {
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization": "กรมตัวอย่าง",
+            "project_number": "69010000011",
+            "proposal_submission_date": "10/04/2569",
+            "budget": "1,000,000.00",
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.collect_downloaded_documents",
+        lambda page, source_status_text, source_page_text, project_state: [],
+    )
+
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="แพลตฟอร์ม",
+        include_documents=True,
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+
+    assert payload is not None
+    assert payload["project_number"] == "69010000011"
 
 
 def test_open_and_extract_project_rejects_error_detail_pages(monkeypatch) -> None:

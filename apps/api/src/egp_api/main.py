@@ -189,11 +189,51 @@ def _validation_error_code(exc: RequestValidationError, *, path: str) -> str | N
     return None
 
 
+def _resolve_browser_settings_payload(
+    *,
+    profile_repository,
+    tenant_id: str,
+    profile_id: str,
+) -> dict[str, object] | None:
+    if profile_repository is None:
+        return None
+    try:
+        detail = profile_repository.get_profile_detail(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+        )
+    except Exception:
+        _logger.warning(
+            "Failed to resolve crawl profile settings for discover spawn (tenant_id=%s profile_id=%s)",
+            tenant_id,
+            profile_id,
+            exc_info=True,
+        )
+        return None
+    if detail is None:
+        return None
+    max_pages_per_keyword = getattr(detail.profile, "max_pages_per_keyword", None)
+    if max_pages_per_keyword is None:
+        return None
+    try:
+        normalized_max_pages = max(1, int(max_pages_per_keyword))
+    except (TypeError, ValueError):
+        _logger.warning(
+            "Invalid max_pages_per_keyword on crawl profile (tenant_id=%s profile_id=%s value=%r)",
+            tenant_id,
+            profile_id,
+            max_pages_per_keyword,
+        )
+        return None
+    return {"max_pages_per_keyword": normalized_max_pages}
+
+
 def _make_discover_spawner(
     database_url: str,
     *,
     artifact_root: Path | None = None,
     run_repository=None,
+    profile_repository=None,
 ) -> Callable[..., None]:
     """Return a function that spawns a worker subprocess for a single keyword.
 
@@ -213,7 +253,7 @@ def _make_discover_spawner(
         def update_run_summary(self, run_id: str, *, summary_json: dict[str, object] | None):
             del run_id, summary_json
 
-    resolved_artifact_root = artifact_root or Path("artifacts")
+    resolved_artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
     resolved_run_repository = run_repository or _NoopRunRepository()
 
     def _stderr_preview(stderr: bytes | str | None, *, limit: int = 500) -> str | None:
@@ -339,13 +379,20 @@ def _make_discover_spawner(
         keyword: str,
     ) -> None:
         run_id = str(uuid4())
+        browser_settings = _resolve_browser_settings_payload(
+            profile_repository=profile_repository,
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+        )
         resolved_run_repository.create_run(
             tenant_id=tenant_id,
             profile_id=profile_id,
             trigger_type="manual",
             run_id=run_id,
         )
-        log_path = resolved_artifact_root / "tenants" / tenant_id / "runs" / run_id / "worker.log"
+        log_path = (
+            resolved_artifact_root / "tenants" / tenant_id / "runs" / run_id / "worker.log"
+        ).resolve()
         log_handle = None
         if resolved_artifact_root is not None:
             try:
@@ -371,6 +418,7 @@ def _make_discover_spawner(
                 "trigger_type": "manual",
                 "live": True,
                 "live_include_documents": True,
+                **({"browser_settings": browser_settings} if browser_settings is not None else {}),
             },
             ensure_ascii=False,
         ).encode()
@@ -883,6 +931,7 @@ def create_app(
         resolved_database_url,
         artifact_root=resolved_artifact_root,
         run_repository=run_repository,
+        profile_repository=profile_repository,
     )
     app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
         repository=discovery_job_repository,

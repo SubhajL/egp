@@ -11,11 +11,11 @@ from egp_notifications.service import SmtpConfig
 
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:
-        return override
+        return override.expanduser().resolve()
     raw = os.getenv("EGP_ARTIFACT_ROOT", "").strip()
     if raw:
-        return Path(raw).expanduser()
-    return Path(".data") / "artifacts"
+        return Path(raw).expanduser().resolve()
+    return (Path(".data") / "artifacts").resolve()
 
 
 def get_database_url(override: str | None = None, *, artifact_root: Path | None = None) -> str:
