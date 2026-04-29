@@ -567,6 +567,91 @@ def test_collect_downloaded_documents_preserves_provenance_fields(monkeypatch) -
     ]
 
 
+def test_collect_downloaded_documents_skips_fallback_after_clean_targeted_success(
+    monkeypatch,
+) -> None:
+    fallback_calls: list[str] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._download_one_document",
+        lambda page, target_doc, document_context=None: (
+            [
+                {
+                    "file_name": "invite.pdf",
+                    "file_bytes": b"invite",
+                    "source_label": target_doc,
+                    "source_status_text": "",
+                    "source_page_text": "",
+                }
+            ]
+            if target_doc == "ประกาศเชิญชวน"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._collect_detail_page_link_documents",
+        lambda *args, **kwargs: fallback_calls.append("called") or [],
+    )
+
+    downloaded = collect_downloaded_documents(FakeDetailFlowPage(url="https://detail"))
+
+    assert downloaded == [
+        {
+            "file_name": "invite.pdf",
+            "file_bytes": b"invite",
+            "source_label": "ประกาศเชิญชวน",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+    assert fallback_calls == []
+
+
+def test_collect_downloaded_documents_keeps_fallback_when_targeted_collection_failed(
+    monkeypatch,
+) -> None:
+    fallback_calls: list[str] = []
+
+    def fake_download_one_document(page, target_doc, document_context=None):
+        if target_doc == "ประกาศเชิญชวน":
+            raise PlaywrightTimeout("invite stalled")
+        if target_doc == "ประกาศราคากลาง":
+            return [
+                {
+                    "file_name": "price.pdf",
+                    "file_bytes": b"price",
+                    "source_label": target_doc,
+                    "source_status_text": "",
+                    "source_page_text": "",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._download_one_document",
+        fake_download_one_document,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._collect_detail_page_link_documents",
+        lambda *args, **kwargs: fallback_calls.append("called") or [],
+    )
+
+    downloaded = collect_downloaded_documents(FakeDetailFlowPage(url="https://detail"))
+
+    assert downloaded == [
+        {
+            "file_name": "price.pdf",
+            "file_bytes": b"price",
+            "source_label": "ประกาศราคากลาง",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+    assert fallback_calls == ["called"]
+
+
 def test_click_back_or_exit_prefers_modal_local_exit_before_page_back(
     monkeypatch,
 ) -> None:

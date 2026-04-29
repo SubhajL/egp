@@ -179,12 +179,28 @@ class RunService:
         ).resolve()
         if not isinstance(raw_path, str) or not raw_path.strip():
             return None
-        log_path = Path(raw_path).resolve()
-        if log_path != expected_log_path:
-            return None
-        if not log_path.is_file():
-            return None
-        return log_path.read_text(encoding="utf-8", errors="replace")
+        for log_path in _resolve_run_log_candidates(raw_path, artifact_root=self._artifact_root):
+            if log_path != expected_log_path:
+                continue
+            if not log_path.is_file():
+                return None
+            return log_path.read_text(encoding="utf-8", errors="replace")
+        return None
 
     def reconcile_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]:
         return self._repository.fail_runs_with_missing_workers(owner_pid=owner_pid)
+
+
+def _resolve_run_log_candidates(raw_path: str, *, artifact_root: Path) -> list[Path]:
+    raw = Path(raw_path.strip())
+    candidates: list[Path] = [raw.resolve()]
+    if raw.is_absolute():
+        return candidates
+
+    parts = raw.parts
+    if "tenants" not in parts:
+        return candidates
+
+    tenant_index = parts.index("tenants")
+    candidates.append((artifact_root / Path(*parts[tenant_index:])).resolve())
+    return candidates

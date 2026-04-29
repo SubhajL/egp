@@ -481,6 +481,47 @@ def test_run_log_endpoint_rejects_noncanonical_log_path(tmp_path) -> None:
     assert response.json()["detail"] == "run log not found"
 
 
+def test_run_log_endpoint_reads_legacy_relative_log_path_via_artifact_root(
+    tmp_path, monkeypatch
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    artifact_root = tmp_path / ".data" / "artifacts"
+    client = TestClient(
+        create_app(
+            artifact_root=artifact_root,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+    repository = client.app.state.run_repository
+    run_id = str(uuid4())
+    log_path = artifact_root / "tenants" / TENANT_ID / "runs" / run_id / "worker.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("legacy relative log\n", encoding="utf-8")
+
+    legacy_cwd = tmp_path / "legacy-cwd"
+    legacy_cwd.mkdir()
+    monkeypatch.chdir(legacy_cwd)
+
+    run = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        run_id=run_id,
+        summary_json={
+            "worker_log_path": ".data/artifacts/tenants/"
+            f"{TENANT_ID}/runs/{run_id}/worker.log"
+        },
+    )
+
+    response = client.get(
+        f"/v1/runs/{run.id}/log",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "legacy relative log\n"
+
+
 def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(
     tmp_path,
 ) -> None:
