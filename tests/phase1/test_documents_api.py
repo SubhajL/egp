@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from egp_api.main import create_app
+from egp_api.routes.documents import _build_content_disposition
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.admin_repo import create_admin_repository
@@ -990,6 +991,51 @@ def test_document_download_endpoint_streams_local_artifact_bytes(tmp_path) -> No
     assert response.headers["content-type"] == "application/pdf"
     assert "attachment;" in response.headers["content-disposition"]
     assert "tor.pdf" in response.headers["content-disposition"]
+
+
+def test_document_download_endpoint_exposes_content_disposition_for_cors_origin(
+    tmp_path,
+) -> None:
+    client = create_test_client(
+        tmp_path,
+        web_allowed_origins=["http://127.0.0.1:3002"],
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+        headers={"Origin": "http://127.0.0.1:3002"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3002"
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert response.headers["access-control-expose-headers"] == "Content-Disposition"
+
+
+def test_build_content_disposition_uses_safe_ascii_fallback_for_non_ascii_name() -> (
+    None
+):
+    content_disposition = _build_content_disposition("ประกาศเชิญชวน.pdf")
+
+    assert 'filename="document.pdf"' in content_disposition
+    assert "filename*=UTF-8''" in content_disposition
+    assert (
+        "%E0%B8%9B%E0%B8%A3%E0%B8%B0%E0%B8%81%E0%B8%B2%E0%B8%A8" in content_disposition
+    )
 
 
 def test_document_download_endpoint_streams_supabase_backed_bytes(tmp_path) -> None:

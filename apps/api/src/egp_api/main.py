@@ -667,6 +667,7 @@ def create_app(
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+            expose_headers=["Content-Disposition"],
         )
 
     resolved_artifact_root = get_artifact_root(artifact_root)

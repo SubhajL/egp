@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
@@ -209,12 +210,18 @@ def _serialize_review_page(page: DocumentReviewPage) -> ListDocumentReviewsRespo
 
 
 def _build_content_disposition(file_name: str) -> str:
-    safe_ascii = file_name.encode("ascii", errors="ignore").decode("ascii").strip()
-    safe_ascii = safe_ascii.replace("\\", "_").replace('"', "_") or "document.bin"
-    return (
-        f'attachment; filename="{safe_ascii}"; '
-        f"filename*=UTF-8''{quote(file_name or 'document.bin')}"
-    )
+    normalized_file_name = str(file_name or "").strip() or "document.bin"
+    safe_ascii = normalized_file_name.encode("ascii", errors="ignore").decode("ascii").strip()
+    safe_ascii = safe_ascii.replace("\\", "_").replace('"', "_")
+    safe_ascii = " ".join(safe_ascii.split()).strip().rstrip(".")
+    if not safe_ascii or safe_ascii.startswith("."):
+        suffix = "".join(Path(normalized_file_name).suffixes)
+        safe_suffix = suffix.encode("ascii", errors="ignore").decode("ascii").strip()
+        safe_suffix = safe_suffix.replace("\\", "_").replace('"', "_")
+        if safe_suffix and not safe_suffix.startswith("."):
+            safe_suffix = f".{safe_suffix}"
+        safe_ascii = f"document{safe_suffix or '.bin'}"
+    return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quote(normalized_file_name)}"
 
 
 @router.post("/ingest", response_model=StoreDocumentResponse)
