@@ -14,6 +14,7 @@
 docker compose up -d postgres redis
 ./.venv/bin/python -m egp_db.migration_runner --database-url postgresql://egp:egp_dev@localhost:5432/egp --migrations-dir packages/db/src/migrations
 ./.venv/bin/python scripts/run_phase1_postgres_smoke.py
+./.venv/bin/python scripts/check_main_sync.py --json
 (cd apps/web && npm install)
 ./.venv/bin/python -m compileall apps packages
 (cd apps/web && npm run build)
