@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { AppShell } from "@/components/layout/app-shell";
 import { ApiError } from "@/lib/api";
 import { buildCurrentPath } from "@/lib/auth";
+import { hasAdminAccessRole, isAdminOnlyPath } from "@/lib/authorization";
 import { useMe } from "@/lib/hooks";
 
 export default function AppLayout({ children }: { children: ReactNode }) {
@@ -59,6 +60,25 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   if (!currentSession) {
     return null;
+  }
+
+  if (isAdminOnlyPath(pathname) && !hasAdminAccessRole(currentSession.user.role)) {
+    return (
+      <AppShell>
+        <div className="flex min-h-[60vh] items-center justify-center">
+          <div className="w-full max-w-2xl rounded-3xl border border-amber-200 bg-amber-50 px-8 py-10 text-center shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-700">
+              Restricted Area
+            </p>
+            <h1 className="mt-3 text-3xl font-bold text-amber-950">เฉพาะผู้ดูแลระบบ</h1>
+            <p className="mt-4 text-sm leading-7 text-amber-900">
+              ส่วนบิล การชำระเงิน และแอดมิน ใช้งานได้เฉพาะ owner, admin, หรือ support
+              เท่านั้น
+            </p>
+          </div>
+        </div>
+      </AppShell>
+    );
   }
 
   return <AppShell>{children}</AppShell>;

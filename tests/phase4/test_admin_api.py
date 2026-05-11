@@ -568,6 +568,124 @@ def test_owner_can_start_free_trial_once_for_tenant(tmp_path) -> None:
     assert duplicate.json()["detail"] == "free trial already used for tenant"
 
 
+def test_billing_routes_require_admin_role_for_records_and_mutations_when_auth_enabled(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+    future_start = (_utc_today() + timedelta(days=5)).isoformat()
+
+    created = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-AUTHZ-0001",
+            "plan_code": "one_time_search_pack",
+            "status": "draft",
+            "billing_period_start": future_start,
+        },
+        headers=_auth_headers(role="owner"),
+    )
+    assert created.status_code == 201
+    record_id = created.json()["record"]["id"]
+
+    viewer_requests = [
+        ("GET", "/v1/billing/records", None),
+        ("POST", "/v1/billing/trial/start", {"tenant_id": TENANT_ID}),
+        (
+            "POST",
+            "/v1/billing/upgrades",
+            {
+                "tenant_id": TENANT_ID,
+                "target_plan_code": "monthly_membership",
+                "billing_period_start": future_start,
+            },
+        ),
+        (
+            "POST",
+            "/v1/billing/records",
+            {
+                "tenant_id": TENANT_ID,
+                "record_number": "INV-AUTHZ-0002",
+                "plan_code": "monthly_membership",
+                "status": "draft",
+                "billing_period_start": future_start,
+            },
+        ),
+        (
+            "POST",
+            f"/v1/billing/records/{record_id}/transition",
+            {
+                "tenant_id": TENANT_ID,
+                "status": "issued",
+            },
+        ),
+        (
+            "POST",
+            f"/v1/billing/records/{record_id}/payments",
+            {
+                "tenant_id": TENANT_ID,
+                "payment_method": "bank_transfer",
+                "amount": "20.00",
+                "currency": "THB",
+                "received_at": f"{future_start}T03:30:00+00:00",
+            },
+        ),
+        (
+            "POST",
+            f"/v1/billing/records/{record_id}/payment-requests",
+            {
+                "tenant_id": TENANT_ID,
+                "provider": "mock_promptpay",
+                "payment_method": "promptpay_qr",
+            },
+        ),
+        (
+            "POST",
+            "/v1/billing/payments/payment-1/reconcile",
+            {
+                "tenant_id": TENANT_ID,
+                "status": "reconciled",
+            },
+        ),
+    ]
+
+    for method, path, payload in viewer_requests:
+        if method == "GET":
+            response = client.get(path, headers=_auth_headers(role="viewer"))
+        else:
+            response = client.post(
+                path,
+                json=payload,
+                headers=_auth_headers(role="viewer"),
+            )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "admin role required"
+
+
+def test_billing_record_creation_rejects_unknown_plan_codes(tmp_path) -> None:
+    client = _create_client(tmp_path, auth_required=True)
+    _seed_tenant(client)
+
+    response = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-CUSTOM-0001",
+            "plan_code": "custom_enterprise",
+            "status": "draft",
+            "billing_period_start": (_utc_today() + timedelta(days=5)).isoformat(),
+            "billing_period_end": (_utc_today() + timedelta(days=35)).isoformat(),
+            "amount_due": "9999.00",
+            "currency": "THB",
+        },
+        headers=_auth_headers(role="owner"),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "unsupported billing plan"
+
+
 def _create_failed_run(client: TestClient, *, tenant_id: str = TENANT_ID) -> str:
     repository = client.app.state.run_repository
     created = repository.create_run(tenant_id=tenant_id, trigger_type="manual")

@@ -1,3 +1,5 @@
+import { hasAdminAccessRole } from "./authorization";
+
 export type BadgeColor = "indigo" | "teal" | "green" | "purple" | "amber" | "red" | "gray";
 
 export type BadgeConfig = {
@@ -78,6 +80,7 @@ export const DOCUMENT_PHASE_LABELS: Record<string, string> = {
 export type NavItem = {
   label: string;
   href: string;
+  adminOnly?: boolean;
 };
 
 export const NAV_ITEMS: NavItem[] = [
@@ -85,10 +88,14 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "สำรวจโครงการ", href: "/projects" },
   { label: "การทำงาน", href: "/runs" },
   { label: "คำค้นติดตาม", href: "/rules" },
-  { label: "บิลและชำระเงิน", href: "/billing" },
+  { label: "บิลและชำระเงิน", href: "/billing", adminOnly: true },
   { label: "ความปลอดภัย", href: "/security" },
-  { label: "แอดมิน", href: "/admin" },
+  { label: "แอดมิน", href: "/admin", adminOnly: true },
 ];
+
+export function getNavItems(role: string | null | undefined): NavItem[] {
+  return NAV_ITEMS.filter((item) => !item.adminOnly || hasAdminAccessRole(role));
+}
 
 export const BADGE_STYLE_MAP: Record<BadgeColor, string> = {
   indigo: "bg-[var(--badge-indigo-bg)] text-[var(--badge-indigo-text)]",
