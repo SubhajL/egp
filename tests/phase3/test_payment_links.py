@@ -151,6 +151,7 @@ def test_create_app_requires_payment_callback_secret(
 def _create_billing_record(
     client: TestClient, *, tenant_id: str = TENANT_ID
 ) -> dict[str, object]:
+    billing_period_start = _utc_today()
     response = client.post(
         "/v1/billing/records",
         json={
@@ -158,7 +159,7 @@ def _create_billing_record(
             "record_number": "INV-2026-3001",
             "plan_code": "monthly_membership",
             "status": "awaiting_payment",
-            "billing_period_start": "2026-04-01",
+            "billing_period_start": billing_period_start.isoformat(),
         },
     )
     assert response.status_code == 201
@@ -202,7 +203,7 @@ def _settle_request(
             "status": "settled",
             "amount": "25.00",
             "currency": "THB",
-            "occurred_at": "2026-04-05T05:30:00+00:00",
+            "occurred_at": f"{_utc_today().isoformat()}T05:30:00+00:00",
             "reference_code": "PROMPTPAY-3001",
         },
         headers=(

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
 from egp_api.main import create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _utc_today() -> date:
+    return datetime.now(UTC).date()
 
 
 def _create_client(tmp_path) -> TestClient:
@@ -23,6 +29,7 @@ def _create_client(tmp_path) -> TestClient:
 def _create_billing_record(
     client: TestClient, *, tenant_id: str = TENANT_ID
 ) -> dict[str, object]:
+    billing_period_start = _utc_today() - timedelta(days=1)
     response = client.post(
         "/v1/billing/records",
         json={
@@ -30,9 +37,8 @@ def _create_billing_record(
             "record_number": "INV-2026-0001",
             "plan_code": "monthly_membership",
             "status": "awaiting_payment",
-            "billing_period_start": "2026-04-01",
-            "billing_period_end": "2026-04-30",
-            "due_at": "2026-04-15T09:00:00+00:00",
+            "billing_period_start": billing_period_start.isoformat(),
+            "due_at": f"{billing_period_start.isoformat()}T09:00:00+00:00",
             "amount_due": "1500.00",
             "currency": "THB",
             "notes": "Internal beta invoice",
@@ -59,7 +65,7 @@ def _record_payment(
             "amount": amount,
             "currency": "THB",
             "reference_code": reference_code,
-            "received_at": "2026-04-16T03:30:00+00:00",
+            "received_at": f"{_utc_today().isoformat()}T03:30:00+00:00",
             "note": "Customer transfer recorded by ops",
         },
     )
