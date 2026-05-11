@@ -7,7 +7,7 @@ import json
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
 
-from egp_api.auth import resolve_request_tenant_id
+from egp_api.auth import require_admin_role, resolve_request_tenant_id
 from egp_api.services.billing_service import BillingService
 from egp_db.repositories.billing_repo import (
     BillingEventRecord,
@@ -398,6 +398,7 @@ def start_free_trial(
     request: Request,
     response: Response,
 ) -> BillingSubscriptionResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -434,6 +435,7 @@ def create_billing_upgrade(
     request: Request,
     response: Response,
 ) -> BillingRecordDetailResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -462,6 +464,7 @@ def list_billing_records(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> BillingListResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -479,6 +482,7 @@ def create_billing_record(
     request: Request,
     response: Response,
 ) -> BillingRecordDetailResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -512,6 +516,7 @@ def transition_billing_record(
     payload: TransitionBillingRecordRequest,
     request: Request,
 ) -> BillingRecordDetailResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -542,6 +547,7 @@ def create_billing_payment(
     request: Request,
     response: Response,
 ) -> BillingPaymentResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -577,6 +583,7 @@ def create_billing_payment_request(
     request: Request,
     response: Response,
 ) -> BillingRecordDetailResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,
@@ -678,6 +685,7 @@ def reconcile_billing_payment(
     payload: ReconcileBillingPaymentRequest,
     request: Request,
 ) -> BillingRecordDetailResponse:
+    require_admin_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(
         request,

@@ -6,11 +6,11 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { startTransition, useState } from "react";
 
-import { cn } from "@/lib/utils";
-import { NAV_ITEMS } from "@/lib/constants";
 import { getUserDisplayName, getUserInitials } from "@/lib/auth";
 import { logout } from "@/lib/api";
+import { getNavItems } from "@/lib/constants";
 import { useMe } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 
 export function AppHeader() {
   const router = useRouter();
@@ -18,6 +18,7 @@ export function AppHeader() {
   const pathname = usePathname() ?? "";
   const { data: currentSession } = useMe();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const navItems = getNavItems(currentSession?.user.role);
 
   const displayName = currentSession ? getUserDisplayName(currentSession.user) : "กำลังโหลด...";
   const initials = currentSession ? getUserInitials(currentSession.user) : "?";
@@ -58,7 +59,7 @@ export function AppHeader() {
 
         {/* Center: Navigation */}
         <nav className="hidden items-center gap-6 lg:flex">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const isActive =
               pathname === item.href || pathname.startsWith(item.href + "/");
             return (

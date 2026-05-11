@@ -35,22 +35,23 @@
 3. Create a new user.
 4. Send invite for that user.
 5. Open the invite link from the local email output/log and complete `/invite` password setup.
-6. Log in as the new user and verify `/dashboard`, `/rules`, and `/billing` load.
-7. Go to `/billing` and confirm the available plan labels:
+6. Log in as the new user and verify `/dashboard` and `/rules` load.
+7. Verify the normal app navigation does not expose `/billing` or `/admin` for that non-admin user.
+8. Sign back in as an owner/admin user and go to `/billing`, then confirm the available plan labels:
    - `Free Trial`
    - `Monthly Membership`
    - `One-Time Search Pack`
-8. Create a draft billing record for the chosen plan and verify the plan description and derived billing period end date.
+9. Create a draft billing record for the chosen plan and verify the plan description and derived billing period end date.
 
 Expected:
 - Invite acceptance works.
 - Login creates a session.
-- Billing page shows the three implemented plans.
+- Billing page shows the three implemented plans for owner/admin users only.
 
 ## Scenario 2: Billing Modes
 
 ### A. Monthly Subscription
-1. Go to `/billing`.
+1. Sign in as an owner/admin user and go to `/billing`.
 2. Create a billing record with plan `Monthly Membership`.
 3. Transition it through:
    - `draft`
@@ -66,7 +67,7 @@ Expected:
    - runs/exports/downloads/notifications enabled
 
 ### B. One-Time Shot
-1. Create a billing record with plan `One-Time Search Pack`.
+1. As an owner/admin user, create a billing record with plan `One-Time Search Pack`.
 2. Move it to payment-ready state and generate PromptPay QR.
 3. Settle payment.
 4. Open `/rules` and verify:
@@ -75,7 +76,7 @@ Expected:
    - keyword limit `1`
 
 ### C. Free Trial
-1. Open `/billing` and click `เริ่ม Free Trial`.
+1. As an owner/admin user, open `/billing` and click `เริ่ม Free Trial`.
 2. Open `/rules` and verify:
    - `free_trial`
    - active subscription

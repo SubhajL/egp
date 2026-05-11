@@ -159,7 +159,7 @@ const jsonLd = {
           name: "Monthly Membership",
           price: "1500",
           priceCurrency: "THB",
-          description: "สมาชิกรายเดือน 30 วัน — 5 คำค้น",
+          description: "สมาชิกรายเดือน 1 เดือน — 5 คำค้น",
           availability: "https://schema.org/InStock",
         },
       ],
@@ -1054,7 +1054,7 @@ export default function LandingPage() {
                 </div>
                 <Badge color="indigo-light">Monthly Membership</Badge>
                 <p className="mt-4 text-4xl font-extrabold">฿1,500</p>
-                <p className="mt-1 text-sm text-indigo-200">ต่อเดือน • 30 วัน</p>
+                <p className="mt-1 text-sm text-indigo-200">ต่อเดือน • 1 เดือน</p>
                 <ul className="my-6 flex-1 space-y-2.5">
                   {[
                     "5 คำค้น",

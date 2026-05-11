@@ -127,12 +127,7 @@ class BillingService:
                     f"{plan_definition.code} must use currency {plan_definition.currency}"
                 )
         else:
-            if resolved_end is None:
-                raise ValueError("billing_period_end is required for custom plans")
-            if resolved_amount is None:
-                raise ValueError("amount_due is required for custom plans")
-            if resolved_currency is None:
-                resolved_currency = "THB"
+            raise ValueError("unsupported billing plan")
 
         return self._repository.create_billing_record(
             tenant_id=tenant_id,

@@ -1,28 +1,45 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-const CURRENT_SESSION = {
-  user: {
-    id: "user-1",
-    subject: "user-1",
-    email: "analyst@example.com",
-    full_name: "Example Analyst",
-    role: "admin",
-    status: "active",
-    email_verified: false,
-    email_verified_at: null,
-    mfa_enabled: false,
-  },
-  tenant: {
-    id: "tenant-1",
-    name: "Example Tenant",
-    slug: "example-tenant",
-    plan_code: "pro",
-    is_active: true,
-    created_at: "2026-04-06T00:00:00Z",
-    updated_at: "2026-04-06T00:00:00Z",
-  },
-  requires_billing_update: false,
-};
+function buildCurrentSession(
+  userOverrides?: Partial<{
+    id: string;
+    subject: string;
+    email: string;
+    full_name: string;
+    role: string;
+    status: string;
+    email_verified: boolean;
+    email_verified_at: string | null;
+    mfa_enabled: boolean;
+  }>,
+) {
+  return {
+    user: {
+      id: "user-1",
+      subject: "user-1",
+      email: "analyst@example.com",
+      full_name: "Example Analyst",
+      role: "admin",
+      status: "active",
+      email_verified: false,
+      email_verified_at: null,
+      mfa_enabled: false,
+      ...userOverrides,
+    },
+    tenant: {
+      id: "tenant-1",
+      name: "Example Tenant",
+      slug: "example-tenant",
+      plan_code: "pro",
+      is_active: true,
+      created_at: "2026-04-06T00:00:00Z",
+      updated_at: "2026-04-06T00:00:00Z",
+    },
+    requires_billing_update: false,
+  };
+}
+
+const CURRENT_SESSION = buildCurrentSession();
 
 const BILLING_RECORDS = {
   records: [],
@@ -162,6 +179,7 @@ async function mockApi(
   page: Page,
   options: {
     authenticated?: boolean;
+    currentSession?: typeof CURRENT_SESSION;
     onRegister?: (payload: unknown) => void;
     onLogin?: (payload: unknown) => void;
     loginResponses?: Array<{ status: number; body: unknown }>;
@@ -172,6 +190,7 @@ async function mockApi(
   } = {},
 ) {
   let authenticated = options.authenticated ?? false;
+  const currentSession = options.currentSession ?? CURRENT_SESSION;
   const loginResponses = [...(options.loginResponses ?? [])];
 
   await page.route("**/v1/**", async (route) => {
@@ -185,7 +204,7 @@ async function mockApi(
           await fulfillJson(route, 401, { detail: "authentication required" });
           return;
         }
-        await fulfillJson(route, 200, CURRENT_SESSION);
+        await fulfillJson(route, 200, currentSession);
         return;
       case "GET /v1/dashboard/summary":
         await fulfillJson(route, 200, DASHBOARD_SUMMARY);
@@ -210,12 +229,12 @@ async function mockApi(
           return;
         }
         authenticated = true;
-        await fulfillJson(route, 200, CURRENT_SESSION);
+        await fulfillJson(route, 200, currentSession);
         return;
       case "POST /v1/auth/register":
         options.onRegister?.(request.postDataJSON());
         authenticated = true;
-        await fulfillJson(route, 200, CURRENT_SESSION);
+        await fulfillJson(route, 200, currentSession);
         return;
       case "POST /v1/auth/password/forgot":
         options.onForgotPassword?.(request.postDataJSON());
@@ -224,7 +243,7 @@ async function mockApi(
       case "POST /v1/auth/invite/accept":
         options.onAcceptInvite?.(request.postDataJSON());
         authenticated = true;
-        await fulfillJson(route, 200, CURRENT_SESSION);
+        await fulfillJson(route, 200, currentSession);
         return;
       case "POST /v1/auth/password/reset":
         options.onResetPassword?.(request.postDataJSON());
@@ -390,6 +409,33 @@ test("login redirects overdue accounts to billing with a payment notice", async 
   await expect(
     page.getByText("กรุณาอัปเดตการชำระเงินก่อนดำเนินการต่อ", { exact: true }),
   ).toBeVisible();
+});
+
+test("pricing page describes monthly membership as one month", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByText("ต่อเดือน • 1 เดือน")).toBeVisible();
+});
+
+test("viewer session hides billing and admin navigation and blocks billing operations", async ({ page }) => {
+  await mockApi(page, {
+    authenticated: true,
+    currentSession: buildCurrentSession({
+      email: "viewer@example.com",
+      full_name: "Example Viewer",
+      role: "viewer",
+    }),
+  });
+
+  await page.goto("/dashboard");
+
+  await expect(page.getByRole("link", { name: "บิลและชำระเงิน" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "แอดมิน" })).toHaveCount(0);
+
+  await page.goto("/billing");
+
+  await expect(page.getByRole("heading", { name: "เฉพาะผู้ดูแลระบบ" })).toBeVisible();
+  await expect(page.getByText("owner, admin, หรือ support")).toBeVisible();
 });
 
 test("signup creates a workspace and continues to the requested page", async ({ page }) => {
