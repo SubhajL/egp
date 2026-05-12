@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { StatusBadge } from "@/components/ui/status-badge";
 import {
+  ApiError,
   createBillingUpgrade,
   createBillingRecord,
   createBillingPaymentRequest,
@@ -532,20 +533,46 @@ export default function BillingPage() {
         target_plan_code: targetPlanCode,
         billing_period_start: todayIsoDate(),
       });
-      const detail = await createPromptPayRequestForRecord(upgrade.record.id);
-      await refreshBilling();
-      setSelectedRecordId(detail.record.id);
-      setPaymentAmount(detail.record.outstanding_balance);
-      setUpgradeStatusMessage(
-        `สร้างคำขอ ${optionTitle} แล้ว กรุณาสแกน PromptPay QR เพื่อชำระเงิน`,
-      );
+      setSelectedRecordId(upgrade.record.id);
+      setPaymentAmount(upgrade.record.outstanding_balance);
+      try {
+        const detail = await createPromptPayRequestForRecord(upgrade.record.id);
+        await refreshBilling();
+        setSelectedRecordId(detail.record.id);
+        setPaymentAmount(detail.record.outstanding_balance);
+        setUpgradeStatusMessage(
+          `สร้างคำขอ ${optionTitle} แล้ว กรุณาสแกน PromptPay QR เพื่อชำระเงิน`,
+        );
+      } catch (paymentRequestError) {
+        await refreshBilling();
+        const localizedPaymentError = localizeApiError(
+          paymentRequestError,
+          "ไม่สามารถสร้าง PromptPay QR ได้",
+        );
+        setUpgradeStatusMessage(
+          `สร้างคำขอ ${optionTitle} แล้ว แต่ยังสร้าง PromptPay QR ไม่สำเร็จ`,
+        );
+        setUpgradeError(
+          `${localizedPaymentError} กรุณาเลือกบิลที่เพิ่งสร้างและกด "สร้าง PromptPay QR" อีกครั้ง`,
+        );
+      }
       setUpgradeCopy(
         targetPlanCode === "monthly_membership"
           ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
           : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
       );
     } catch (mutationError) {
-      setUpgradeError(localizeApiError(mutationError, "ไม่สามารถเริ่มคำขออัปเกรดได้"));
+      if (
+        mutationError instanceof ApiError &&
+        mutationError.detail.includes("upgrade already in progress for subscription")
+      ) {
+        await refreshBilling();
+        setUpgradeError(
+          "มีคำขออัปเกรดที่กำลังรอชำระอยู่แล้ว กรุณาเลือกบิลอัปเกรดในรายการและกดสร้าง PromptPay QR",
+        );
+      } else {
+        setUpgradeError(localizeApiError(mutationError, "ไม่สามารถเริ่มคำขออัปเกรดได้"));
+      }
     } finally {
       setActionBusy(false);
       setUpgradeInFlightPlanCode(null);
