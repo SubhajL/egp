@@ -368,7 +368,16 @@ class SqlNotificationRepository:
             self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        METADATA.create_all(self._engine)
+        METADATA.create_all(
+            self._engine,
+            tables=[
+                USERS_TABLE,
+                NOTIFICATIONS_TABLE,
+                NOTIFICATION_PREFERENCES_TABLE,
+                WEBHOOK_SUBSCRIPTIONS_TABLE,
+                WEBHOOK_DELIVERIES_TABLE,
+            ],
+        )
 
     def add(self, notification: Notification) -> None:
         with self._engine.begin() as connection:

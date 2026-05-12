@@ -15,20 +15,24 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "/dashboard";
   const { data: currentSession, error, isLoading } = useMe();
   const currentPath = buildCurrentPath(pathname);
+  const isUnauthorized = error instanceof ApiError && error.status === 401;
 
   useEffect(() => {
-    if (isLoading || currentSession) {
+    if (isLoading || !isUnauthorized) {
       return;
     }
-    if (error instanceof ApiError && error.status === 401) {
-      startTransition(() => {
-        router.replace(`/login?next=${encodeURIComponent(currentPath)}`);
-      });
-    }
-  }, [currentPath, currentSession, error, isLoading, router]);
+    startTransition(() => {
+      router.replace(`/login?next=${encodeURIComponent(currentPath)}`);
+    });
+  }, [currentPath, isLoading, isUnauthorized, router]);
 
   useEffect(() => {
-    if (isLoading || !currentSession || pathname.startsWith("/billing")) {
+    if (
+      isLoading ||
+      isUnauthorized ||
+      !currentSession ||
+      pathname.startsWith("/billing")
+    ) {
       return;
     }
     if (currentSession.requires_billing_update) {
@@ -36,9 +40,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         router.replace("/billing?notice=payment_overdue");
       });
     }
-  }, [currentSession, isLoading, pathname, router]);
+  }, [currentSession, isLoading, isUnauthorized, pathname, router]);
 
-  if (isLoading || (error instanceof ApiError && error.status === 401)) {
+  if (isLoading || isUnauthorized) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg-page)] px-6">
         <div className="w-full max-w-md rounded-3xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-6 py-8 text-center shadow-sm">
@@ -48,7 +52,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  if (error) {
+  if (!currentSession && error) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg-page)] px-6">
         <div className="w-full max-w-lg rounded-3xl border border-red-200 bg-red-50 px-6 py-8 text-center text-sm text-red-700 shadow-sm">
