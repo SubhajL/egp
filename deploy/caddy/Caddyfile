@@ -1,0 +1,9 @@
+{$EGP_API_DOMAIN} {
+    encode gzip zstd
+    reverse_proxy api:8000
+}
+
+{$EGP_APP_DOMAIN} {
+    encode gzip zstd
+    reverse_proxy web:3000
+}
