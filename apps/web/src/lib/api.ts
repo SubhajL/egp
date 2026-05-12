@@ -865,6 +865,8 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "invalid billing date", thai: "วันที่เรียกเก็บไม่ถูกต้อง" },
   { pattern: "unsupported subscription upgrade", thai: "แพ็กเกจปัจจุบันยังอัปเกรดไปตัวเลือกนี้ไม่ได้" },
   { pattern: "upgrade already in progress for subscription", thai: "มีคำขออัปเกรดที่กำลังรอชำระอยู่แล้ว" },
+  { pattern: "active or pending subscription required for upgrade", thai: "ต้องมีประวัติแพ็กเกจเดิมก่อนจึงจะสร้างคำขออัปเกรดได้" },
+  { pattern: "active, pending, or expired subscription required for upgrade", thai: "ต้องมีประวัติแพ็กเกจเดิมก่อนจึงจะสร้างคำขออัปเกรดได้" },
   { pattern: "future-start upgrades are not supported", thai: "การอัปเกรดแบบเริ่มใช้ภายหลังยังไม่รองรับ" },
   { pattern: "callback currency does not match", thai: "สกุลเงินไม่ตรงกับคำขอชำระเงิน" },
   { pattern: "callback amount does not match", thai: "จำนวนเงินไม่ตรงกับคำขอชำระเงิน" },

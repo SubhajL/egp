@@ -219,12 +219,18 @@ function UpgradeCallout({
   entitlements,
   billingPlans,
   busy,
+  busyPlanCode,
+  errorMessage,
+  statusMessage,
   onUpgrade,
 }: {
   entitlements: EntitlementSummary | undefined;
   billingPlans: BillingPlan[];
   busy: boolean;
-  onUpgrade: (targetPlanCode: string) => Promise<void>;
+  busyPlanCode: string | null;
+  errorMessage: string | null;
+  statusMessage: string | null;
+  onUpgrade: (targetPlanCode: string, optionTitle: string) => Promise<void>;
 }) {
   const options = getUpgradeOptions(entitlements, billingPlans);
   if (options.length === 0) {
@@ -246,6 +252,18 @@ function UpgradeCallout({
         </p>
       </div>
 
+      {statusMessage ? (
+        <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {statusMessage}
+        </div>
+      ) : null}
+
+      {errorMessage ? (
+        <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {errorMessage}
+        </div>
+      ) : null}
+
       <div className="mt-4 grid gap-3">
         {options.map((option) => (
           <div
@@ -262,10 +280,10 @@ function UpgradeCallout({
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void onUpgrade(option.targetPlanCode)}
+                onClick={() => void onUpgrade(option.targetPlanCode, option.title)}
                 className="rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {option.title}
+                {busyPlanCode === option.targetPlanCode ? "กำลังสร้างคำขอ..." : option.title}
               </button>
             </div>
           </div>
@@ -299,8 +317,11 @@ export default function BillingPage() {
   );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  const [upgradeStatusMessage, setUpgradeStatusMessage] = useState<string | null>(null);
   const [renderedQrSvg, setRenderedQrSvg] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
+  const [upgradeInFlightPlanCode, setUpgradeInFlightPlanCode] = useState<string | null>(null);
   const [upgradeCopy, setUpgradeCopy] = useState<string | null>(null);
 
   const records = data?.records ?? EMPTY_RECORDS;
@@ -498,10 +519,13 @@ export default function BillingPage() {
     }
   }
 
-  async function handleCreateUpgrade(targetPlanCode: string) {
+  async function handleCreateUpgrade(targetPlanCode: string, optionTitle: string) {
     setSubmitError(null);
     setPaymentError(null);
+    setUpgradeError(null);
+    setUpgradeStatusMessage(null);
     setUpgradeCopy(null);
+    setUpgradeInFlightPlanCode(targetPlanCode);
     setActionBusy(true);
     try {
       const upgrade = await createBillingUpgrade({
@@ -512,15 +536,19 @@ export default function BillingPage() {
       await refreshBilling();
       setSelectedRecordId(detail.record.id);
       setPaymentAmount(detail.record.outstanding_balance);
+      setUpgradeStatusMessage(
+        `สร้างคำขอ ${optionTitle} แล้ว กรุณาสแกน PromptPay QR เพื่อชำระเงิน`,
+      );
       setUpgradeCopy(
         targetPlanCode === "monthly_membership"
           ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
           : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
       );
     } catch (mutationError) {
-      setSubmitError(localizeApiError(mutationError, "ไม่สามารถเริ่มคำขออัปเกรดได้"));
+      setUpgradeError(localizeApiError(mutationError, "ไม่สามารถเริ่มคำขออัปเกรดได้"));
     } finally {
       setActionBusy(false);
+      setUpgradeInFlightPlanCode(null);
     }
   }
 
@@ -599,6 +627,9 @@ export default function BillingPage() {
             entitlements={rulesData?.entitlements}
             billingPlans={billingPlans}
             busy={actionBusy}
+            busyPlanCode={upgradeInFlightPlanCode}
+            errorMessage={upgradeError}
+            statusMessage={upgradeStatusMessage}
             onUpgrade={handleCreateUpgrade}
           />
 

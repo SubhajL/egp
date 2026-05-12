@@ -31,11 +31,7 @@ import {
   type FetchSupportTenantsParams,
   type FetchWebhooksParams,
 } from "./api";
-import {
-  clearStoredCurrentSession,
-  readStoredCurrentSession,
-  writeStoredCurrentSession,
-} from "./auth";
+import { clearStoredCurrentSession, writeStoredCurrentSession } from "./auth";
 
 export function useProjects(params: FetchProjectsParams = {}) {
   return useQuery({
@@ -112,7 +108,6 @@ export function useMe() {
         throw error;
       }
     },
-    placeholderData: () => readStoredCurrentSession(),
     retry: false,
   });
 }

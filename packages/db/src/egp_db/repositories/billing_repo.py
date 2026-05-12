@@ -1680,12 +1680,13 @@ class SqlBillingRepository:
             tenant_id=tenant_id
         )
         if current_subscription is None:
-            raise ValueError("active or pending subscription required for upgrade")
+            raise ValueError("active, pending, or expired subscription required for upgrade")
         if current_subscription.subscription_status not in {
             BillingSubscriptionStatus.ACTIVE,
             BillingSubscriptionStatus.PENDING_ACTIVATION,
+            BillingSubscriptionStatus.EXPIRED,
         }:
-            raise ValueError("active or pending subscription required for upgrade")
+            raise ValueError("active, pending, or expired subscription required for upgrade")
 
         normalized_target_plan_code = str(target_plan_code).strip()
         allowed_transitions = {
