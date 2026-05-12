@@ -8,7 +8,7 @@
 ## Setup & Run
 
 ```bash
-docker compose up -d postgres redis
+docker compose -f docker-compose-localdev.yml up -d postgres redis
 python -m egp_db.migration_runner --database-url postgresql://egp:egp_dev@localhost:5432/egp --migrations-dir packages/db/src/migrations
 python -m compileall packages/db/src
 ```
@@ -45,7 +45,8 @@ rg -n "tenant_id|project_state|closed_reason|sha256" packages/db/src/migrations
 
 ## Common Gotchas
 
-- `docker-compose.yml` mounts `packages/db/src/migrations` into Postgres init; that only auto-applies on a fresh volume.
+- `docker-compose-localdev.yml` is the local development stack; it mounts `packages/db/src/migrations` into the dev flow only after the explicit migration runner command above, so a fresh volume is still the safest path for testing init-time behavior.
+- `docker-compose.yml` is now the production-oriented single-host stack and should not be treated as the local default.
 - The checked-in migration already encodes business rules for project states, closed reasons, and document hashing.
 - Supabase keeps PostgreSQL semantics; schema work should still look like normal Postgres DDL, not document-store modeling.
 - When repository modules are added, they must keep `tenant_id` filtering explicit.

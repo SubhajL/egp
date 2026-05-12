@@ -1,14 +1,13 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: egp-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${EGP_POSTGRES_DB:-egp}
       POSTGRES_USER: ${EGP_POSTGRES_USER:-egp}
-      POSTGRES_PASSWORD: ${EGP_POSTGRES_PASSWORD:-egp_dev}
-    ports:
-      - "${EGP_POSTGRES_PORT:-5434}:5432"
+      POSTGRES_PASSWORD: ${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}
+    expose:
+      - "5432"
     volumes:
       - egp_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -19,11 +18,10 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: egp-redis
     restart: unless-stopped
     command: redis-server --appendonly yes
-    ports:
-      - "${EGP_REDIS_PORT:-6380}:6379"
+    expose:
+      - "6379"
     volumes:
       - egp_redisdata:/data
     healthcheck:
@@ -36,10 +34,9 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: egp-migrate
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:-egp_dev}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,7 +45,7 @@ services:
       - -m
       - egp_db.migration_runner
       - --database-url
-      - postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:-egp_dev}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+      - postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       - --migrations-dir
       - /app/packages/db/src/migrations
 
@@ -56,21 +53,32 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: egp-api
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:-egp_dev}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
-      EGP_ARTIFACT_STORE: local
-      EGP_PAYMENT_CALLBACK_SECRET: ${EGP_PAYMENT_CALLBACK_SECRET:-top-secret}
-      EGP_AUTH_REQUIRED: ${EGP_AUTH_REQUIRED:-false}
-      EGP_JWT_SECRET: ${EGP_JWT_SECRET:-dev-jwt-secret}
-      EGP_SESSION_COOKIE_SECURE: ${EGP_SESSION_COOKIE_SECURE:-false}
-      EGP_WEB_ALLOWED_ORIGINS: http://127.0.0.1:${EGP_WEB_PORT:-3002},http://localhost:${EGP_WEB_PORT:-3002}
-      EGP_WEB_BASE_URL: http://127.0.0.1:${EGP_WEB_PORT:-3002}
-      EGP_INTERNAL_WORKER_TOKEN: ${EGP_INTERNAL_WORKER_TOKEN:-dev-internal-worker-token}
-    ports:
-      - "${EGP_API_PORT:-8010}:8000"
+      EGP_ARTIFACT_STORE: ${EGP_ARTIFACT_STORE:-local}
+      EGP_PAYMENT_PROVIDER: ${EGP_PAYMENT_PROVIDER:-opn}
+      EGP_PAYMENT_CALLBACK_SECRET: ${EGP_PAYMENT_CALLBACK_SECRET:?set EGP_PAYMENT_CALLBACK_SECRET in your environment}
+      EGP_AUTH_REQUIRED: ${EGP_AUTH_REQUIRED:-true}
+      EGP_JWT_SECRET: ${EGP_JWT_SECRET:?set EGP_JWT_SECRET in your environment}
+      EGP_SESSION_COOKIE_SECURE: ${EGP_SESSION_COOKIE_SECURE:-true}
+      EGP_SESSION_COOKIE_SAMESITE: ${EGP_SESSION_COOKIE_SAMESITE:-lax}
+      EGP_WEB_ALLOWED_ORIGINS: ${EGP_WEB_ALLOWED_ORIGINS:?set EGP_WEB_ALLOWED_ORIGINS in your environment}
+      EGP_WEB_BASE_URL: ${EGP_WEB_BASE_URL:?set EGP_WEB_BASE_URL in your environment}
+      EGP_INTERNAL_WORKER_TOKEN: ${EGP_INTERNAL_WORKER_TOKEN:?set EGP_INTERNAL_WORKER_TOKEN in your environment}
+      EGP_OPN_SECRET_KEY: ${EGP_OPN_SECRET_KEY:-}
+      EGP_OPN_PUBLIC_KEY: ${EGP_OPN_PUBLIC_KEY:-}
+      EGP_RESEND_API_KEY: ${EGP_RESEND_API_KEY:-}
+      EGP_RESEND_FROM: ${EGP_RESEND_FROM:-}
+      EGP_SMTP_HOST: ${EGP_SMTP_HOST:-}
+      EGP_SMTP_PORT: ${EGP_SMTP_PORT:-587}
+      EGP_SMTP_USERNAME: ${EGP_SMTP_USERNAME:-}
+      EGP_SMTP_PASSWORD: ${EGP_SMTP_PASSWORD:-}
+      EGP_SMTP_FROM: ${EGP_SMTP_FROM:-}
+      EGP_SMTP_USE_TLS: ${EGP_SMTP_USE_TLS:-true}
+    expose:
+      - "8000"
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:
@@ -91,15 +99,14 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_EGP_API_BASE_URL: http://127.0.0.1:${EGP_API_PORT:-8010}
-        NEXT_PUBLIC_SITE_URL: http://127.0.0.1:${EGP_WEB_PORT:-3002}
-    container_name: egp-web
+        NEXT_PUBLIC_EGP_API_BASE_URL: ${NEXT_PUBLIC_EGP_API_BASE_URL:?set NEXT_PUBLIC_EGP_API_BASE_URL in your environment}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in your environment}
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_EGP_API_BASE_URL: http://127.0.0.1:${EGP_API_PORT:-8010}
-      NEXT_PUBLIC_SITE_URL: http://127.0.0.1:${EGP_WEB_PORT:-3002}
-    ports:
-      - "${EGP_WEB_PORT:-3002}:3000"
+      NEXT_PUBLIC_EGP_API_BASE_URL: ${NEXT_PUBLIC_EGP_API_BASE_URL:?set NEXT_PUBLIC_EGP_API_BASE_URL in your environment}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in your environment}
+    expose:
+      - "3000"
     depends_on:
       api:
         condition: service_healthy
@@ -109,7 +116,28 @@ services:
       timeout: 5s
       retries: 5
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      EGP_API_DOMAIN: ${EGP_API_DOMAIN:?set EGP_API_DOMAIN in your environment}
+      EGP_APP_DOMAIN: ${EGP_APP_DOMAIN:?set EGP_APP_DOMAIN in your environment}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+
 volumes:
   egp_pgdata:
   egp_redisdata:
   egp_artifacts:
+  caddy_data:
+  caddy_config:

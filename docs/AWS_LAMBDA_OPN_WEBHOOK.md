@@ -4,6 +4,9 @@ This repo now includes a **Lambda-only webhook ingress path** for OPN/Omise paym
 It is intended for teams that want a stable public HTTPS endpoint for payment settlement without
 exposing the full FastAPI app.
 
+If you instead want the cheapest single-VM launch path for the current repo shape, see
+[`docs/LIGHTSAIL_LOW_COST_LAUNCH.md`](LIGHTSAIL_LOW_COST_LAUNCH.md).
+
 ## What it does
 
 - Receives `POST /v1/billing/providers/opn/webhooks` through API Gateway.
