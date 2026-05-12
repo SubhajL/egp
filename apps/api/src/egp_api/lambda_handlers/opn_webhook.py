@@ -10,21 +10,19 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from typing import Any
 
-from egp_api.config import get_opn_public_key, get_opn_secret_key
+from egp_api.lambda_handlers.runtime_config import (
+    LambdaConfigurationError,
+    load_runtime_config,
+)
 from egp_api.services.billing_service import BillingService
-from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
+from egp_api.services.payment_provider import build_payment_provider
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_shared_types.enums import BillingPaymentProvider
 
 _JSON_HEADERS = {"content-type": "application/json"}
 _CACHED_BILLING_SERVICE: BillingService | None = None
-
-
-class LambdaConfigurationError(RuntimeError):
-    """Raised when the Lambda runtime is missing required configuration."""
 
 
 def _response(status_code: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -75,30 +73,24 @@ def _parse_payload(raw_body: str) -> dict[str, Any]:
     return payload
 
 
-def _build_payment_provider_from_env() -> PaymentProvider:
+def build_billing_service_from_env() -> BillingService:
+    runtime_config = load_runtime_config()
+    repository = create_billing_repository(
+        database_url=runtime_config.database_url,
+        bootstrap_schema=False,
+    )
     provider = build_payment_provider(
-        provider_name=os.getenv("EGP_PAYMENT_PROVIDER", BillingPaymentProvider.OPN.value),
-        base_url=os.getenv("EGP_PAYMENT_BASE_URL", "https://api.omise.co"),
-        promptpay_proxy_id=os.getenv("EGP_PROMPTPAY_PROXY_ID"),
-        opn_public_key=get_opn_public_key(None),
-        opn_secret_key=get_opn_secret_key(None),
+        provider_name=runtime_config.payment_provider,
+        base_url="https://api.omise.co",
+        promptpay_proxy_id=None,
+        opn_public_key=runtime_config.opn_public_key,
+        opn_secret_key=runtime_config.opn_secret_key,
     )
     if provider is None:
         raise LambdaConfigurationError("payment provider is not configured")
-    return provider
-
-
-def build_billing_service_from_env() -> BillingService:
-    database_url = os.getenv("DATABASE_URL", "").strip()
-    if not database_url:
-        raise LambdaConfigurationError("DATABASE_URL is required")
-    repository = create_billing_repository(
-        database_url=database_url,
-        bootstrap_schema=False,
-    )
     return BillingService(
         repository,
-        payment_provider=_build_payment_provider_from_env(),
+        payment_provider=provider,
     )
 
 

@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from egp_api.lambda_handlers import opn_webhook
+from egp_api.lambda_handlers import opn_webhook, runtime_config
 from egp_api.main import create_app
 from egp_api.services.payment_provider import CreatedPaymentRequest, ParsedPaymentCallback
 from egp_shared_types.enums import (
@@ -106,6 +106,22 @@ def _create_opn_payment_request(client: TestClient, *, record_id: str) -> dict[s
     return response.json()
 
 
+class _FakeSecretsManagerClient:
+    def __init__(self, secret_string: str) -> None:
+        self._secret_string = secret_string
+
+    def get_secret_value(self, *, SecretId: str) -> dict[str, str]:
+        return {"SecretString": self._secret_string}
+
+
+class _FakeSsmClient:
+    def __init__(self, parameter_value: str) -> None:
+        self._parameter_value = parameter_value
+
+    def get_parameter(self, *, Name: str, WithDecryption: bool) -> dict[str, dict[str, str]]:
+        return {"Parameter": {"Value": self._parameter_value}}
+
+
 def _opn_signature(secret: str, raw_body: str) -> str:
     digest = hmac.new(
         secret.encode("utf-8"),
@@ -113,6 +129,50 @@ def _opn_signature(secret: str, raw_body: str) -> str:
         hashlib.sha256,
     ).digest()
     return base64.b64encode(digest).decode("ascii")
+
+
+def test_runtime_config_supports_secrets_manager_bundle(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("EGP_OPN_SECRET_KEY", raising=False)
+    monkeypatch.setenv("EGP_LAMBDA_CONFIG_SECRET_ARN", "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:egp/opn")
+
+    config = runtime_config.load_runtime_config(
+        secrets_client=_FakeSecretsManagerClient(
+            json.dumps(
+                {
+                    "database_url": "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp",
+                    "opn_secret_key": "skey_test_secret_bundle",
+                    "opn_public_key": "pkey_test_secret_bundle",
+                }
+            )
+        )
+    )
+
+    assert config.database_url == "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp"
+    assert config.opn_secret_key == "skey_test_secret_bundle"
+    assert config.opn_public_key == "pkey_test_secret_bundle"
+
+
+def test_runtime_config_supports_ssm_bundle(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("EGP_OPN_SECRET_KEY", raising=False)
+    monkeypatch.delenv("EGP_LAMBDA_CONFIG_SECRET_ARN", raising=False)
+    monkeypatch.setenv("EGP_LAMBDA_CONFIG_SSM_PARAMETER", "/egp/opn-webhook/config")
+
+    config = runtime_config.load_runtime_config(
+        ssm_client=_FakeSsmClient(
+            json.dumps(
+                {
+                    "database_url": "postgresql+psycopg://ssm-user:ssm-pass@db.example:5432/egp",
+                    "opn_secret_key": "skey_test_ssm_bundle",
+                }
+            )
+        )
+    )
+
+    assert config.database_url == "postgresql+psycopg://ssm-user:ssm-pass@db.example:5432/egp"
+    assert config.opn_secret_key == "skey_test_ssm_bundle"
+    assert config.opn_public_key is None
 
 
 def test_lambda_handler_processes_opn_webhook_and_remains_idempotent(

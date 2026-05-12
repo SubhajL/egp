@@ -5,17 +5,27 @@ Description: OPN webhook ingress Lambda for e-GP billing settlement
 Parameters:
   DatabaseUrl:
     Type: String
+    Default: ''
     NoEcho: true
-    Description: SQLAlchemy DATABASE_URL reachable from the Lambda runtime
+    Description: Optional direct SQLAlchemy DATABASE_URL (leave blank when using Secrets Manager or SSM)
   OpnSecretKey:
     Type: String
+    Default: ''
     NoEcho: true
-    Description: OPN secret key used for API requests and webhook signature verification
+    Description: Optional direct OPN secret key (leave blank when using Secrets Manager or SSM)
   OpnPublicKey:
     Type: String
     Default: ''
     NoEcho: true
-    Description: Optional OPN public key
+    Description: Optional direct OPN public key
+  ConfigSecretArn:
+    Type: String
+    Default: ''
+    Description: Optional Secrets Manager secret ARN containing JSON keys database_url, opn_secret_key, and optional opn_public_key
+  ConfigSsmParameterName:
+    Type: String
+    Default: ''
+    Description: Optional SSM parameter name containing the same JSON object as ConfigSecretArn
   LambdaMemorySize:
     Type: Number
     Default: 512
@@ -28,6 +38,10 @@ Parameters:
   LambdaSecurityGroupIds:
     Type: CommaDelimitedList
     Description: Security groups that allow egress to the database
+
+Conditions:
+  HasConfigSecretArn: !Not [!Equals [!Ref ConfigSecretArn, '']]
+  HasConfigSsmParameterName: !Not [!Equals [!Ref ConfigSsmParameterName, '']]
 
 Resources:
   OpnWebhookHttpApi:
@@ -47,12 +61,32 @@ Resources:
       Timeout: !Ref LambdaTimeoutSeconds
       Architectures:
         - x86_64
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - !If
+          - HasConfigSecretArn
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref ConfigSecretArn
+          - !Ref AWS::NoValue
+        - !If
+          - HasConfigSsmParameterName
+          - Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource: '*'
+          - !Ref AWS::NoValue
       Environment:
         Variables:
           DATABASE_URL: !Ref DatabaseUrl
           EGP_PAYMENT_PROVIDER: opn
           EGP_OPN_SECRET_KEY: !Ref OpnSecretKey
           EGP_OPN_PUBLIC_KEY: !Ref OpnPublicKey
+          EGP_LAMBDA_CONFIG_SECRET_ARN: !Ref ConfigSecretArn
+          EGP_LAMBDA_CONFIG_SSM_PARAMETER: !Ref ConfigSsmParameterName
       VpcConfig:
         SecurityGroupIds: !Ref LambdaSecurityGroupIds
         SubnetIds: !Ref PrivateSubnetIds
