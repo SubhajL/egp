@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: OPN webhook ingress Lambda for e-GP billing settlement
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: SQLAlchemy DATABASE_URL reachable from the Lambda runtime
+  OpnSecretKey:
+    Type: String
+    NoEcho: true
+    Description: OPN secret key used for API requests and webhook signature verification
+  OpnPublicKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Optional OPN public key
+  LambdaMemorySize:
+    Type: Number
+    Default: 512
+  LambdaTimeoutSeconds:
+    Type: Number
+    Default: 30
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    Description: Private subnet IDs with database reachability
+  LambdaSecurityGroupIds:
+    Type: CommaDelimitedList
+    Description: Security groups that allow egress to the database
+
+Resources:
+  OpnWebhookHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+
+  OpnWebhookFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerContext: ../..
+      Dockerfile: apps/api/Dockerfile.lambda-opn-webhook
+      DockerTag: opn-webhook-lambda
+    Properties:
+      PackageType: Image
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeoutSeconds
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          EGP_PAYMENT_PROVIDER: opn
+          EGP_OPN_SECRET_KEY: !Ref OpnSecretKey
+          EGP_OPN_PUBLIC_KEY: !Ref OpnPublicKey
+      VpcConfig:
+        SecurityGroupIds: !Ref LambdaSecurityGroupIds
+        SubnetIds: !Ref PrivateSubnetIds
+      Events:
+        OpnWebhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref OpnWebhookHttpApi
+            Path: /v1/billing/providers/opn/webhooks
+            Method: POST
+
+Outputs:
+  OpnWebhookUrl:
+    Description: Public HTTPS webhook endpoint to configure in OPN
+    Value: !Sub https://${OpnWebhookHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod/v1/billing/providers/opn/webhooks
