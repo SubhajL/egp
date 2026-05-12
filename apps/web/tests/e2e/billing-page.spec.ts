@@ -402,6 +402,62 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
   });
 });
 
+test("billing page surfaces upgrade failure inline when the backend rejects eligibility", async ({ page }) => {
+  const expiredRules = {
+    ...buildRulesResponse("free_trial"),
+    entitlements: {
+      ...buildRulesResponse("free_trial").entitlements,
+      subscription_status: "expired",
+      has_active_subscription: false,
+      runs_allowed: false,
+      exports_allowed: false,
+      document_download_allowed: false,
+      notifications_allowed: false,
+    },
+  };
+
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/dashboard/summary":
+        await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, buildPlansResponse());
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, buildBillingRecordsResponse());
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, expiredRules);
+        return;
+      case "POST /v1/billing/upgrades":
+        await fulfillJson(route, 400, {
+          detail: "active, pending, or expired subscription required for upgrade",
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/billing");
+  await page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" }).click();
+
+  await expect(
+    page.getByText("ต้องมีประวัติแพ็กเกจเดิมก่อนจึงจะสร้างคำขออัปเกรดได้", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeEnabled();
+});
+
 test("billing page shows one-time upgrade CTA only for monthly membership", async ({ page }) => {
   await mockBillingApp(page, "one_time_search_pack");
 

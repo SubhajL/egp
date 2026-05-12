@@ -329,6 +329,35 @@ def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> Non
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
 
+def test_expired_free_trial_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    trial_subscription_id = _seed_subscription(
+        client,
+        plan_code="free_trial",
+        billing_period_start=today - timedelta(days=10),
+        billing_period_end=today - timedelta(days=4),
+        keyword_limit=1,
+        status="expired",
+    )
+
+    response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "monthly_membership",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+
+    assert response.status_code == 201
+    detail = response.json()
+    assert detail["record"]["plan_code"] == "monthly_membership"
+    assert detail["record"]["amount_due"] == "25.00"
+    assert detail["record"]["upgrade_from_subscription_id"] == trial_subscription_id
+    assert detail["record"]["upgrade_mode"] == "replace_now"
+
+
 def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = _utc_today()

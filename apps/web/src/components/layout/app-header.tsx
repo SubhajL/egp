@@ -6,7 +6,11 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { startTransition, useState } from "react";
 
-import { getUserDisplayName, getUserInitials } from "@/lib/auth";
+import {
+  clearStoredCurrentSession,
+  getUserDisplayName,
+  getUserInitials,
+} from "@/lib/auth";
 import { logout } from "@/lib/api";
 import { getNavItems } from "@/lib/constants";
 import { useMe } from "@/lib/hooks";
@@ -28,6 +32,7 @@ export function AppHeader() {
     try {
       await logout();
     } finally {
+      clearStoredCurrentSession();
       queryClient.clear();
       startTransition(() => {
         router.replace("/login");
