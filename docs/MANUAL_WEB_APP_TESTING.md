@@ -28,6 +28,7 @@
 
 ## Important Product Gaps
 - The web app does not yet provide a full click-through crawler execution UI. Runs/tasks still need API or worker assistance; verify results in the web UI.
+- For testing real OPN webhooks against a **locally running API port**, use [`docs/CLOUDFLARE_LOCAL_OPN_WEBHOOK.md`](CLOUDFLARE_LOCAL_OPN_WEBHOOK.md).
 
 ## Scenario 1: New User Setup And Plan Selection
 1. Log in at `/login` with the seeded owner account.

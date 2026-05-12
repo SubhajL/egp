@@ -7,6 +7,9 @@ exposing the full FastAPI app.
 If you instead want the cheapest single-VM launch path for the current repo shape, see
 [`docs/LIGHTSAIL_LOW_COST_LAUNCH.md`](LIGHTSAIL_LOW_COST_LAUNCH.md).
 
+If you want to test OPN callbacks against a **local API port** through a temporary
+Cloudflare URL, see [`docs/CLOUDFLARE_LOCAL_OPN_WEBHOOK.md`](CLOUDFLARE_LOCAL_OPN_WEBHOOK.md).
+
 ## What it does
 
 - Receives `POST /v1/billing/providers/opn/webhooks` through API Gateway.
