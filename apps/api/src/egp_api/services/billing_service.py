@@ -263,6 +263,8 @@ class BillingService:
             )
         except ValueError:
             raise
+        except RuntimeError:
+            raise
         except Exception as exc:
             raise RuntimeError("payment provider request failed") from exc
         return self._repository.create_payment_request(

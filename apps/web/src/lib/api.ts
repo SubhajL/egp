@@ -861,6 +861,7 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "payment provider is not configured", thai: "ระบบชำระเงินยังไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบ" },
   { pattern: "billing record is not payable", thai: "ใบแจ้งหนี้นี้ยังไม่อยู่ในสถานะที่ชำระได้" },
   { pattern: "billing record has no outstanding balance", thai: "ใบแจ้งหนี้นี้ไม่มียอดคงค้าง" },
+  { pattern: "opn api request failed", thai: "ไม่สามารถเชื่อมต่อระบบชำระเงิน OPN ได้ กรุณาตรวจสอบการตั้งค่าและลองใหม่" },
   { pattern: "payment provider request failed", thai: "ไม่สามารถเชื่อมต่อระบบชำระเงินได้ กรุณาลองใหม่อีกครั้ง" },
   { pattern: "invalid billing date", thai: "วันที่เรียกเก็บไม่ถูกต้อง" },
   { pattern: "unsupported subscription upgrade", thai: "แพ็กเกจปัจจุบันยังอัปเกรดไปตัวเลือกนี้ไม่ได้" },

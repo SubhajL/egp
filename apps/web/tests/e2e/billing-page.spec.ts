@@ -308,7 +308,13 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
   });
 }
 
-async function mockBillingApp(page: Page, planCode: "free_trial" | "one_time_search_pack" | "monthly_membership") {
+async function mockBillingApp(
+  page: Page,
+  planCode: "free_trial" | "one_time_search_pack" | "monthly_membership",
+  options: {
+    failUpgradePaymentRequest?: boolean;
+  } = {},
+) {
   let latestBillingRecords = buildBillingRecordsResponse();
   let latestRules = buildRulesResponse(planCode);
   let upgradePayload: unknown;
@@ -339,7 +345,12 @@ async function mockBillingApp(page: Page, planCode: "free_trial" | "one_time_sea
         upgradePayload = request.postDataJSON();
         latestBillingRecords = {
           ...latestBillingRecords,
-          records: [buildUpgradeWithQrResponse(), ...latestBillingRecords.records],
+          records: [
+            options.failUpgradePaymentRequest
+              ? buildUpgradeResponse()
+              : buildUpgradeWithQrResponse(),
+            ...latestBillingRecords.records,
+          ],
           total: 2,
           summary: {
             open_records: 1,
@@ -353,6 +364,12 @@ async function mockBillingApp(page: Page, planCode: "free_trial" | "one_time_sea
         return;
       case "POST /v1/billing/records/record-upgrade-1/payment-requests":
         paymentRequestPayload = request.postDataJSON();
+        if (options.failUpgradePaymentRequest) {
+          await fulfillJson(route, 502, {
+            detail: "payment provider request failed",
+          });
+          return;
+        }
         await fulfillJson(route, 201, buildUpgradeWithQrResponse());
         return;
       default:
@@ -456,6 +473,32 @@ test("billing page surfaces upgrade failure inline when the backend rejects elig
     }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeEnabled();
+});
+
+test("billing page keeps created upgrade visible when PromptPay generation fails", async ({
+  page,
+}) => {
+  await mockBillingApp(page, "free_trial", {
+    failUpgradePaymentRequest: true,
+  });
+
+  await page.goto("/billing");
+  await page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" }).click();
+
+  await expect(
+    page.getByText("สร้างคำขอ อัปเกรดเป็น Monthly Membership แล้ว แต่ยังสร้าง PromptPay QR ไม่สำเร็จ", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "ไม่สามารถเชื่อมต่อระบบชำระเงินได้ กรุณาลองใหม่อีกครั้ง กรุณาเลือกบิลที่เพิ่งสร้างและกด \"สร้าง PromptPay QR\" อีกครั้ง",
+      {
+        exact: true,
+      },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("UPG-MONTHLY-20260408", { exact: true })).toBeVisible();
 });
 
 test("billing page shows one-time upgrade CTA only for monthly membership", async ({ page }) => {
