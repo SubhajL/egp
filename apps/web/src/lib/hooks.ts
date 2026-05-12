@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  ApiError,
   fetchAuditLog,
   fetchAdminSnapshot,
   fetchBillingPlans,
@@ -30,6 +31,11 @@ import {
   type FetchSupportTenantsParams,
   type FetchWebhooksParams,
 } from "./api";
+import {
+  clearStoredCurrentSession,
+  readStoredCurrentSession,
+  writeStoredCurrentSession,
+} from "./auth";
 
 export function useProjects(params: FetchProjectsParams = {}) {
   return useQuery({
@@ -94,7 +100,19 @@ export function useRules() {
 export function useMe() {
   return useQuery({
     queryKey: ["me"],
-    queryFn: () => fetchMe(),
+    queryFn: async () => {
+      try {
+        const session = await fetchMe();
+        writeStoredCurrentSession(session);
+        return session;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          clearStoredCurrentSession();
+        }
+        throw error;
+      }
+    },
+    placeholderData: () => readStoredCurrentSession(),
     retry: false,
   });
 }
