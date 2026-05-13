@@ -2,7 +2,7 @@
 
 import { use, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ChevronRight, Download, FileText } from "lucide-react";
+import { AlertTriangle, ChevronRight, Download, FileText, Loader2 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import {
@@ -407,14 +407,19 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                         type="button"
                         onClick={() => void handleDownload(document.id)}
                         disabled={downloadingDocumentId === document.id}
-                        className="shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-surface-hover)] hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        className="shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] hover:bg-[var(--bg-surface-hover)] hover:text-primary disabled:cursor-wait disabled:opacity-70"
                         aria-label={
                           downloadingDocumentId === document.id
                             ? "กำลังเตรียมดาวน์โหลดเอกสาร"
                             : "ดาวน์โหลดเอกสาร"
                         }
+                        aria-busy={downloadingDocumentId === document.id}
                       >
-                        <Download className="size-4" />
+                        {downloadingDocumentId === document.id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Download className="size-4" aria-hidden="true" />
+                        )}
                       </button>
                     </div>
                   ))}
