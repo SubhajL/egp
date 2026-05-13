@@ -74,7 +74,7 @@ def run(argv: list[str] | None = None) -> int:
         return 1
 
     local_url = build_local_url(port=args.port, host=args.host, scheme=args.scheme)
-    command = [executable, "tunnel", "--url", local_url]
+    command = [executable, "--config", os.devnull, "tunnel", "--url", local_url]
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,

@@ -12,6 +12,7 @@ from egp_api.services.payment_provider import (
     CreatedPaymentRequest,
     OpnProvider,
     ParsedPaymentCallback,
+    ProviderPaymentRequest,
 )
 from egp_shared_types.enums import (
     BillingPaymentMethod,
@@ -125,6 +126,12 @@ def _opn_signature(secret: str, raw_body: str) -> str:
         hashlib.sha256,
     ).digest()
     return base64.b64encode(digest).decode("ascii")
+
+
+def _omise_signature(webhook_secret: str, timestamp: str, raw_body: str) -> str:
+    decoded_secret = base64.b64decode(webhook_secret, validate=True)
+    signed_payload = f"{timestamp}.{raw_body}".encode("utf-8")
+    return hmac.new(decoded_secret, signed_payload, hashlib.sha256).hexdigest()
 
 
 def test_create_app_requires_payment_callback_secret(
@@ -612,9 +619,13 @@ def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
 
     provider._request = fake_request  # type: ignore[method-assign]
 
+    raw_body = (
+        '{"id":"evt_test_card_001","key":"charge.complete",'
+        '"data":{"object":"charge","id":"chrg_test_card_001"}}'
+    )
     parsed = provider.parse_callback(
-        headers={"x-opn-signature": _opn_signature("skey_test_example", '{"id":"evt_test_card_001","key":"charge.complete","data":{"object":"charge","id":"chrg_test_card_001"}}')},
-        raw_body='{"id":"evt_test_card_001","key":"charge.complete","data":{"object":"charge","id":"chrg_test_card_001"}}',
+        headers={"x-opn-signature": _opn_signature("skey_test_example", raw_body)},
+        raw_body=raw_body,
         payload={
             "id": "evt_test_card_001",
             "key": "charge.complete",
@@ -622,13 +633,146 @@ def test_opn_charge_callback_uses_link_reference_for_card_requests() -> None:
                 "object": "charge",
                 "id": "chrg_test_card_001",
             },
-        }
+        },
     )
 
     assert parsed.provider_event_id == "evt_test_card_001"
     assert parsed.provider_reference == "link_test_card_001"
     assert parsed.reference_code == "chrg_test_card_001"
     assert parsed.status is BillingPaymentRequestStatus.SETTLED
+
+
+def test_opn_charge_callback_accepts_omise_signature_headers() -> None:
+    webhook_secret = base64.b64encode(b"test-webhook-secret").decode("ascii")
+    provider = OpnProvider(
+        secret_key="skey_test_example",
+        webhook_secret=webhook_secret,
+    )
+
+    def fake_request(*, method: str, path: str, payload=None):
+        assert method == "GET"
+        assert path == "/charges/chrg_test_card_002"
+        assert payload is None
+        return {
+            "id": "chrg_test_card_002",
+            "link": "link_test_card_002",
+            "amount": 150000,
+            "currency": "thb",
+            "status": "successful",
+            "paid_at": "2026-04-05T05:30:00+00:00",
+        }
+
+    provider._request = fake_request  # type: ignore[method-assign]
+
+    timestamp = "1758696391"
+    raw_body = (
+        '{"id":"evt_test_card_002","key":"charge.complete",'
+        '"data":{"object":"charge","id":"chrg_test_card_002"}}'
+    )
+    parsed = provider.parse_callback(
+        headers={
+            "omise-signature": _omise_signature(webhook_secret, timestamp, raw_body),
+            "omise-signature-timestamp": timestamp,
+        },
+        raw_body=raw_body,
+        payload={
+            "id": "evt_test_card_002",
+            "key": "charge.complete",
+            "data": {
+                "object": "charge",
+                "id": "chrg_test_card_002",
+            },
+        },
+    )
+
+    assert parsed.provider_event_id == "evt_test_card_002"
+    assert parsed.provider_reference == "link_test_card_002"
+    assert parsed.reference_code == "chrg_test_card_002"
+    assert parsed.status is BillingPaymentRequestStatus.SETTLED
+
+
+def test_opn_promptpay_request_prefers_authorize_uri_and_sets_return_and_webhook_urls() -> None:
+    provider = OpnProvider(
+        secret_key="skey_test_example",
+        base_url="https://api.egp.test",
+        web_base_url="https://app.egp.test",
+    )
+    captured_requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def fake_request(*, method: str, path: str, payload=None):
+        captured_requests.append((method, path, payload))
+        if path == "/sources":
+            return {
+                "id": "src_test_promptpay_001",
+                "scannable_code": {
+                    "value": "0002010102121234",
+                    "image": {
+                        "download_uri": "https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg",
+                    },
+                },
+                "expires_at": "2026-04-05T05:30:00+00:00",
+            }
+        if path == "/charges":
+            return {
+                "id": "chrg_test_promptpay_001",
+                "status": "pending",
+                "authorize_uri": "https://pay.omise.co/payments/pay2_test_promptpay_001/authorize",
+                "expires_at": "2026-04-05T05:30:00+00:00",
+                "source": {
+                    "scannable_code": {
+                        "value": "0002010102121234",
+                        "image": {
+                            "download_uri": "https://api.omise.co/charges/chrg_test_promptpay_001/qrcode.svg",
+                        },
+                    },
+                },
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    provider._request = fake_request  # type: ignore[method-assign]
+
+    created = provider.create_payment_request(
+        request=ProviderPaymentRequest(
+            provider=BillingPaymentProvider.OPN,
+            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            tenant_id=TENANT_ID,
+            billing_record_id="record-123",
+            record_number="INV-123",
+            amount="25.00",
+            currency="THB",
+            expires_in_minutes=30,
+        )
+    )
+
+    assert created.payment_url == "https://pay.omise.co/payments/pay2_test_promptpay_001/authorize"
+    assert created.provider_reference == "chrg_test_promptpay_001"
+    assert captured_requests == [
+        (
+            "POST",
+            "/sources",
+            {
+                "amount": 2500,
+                "currency": "thb",
+                "type": "promptpay",
+            },
+        ),
+        (
+            "POST",
+            "/charges",
+            {
+                "amount": 2500,
+                "currency": "thb",
+                "source": "src_test_promptpay_001",
+                "description": "Billing record INV-123",
+                "metadata": {
+                    "billing_record_id": "record-123",
+                    "record_number": "INV-123",
+                },
+                "return_uri": "https://app.egp.test/billing?record_id=record-123&payment_return=opn",
+                "webhook_endpoints": ["https://api.egp.test/v1/billing/providers/opn/webhooks"],
+            },
+        ),
+    ]
 
 
 def test_opn_request_encoding_flattens_nested_metadata() -> None:
@@ -639,6 +783,7 @@ def test_opn_request_encoding_flattens_nested_metadata() -> None:
                 "billing_record_id": "record-123",
                 "record_number": "INV-123",
             },
+            "webhook_endpoints": ["https://api.egp.test/v1/billing/providers/opn/webhooks"],
         }
     )
 
@@ -646,4 +791,5 @@ def test_opn_request_encoding_flattens_nested_metadata() -> None:
         ("amount", "150000"),
         ("metadata[billing_record_id]", "record-123"),
         ("metadata[record_number]", "INV-123"),
+        ("webhook_endpoints[]", "https://api.egp.test/v1/billing/providers/opn/webhooks"),
     ]

@@ -85,6 +85,7 @@ def build_billing_service_from_env() -> BillingService:
         promptpay_proxy_id=None,
         opn_public_key=runtime_config.opn_public_key,
         opn_secret_key=runtime_config.opn_secret_key,
+        opn_webhook_secret=runtime_config.opn_webhook_secret,
     )
     if provider is None:
         raise LambdaConfigurationError("payment provider is not configured")

@@ -103,6 +103,9 @@ curl http://127.0.0.1:8010/health
 ./.venv/bin/python scripts/cloudflare_opn_webhook_tunnel.py --port 8000
 ```
 
+The helper intentionally ignores `~/.cloudflared/config.yml` by running Cloudflare with an empty config.
+This prevents existing named-tunnel ingress rules from hijacking your quick tunnel target.
+
 ### Example output
 
 ```text
@@ -175,11 +178,12 @@ You should get:
 ### Common failure modes
 
 - `400 invalid opn webhook signature`
-  - local API is using the wrong `EGP_OPN_SECRET_KEY`
+  - local API is using the wrong `EGP_OPN_SECRET_KEY` or `EGP_OPN_WEBHOOK_SECRET`
 - `404 payment request not found`
   - webhook arrived for a provider reference not stored locally yet
 - `502 ...`
   - provider/runtime failure in the app logic
+  - or your local `cloudflared` is picking up an existing `~/.cloudflared/config.yml` with unrelated ingress rules
 - Cloudflare URL changes
   - quick tunnels are temporary; update OPN test webhook again after restarting the tunnel
 

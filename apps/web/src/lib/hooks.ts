@@ -20,6 +20,7 @@ import {
   fetchSupportSummary,
   fetchSupportTenants,
   fetchWebhooks,
+  type BillingListResponse,
   type FetchAdminSnapshotParams,
   type FetchAuditLogParams,
   type FetchBillingParams,
@@ -32,6 +33,21 @@ import {
   type FetchWebhooksParams,
 } from "./api";
 import { clearStoredCurrentSession, writeStoredCurrentSession } from "./auth";
+
+function shouldAutoRefreshBilling(snapshot: BillingListResponse | undefined): boolean {
+  if (!snapshot) {
+    return false;
+  }
+  return snapshot.records.some((detail) => {
+    const isPayableRecord = ["issued", "awaiting_payment", "overdue", "payment_detected"].includes(
+      detail.record.status,
+    );
+    if (!isPayableRecord) {
+      return false;
+    }
+    return detail.payment_requests.some((request) => request.status === "pending");
+  });
+}
 
 export function useProjects(params: FetchProjectsParams = {}) {
   return useQuery({
@@ -116,6 +132,11 @@ export function useBillingRecords(params: FetchBillingParams = {}) {
   return useQuery({
     queryKey: ["billing-records", params],
     queryFn: () => fetchBillingRecords(params),
+    refetchInterval: (query) => {
+      const snapshot = query.state.data as BillingListResponse | undefined;
+      return shouldAutoRefreshBilling(snapshot) ? 5_000 : false;
+    },
+    refetchIntervalInBackground: true,
   });
 }
 

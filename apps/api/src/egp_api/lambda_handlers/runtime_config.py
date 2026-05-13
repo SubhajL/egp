@@ -23,6 +23,7 @@ class LambdaRuntimeConfig:
     payment_provider: str
     opn_secret_key: str
     opn_public_key: str | None
+    opn_webhook_secret: str | None
 
 
 def _parse_json_bundle(raw_value: str, *, source: str) -> dict[str, str | None]:
@@ -101,6 +102,9 @@ def load_runtime_config(
     opn_public_key = str(
         source_env.get("EGP_OPN_PUBLIC_KEY") or bundle.get("opn_public_key") or ""
     ).strip() or None
+    opn_webhook_secret = str(
+        source_env.get("EGP_OPN_WEBHOOK_SECRET") or bundle.get("opn_webhook_secret") or ""
+    ).strip() or None
 
     if not database_url:
         raise LambdaConfigurationError("DATABASE_URL is required")
@@ -112,4 +116,5 @@ def load_runtime_config(
         payment_provider=payment_provider,
         opn_secret_key=opn_secret_key,
         opn_public_key=opn_public_key,
+        opn_webhook_secret=opn_webhook_secret,
     )
