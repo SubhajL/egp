@@ -1116,6 +1116,24 @@ export async function fetchDocuments(
   return apiFetch<DocumentListResponse>(url);
 }
 
+export type DocumentDownloadLinkResponse = {
+  url: string;
+  filename: string;
+  direct: boolean;
+  size_bytes: number;
+  sha256: string;
+};
+
+export async function fetchDocumentDownloadLink(
+  documentId: string,
+): Promise<DocumentDownloadLinkResponse> {
+  const url = buildUrl(
+    `/v1/documents/${encodeURIComponent(documentId)}/download-link`,
+    {},
+  );
+  return apiFetch<DocumentDownloadLinkResponse>(url);
+}
+
 export async function fetchDocumentDownloadFile(
   documentId: string,
 ) : Promise<DocumentDownloadFileResponse> {

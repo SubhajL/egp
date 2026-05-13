@@ -10,7 +10,7 @@ import {
   STATE_BADGE_CONFIG,
   PROCUREMENT_TYPE_LABELS,
 } from "@/lib/constants";
-import { fetchDocumentDownloadFile, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
+import { fetchDocumentDownloadLink, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
 import { useProjectDetail, useDocuments, useProjectCrawlEvidence } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
@@ -162,15 +162,23 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setDownloadError(null);
     setDownloadingDocumentId(documentId);
     try {
-      const { blob, filename } = await fetchDocumentDownloadFile(documentId);
-      const objectUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+      const link = await fetchDocumentDownloadLink(documentId);
+      // Hand the download off to the browser: it streams to disk natively
+      // (with its own progress UI) instead of buffering the whole file in JS
+      // memory via fetch -> blob -> object URL. For cross-origin signed URLs
+      // (link.direct === true) the `download` attribute is advisory and may be
+      // ignored, but the file still downloads; opening in a new tab keeps the
+      // current page intact.
+      const anchor = document.createElement("a");
+      anchor.href = link.url;
+      anchor.download = link.filename;
+      anchor.rel = "noopener";
+      if (link.direct) {
+        anchor.target = "_blank";
+      }
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
     } catch (downloadException) {
       const message = localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้");
       setDownloadError(message);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
@@ -24,6 +25,23 @@ from egp_shared_types.enums import (
 if TYPE_CHECKING:
     from egp_db.repositories.project_repo import SqlProjectRepository
     from egp_notifications.dispatcher import NotificationDispatcher
+
+
+@dataclass(frozen=True)
+class DocumentDownloadLink:
+    """Resolved download link for a document.
+
+    ``url`` is set when the underlying artifact store can produce a
+    browser-usable HTTP(S) URL (e.g. a Supabase signed URL). When the artifact
+    store can only return a local filesystem path or otherwise non-HTTP value,
+    ``url`` is ``None`` and callers should fall back to the proxied download
+    endpoint.
+    """
+
+    url: str | None
+    filename: str
+    size_bytes: int
+    sha256: str
 
 
 class DocumentIngestService:
@@ -244,4 +262,53 @@ class DocumentIngestService:
         return self._repository.get_document_content(
             tenant_id=tenant_id,
             document_id=document_id,
+        )
+
+    def get_document_download_link(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        expires_in: int = 300,
+    ) -> DocumentDownloadLink:
+        """Resolve a browser-usable download link for ``document_id``.
+
+        Performs the entitlement check, loads document metadata for the link
+        payload, and attempts to obtain a signed URL from the resolved
+        artifact store. When the store returns a value that is not an HTTP(S)
+        URL (for example, the local filesystem store returns a filesystem
+        path), the returned ``DocumentDownloadLink.url`` is ``None`` and the
+        caller is expected to fall back to the proxied download endpoint.
+        """
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="document downloads",
+            )
+        document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
+        if document is None:
+            raise KeyError(document_id)
+
+        signed_url: str | None
+        try:
+            candidate = self._repository.get_download_url(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                expires_in=expires_in,
+            )
+        except Exception:  # noqa: BLE001 - fall back to proxy on any resolver error
+            signed_url = None
+        else:
+            signed_url = (
+                candidate
+                if isinstance(candidate, str)
+                and (candidate.startswith("https://") or candidate.startswith("http://"))
+                else None
+            )
+
+        return DocumentDownloadLink(
+            url=signed_url,
+            filename=document.file_name,
+            size_bytes=document.size_bytes,
+            sha256=document.sha256,
         )

@@ -1233,3 +1233,117 @@ def test_document_download_endpoint_returns_422_when_external_provider_download_
 
     assert response.status_code == 422
     assert "credentials missing" in response.json()["detail"]
+
+
+def test_document_download_endpoint_includes_content_length_and_etag(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    payload = b"tor-bytes"
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(payload).decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document = ingest_response.json()["document"]
+    document_id = document["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-length"] == str(len(payload))
+    assert response.headers["etag"] == f'"{document["sha256"]}"'
+    assert "private" in response.headers["cache-control"]
+
+
+def test_document_download_link_falls_back_to_proxy_url_for_local_store(
+    tmp_path,
+) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document = ingest_response.json()["document"]
+    document_id = document["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download-link",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direct"] is False
+    assert body["filename"] == "tor.pdf"
+    assert body["sha256"] == document["sha256"]
+    assert body["size_bytes"] == document["size_bytes"]
+    # Local filesystem store can't mint a real URL, so we fall back to the
+    # proxied /download route on the API itself.
+    assert body["url"].endswith(f"/v1/documents/{document_id}/download")
+
+
+def test_document_download_link_returns_signed_url_when_store_supports_it(
+    tmp_path, monkeypatch
+) -> None:
+    from egp_db.repositories import document_repo
+
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+
+    signed = "https://signed.example.com/bucket/tor.pdf?token=abc"
+    monkeypatch.setattr(
+        document_repo.SqlDocumentRepository,
+        "get_download_url",
+        lambda self, *, tenant_id, document_id, expires_in=300: signed,
+    )
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download-link",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direct"] is True
+    assert body["url"] == signed
+
+
+def test_document_download_link_returns_404_for_missing_document(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    seed_project(client)
+
+    response = client.get(
+        "/v1/documents/00000000-0000-0000-0000-000000000000/download-link",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 404

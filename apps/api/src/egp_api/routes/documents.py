@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
-from egp_api.services.document_ingest_service import DocumentIngestService
+from egp_api.services.document_ingest_service import DocumentDownloadLink, DocumentIngestService
 from egp_db.repositories.document_repo import (
     DocumentArtifactReadError,
     DocumentDiffRecord,
@@ -117,6 +117,14 @@ class ApplyDocumentReviewActionRequest(BaseModel):
     tenant_id: str | None = None
     action: DocumentReviewAction
     note: str | None = None
+
+
+class DocumentDownloadLinkResponse(BaseModel):
+    url: str
+    filename: str
+    direct: bool
+    size_bytes: int
+    sha256: str
 
 
 class DocumentReviewActionResponse(BaseModel):
@@ -365,8 +373,78 @@ def download_document(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    headers = {
+        "Content-Disposition": _build_content_disposition(document.document.file_name),
+        # Surface the document size so the browser can render an accurate
+        # progress bar instead of an indeterminate spinner.
+        "Content-Length": str(document.document.size_bytes),
+        # Documents are mutable from the user's perspective (a project can
+        # publish a new revision) but byte-identical re-downloads happen often.
+        # Use a private revalidating cache so the browser may reuse but never
+        # share across users.
+        "Cache-Control": "private, max-age=0, must-revalidate",
+        "ETag": f'"{document.document.sha256}"',
+    }
     return StreamingResponse(
         io.BytesIO(document.file_bytes),
         media_type=document.content_type,
-        headers={"Content-Disposition": _build_content_disposition(document.document.file_name)},
+        headers=headers,
+    )
+
+
+@router.get(
+    "/{document_id}/download-link",
+    response_model=DocumentDownloadLinkResponse,
+)
+def get_document_download_link(
+    document_id: str,
+    request: Request,
+    tenant_id: str | None = None,
+    expires_in: int = Query(300, ge=30, le=3600),
+) -> DocumentDownloadLinkResponse:
+    """Resolve the URL the browser should hit to download a document.
+
+    For artifact stores that can mint signed URLs (Supabase, S3, Drive,
+    OneDrive) the response carries a direct, time-limited URL so the browser
+    can stream the bytes from origin storage without proxying through the
+    API. For local-filesystem stores (and any store that cannot produce an
+    HTTP URL) the response falls back to the API's own ``/download`` route.
+
+    The response shape lets the frontend always do the same thing: navigate
+    to ``url`` (e.g. via ``<a href={url} download>``) and let the browser
+    handle streaming + native progress UI, instead of buffering the entire
+    file in JavaScript.
+    """
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    try:
+        link: DocumentDownloadLink = service.get_document_download_link(
+            tenant_id=resolved_tenant_id,
+            document_id=document_id,
+            expires_in=expires_in,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DocumentArtifactReadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if link.url is not None:
+        return DocumentDownloadLinkResponse(
+            url=link.url,
+            filename=link.filename,
+            direct=True,
+            size_bytes=link.size_bytes,
+            sha256=link.sha256,
+        )
+    proxy_url = str(request.url_for("download_document", document_id=document_id))
+    return DocumentDownloadLinkResponse(
+        url=proxy_url,
+        filename=link.filename,
+        direct=False,
+        size_bytes=link.size_bytes,
+        sha256=link.sha256,
     )
