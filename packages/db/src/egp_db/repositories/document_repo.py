@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 import logging
 import mimetypes
+from collections.abc import Iterator
 from pathlib import Path
 import re
 from uuid import uuid4
@@ -30,6 +31,7 @@ from sqlalchemy.engine import Engine, RowMapping
 from egp_crawler_core.document_hasher import hash_file
 from egp_db.artifact_store import (
     ArtifactStore,
+    DEFAULT_DOWNLOAD_CHUNK_SIZE,
     LocalArtifactStore,
     S3ArtifactStore,
     SupabaseArtifactStore,
@@ -100,6 +102,22 @@ class StoreDocumentResult:
 class DocumentContentResult:
     document: DocumentRecord
     file_bytes: bytes
+    content_type: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentContentStream:
+    """Streaming counterpart of :class:`DocumentContentResult`.
+
+    ``chunks`` is an iterator that yields the document bytes in chunks; the
+    iterator must be fully consumed (or closed) by the caller. ``content_type``
+    and ``document`` mirror :class:`DocumentContentResult` so callers can build
+    response headers (Content-Type, Content-Length, ETag) without re-fetching
+    metadata.
+    """
+
+    document: DocumentRecord
+    chunks: "Iterator[bytes]"
     content_type: str
 
 
@@ -1524,6 +1542,106 @@ class SqlDocumentRepository:
             file_bytes=file_bytes,
             content_type=_guess_content_type(document.file_name),
         )
+
+    def iter_document_bytes(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
+    ) -> DocumentContentStream:
+        """Return a streaming view of a document's bytes.
+
+        Resolves the artifact store the same way :meth:`get_document_content`
+        does, but yields bytes in ``chunk_size`` chunks via
+        :func:`iter_artifact_bytes`. Stores that natively support chunked
+        reads (local filesystem, S3 boto3 ``StreamingBody``) get true
+        streaming. Stores that don't fall back to a single chunk so behaviour
+        is unchanged for them.
+
+        On primary-store failure with a managed backup configured, the backup
+        is used (mirroring :meth:`get_document_content`).
+        """
+        document = self.get_document(tenant_id=tenant_id, document_id=document_id)
+        if document is None:
+            raise KeyError(document_id)
+        content_type = _guess_content_type(document.file_name)
+        try:
+            resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+                tenant_id=tenant_id,
+                storage_key=document.storage_key,
+            )
+            decoded_key = resolved_artifact_store.decode_storage_key(
+                document.storage_key
+            )
+            chunks = self._open_chunk_stream(
+                resolved_artifact_store.store,
+                decoded_key,
+                chunk_size=chunk_size,
+            )
+        except Exception as exc:
+            primary_error = self._build_document_read_error(
+                document=document,
+                provider=(
+                    resolved_artifact_store.provider
+                    if "resolved_artifact_store" in locals()
+                    else "unresolved"
+                ),
+                cause=exc,
+            )
+            if document.managed_backup_storage_key is None:
+                raise primary_error from exc
+            try:
+                chunks = self._open_chunk_stream(
+                    self._artifact_store,
+                    document.managed_backup_storage_key,
+                    chunk_size=chunk_size,
+                )
+            except Exception as backup_exc:
+                raise self._build_document_read_error(
+                    document=document,
+                    provider="managed",
+                    cause=backup_exc,
+                ) from backup_exc
+        return DocumentContentStream(
+            document=document,
+            chunks=chunks,
+            content_type=content_type,
+        )
+
+    @staticmethod
+    def _open_chunk_stream(
+        store: ArtifactStore,
+        key: str,
+        *,
+        chunk_size: int,
+    ) -> Iterator[bytes]:
+        """Open a chunk iterator over ``key`` from ``store`` *eagerly*.
+
+        Opening eagerly is important: if the underlying store can't satisfy
+        the read (missing credentials, network failure), the exception must
+        surface here so the repository can fail over to a managed backup. If
+        we returned a lazy generator, the exception would only fire once the
+        HTTP response had already started streaming.
+
+        For stores that expose ``iter_bytes`` we materialise the first chunk
+        so any open/permission errors trip immediately, then re-yield it via
+        :func:`itertools.chain`. For stores without ``iter_bytes`` we call
+        ``get_bytes`` inline (which already raises eagerly) and return a
+        single-chunk iterator preserving prior behaviour.
+        """
+        iter_method = getattr(store, "iter_bytes", None)
+        if callable(iter_method):
+            inner = iter_method(key, chunk_size=chunk_size)
+            try:
+                first = next(inner)
+            except StopIteration:
+                return iter(())
+            from itertools import chain
+
+            return chain((first,), inner)
+        payload = store.get_bytes(key)
+        return iter((payload,)) if payload else iter(())
 
 
 class FilesystemDocumentRepository(SqlDocumentRepository):
