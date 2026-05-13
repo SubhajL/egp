@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from egp_db.artifact_store import (
     ArtifactStore,
@@ -112,6 +113,18 @@ class ResolvedDocumentWritePlan:
 
 
 class TenantArtifactStoreResolver:
+    # Default TTL applied when an OAuth refresh response doesn't carry an
+    # ``expires_in`` hint. Cloud providers typically issue access tokens that
+    # last 3600 s, but Drive/OneDrive both honour 5-minute reuse comfortably.
+    DEFAULT_RESOLUTION_TTL_SECONDS = 300
+    # Safety margin subtracted from any provider-supplied ``expires_in``: we
+    # want to evict the cache entry well before the token actually expires so
+    # an in-flight download never trips a 401 mid-stream.
+    RESOLUTION_TTL_SAFETY_MARGIN_SECONDS = 60
+    # Floor so we never effectively disable caching for tokens that report
+    # very short expiries.
+    MIN_RESOLUTION_TTL_SECONDS = 30
+
     def __init__(
         self,
         *,
@@ -122,6 +135,7 @@ class TenantArtifactStoreResolver:
         google_drive_client: GoogleDriveRuntimeClient | None = None,
         onedrive_oauth_config: OneDriveOAuthConfig | None = None,
         onedrive_client: OneDriveRuntimeClient | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._admin_repository = admin_repository
         self._managed_artifact_store = managed_artifact_store
@@ -130,6 +144,51 @@ class TenantArtifactStoreResolver:
         self._google_drive_client = google_drive_client
         self._onedrive_oauth_config = onedrive_oauth_config
         self._onedrive_client = onedrive_client
+        self._clock = clock if clock is not None else time.monotonic
+        # Cache of (tenant_id, provider, folder_id) -> (expires_at, store).
+        # Bounded indirectly by the number of (tenant, folder) tuples a single
+        # process serves; entries are evicted on access when expired.
+        self._resolution_cache: dict[
+            tuple[str, str, str | None], tuple[float, ResolvedArtifactStore]
+        ] = {}
+
+    def clear_resolution_cache(self) -> None:
+        """Drop all cached provider resolutions (primarily for tests)."""
+        self._resolution_cache.clear()
+
+    def _ttl_from_expires_in(self, expires_in: Any) -> float:
+        try:
+            value = int(expires_in)
+        except (TypeError, ValueError):
+            value = self.DEFAULT_RESOLUTION_TTL_SECONDS
+        if value <= 0:
+            value = self.DEFAULT_RESOLUTION_TTL_SECONDS
+        return float(
+            max(
+                self.MIN_RESOLUTION_TTL_SECONDS,
+                value - self.RESOLUTION_TTL_SAFETY_MARGIN_SECONDS,
+            )
+        )
+
+    def _cache_get(
+        self, key: tuple[str, str, str | None]
+    ) -> ResolvedArtifactStore | None:
+        entry = self._resolution_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, store = entry
+        if expires_at <= self._clock():
+            self._resolution_cache.pop(key, None)
+            return None
+        return store
+
+    def _cache_put(
+        self,
+        key: tuple[str, str, str | None],
+        store: ResolvedArtifactStore,
+        ttl_seconds: float,
+    ) -> None:
+        self._resolution_cache[key] = (self._clock() + ttl_seconds, store)
 
     def resolve_write_plan(self, *, tenant_id: str) -> ResolvedDocumentWritePlan:
         config = self._admin_repository.get_tenant_storage_config(tenant_id=tenant_id)
@@ -206,6 +265,10 @@ class TenantArtifactStoreResolver:
         tenant_id: str,
         folder_id: str | None,
     ) -> ResolvedArtifactStore:
+        cache_key = (tenant_id, "google_drive", folder_id)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         if self._credential_cipher is None:
             raise ValueError(
                 "Google Drive storage credentials secret is not configured"
@@ -246,7 +309,7 @@ class TenantArtifactStoreResolver:
             encrypted_payload=self._credential_cipher.encrypt_dict(updated_credentials),
         )
 
-        return ResolvedArtifactStore(
+        resolved = ResolvedArtifactStore(
             provider="google_drive",
             store=GoogleDriveArtifactStore(
                 client=self._google_drive_client,
@@ -254,6 +317,10 @@ class TenantArtifactStoreResolver:
                 folder_id=folder_id,
             ),
         )
+        self._cache_put(
+            cache_key, resolved, self._ttl_from_expires_in(refreshed.get("expires_in"))
+        )
+        return resolved
 
     def _onedrive(
         self,
@@ -261,6 +328,10 @@ class TenantArtifactStoreResolver:
         tenant_id: str,
         folder_id: str | None,
     ) -> ResolvedArtifactStore:
+        cache_key = (tenant_id, "onedrive", folder_id)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         if self._credential_cipher is None:
             raise ValueError("OneDrive storage credentials secret is not configured")
         if self._onedrive_oauth_config is None:
@@ -297,7 +368,7 @@ class TenantArtifactStoreResolver:
             encrypted_payload=self._credential_cipher.encrypt_dict(updated_credentials),
         )
 
-        return ResolvedArtifactStore(
+        resolved = ResolvedArtifactStore(
             provider="onedrive",
             store=OneDriveArtifactStore(
                 client=self._onedrive_client,
@@ -305,3 +376,7 @@ class TenantArtifactStoreResolver:
                 folder_id=folder_id,
             ),
         )
+        self._cache_put(
+            cache_key, resolved, self._ttl_from_expires_in(refreshed.get("expires_in"))
+        )
+        return resolved

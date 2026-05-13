@@ -11,6 +11,7 @@ from egp_api.services.entitlement_service import TenantEntitlementService
 from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.document_repo import (
     DocumentContentResult,
+    DocumentContentStream,
     SqlDocumentRepository,
     StoreDocumentResult,
 )
@@ -263,6 +264,56 @@ class DocumentIngestService:
             tenant_id=tenant_id,
             document_id=document_id,
         )
+
+    def iter_document_bytes(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        chunk_size: int | None = None,
+    ) -> DocumentContentStream:
+        """Streaming variant of :meth:`download_document`.
+
+        Performs the entitlement check and returns a chunk iterator over the
+        document bytes plus the metadata needed to set response headers.
+        ``chunk_size`` defaults to the artifact store layer's default.
+        """
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="document downloads",
+            )
+        if chunk_size is None:
+            return self._repository.iter_document_bytes(
+                tenant_id=tenant_id,
+                document_id=document_id,
+            )
+        return self._repository.iter_document_bytes(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            chunk_size=chunk_size,
+        )
+
+    def get_document_metadata(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+    ):
+        """Return document metadata after the entitlement check.
+
+        Used by the download route to short-circuit ``If-None-Match`` requests
+        without ever fetching the artifact bytes.
+        """
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="document downloads",
+            )
+        document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
+        if document is None:
+            raise KeyError(document_id)
+        return document
 
     def get_document_download_link(
         self,

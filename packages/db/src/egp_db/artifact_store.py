@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Protocol
+
+
+DEFAULT_DOWNLOAD_CHUNK_SIZE = 64 * 1024
 
 
 class ArtifactStore(Protocol):
@@ -21,6 +25,28 @@ class ArtifactStore(Protocol):
     def delete(self, key: str) -> None: ...
 
     def download_url(self, key: str, *, expires_in: int = 300) -> str: ...
+
+
+def iter_artifact_bytes(
+    store: ArtifactStore,
+    key: str,
+    *,
+    chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE,
+) -> Iterator[bytes]:
+    """Yield ``key`` from ``store`` in chunks.
+
+    Stores that implement an ``iter_bytes(key, *, chunk_size=...)`` method get
+    true streaming. Stores that do not (legacy/cloud SDKs that only expose a
+    full-payload download) fall back to a single chunk via ``get_bytes`` so
+    behaviour is preserved everywhere.
+    """
+    iter_method = getattr(store, "iter_bytes", None)
+    if callable(iter_method):
+        yield from iter_method(key, chunk_size=chunk_size)
+        return
+    payload = store.get_bytes(key)
+    if payload:
+        yield payload
 
 
 class GoogleDriveClientProtocol(Protocol):
@@ -165,6 +191,19 @@ class LocalArtifactStore:
     def get_bytes(self, key: str) -> bytes:
         return (self._base_dir / key).read_bytes()
 
+    def iter_bytes(
+        self, key: str, *, chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE
+    ) -> Iterator[bytes]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        path = self._base_dir / key
+        with path.open("rb") as fh:
+            while True:
+                chunk = fh.read(chunk_size)
+                if not chunk:
+                    return
+                yield chunk
+
     def delete(self, key: str) -> None:
         path = self._base_dir / key
         if path.exists():
@@ -228,6 +267,29 @@ class S3ArtifactStore:
         )
         body = response["Body"]
         return body.read() if hasattr(body, "read") else bytes(body)
+
+    def iter_bytes(
+        self, key: str, *, chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE
+    ) -> Iterator[bytes]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        response = self._s3_client.get_object(
+            Bucket=self._bucket,
+            Key=self._qualified_key(key),
+        )
+        body = response["Body"]
+        # boto3's StreamingBody exposes ``iter_chunks`` for true chunked
+        # streaming over the underlying HTTP socket; fall back to a single
+        # ``read`` for stub clients used in tests.
+        iter_chunks = getattr(body, "iter_chunks", None)
+        if callable(iter_chunks):
+            for chunk in iter_chunks(chunk_size=chunk_size):
+                if chunk:
+                    yield chunk
+            return
+        payload = body.read() if hasattr(body, "read") else bytes(body)
+        if payload:
+            yield payload
 
     def delete(self, key: str) -> None:
         self._s3_client.delete_object(Bucket=self._bucket, Key=self._qualified_key(key))

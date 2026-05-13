@@ -1347,3 +1347,93 @@ def test_document_download_link_returns_404_for_missing_document(tmp_path) -> No
     )
 
     assert response.status_code == 404
+
+
+def test_document_download_endpoint_returns_304_for_matching_if_none_match(
+    tmp_path,
+) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    payload = b"tor-bytes"
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(payload).decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document = ingest_response.json()["document"]
+    document_id = document["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+        headers={"If-None-Match": f'"{document["sha256"]}"'},
+    )
+
+    assert response.status_code == 304
+    assert response.content == b""
+    assert response.headers["etag"] == f'"{document["sha256"]}"'
+    assert "private" in response.headers["cache-control"]
+
+
+def test_document_download_endpoint_returns_200_when_if_none_match_mismatches(
+    tmp_path,
+) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+        headers={"If-None-Match": '"deadbeef"'},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"tor-bytes"
+
+
+def test_document_download_endpoint_streams_local_artifact_in_chunks(tmp_path) -> None:
+    """Sanity check that the streaming path returns the full payload intact."""
+
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    # Big enough to span multiple 64 KiB chunks.
+    payload = b"A" * (200 * 1024)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(payload).decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document_id = ingest_response.json()["document"]["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-length"] == str(len(payload))

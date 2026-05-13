@@ -412,3 +412,92 @@ def test_provider_storage_key_helpers_round_trip_google_drive_key() -> None:
         "managed",
         "tenants/t/file.pdf",
     )
+
+
+def test_resolver_caches_google_drive_resolution_within_ttl(tmp_path) -> None:
+    repository = create_admin_repository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'resolver.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_tenant_storage(repository)
+    google_client = FakeGoogleDriveClient()
+    now = {"value": 1000.0}
+
+    def clock() -> float:
+        return now["value"]
+
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=repository,
+        managed_artifact_store=LocalArtifactStore(tmp_path / "managed"),
+        credential_cipher=StorageCredentialCipher("resolver-secret"),
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+        clock=clock,
+    )
+
+    first = resolver.resolve_for_write(tenant_id=TENANT_ID)
+    # Second call within the TTL window must reuse the cached resolution and
+    # avoid hitting the OAuth refresh endpoint again — the per-request cost
+    # this cache is designed to eliminate.
+    second = resolver.resolve_for_write(tenant_id=TENANT_ID)
+
+    assert first.provider == "google_drive"
+    assert second is first
+    assert google_client.refresh_calls == ["google-refresh-token"]
+
+
+def test_resolver_refreshes_google_drive_after_ttl_expires(tmp_path) -> None:
+    repository = create_admin_repository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'resolver.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_tenant_storage(repository)
+    google_client = FakeGoogleDriveClient()
+    now = {"value": 1000.0}
+
+    def clock() -> float:
+        return now["value"]
+
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=repository,
+        managed_artifact_store=LocalArtifactStore(tmp_path / "managed"),
+        credential_cipher=StorageCredentialCipher("resolver-secret"),
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+        clock=clock,
+    )
+
+    resolver.resolve_for_write(tenant_id=TENANT_ID)
+    # Advance well past the default TTL (300s default minus 60s safety = 240s).
+    now["value"] += 10_000
+    resolver.resolve_for_write(tenant_id=TENANT_ID)
+
+    assert google_client.refresh_calls == [
+        "google-refresh-token",
+        "google-refresh-token",
+    ]
+
+
+def test_resolver_clear_cache_forces_refresh(tmp_path) -> None:
+    repository = create_admin_repository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'resolver.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_tenant_storage(repository)
+    google_client = FakeGoogleDriveClient()
+    resolver = TenantArtifactStoreResolver(
+        admin_repository=repository,
+        managed_artifact_store=LocalArtifactStore(tmp_path / "managed"),
+        credential_cipher=StorageCredentialCipher("resolver-secret"),
+        google_drive_oauth_config=_google_config(),
+        google_drive_client=google_client,
+    )
+
+    resolver.resolve_for_write(tenant_id=TENANT_ID)
+    resolver.clear_resolution_cache()
+    resolver.resolve_for_write(tenant_id=TENANT_ID)
+
+    assert google_client.refresh_calls == [
+        "google-refresh-token",
+        "google-refresh-token",
+    ]

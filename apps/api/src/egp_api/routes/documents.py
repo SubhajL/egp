@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
@@ -350,18 +350,76 @@ def apply_document_review_action(
     return DocumentReviewActionResponse(review=_serialize_review(review))
 
 
+def _matches_etag(if_none_match: str | None, sha256: str) -> bool:
+    """Return True when an ``If-None-Match`` header matches our document ETag.
+
+    Tolerates the weak validator prefix (``W/"..."``), bare hashes, and the
+    multi-tag form (``"a", "b", *``). Comparison is case-sensitive on the hash
+    body itself but tolerant of surrounding quotes/whitespace.
+    """
+    if not if_none_match or not sha256:
+        return False
+    target = sha256.strip()
+    for raw in if_none_match.split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].strip()
+        if candidate.startswith('"') and candidate.endswith('"') and len(candidate) >= 2:
+            candidate = candidate[1:-1]
+        if candidate == target:
+            return True
+    return False
+
+
 @router.get("/{document_id}/download")
-def download_document(
+async def download_document(
     document_id: str,
     request: Request,
     tenant_id: str | None = None,
     expires_in: int = 300,
-) -> StreamingResponse:
+) -> Response:
     del expires_in
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+
+    # Step 1: cheap metadata-only lookup so we can honor ``If-None-Match``
+    # without ever touching the artifact store. Repo + entitlement checks are
+    # synchronous DB calls, so push them off the event loop.
     try:
-        document = service.download_document(
+        document = await run_in_threadpool(
+            service.get_document_metadata,
+            tenant_id=resolved_tenant_id,
+            document_id=document_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    etag_value = f'"{document.sha256}"'
+    cache_control = "private, max-age=0, must-revalidate"
+    if_none_match = request.headers.get("if-none-match")
+    if _matches_etag(if_none_match, document.sha256):
+        # 304 must not have a body; include the ETag and Cache-Control so the
+        # browser can keep using its cached copy.
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag_value, "Cache-Control": cache_control},
+        )
+
+    # Step 2: open a streaming view of the artifact. Resolution + the first
+    # store handshake can do blocking I/O; iteration itself is then fed to
+    # Starlette's StreamingResponse (which iterates sync generators in a
+    # threadpool, so file/HTTP reads don't block the event loop).
+    try:
+        stream = await run_in_threadpool(
+            service.iter_document_bytes,
             tenant_id=resolved_tenant_id,
             document_id=document_id,
         )
@@ -373,21 +431,22 @@ def download_document(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     headers = {
-        "Content-Disposition": _build_content_disposition(document.document.file_name),
+        "Content-Disposition": _build_content_disposition(stream.document.file_name),
         # Surface the document size so the browser can render an accurate
         # progress bar instead of an indeterminate spinner.
-        "Content-Length": str(document.document.size_bytes),
+        "Content-Length": str(stream.document.size_bytes),
         # Documents are mutable from the user's perspective (a project can
         # publish a new revision) but byte-identical re-downloads happen often.
         # Use a private revalidating cache so the browser may reuse but never
         # share across users.
-        "Cache-Control": "private, max-age=0, must-revalidate",
-        "ETag": f'"{document.document.sha256}"',
+        "Cache-Control": cache_control,
+        "ETag": etag_value,
     }
     return StreamingResponse(
-        io.BytesIO(document.file_bytes),
-        media_type=document.content_type,
+        stream.chunks,
+        media_type=stream.content_type,
         headers=headers,
     )
 
