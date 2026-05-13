@@ -190,6 +190,7 @@ EGP_JWT_SECRET=replace_with_long_random_secret
 EGP_PAYMENT_CALLBACK_SECRET=replace_with_long_random_secret
 EGP_OPN_SECRET_KEY=skey_live_or_test_xxxxx
 EGP_OPN_PUBLIC_KEY=pkey_live_or_test_xxxxx
+EGP_OPN_WEBHOOK_SECRET=base64_webhook_secret_from_opn_dashboard
 EGP_PAYMENT_PROVIDER=opn
 EGP_WEB_ALLOWED_ORIGINS=https://app.yourdomain.com,https://www.yourdomain.com
 EGP_WEB_BASE_URL=https://app.yourdomain.com

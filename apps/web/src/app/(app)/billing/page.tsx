@@ -139,11 +139,22 @@ function todayIsoDate(): string {
 function getUpgradeOptions(
   entitlements: EntitlementSummary | undefined,
   billingPlans: BillingPlan[],
+  records: BillingRecordDetail[],
 ): UpgradeOption[] {
   const planMap = new Map(billingPlans.map((plan) => [plan.code, plan]));
+  const openUpgradeTargetPlanCodes = new Set(
+    records
+      .filter(
+        (detail) =>
+          detail.record.upgrade_from_subscription_id !== null &&
+          !["paid", "cancelled", "refunded"].includes(detail.record.status),
+      )
+      .map((detail) => detail.record.plan_code),
+  );
   const currentPlanCode = entitlements?.plan_code;
+  let options: UpgradeOption[] = [];
   if (currentPlanCode === "free_trial") {
-    return ["one_time_search_pack", "monthly_membership"]
+    options = ["one_time_search_pack", "monthly_membership"]
       .map((targetPlanCode) => {
         const plan = planMap.get(targetPlanCode);
         if (!plan) {
@@ -171,13 +182,12 @@ function getUpgradeOptions(
         };
       })
       .filter((option): option is UpgradeOption => option !== null);
-  }
-  if (currentPlanCode === "one_time_search_pack") {
+  } else if (currentPlanCode === "one_time_search_pack") {
     const monthlyPlan = planMap.get("monthly_membership");
     if (!monthlyPlan) {
       return [];
     }
-    return [
+    options = [
       {
         targetPlanCode: monthlyPlan.code,
         title: `อัปเกรดเป็น ${monthlyPlan.label}`,
@@ -191,7 +201,7 @@ function getUpgradeOptions(
       },
     ];
   }
-  return [];
+  return options.filter((option) => !openUpgradeTargetPlanCodes.has(option.targetPlanCode));
 }
 
 function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
@@ -219,6 +229,7 @@ function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
 function UpgradeCallout({
   entitlements,
   billingPlans,
+  records,
   busy,
   busyPlanCode,
   errorMessage,
@@ -227,13 +238,14 @@ function UpgradeCallout({
 }: {
   entitlements: EntitlementSummary | undefined;
   billingPlans: BillingPlan[];
+  records: BillingRecordDetail[];
   busy: boolean;
   busyPlanCode: string | null;
   errorMessage: string | null;
   statusMessage: string | null;
   onUpgrade: (targetPlanCode: string, optionTitle: string) => Promise<void>;
 }) {
-  const options = getUpgradeOptions(entitlements, billingPlans);
+  const options = getUpgradeOptions(entitlements, billingPlans, records);
   if (options.length === 0) {
     return null;
   }
@@ -301,6 +313,8 @@ export default function BillingPage() {
   const { data: plansData } = useBillingPlans();
   const { data: rulesData } = useRules();
   const notice = searchParams.get("notice");
+  const paymentReturn = searchParams.get("payment_return");
+  const requestedRecordId = searchParams.get("record_id")?.trim() ?? "";
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordNumber, setRecordNumber] = useState("");
   const [planCode, setPlanCode] = useState("monthly_membership");
@@ -350,17 +364,27 @@ export default function BillingPage() {
       setSelectedRecordId("");
       return;
     }
-    if (!selectedRecordId || !records.some((item) => item.record.id === selectedRecordId)) {
-      setSelectedRecordId(records[0].record.id);
-      setPaymentAmount(records[0].record.outstanding_balance);
+    const requestedRecord = requestedRecordId
+      ? records.find((item) => item.record.id === requestedRecordId) ?? null
+      : null;
+    if (requestedRecord && selectedRecordId !== requestedRecord.record.id) {
+      setSelectedRecordId(requestedRecord.record.id);
+      setPaymentAmount(requestedRecord.record.outstanding_balance);
+      return;
     }
-  }, [records, selectedRecordId]);
+    if (!selectedRecordId || !records.some((item) => item.record.id === selectedRecordId)) {
+      const fallbackRecord = requestedRecord ?? records[0];
+      setSelectedRecordId(fallbackRecord.record.id);
+      setPaymentAmount(fallbackRecord.record.outstanding_balance);
+    }
+  }, [records, requestedRecordId, selectedRecordId]);
 
   const selectedRecord =
     records.find((item) => item.record.id === selectedRecordId) ?? records[0] ?? null;
   const latestPaymentRequest = selectedRecord?.payment_requests[0] ?? null;
   const latestRequestIsPromptPay = latestPaymentRequest?.payment_method === "promptpay_qr";
   const latestRequestIsCard = latestPaymentRequest?.payment_method === "card";
+  const liveStatusPolling = latestPaymentRequest?.status === "pending";
 
   useEffect(() => {
     let cancelled = false;
@@ -621,6 +645,15 @@ export default function BillingPage() {
         </div>
       ) : null}
 
+      {paymentReturn === "opn" ? (
+        <div className="mt-6 rounded-2xl border border-primary/20 bg-primary/5 px-5 py-4 text-sm text-[var(--text-primary)] shadow-[var(--shadow-soft)]">
+          <p className="font-semibold">กำลังกลับจากหน้าชำระเงินของ Opn</p>
+          <p className="mt-1 text-[var(--text-secondary)]">
+            ระบบจะเลือกบิลที่เกี่ยวข้องให้โดยอัตโนมัติ และรีเฟรชสถานะการชำระเงินทุก 5 วินาทีจนกว่าผลล่าสุดจะเข้าระบบ
+          </p>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
         <SummaryCard
           label="บิลที่ยังเปิดอยู่"
@@ -653,6 +686,7 @@ export default function BillingPage() {
           <UpgradeCallout
             entitlements={rulesData?.entitlements}
             billingPlans={billingPlans}
+            records={records}
             busy={actionBusy}
             busyPlanCode={upgradeInFlightPlanCode}
             errorMessage={upgradeError}
@@ -1045,6 +1079,11 @@ export default function BillingPage() {
                         </div>
                         <StatusBadge state={latestPaymentRequest.status} variant="billing" />
                       </div>
+                      {liveStatusPolling ? (
+                        <p className="mt-2 text-xs text-primary">
+                          ระบบกำลังอัปเดตสถานะอัตโนมัติทุก 5 วินาที
+                        </p>
+                      ) : null}
 
                       {latestRequestIsPromptPay ? (
                         <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[200px_minmax(0,1fr)]">

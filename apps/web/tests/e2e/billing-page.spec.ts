@@ -531,6 +531,97 @@ test("billing page hides upgrade CTA for monthly membership", async ({ page }) =
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toHaveCount(0);
 });
 
+test("billing page hides duplicate one-time CTA when a one-time upgrade is already pending", async ({ page }) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/dashboard/summary":
+        await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, buildPlansResponse());
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, buildRulesResponse("free_trial"));
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, {
+          ...buildBillingRecordsResponse(),
+          records: [
+            {
+              record: {
+                id: "record-upgrade-one-time-1",
+                tenant_id: "tenant-1",
+                record_number: "UPG-ONE-TIME-20260408",
+                plan_code: "one_time_search_pack",
+                status: "awaiting_payment",
+                billing_period_start: "2026-04-08",
+                billing_period_end: "2026-04-10",
+                due_at: null,
+                issued_at: "2026-04-08T00:00:00Z",
+                paid_at: null,
+                currency: "THB",
+                amount_due: "20.00",
+                reconciled_total: "0.00",
+                outstanding_balance: "20.00",
+                upgrade_from_subscription_id: "sub-trial-1",
+                upgrade_mode: "replace_now",
+                notes: null,
+                created_at: "2026-04-08T00:00:00Z",
+                updated_at: "2026-04-08T00:00:00Z",
+              },
+              payment_requests: [
+                {
+                  id: "request-upgrade-one-time-1",
+                  billing_record_id: "record-upgrade-one-time-1",
+                  provider: "opn",
+                  payment_method: "promptpay_qr",
+                  status: "pending",
+                  provider_reference: "chrg_upgrade_one_time_001",
+                  payment_url: "https://pay.omise.co/payments/pay2_test_promptpay_001/authorize",
+                  qr_payload: "0002010102121234",
+                  qr_svg: "<svg></svg>",
+                  amount: "20.00",
+                  currency: "THB",
+                  expires_at: "2026-04-08T01:00:00Z",
+                  settled_at: null,
+                  created_at: "2026-04-08T00:00:00Z",
+                  updated_at: "2026-04-08T00:00:00Z",
+                },
+              ],
+              payments: [],
+              events: [],
+              subscription: null,
+            },
+            ...buildBillingRecordsResponse().records,
+          ],
+          total: 2,
+          summary: {
+            open_records: 1,
+            awaiting_reconciliation: 0,
+            outstanding_amount: "20.00",
+            collected_amount: "0.00",
+          },
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/billing");
+
+  await expect(page.getByText("อัปเกรดจาก Free Trial", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "อัปเกรดเป็น One-Time Search Pack" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
+});
+
 test("billing page shows pending activation copy for future-start upgrades", async ({ page }) => {
   await page.route("**/v1/**", async (route) => {
     const request = route.request();

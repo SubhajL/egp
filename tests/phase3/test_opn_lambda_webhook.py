@@ -143,6 +143,7 @@ def test_runtime_config_supports_secrets_manager_bundle(monkeypatch) -> None:
                     "database_url": "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp",
                     "opn_secret_key": "skey_test_secret_bundle",
                     "opn_public_key": "pkey_test_secret_bundle",
+                    "opn_webhook_secret": "dGVzdC13ZWJob29rLXNlY3JldA==",
                 }
             )
         )
@@ -151,6 +152,7 @@ def test_runtime_config_supports_secrets_manager_bundle(monkeypatch) -> None:
     assert config.database_url == "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp"
     assert config.opn_secret_key == "skey_test_secret_bundle"
     assert config.opn_public_key == "pkey_test_secret_bundle"
+    assert config.opn_webhook_secret == "dGVzdC13ZWJob29rLXNlY3JldA=="
 
 
 def test_runtime_config_supports_ssm_bundle(monkeypatch) -> None:
@@ -173,6 +175,7 @@ def test_runtime_config_supports_ssm_bundle(monkeypatch) -> None:
     assert config.database_url == "postgresql+psycopg://ssm-user:ssm-pass@db.example:5432/egp"
     assert config.opn_secret_key == "skey_test_ssm_bundle"
     assert config.opn_public_key is None
+    assert config.opn_webhook_secret is None
 
 
 def test_lambda_handler_processes_opn_webhook_and_remains_idempotent(

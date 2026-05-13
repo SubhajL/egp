@@ -149,9 +149,28 @@ class OpnProvider:
         *,
         secret_key: str,
         public_key: str | None = None,
+        webhook_secret: str | None = None,
+        base_url: str | None = None,
+        web_base_url: str | None = None,
     ) -> None:
         self._secret_key = secret_key.strip()
         self._public_key = public_key.strip() if public_key else None
+        self._webhook_secret = webhook_secret.strip() if webhook_secret else None
+        self._base_url = base_url.strip().rstrip("/") if base_url else None
+        self._web_base_url = web_base_url.strip().rstrip("/") if web_base_url else None
+
+    @staticmethod
+    def _normalized_headers(headers: dict[str, str] | None) -> dict[str, str]:
+        if headers is None:
+            return {}
+        return {str(key).lower(): str(value) for key, value in headers.items()}
+
+    @staticmethod
+    def _decode_webhook_secret(secret: str) -> bytes:
+        try:
+            return base64.b64decode(secret, validate=True)
+        except ValueError as exc:
+            raise ValueError("invalid opn webhook secret") from exc
 
     def _verify_webhook_signature(
         self,
@@ -159,18 +178,47 @@ class OpnProvider:
         headers: dict[str, str] | None,
         raw_body: str | None,
     ) -> None:
-        signature = str((headers or {}).get("x-opn-signature") or "").strip()
-        if not signature or raw_body is None:
+        if raw_body is None:
             raise ValueError("invalid opn webhook signature")
-        expected = base64.b64encode(
-            hmac.new(
-                self._secret_key.encode("utf-8"),
-                raw_body.encode("utf-8"),
-                hashlib.sha256,
-            ).digest()
-        ).decode("ascii")
-        if not hmac.compare_digest(signature, expected):
-            raise ValueError("invalid opn webhook signature")
+
+        normalized_headers = self._normalized_headers(headers)
+
+        legacy_signature = str(normalized_headers.get("x-opn-signature") or "").strip()
+        if legacy_signature:
+            expected_legacy = base64.b64encode(
+                hmac.new(
+                    self._secret_key.encode("utf-8"),
+                    raw_body.encode("utf-8"),
+                    hashlib.sha256,
+                ).digest()
+            ).decode("ascii")
+            if hmac.compare_digest(legacy_signature, expected_legacy):
+                return
+
+        omise_signature_header = str(
+            normalized_headers.get("omise-signature")
+            or normalized_headers.get("x-omise-signature")
+            or ""
+        ).strip()
+        omise_timestamp = str(
+            normalized_headers.get("omise-signature-timestamp")
+            or normalized_headers.get("x-omise-signature-timestamp")
+            or ""
+        ).strip()
+        if omise_signature_header and omise_timestamp:
+            signatures = [item.strip().lower() for item in omise_signature_header.split(",")]
+            signatures = [item for item in signatures if item]
+            signed_payload = f"{omise_timestamp}.{raw_body}".encode("utf-8")
+
+            secret_candidates: list[bytes] = [self._secret_key.encode("utf-8")]
+            if self._webhook_secret:
+                secret_candidates.insert(0, self._decode_webhook_secret(self._webhook_secret))
+            for secret in secret_candidates:
+                expected_hex = hmac.new(secret, signed_payload, hashlib.sha256).hexdigest()
+                if any(hmac.compare_digest(signature, expected_hex) for signature in signatures):
+                    return
+
+        raise ValueError("invalid opn webhook signature")
 
     @staticmethod
     def _flatten_payload(
@@ -185,6 +233,12 @@ class OpnProvider:
             full_key = f"{prefix}[{key}]" if prefix else key
             if isinstance(value, dict):
                 items.extend(OpnProvider._flatten_payload(value, prefix=full_key))
+                continue
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if item is None:
+                        continue
+                    items.append((f"{full_key}[]", str(item)))
                 continue
             items.append((full_key, str(value)))
         return items
@@ -227,6 +281,29 @@ class OpnProvider:
         return parsed
 
     @staticmethod
+    def _is_public_https_url(url: str | None) -> bool:
+        if not url:
+            return False
+        parsed = parse.urlparse(url)
+        hostname = (parsed.hostname or "").strip().lower()
+        if parsed.scheme != "https":
+            return False
+        return hostname not in {"localhost", "127.0.0.1", "0.0.0.0"} and not hostname.endswith(
+            ".local"
+        )
+
+    def _build_webhook_endpoint(self) -> str | None:
+        if not self._is_public_https_url(self._base_url):
+            return None
+        return f"{self._base_url}/v1/billing/providers/opn/webhooks"
+
+    def _build_billing_return_uri(self, *, billing_record_id: str) -> str | None:
+        if not self._is_public_https_url(self._web_base_url):
+            return None
+        query = parse.urlencode({"record_id": billing_record_id, "payment_return": "opn"})
+        return f"{self._web_base_url}/billing?{query}"
+
+    @staticmethod
     def _to_subunits(amount: str) -> int:
         return int((Decimal(str(amount)) * Decimal("100")).quantize(Decimal("1")))
 
@@ -266,19 +343,28 @@ class OpnProvider:
                     "type": "promptpay",
                 },
             )
+            charge_payload: dict[str, object] = {
+                "amount": amount_subunits,
+                "currency": normalized_currency.lower(),
+                "source": source.get("id"),
+                "description": f"Billing record {request.record_number}",
+                "metadata": {
+                    "billing_record_id": request.billing_record_id,
+                    "record_number": request.record_number,
+                },
+            }
+            return_uri = self._build_billing_return_uri(
+                billing_record_id=request.billing_record_id,
+            )
+            if return_uri:
+                charge_payload["return_uri"] = return_uri
+            webhook_endpoint = self._build_webhook_endpoint()
+            if webhook_endpoint:
+                charge_payload["webhook_endpoints"] = [webhook_endpoint]
             charge = self._request(
                 method="POST",
                 path="/charges",
-                payload={
-                    "amount": amount_subunits,
-                    "currency": normalized_currency.lower(),
-                    "source": source.get("id"),
-                    "description": f"Billing record {request.record_number}",
-                    "metadata": {
-                        "billing_record_id": request.billing_record_id,
-                        "record_number": request.record_number,
-                    },
-                },
+                payload=charge_payload,
             )
             source_payload = (
                 charge.get("source") if isinstance(charge.get("source"), dict) else source
@@ -296,13 +382,15 @@ class OpnProvider:
                 image = scannable_code.get("image")
                 if isinstance(image, dict):
                     qr_image = str(image.get("download_uri") or image.get("uri") or "").strip()
+            payment_url = str(charge.get("authorize_uri") or "").strip()
+            if not payment_url:
+                payment_url = qr_image or f"{self._api_base_url}/charges/{str(charge.get('id') or '').strip()}"
             return CreatedPaymentRequest(
                 provider=BillingPaymentProvider.OPN,
                 payment_method=BillingPaymentMethod.PROMPTPAY_QR,
                 status=self._normalize_status(str(charge.get("status") or "pending")),
                 provider_reference=str(charge.get("id") or "").strip(),
-                payment_url=qr_image
-                or f"{self._api_base_url}/charges/{str(charge.get('id') or '').strip()}",
+                payment_url=payment_url,
                 qr_payload=qr_payload,
                 qr_svg=render_promptpay_qr_svg(qr_payload) if qr_payload else "",
                 amount=request.amount,
@@ -423,6 +511,8 @@ def build_payment_provider(
     promptpay_proxy_id: str | None,
     opn_public_key: str | None = None,
     opn_secret_key: str | None = None,
+    opn_webhook_secret: str | None = None,
+    web_base_url: str | None = None,
 ) -> PaymentProvider | None:
     provider = BillingPaymentProvider(str(provider_name).strip())
     if provider is BillingPaymentProvider.MOCK_PROMPTPAY:
@@ -432,5 +522,11 @@ def build_payment_provider(
     if provider is BillingPaymentProvider.OPN:
         if not opn_secret_key:
             return None
-        return OpnProvider(secret_key=opn_secret_key, public_key=opn_public_key)
+        return OpnProvider(
+            secret_key=opn_secret_key,
+            public_key=opn_public_key,
+            webhook_secret=opn_webhook_secret,
+            base_url=base_url,
+            web_base_url=web_base_url,
+        )
     return None

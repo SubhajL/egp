@@ -40,6 +40,7 @@ from egp_api.config import (
     get_onedrive_scopes,
     get_opn_public_key,
     get_opn_secret_key,
+    get_opn_webhook_secret,
     get_payment_base_url,
     get_payment_callback_secret,
     get_payment_provider,
@@ -556,6 +557,7 @@ def create_app(
     promptpay_proxy_id: str | None = None,
     opn_public_key: str | None = None,
     opn_secret_key: str | None = None,
+    opn_webhook_secret: str | None = None,
     payment_callback_secret: str | None = None,
     web_allowed_origins: list[str] | None = None,
     internal_worker_token: str | None = None,
@@ -802,12 +804,15 @@ def create_app(
         billing_repository,
         profile_repository,
     )
+    resolved_web_base_url = get_web_base_url(None, allowed_origins=resolved_web_allowed_origins)
     resolved_payment_provider = payment_provider or build_payment_provider(
         provider_name=get_payment_provider(None),
         base_url=get_payment_base_url(payment_base_url),
         promptpay_proxy_id=get_promptpay_proxy_id(promptpay_proxy_id),
         opn_public_key=get_opn_public_key(opn_public_key),
         opn_secret_key=get_opn_secret_key(opn_secret_key),
+        opn_webhook_secret=get_opn_webhook_secret(opn_webhook_secret),
+        web_base_url=resolved_web_base_url,
     )
     resolved_payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     if resolved_payment_callback_secret is None:
@@ -816,7 +821,6 @@ def create_app(
         notification_dispatcher,
         entitlement_service,
     )
-    resolved_web_base_url = get_web_base_url(None, allowed_origins=resolved_web_allowed_origins)
     auth_service = AuthService(
         auth_repository,
         admin_repository,

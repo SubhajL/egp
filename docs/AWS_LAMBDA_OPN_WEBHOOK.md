@@ -40,6 +40,7 @@ The Lambda supports three configuration modes:
 - `EGP_PAYMENT_PROVIDER=opn`
 - `EGP_OPN_SECRET_KEY`
 - `EGP_OPN_PUBLIC_KEY` (optional)
+- `EGP_OPN_WEBHOOK_SECRET` (recommended for Omise-Signature verification)
 
 ### Option B — Secrets Manager JSON bundle
 
@@ -53,7 +54,8 @@ Secret value must be a JSON object like:
 {
   "database_url": "postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
   "opn_secret_key": "skey_test_xxxxx",
-  "opn_public_key": "pkey_test_xxxxx"
+  "opn_public_key": "pkey_test_xxxxx",
+  "opn_webhook_secret": "base64_webhook_secret_from_opn_dashboard"
 }
 ```
 
@@ -95,7 +97,8 @@ aws secretsmanager create-secret \
   --secret-string '{
     "database_url":"postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
     "opn_secret_key":"skey_test_xxxxx",
-    "opn_public_key":"pkey_test_xxxxx"
+    "opn_public_key":"pkey_test_xxxxx",
+    "opn_webhook_secret":"base64_webhook_secret_from_opn_dashboard"
   }'
 ```
 
@@ -110,7 +113,8 @@ aws ssm put-parameter \
   --value '{
     "database_url":"postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME",
     "opn_secret_key":"skey_test_xxxxx",
-    "opn_public_key":"pkey_test_xxxxx"
+    "opn_public_key":"pkey_test_xxxxx",
+    "opn_webhook_secret":"base64_webhook_secret_from_opn_dashboard"
   }'
 ```
 
@@ -224,7 +228,7 @@ After the webhook fires, verify:
 
 If testing fails:
 
-- `400 invalid opn webhook signature` → wrong `EGP_OPN_SECRET_KEY`
+- `400 invalid opn webhook signature` → wrong `EGP_OPN_SECRET_KEY` or `EGP_OPN_WEBHOOK_SECRET`
 - `404 payment request not found` → webhook arrived before eGP created/stored the request reference
 - `502 ...` → Lambda can run but cannot complete provider/runtime/DB work
 - timeout / no logs → VPC, subnet, route table, or security group issue

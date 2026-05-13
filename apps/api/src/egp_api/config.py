@@ -232,6 +232,14 @@ def get_opn_secret_key(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_opn_webhook_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_OPN_WEBHOOK_SECRET", "").strip()
+    return raw or None
+
+
 def get_session_cookie_name(override: str | None = None) -> str:
     if override is not None:
         normalized = override.strip()
