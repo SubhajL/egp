@@ -98,6 +98,49 @@ def test_create_app_shares_one_engine_across_repositories(tmp_path) -> None:
     assert app.state.project_repository._engine is app.state.document_repository._engine
 
 
+def test_create_app_exposes_expected_bootstrap_state(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+
+    app = create_app(
+        artifact_root=tmp_path,
+        database_url=database_url,
+        jwt_secret=JWT_SECRET,
+    )
+
+    for state_name in (
+        "admin_repository",
+        "auth_repository",
+        "billing_repository",
+        "document_repository",
+        "project_repository",
+        "profile_repository",
+        "run_repository",
+        "auth_service",
+        "billing_service",
+        "document_ingest_service",
+        "project_ingest_service",
+        "run_service",
+        "rules_service",
+        "discover_spawner",
+        "discovery_dispatch_processor",
+        "session_cookie_name",
+    ):
+        assert hasattr(app.state, state_name), state_name
+
+
+def test_create_app_preserves_background_processor_flags_for_sqlite(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+
+    app = create_app(
+        artifact_root=tmp_path,
+        database_url=database_url,
+        jwt_secret=JWT_SECRET,
+    )
+
+    assert app.state.webhook_delivery_processor_enabled is False
+    assert app.state.discovery_dispatch_processor_enabled is False
+
+
 def test_create_app_requires_database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
