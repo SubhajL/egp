@@ -171,6 +171,9 @@ class FakeAdminRepository:
 
 
 class FakeProfileRepository:
+    def __init__(self) -> None:
+        self.active_keyword_calls = 0
+
     def list_profiles_with_keywords(self, *, tenant_id: str):
         return [
             SimpleNamespace(
@@ -187,6 +190,7 @@ class FakeProfileRepository:
         ]
 
     def list_active_keywords(self, *, tenant_id: str):
+        self.active_keyword_calls += 1
         return ["analytics", "cloud"]
 
 
@@ -198,8 +202,10 @@ class FakeScheduledRunRepository:
 class FakeBillingRepository:
     def __init__(self, subscriptions_by_tenant: dict[str, list[object]]) -> None:
         self._subscriptions_by_tenant = subscriptions_by_tenant
+        self.subscription_calls = 0
 
     def list_subscriptions_for_tenant(self, *, tenant_id: str):
+        self.subscription_calls += 1
         return list(self._subscriptions_by_tenant.get(tenant_id, []))
 
 
@@ -399,6 +405,54 @@ def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(
     assert result["command"] == "discover"
     assert result["run_status"] == "succeeded"
     assert result["project_count"] == 1
+
+
+def test_run_discover_workflow_reuses_authorization_snapshot_for_discovered_projects(
+    monkeypatch,
+) -> None:
+    billing_repository = FakeBillingRepository(
+        {
+            TENANT_ID: [
+                SimpleNamespace(
+                    subscription_status=SimpleNamespace(value="active"),
+                    keyword_limit=5,
+                )
+            ]
+        }
+    )
+    profile_repository = FakeProfileRepository()
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.create_billing_repository",
+        lambda **kwargs: billing_repository,
+    )
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.create_profile_repository",
+        lambda **kwargs: profile_repository,
+    )
+
+    run_discover_workflow(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        tenant_id=TENANT_ID,
+        keyword="analytics",
+        discovered_projects=[
+            {
+                "project_number": "EGP-2026-5010",
+                "project_name": "โครงการระบบข้อมูลกลาง A",
+                "organization_name": "กรมตัวอย่าง",
+            },
+            {
+                "project_number": "EGP-2026-5011",
+                "project_name": "โครงการระบบข้อมูลกลาง B",
+                "organization_name": "กรมตัวอย่าง",
+            },
+        ],
+        run_repository=FakeRunRepository(),
+        project_event_sink=FakeProjectEventSink(),
+    )
+
+    assert billing_repository.subscription_calls == 1
+    assert profile_repository.active_keyword_calls == 1
 
 
 def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
@@ -1731,6 +1785,35 @@ def test_run_scheduled_discovery_executes_due_jobs_from_repository_state() -> No
             "live": True,
         },
     ]
+
+
+def test_run_scheduled_discovery_reuses_authorization_snapshot_per_tenant_batch() -> None:
+    executed_jobs: list[dict[str, object]] = []
+    billing_repository = FakeBillingRepository(
+        {
+            TENANT_ID: [
+                SimpleNamespace(
+                    subscription_status=SimpleNamespace(value="active"),
+                    keyword_limit=5,
+                )
+            ]
+        }
+    )
+    profile_repository = FakeProfileRepository()
+
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=billing_repository,
+        profile_repository=profile_repository,
+        run_repository=FakeScheduledRunRepository(),
+        job_runner=lambda job: executed_jobs.append(job) or {"run_id": "run-1"},
+    )
+
+    assert result["due_job_count"] == 2
+    assert result["executed_job_count"] == 2
+    assert billing_repository.subscription_calls == 1
+    assert profile_repository.active_keyword_calls == 1
 
 
 def test_run_scheduled_discovery_skips_expired_subscription_profiles() -> None:

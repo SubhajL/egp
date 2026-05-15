@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.discovery_authorization import (
+    DiscoveryAuthorizationSnapshot,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
 )
@@ -51,7 +52,9 @@ LIVE_DOCUMENT_COLLECTION_STATUS = "deferred"
 LIVE_DOCUMENT_COLLECTION_REASON = "live_discovery_metadata_first"
 
 
-def _authorize_discovery(*, database_url: str, tenant_id: str, keyword: str) -> None:
+def _load_discovery_authorization_snapshot(
+    *, database_url: str, tenant_id: str
+) -> DiscoveryAuthorizationSnapshot:
     billing_repository = create_billing_repository(
         database_url=database_url,
         bootstrap_schema=False,
@@ -62,12 +65,9 @@ def _authorize_discovery(*, database_url: str, tenant_id: str, keyword: str) -> 
     )
     subscriptions = billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
     active_keywords = profile_repository.list_active_keywords(tenant_id=tenant_id)
-    require_discovery_authorization(
-        snapshot=build_discovery_authorization_snapshot(
-            subscriptions=subscriptions,
-            active_keywords=active_keywords,
-        ),
-        keyword=keyword,
+    return build_discovery_authorization_snapshot(
+        subscriptions=subscriptions,
+        active_keywords=active_keywords,
     )
 
 
@@ -164,8 +164,13 @@ def run_discover_workflow(
     onedrive_oauth_config: OneDriveOAuthConfig | None = None,
     onedrive_client: object | None = None,
 ) -> DiscoverWorkflowResult:
+    authorization_snapshot: DiscoveryAuthorizationSnapshot | None = None
     if database_url is not None:
-        _authorize_discovery(database_url=database_url, tenant_id=tenant_id, keyword=keyword)
+        authorization_snapshot = _load_discovery_authorization_snapshot(
+            database_url=database_url,
+            tenant_id=tenant_id,
+        )
+        require_discovery_authorization(snapshot=authorization_snapshot, keyword=keyword)
     if run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
@@ -224,10 +229,9 @@ def run_discover_workflow(
         task_keyword = str(discovered.get("keyword") or keyword)
         safe_discovered = _task_safe_payload(discovered)
         task = None
-        if database_url is not None:
-            _authorize_discovery(
-                database_url=database_url,
-                tenant_id=tenant_id,
+        if authorization_snapshot is not None:
+            require_discovery_authorization(
+                snapshot=authorization_snapshot,
                 keyword=task_keyword,
             )
         try:
