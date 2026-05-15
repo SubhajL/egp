@@ -142,8 +142,8 @@ cd apps/web && npx eslint src/ --fix
 ### Packages
 
 - **`packages/db/`** — PostgreSQL schema + migrations + repositories
-  - Migrations: `src/migrations/` (numbered sequentially: `001_*.sql`, `002_*.sql`)
-  - Repositories: `src/repositories/` (project_repo, document_repo, run_repo)
+  - Migrations: `src/migrations/` (see `docs/MIGRATION_POLICY.md`)
+  - Repositories: `src/egp_db/repositories/` (project_repo, document_repo, run_repo, and peers)
 
 - **`packages/shared-types/`** — Shared Python enums and type definitions
   - `src/egp_shared_types/enums.py` — ProjectState, ClosedReason, DocumentType, DocumentPhase, etc.
@@ -152,12 +152,12 @@ cd apps/web && npx eslint src/ --fix
   - `src/egp_crawler_core/canonical_id.py` — Canonical project ID generation
   - `src/egp_crawler_core/project_lifecycle.py` — State transition logic
   - `src/egp_crawler_core/closure_rules.py` — Consulting timeout, winner close, stale close
-  - `src/profiles.py` — Keyword profiles (TOR/TOE/LUE/custom)
-  - `src/parser.py` — e-GP page parsing
+  - `src/egp_crawler_core/discovery_authorization.py` — shared discovery entitlement checks
+  - `src/egp_crawler_core/document_hasher.py` — shared document hashing helper
 
-- **`packages/document-classifier/`** — TOR vs invitation vs mid-price classification; public_hearing vs final phase detection
+- **`packages/document-classifier/`** — document classification and document-diff helpers
 
-- **`packages/notification-core/`** — Alert delivery (email, webhook, in-app)
+- **`packages/notification-core/`** — in-app/email notifications plus webhook dispatch/delivery primitives
 
 ### Infrastructure
 
@@ -250,7 +250,8 @@ Closure reasons: `winner_announced`, `contract_signed`, `consulting_timeout_30d`
 
 ### Schema Conventions
 
-- Migrations numbered sequentially: `001_initial_schema.sql`, `002_add_billing.sql`
+- New migrations use the next unused unique prefix after the current maximum; historical duplicate
+  prefixes stay untouched once applied. See `docs/MIGRATION_POLICY.md`.
 - Always add indexes for foreign keys and common query patterns
 - Use `UNIQUE` constraints to enforce business rules (e.g., `documents(project_id, sha256)`)
 - Row-level tenant isolation enforced in repository layer — every query includes `WHERE tenant_id = $1`

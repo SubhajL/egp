@@ -50,6 +50,7 @@ docker compose -f docker-compose-localdev.yml up -d postgres redis
 - Shared Python packages: `packages/` → [see `packages/AGENTS.md`](packages/AGENTS.md)
 - Database package: `packages/db/` → [see `packages/db/AGENTS.md`](packages/db/AGENTS.md)
 - Shared enums/types: `packages/shared-types/` → [see `packages/shared-types/AGENTS.md`](packages/shared-types/AGENTS.md)
+- Migration numbering policy: [`docs/MIGRATION_POLICY.md`](docs/MIGRATION_POLICY.md)
 - Legacy crawler: `egp_crawler.py` and `test_egp_crawler.py` stay useful as extraction references and anti-pattern warnings.
 
 ### Quick Find Commands

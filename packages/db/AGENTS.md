@@ -17,7 +17,9 @@ Current code status: repository modules, storage adapters, and a lightweight mig
 
 ## Patterns & Conventions
 
-- ✅ DO number migrations sequentially, copying the style of [`src/migrations/001_initial_schema.sql`](src/migrations/001_initial_schema.sql).
+- ✅ DO follow the forward-looking numbering rules in
+  [`docs/MIGRATION_POLICY.md`](../../docs/MIGRATION_POLICY.md): keep future prefixes unique and use
+  the next unused prefix after the current maximum.
 - ✅ DO include `tenant_id` on tenant-scoped tables, as shown throughout [`src/migrations/001_initial_schema.sql`](src/migrations/001_initial_schema.sql).
 - ✅ DO keep lifecycle, document, and notification fields constrained with explicit `CHECK` rules, matching the current migration style.
 - ✅ DO add indexes for foreign keys and common query patterns, copying the `CREATE INDEX` sections in [`src/migrations/001_initial_schema.sql`](src/migrations/001_initial_schema.sql).
@@ -30,6 +32,7 @@ Current code status: repository modules, storage adapters, and a lightweight mig
 ## Touch Points / Key Files
 
 - Initial schema: [`src/migrations/001_initial_schema.sql`](src/migrations/001_initial_schema.sql)
+- Migration policy: [`docs/MIGRATION_POLICY.md`](../../docs/MIGRATION_POLICY.md)
 - Package marker: [`src/__init__.py`](src/__init__.py)
 - Shared enum definitions: [`packages/shared-types/src/egp_shared_types/enums.py`](../shared-types/src/egp_shared_types/enums.py)
 - Migration/extraction plan: [`docs/PHASE1_PLAN.md`](../../docs/PHASE1_PLAN.md)
@@ -50,6 +53,8 @@ rg -n "tenant_id|project_state|closed_reason|sha256" packages/db/src/migrations
 - The checked-in migration already encodes business rules for project states, closed reasons, and document hashing.
 - Supabase keeps PostgreSQL semantics; schema work should still look like normal Postgres DDL, not document-store modeling.
 - When repository modules are added, they must keep `tenant_id` filtering explicit.
+- Historical duplicate prefixes (`002_*`, `008_*`) are intentional history now; do not rename already
+  applied migration files just to make the sequence prettier.
 
 ## Pre-PR Checks
 
