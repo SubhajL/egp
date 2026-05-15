@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from egp_crawler_core.discovery_authorization import (
+    DiscoveryAuthorizationSnapshot,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
 )
@@ -102,15 +103,19 @@ def run_scheduled_discovery(
 
     due_jobs = build_scheduled_discovery_jobs(tenants=tenants, now=now)
     filtered_jobs: list[dict[str, object]] = []
+    authorization_snapshots: dict[str, DiscoveryAuthorizationSnapshot] = {}
     for job in due_jobs:
         tenant_id = str(job["tenant_id"])
-        active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant_id)
-        snapshot = build_discovery_authorization_snapshot(
-            subscriptions=resolved_billing_repository.list_subscriptions_for_tenant(
-                tenant_id=tenant_id
-            ),
-            active_keywords=active_keywords,
-        )
+        snapshot = authorization_snapshots.get(tenant_id)
+        if snapshot is None:
+            active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant_id)
+            snapshot = build_discovery_authorization_snapshot(
+                subscriptions=resolved_billing_repository.list_subscriptions_for_tenant(
+                    tenant_id=tenant_id
+                ),
+                active_keywords=active_keywords,
+            )
+            authorization_snapshots[tenant_id] = snapshot
         try:
             require_discovery_authorization(snapshot=snapshot, keyword=str(job["keyword"]))
         except PermissionError:
