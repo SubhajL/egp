@@ -1985,10 +1985,7 @@ export interface components {
         };
         /** DashboardSummaryResponse */
         DashboardSummaryResponse: {
-            /** Cost Summary */
-            cost_summary: {
-                [key: string]: unknown;
-            };
+            cost_summary: components["schemas"]["SupportCostSummaryResponse"];
             /** Daily Discovery */
             daily_discovery: components["schemas"]["DashboardDailyDiscoveryPointResponse"][];
             kpis: components["schemas"]["DashboardKpisResponse"];
@@ -2732,28 +2729,27 @@ export interface components {
         };
         /** SupportCostSummaryResponse */
         SupportCostSummaryResponse: {
-            /** Crawl */
-            crawl: {
-                [key: string]: unknown;
-            };
+            crawl: components["schemas"]["SupportCrawlCostResponse"];
             /** Currency */
             currency: string;
             /** Estimated Total Thb */
             estimated_total_thb: string;
-            /** Notifications */
-            notifications: {
-                [key: string]: unknown;
-            };
-            /** Payments */
-            payments: {
-                [key: string]: unknown;
-            };
-            /** Storage */
-            storage: {
-                [key: string]: unknown;
-            };
+            notifications: components["schemas"]["SupportNotificationCostResponse"];
+            payments: components["schemas"]["SupportPaymentCostResponse"];
+            storage: components["schemas"]["SupportStorageCostResponse"];
             /** Window Days */
             window_days: number;
+        };
+        /** SupportCrawlCostResponse */
+        SupportCrawlCostResponse: {
+            /** Estimated Cost Thb */
+            estimated_cost_thb: string;
+            /** Failed Run Count */
+            failed_run_count: number;
+            /** Run Count */
+            run_count: number;
+            /** Task Count */
+            task_count: number;
         };
         /** SupportFailedRunResponse */
         SupportFailedRunResponse: {
@@ -2781,6 +2777,26 @@ export interface components {
             /** Webhook Subscription Id */
             webhook_subscription_id: string;
         };
+        /** SupportNotificationCostResponse */
+        SupportNotificationCostResponse: {
+            /** Estimated Cost Thb */
+            estimated_cost_thb: string;
+            /** Failed Webhook Delivery Count */
+            failed_webhook_delivery_count: number;
+            /** Sent Count */
+            sent_count: number;
+        };
+        /** SupportPaymentCostResponse */
+        SupportPaymentCostResponse: {
+            /** Billing Record Count */
+            billing_record_count: number;
+            /** Collected Amount Thb */
+            collected_amount_thb: string;
+            /** Estimated Cost Thb */
+            estimated_cost_thb: string;
+            /** Payment Request Count */
+            payment_request_count: number;
+        };
         /** SupportPendingReviewResponse */
         SupportPendingReviewResponse: {
             /** Created At */
@@ -2791,6 +2807,15 @@ export interface components {
             project_id: string;
             /** Status */
             status: string;
+        };
+        /** SupportStorageCostResponse */
+        SupportStorageCostResponse: {
+            /** Document Count */
+            document_count: number;
+            /** Estimated Cost Thb */
+            estimated_cost_thb: string;
+            /** Total Bytes */
+            total_bytes: number;
         };
         /** SupportStorageDiagnosticsResponse */
         SupportStorageDiagnosticsResponse: {

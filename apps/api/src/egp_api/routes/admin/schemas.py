@@ -216,14 +216,40 @@ class SupportAlertResponse(BaseModel):
     detail: str
 
 
+class SupportCrawlCostResponse(BaseModel):
+    estimated_cost_thb: str
+    run_count: int
+    task_count: int
+    failed_run_count: int
+
+
+class SupportStorageCostResponse(BaseModel):
+    estimated_cost_thb: str
+    document_count: int
+    total_bytes: int
+
+
+class SupportNotificationCostResponse(BaseModel):
+    estimated_cost_thb: str
+    sent_count: int
+    failed_webhook_delivery_count: int
+
+
+class SupportPaymentCostResponse(BaseModel):
+    estimated_cost_thb: str
+    billing_record_count: int
+    payment_request_count: int
+    collected_amount_thb: str
+
+
 class SupportCostSummaryResponse(BaseModel):
     window_days: int
     currency: str
     estimated_total_thb: str
-    crawl: dict[str, object]
-    storage: dict[str, object]
-    notifications: dict[str, object]
-    payments: dict[str, object]
+    crawl: SupportCrawlCostResponse
+    storage: SupportStorageCostResponse
+    notifications: SupportNotificationCostResponse
+    payments: SupportPaymentCostResponse
 
 
 class SupportSummaryResponse(BaseModel):

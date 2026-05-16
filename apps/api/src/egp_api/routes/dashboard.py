@@ -6,6 +6,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from egp_api.auth import resolve_request_tenant_id
+from egp_api.routes.admin.schemas import SupportCostSummaryResponse
 from egp_api.services.dashboard_service import DashboardKpis, DashboardService, DashboardSummary
 from egp_db.repositories.project_repo import (
     DashboardDailyDiscoveryPoint,
@@ -74,7 +75,7 @@ class DashboardSummaryResponse(BaseModel):
     winner_projects: list[DashboardWinnerProjectResponse]
     daily_discovery: list[DashboardDailyDiscoveryPointResponse]
     project_state_breakdown: list[DashboardStateBreakdownPointResponse]
-    cost_summary: dict[str, object]
+    cost_summary: SupportCostSummaryResponse
 
 
 def _service_from_request(request: Request) -> DashboardService:
@@ -140,34 +141,34 @@ def _serialize_state_breakdown(
     return DashboardStateBreakdownPointResponse(bucket=point.bucket, count=point.count)
 
 
-def _serialize_cost_summary(summary: SupportCostSummary) -> dict[str, object]:
-    return {
-        "window_days": summary.window_days,
-        "currency": summary.currency,
-        "estimated_total_thb": summary.estimated_total_thb,
-        "crawl": {
+def _serialize_cost_summary(summary: SupportCostSummary) -> SupportCostSummaryResponse:
+    return SupportCostSummaryResponse(
+        window_days=summary.window_days,
+        currency=summary.currency,
+        estimated_total_thb=summary.estimated_total_thb,
+        crawl={
             "estimated_cost_thb": summary.crawl.estimated_cost_thb,
             "run_count": summary.crawl.run_count,
             "task_count": summary.crawl.task_count,
             "failed_run_count": summary.crawl.failed_run_count,
         },
-        "storage": {
+        storage={
             "estimated_cost_thb": summary.storage.estimated_cost_thb,
             "document_count": summary.storage.document_count,
             "total_bytes": summary.storage.total_bytes,
         },
-        "notifications": {
+        notifications={
             "estimated_cost_thb": summary.notifications.estimated_cost_thb,
             "sent_count": summary.notifications.sent_count,
             "failed_webhook_delivery_count": summary.notifications.failed_webhook_delivery_count,
         },
-        "payments": {
+        payments={
             "estimated_cost_thb": summary.payments.estimated_cost_thb,
             "billing_record_count": summary.payments.billing_record_count,
             "payment_request_count": summary.payments.payment_request_count,
             "collected_amount_thb": summary.payments.collected_amount_thb,
         },
-    }
+    )
 
 
 def _serialize_summary(summary: DashboardSummary) -> DashboardSummaryResponse:
