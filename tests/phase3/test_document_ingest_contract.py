@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -245,11 +246,13 @@ def test_api_and_worker_document_ingest_share_project_context_contract(tmp_path)
     )
 
 
-def test_cross_path_document_retry_is_idempotent(tmp_path) -> None:
+def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
     client = _create_test_client(tmp_path, database_name="retry")
     project_id = _seed_public_hearing_project(
         client, project_number="EGP-2026-CONTRACT-RETRY"
     )
+    caplog.set_level(logging.INFO, logger="egp_api.services.document_ingest_service")
+    caplog.set_level(logging.INFO, logger="egp_db.repositories.document_repo")
     api_result = _api_ingest(
         client,
         project_id=project_id,
@@ -283,3 +286,22 @@ def test_cross_path_document_retry_is_idempotent(tmp_path) -> None:
     assert retry_result.document.id == api_result["document"]["id"]
     assert retry_result.diff_records == []
     assert row == (1, 0, 0)
+
+    canonical_success_events = [
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "document_ingest_canonical_succeeded"
+    ]
+    replay_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "") == "document_store_duplicate_replay_detected"
+    )
+
+    assert [record.document_created for record in canonical_success_events] == [True, False]
+    assert canonical_success_events[-1].actor_subject == "system:worker"
+    assert canonical_success_events[-1].diff_record_count == 0
+    assert replay_event.existing_document_id == api_result["document"]["id"]
+    assert replay_event.document_sha256 == api_result["document"]["sha256"]
+    assert replay_event.document_type == "tor"
+    assert replay_event.document_phase == "public_hearing"
