@@ -1,52 +1,19 @@
+import type { components, paths } from "./generated/api-types";
+
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-export type ProjectSummary = {
-  id: string;
-  tenant_id: string;
-  canonical_project_id: string;
-  project_number: string | null;
-  project_name: string;
-  organization_name: string;
-  procurement_type: string;
-  proposal_submission_date: string | null;
-  budget_amount: string | null;
-  project_state: string;
-  closed_reason: string | null;
-  source_status_text: string | null;
-  has_changed_tor: boolean;
-  first_seen_at: string;
-  last_seen_at: string;
-  last_changed_at: string;
-  created_at: string;
-  updated_at: string;
-};
+type ProjectListQueryParams = NonNullable<
+  paths["/v1/projects"]["get"]["parameters"]["query"]
+>;
+type ApiQueryInput<T> = Exclude<T, null | undefined>;
 
-export type ProjectAlias = {
-  id: string;
-  project_id: string;
-  alias_type: string;
-  alias_value: string;
-  created_at: string;
-};
-
-export type ProjectStatusEvent = {
-  id: string;
-  project_id: string;
-  observed_status_text: string;
-  normalized_status: string | null;
-  observed_at: string;
-  run_id: string | null;
-  raw_snapshot: Record<string, unknown> | null;
-  created_at: string;
-};
-
-export type ProjectDetailResponse = {
-  project: ProjectSummary;
-  aliases: ProjectAlias[];
-  status_events: ProjectStatusEvent[];
-};
+export type ProjectSummary = components["schemas"]["ProjectResponse"];
+export type ProjectAlias = components["schemas"]["ProjectAliasResponse"];
+export type ProjectStatusEvent = components["schemas"]["ProjectStatusEventResponse"];
+export type ProjectDetailResponse =
+  paths["/v1/projects/{project_id}"]["get"]["responses"][200]["content"]["application/json"];
 
 export type AuthenticatedUser = {
   id: string | null;
@@ -76,62 +43,23 @@ export type CurrentSessionResponse = {
   requires_billing_update: boolean;
 };
 
-export type ProjectListResponse = {
-  projects: ProjectSummary[];
-  total: number;
-  limit: number;
-  offset: number;
-};
+export type ProjectListResponse =
+  paths["/v1/projects"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DocumentSummary = {
-  id: string;
-  project_id: string;
-  file_name: string;
-  sha256: string;
-  storage_key: string;
-  document_type: string;
-  document_phase: string;
-  source_label: string;
-  source_status_text: string;
-  size_bytes: number;
-  is_current: boolean;
-  supersedes_document_id: string | null;
-  created_at: string;
-};
-
-export type DocumentListResponse = {
-  documents: DocumentSummary[];
-};
+export type DocumentSummary = components["schemas"]["DocumentResponse"];
+export type DocumentListResponse =
+  paths["/v1/documents/projects/{project_id}"]["get"]["responses"][200]["content"]["application/json"];
+export type DocumentDownloadLinkResponse =
+  paths["/v1/documents/{document_id}/download-link"]["get"]["responses"][200]["content"]["application/json"];
 
 export type DocumentDownloadFileResponse = {
   blob: Blob;
   filename: string;
 };
 
-export type ProjectCrawlEvidence = {
-  task_id: string;
-  run_id: string;
-  trigger_type: string;
-  run_status: string;
-  task_type: string;
-  task_status: string;
-  attempts: number;
-  keyword: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  created_at: string;
-  payload: Record<string, unknown> | null;
-  result_json: Record<string, unknown> | null;
-  run_summary_json: Record<string, unknown> | null;
-  run_error_count: number;
-};
-
-export type ProjectCrawlEvidenceListResponse = {
-  evidence: ProjectCrawlEvidence[];
-  total: number;
-  limit: number;
-  offset: number;
-};
+export type ProjectCrawlEvidence = components["schemas"]["ProjectCrawlEvidenceResponse"];
+export type ProjectCrawlEvidenceListResponse =
+  paths["/v1/projects/{project_id}/crawl-evidence"]["get"]["responses"][200]["content"]["application/json"];
 
 export type RunSummary = {
   id: string;
@@ -173,71 +101,13 @@ export type RunListResponse = {
   offset: number;
 };
 
-export type RuleProfile = {
-  id: string;
-  name: string;
-  profile_type: string;
-  is_active: boolean;
-  max_pages_per_keyword: number;
-  close_consulting_after_days: number;
-  close_stale_after_days: number;
-  keywords: string[];
-  created_at: string;
-  updated_at: string;
-};
-
-export type ClosureRulesSummary = {
-  close_on_winner_status: boolean;
-  close_on_contract_status: boolean;
-  winner_status_terms: string[];
-  contract_status_terms: string[];
-  consulting_timeout_days: number;
-  stale_no_tor_days: number;
-  stale_eligible_states: string[];
-  source: string;
-};
-
-export type NotificationRulesSummary = {
-  supported_channels: string[];
-  supported_types: string[];
-  event_wiring_complete: boolean;
-  source: string;
-};
-
-export type ScheduleRulesSummary = {
-  supported_trigger_types: string[];
-  schedule_execution_supported: boolean;
-  editable_in_product: boolean;
-  tenant_crawl_interval_hours: number | null;
-  default_crawl_interval_hours: number;
-  effective_crawl_interval_hours: number;
-  source: string;
-};
-
-export type EntitlementSummary = {
-  plan_code: string | null;
-  plan_label: string | null;
-  subscription_status: string | null;
-  has_active_subscription: boolean;
-  keyword_limit: number | null;
-  active_keyword_count: number;
-  remaining_keyword_slots: number | null;
-  active_keywords: string[];
-  over_keyword_limit: boolean;
-  runs_allowed: boolean;
-  exports_allowed: boolean;
-  document_download_allowed: boolean;
-  notifications_allowed: boolean;
-  source: string;
-};
-
-export type RulesResponse = {
-  profiles: RuleProfile[];
-  entitlements: EntitlementSummary;
-  closure_rules: ClosureRulesSummary;
-  notification_rules: NotificationRulesSummary;
-  schedule_rules: ScheduleRulesSummary;
-};
+export type RuleProfile = components["schemas"]["RuleProfileResponse"];
+export type ClosureRulesSummary = components["schemas"]["ClosureRulesResponse"];
+export type NotificationRulesSummary = components["schemas"]["NotificationRulesResponse"];
+export type ScheduleRulesSummary = components["schemas"]["ScheduleRulesResponse"];
+export type EntitlementSummary = components["schemas"]["EntitlementSummaryResponse"];
+export type RulesResponse =
+  paths["/v1/rules"]["get"]["responses"][200]["content"]["application/json"];
 
 export type ProjectExportResponse = {
   blob: Blob;
@@ -1032,18 +902,9 @@ function parseDownloadFilename(
 /* ------------------------------------------------------------------ */
 
 export type FetchProjectsParams = {
-  project_state?: string[];
-  procurement_type?: string[];
-  closed_reason?: string[];
-  organization?: string;
-  keyword?: string;
-  budget_min?: string;
-  budget_max?: string;
-  updated_after?: string;
-  has_changed_tor?: boolean;
-  has_winner?: boolean;
-  limit?: number;
-  offset?: number;
+  [Key in keyof Omit<ProjectListQueryParams, "tenant_id">]?: ApiQueryInput<
+    Omit<ProjectListQueryParams, "tenant_id">[Key]
+  >;
 };
 
 export type ExportProjectsParams = Omit<FetchProjectsParams, "limit" | "offset">;
@@ -1115,14 +976,6 @@ export async function fetchDocuments(
   const url = buildUrl(`/v1/documents/projects/${encodeURIComponent(projectId)}`, {});
   return apiFetch<DocumentListResponse>(url);
 }
-
-export type DocumentDownloadLinkResponse = {
-  url: string;
-  filename: string;
-  direct: boolean;
-  size_bytes: number;
-  sha256: string;
-};
 
 export async function fetchDocumentDownloadLink(
   documentId: string,
@@ -1375,25 +1228,17 @@ export type SelectOneDriveFolderInput = {
   folder_url?: string;
 };
 
-export type CreateRuleProfileInput = {
-  tenant_id?: string;
-  name: string;
-  profile_type?: string;
-  is_active?: boolean;
-  keywords: string[];
-  max_pages_per_keyword?: number;
-  close_consulting_after_days?: number;
-  close_stale_after_days?: number;
-};
+type CreateRuleProfileRequest = components["schemas"]["CreateRuleProfileRequest"];
 
-export type TriggerManualRecrawlInput = {
-  tenant_id?: string;
-};
+export type CreateRuleProfileInput = Pick<CreateRuleProfileRequest, "name" | "keywords"> &
+  Partial<Omit<CreateRuleProfileRequest, "name" | "keywords">>;
 
-export type TriggerManualRecrawlResponse = {
-  queued_job_count: number;
-  queued_keywords: string[];
-};
+export type TriggerManualRecrawlInput = Partial<
+  components["schemas"]["ManualRecrawlRequest"]
+>;
+
+export type TriggerManualRecrawlResponse =
+  paths["/v1/rules/recrawl"]["post"]["responses"][200]["content"]["application/json"];
 
 export type CreateWebhookInput = {
   tenant_id?: string;
