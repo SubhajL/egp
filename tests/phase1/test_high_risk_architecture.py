@@ -121,11 +121,17 @@ def test_create_app_exposes_expected_bootstrap_state(tmp_path) -> None:
         "project_ingest_service",
         "run_service",
         "rules_service",
+        "discovery_dispatcher",
         "discover_spawner",
         "discovery_dispatch_processor",
         "session_cookie_name",
     ):
         assert hasattr(app.state, state_name), state_name
+
+    assert (
+        app.state.discovery_dispatch_processor.dispatcher
+        is app.state.discovery_dispatcher
+    )
 
 
 def test_create_app_preserves_background_processor_flags_for_sqlite(tmp_path) -> None:
@@ -141,7 +147,9 @@ def test_create_app_preserves_background_processor_flags_for_sqlite(tmp_path) ->
     assert app.state.discovery_dispatch_processor_enabled is False
 
 
-def test_create_app_requires_database_url(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_app_requires_database_url(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
     with pytest.raises(RuntimeError, match="DATABASE_URL is required"):
