@@ -52,8 +52,8 @@ Subdirectory CLAUDE.md files extend these rules with package-specific context.
 # Bootstrap isolated Python environment
 ./scripts/bootstrap_python_env.sh
 
-# Start infrastructure (PostgreSQL + Redis)
-docker compose up -d postgres redis
+# Start infrastructure (PostgreSQL)
+docker compose up -d postgres
 
 # Apply database migrations
 ./.venv/bin/python -m egp_db.migration_runner --database-url "$DATABASE_URL" --migrations-dir packages/db/src/migrations
@@ -322,7 +322,7 @@ Closure reasons: `winner_announced`, `contract_signed`, `consulting_timeout_30d`
 
 ```
 DATABASE_URL=postgresql://egp:egp_dev@localhost:5432/egp
-REDIS_URL=redis://localhost:6379
+EGP_DISCOVERY_WORKER_COUNT=1
 EGP_ARTIFACT_STORE=supabase
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
@@ -359,7 +359,7 @@ You have access to:
 
 - Standard bash tools (`rg`, `git`, `python`, `pip`, `node`, `npm`)
 - GitHub CLI (`gh`) for issues, PRs, releases
-- Docker Compose for local PostgreSQL + Redis
+- Docker Compose for local PostgreSQL
 - `psql` for database access
 - `ruff` for Python linting/formatting
 - `pytest` for Python testing
