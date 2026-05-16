@@ -34,15 +34,16 @@ class DiscoveryJobStore(Protocol):
     ) -> DiscoveryJobRecord: ...
 
 
+@dataclass(frozen=True, slots=True)
+class DiscoveryDispatchRequest:
+    tenant_id: str
+    profile_id: str
+    profile_type: str
+    keyword: str
+
+
 class DiscoveryDispatcher(Protocol):
-    def __call__(
-        self,
-        *,
-        tenant_id: str,
-        profile_id: str,
-        profile_type: str,
-        keyword: str,
-    ) -> None: ...
+    def dispatch(self, request: DiscoveryDispatchRequest) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +68,13 @@ class DiscoveryDispatchProcessor:
 
     def process_job(self, *, job: DiscoveryJobRecord) -> None:
         try:
-            self.dispatcher(
-                tenant_id=job.tenant_id,
-                profile_id=job.profile_id,
-                profile_type=job.profile_type,
-                keyword=job.keyword,
+            self.dispatcher.dispatch(
+                DiscoveryDispatchRequest(
+                    tenant_id=job.tenant_id,
+                    profile_id=job.profile_id,
+                    profile_type=job.profile_type,
+                    keyword=job.keyword,
+                )
             )
         except NonRetriableDiscoveryDispatchError as exc:
             self.repository.record_discovery_job_attempt(

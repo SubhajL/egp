@@ -289,3 +289,10 @@ LOW
 
 ### Rollout Notes
 - CI-only workflow expansion; no runtime rollout, env-var, schema, or backward-compatibility concerns.
+
+## Merge train update - 2026-05-16 09:28:29 +07
+
+- Merged PR #76 (`test(web): add frontend unit test foothold`) into `main` using GitHub admin bypass because GitHub Actions are currently considered non-operational per user instruction.
+- Normal merge attempt was blocked by branch policy; PR was Git-mergeable but check-gated (`Python Lint & Format`, `Frontend Lint & Typecheck`, `Database Migrations`, `Python Tests`, `Frontend Build`, `Build Docker Images`, and `claude-review` all reported failure immediately).
+- Synced local `main` with `origin/main`; no open PRs remain. After this required log append, the only local working-tree change is this Coding Log file.
+- Merge commit: `1354fdaba14af62b49d12ac18bc90c829f844289`.

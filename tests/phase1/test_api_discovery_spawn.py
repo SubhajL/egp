@@ -54,7 +54,7 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(
             captured["summary_json"] = summary_json
 
     monkeypatch.setattr(
-        "egp_api.main.subprocess.Popen",
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
         lambda *args, **kwargs: popen_kwargs.update(kwargs) or process,
     )
 
@@ -135,7 +135,7 @@ def test_discover_spawner_treats_terminated_worker_as_non_retriable(
             return None
 
     monkeypatch.setattr(
-        "egp_api.main.subprocess.Popen",
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
         lambda *args, **kwargs: _FakeProcess(returncode=-signal.SIGTERM),
     )
 
@@ -196,15 +196,11 @@ def test_discover_spawner_forwards_profile_max_pages_to_worker_payload(
             return type(
                 "ProfileDetail",
                 (),
-                {
-                    "profile": type(
-                        "ProfileRecord", (), {"max_pages_per_keyword": 37}
-                    )()
-                },
+                {"profile": type("ProfileRecord", (), {"max_pages_per_keyword": 37})()},
             )()
 
     monkeypatch.setattr(
-        "egp_api.main.subprocess.Popen",
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
         lambda *args, **kwargs: process,
     )
 
@@ -258,7 +254,7 @@ def test_discover_spawner_persists_absolute_worker_log_path_for_relative_artifac
             captured["summary_json"] = summary_json
 
     monkeypatch.setattr(
-        "egp_api.main.subprocess.Popen",
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
         lambda *args, **kwargs: process,
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchRequest,
     DiscoveryDispatchProcessor,
     NonRetriableDiscoveryDispatchError,
 )
@@ -10,6 +11,23 @@ from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROFILE_ID = "22222222-2222-2222-2222-222222222222"
+
+
+class RecordingDiscoveryDispatcher:
+    def __init__(self) -> None:
+        self.requests: list[DiscoveryDispatchRequest] = []
+
+    def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+        self.requests.append(request)
+
+
+class RaisingDiscoveryDispatcher:
+    def __init__(self, exception: Exception) -> None:
+        self.exception = exception
+
+    def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+        del request
+        raise self.exception
 
 
 def _seed_profile_row(repository: SqlDiscoveryJobRepository) -> None:
@@ -53,31 +71,19 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
         profile_type="custom",
         keyword="analytics",
     )
-    dispatched: list[dict[str, str]] = []
-
-    def dispatcher(
-        *, tenant_id: str, profile_id: str, profile_type: str, keyword: str
-    ) -> None:
-        dispatched.append(
-            {
-                "tenant_id": tenant_id,
-                "profile_id": profile_id,
-                "profile_type": profile_type,
-                "keyword": keyword,
-            }
-        )
+    dispatcher = RecordingDiscoveryDispatcher()
 
     processor = DiscoveryDispatchProcessor(repository=repo, dispatcher=dispatcher)
 
     assert processor.process_pending() == 1
     stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
-    assert dispatched == [
-        {
-            "tenant_id": TENANT_ID,
-            "profile_id": PROFILE_ID,
-            "profile_type": "custom",
-            "keyword": "analytics",
-        }
+    assert dispatcher.requests == [
+        DiscoveryDispatchRequest(
+            tenant_id=TENANT_ID,
+            profile_id=PROFILE_ID,
+            profile_type="custom",
+            keyword="analytics",
+        )
     ]
     assert stored.job_status == "dispatched"
     assert stored.attempt_count == 1
@@ -98,15 +104,14 @@ def test_discovery_dispatch_processor_retries_and_then_fails(tmp_path) -> None:
     )
     attempts: list[str] = []
 
-    def dispatcher(
-        *, tenant_id: str, profile_id: str, profile_type: str, keyword: str
-    ) -> None:
-        attempts.append(keyword)
-        raise RuntimeError("spawn failed")
+    class FailingDispatcher:
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            attempts.append(request.keyword)
+            raise RuntimeError("spawn failed")
 
     processor = DiscoveryDispatchProcessor(
         repository=repo,
-        dispatcher=dispatcher,
+        dispatcher=FailingDispatcher(),
         max_attempts=2,
         retry_delay_seconds=0.0,
     )
@@ -125,7 +130,9 @@ def test_discovery_dispatch_processor_retries_and_then_fails(tmp_path) -> None:
     assert second.last_error == "spawn failed"
 
 
-def test_discovery_dispatch_processor_retries_when_worker_exits_non_zero(tmp_path) -> None:
+def test_discovery_dispatch_processor_retries_when_worker_exits_non_zero(
+    tmp_path,
+) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-worker-exit.sqlite3'}",
         bootstrap_schema=True,
@@ -140,7 +147,7 @@ def test_discovery_dispatch_processor_retries_when_worker_exits_non_zero(tmp_pat
 
     processor = DiscoveryDispatchProcessor(
         repository=repo,
-        dispatcher=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("worker exited non-zero")),
+        dispatcher=RaisingDiscoveryDispatcher(RuntimeError("worker exited non-zero")),
         max_attempts=2,
         retry_delay_seconds=0.0,
     )
@@ -175,7 +182,7 @@ def test_discovery_dispatch_processor_fails_immediately_on_non_retriable_error(
 
     processor = DiscoveryDispatchProcessor(
         repository=repo,
-        dispatcher=lambda **kwargs: (_ for _ in ()).throw(
+        dispatcher=RaisingDiscoveryDispatcher(
             NonRetriableDiscoveryDispatchError("active subscription required for runs")
         ),
         max_attempts=3,

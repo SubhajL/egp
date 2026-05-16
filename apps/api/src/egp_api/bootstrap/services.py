@@ -24,6 +24,7 @@ from egp_api.services.auth_service import AuthService
 from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
+from egp_api.services.discovery_dispatch import DiscoveryDispatcher
 from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.entitlement_service import (
     EntitlementAwareNotificationDispatcher,
@@ -59,7 +60,7 @@ def configure_services(
     payment_callback_secret: str | None,
     resolved_web_allowed_origins: list[str],
     discover_spawner_factory: Callable[..., Callable[..., None]],
-    discovery_dispatcher_factory: Callable[[FastAPI], Callable[..., None]],
+    discovery_dispatcher_factory: Callable[[FastAPI], DiscoveryDispatcher],
     discovery_loop_enabled: Callable[[str], bool],
     discovery_route_kick_enabled: Callable[[str], bool],
 ) -> None:
@@ -210,7 +211,9 @@ def configure_services(
         run_repository=bundle.run_repository,
         profile_repository=bundle.profile_repository,
     )
+    discovery_dispatcher = discovery_dispatcher_factory(app)
+    app.state.discovery_dispatcher = discovery_dispatcher
     app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
         repository=bundle.discovery_job_repository,
-        dispatcher=discovery_dispatcher_factory(app),
+        dispatcher=discovery_dispatcher,
     )
