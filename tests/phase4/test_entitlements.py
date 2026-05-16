@@ -517,6 +517,27 @@ def test_export_requires_active_subscription(tmp_path) -> None:
     assert response.json()["detail"] == "active subscription required for exports"
 
 
+def test_free_trial_export_is_denied_by_exports_capability(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    _seed_project(client)
+
+    response = client.get("/v1/exports/excel", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "exports capability is not included in current plan"
+    )
+
+
 def test_document_download_requires_active_subscription(tmp_path) -> None:
     client = _create_client(tmp_path)
     project = _seed_project(client)
@@ -535,10 +556,101 @@ def test_document_download_requires_active_subscription(tmp_path) -> None:
     )
 
 
+def test_free_trial_document_download_is_denied_by_download_capability(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    project = _seed_project(client)
+    created = _ingest_document(client, project_id=project.id, content=b"tor-v1")
+    document_id = created["document"]["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "document downloads capability is not included in current plan"
+    )
+
+
+def test_free_trial_document_download_link_is_denied_by_download_capability(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
+    )
+    project = _seed_project(client)
+    created = _ingest_document(client, project_id=project.id, content=b"tor-v1")
+    document_id = created["document"]["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download-link",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "document downloads capability is not included in current plan"
+    )
+
+
 def test_notifications_are_suppressed_when_entitlement_inactive(tmp_path) -> None:
     sent: list[str] = []
     client = _create_client(
         tmp_path, email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    client.app.state.notification_repository.create_user(
+        tenant_id=TENANT_ID,
+        email="ops@example.com",
+        role=UserRole.OWNER,
+    )
+    project = _seed_project(client)
+
+    first = _ingest_document(
+        client, project_id=project.id, content=b"tor-v1", file_name="tor-v1.pdf"
+    )
+    second = _ingest_document(
+        client, project_id=project.id, content=b"tor-v2", file_name="tor-v2.pdf"
+    )
+
+    notifications = client.app.state.notification_repository.list_for_tenant(TENANT_ID)
+
+    assert first["created"] is True
+    assert second["created"] is True
+    assert notifications == []
+    assert sent == []
+
+
+def test_free_trial_notifications_are_suppressed_by_notifications_capability(
+    tmp_path,
+) -> None:
+    sent: list[str] = []
+    client = _create_client(
+        tmp_path, email_sender=lambda *, to, subject, body: sent.append(to)
+    )
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=5),
     )
     client.app.state.notification_repository.create_user(
         tenant_id=TENANT_ID,

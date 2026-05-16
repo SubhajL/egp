@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from jose import jwt
@@ -68,6 +69,103 @@ def _seed_tenant(
         )
 
 
+def _seed_subscription(
+    client: TestClient,
+    *,
+    tenant_id: str = TENANT_ID,
+    plan_code: str,
+    keyword_limit: int,
+) -> None:
+    today = date.today()
+    now = datetime.now(UTC).isoformat()
+    record_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_records (
+                    id,
+                    tenant_id,
+                    record_number,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    currency,
+                    amount_due,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :record_number,
+                    :plan_code,
+                    'paid',
+                    :billing_period_start,
+                    :billing_period_end,
+                    'THB',
+                    '0.00',
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": record_id,
+                "tenant_id": tenant_id,
+                "record_number": f"INV-{record_id[:8]}",
+                "plan_code": plan_code,
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=5)).isoformat(),
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO billing_subscriptions (
+                    id,
+                    tenant_id,
+                    billing_record_id,
+                    plan_code,
+                    status,
+                    billing_period_start,
+                    billing_period_end,
+                    keyword_limit,
+                    activated_at,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    :billing_record_id,
+                    :plan_code,
+                    'active',
+                    :billing_period_start,
+                    :billing_period_end,
+                    :keyword_limit,
+                    :activated_at,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "tenant_id": tenant_id,
+                "billing_record_id": record_id,
+                "plan_code": plan_code,
+                "billing_period_start": (today - timedelta(days=1)).isoformat(),
+                "billing_period_end": (today + timedelta(days=5)).isoformat(),
+                "keyword_limit": keyword_limit,
+                "activated_at": now,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+
 def _auth_headers(*, tenant_id: str = TENANT_ID, role: str) -> dict[str, str]:
     token = jwt.encode(
         {
@@ -84,6 +182,11 @@ def _auth_headers(*, tenant_id: str = TENANT_ID, role: str) -> dict[str, str]:
 def test_create_and_list_webhooks_returns_tenant_scoped_configuration(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+    )
     _seed_tenant(
         client,
         tenant_id=OTHER_TENANT_ID,
@@ -120,6 +223,11 @@ def test_create_and_list_webhooks_returns_tenant_scoped_configuration(tmp_path) 
 def test_delete_webhook_soft_disables_subscription(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+    )
 
     created = client.post(
         "/v1/webhooks",
@@ -141,6 +249,35 @@ def test_delete_webhook_soft_disables_subscription(tmp_path) -> None:
     assert deleted.status_code == 204
     assert listed.status_code == 200
     assert listed.json()["webhooks"] == []
+
+
+def test_free_trial_webhook_creation_is_denied_by_notifications_capability(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client, plan_code="free_trial")
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        keyword_limit=1,
+    )
+
+    response = client.post(
+        "/v1/webhooks",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Ops Receiver",
+            "url": "https://hooks.example.com/egp",
+            "notification_types": ["export_ready"],
+            "signing_secret": "super-secret",
+        },
+    )
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "notifications capability is not included in current plan"
+    )
 
 
 def test_webhook_routes_require_admin_role(tmp_path) -> None:
@@ -195,6 +332,11 @@ def test_webhook_routes_reject_invalid_notification_types_and_bad_urls(
 def test_webhook_routes_reject_cross_tenant_delete_attempt(tmp_path) -> None:
     client = _create_client(tmp_path, auth_required=True)
     _seed_tenant(client, tenant_id=TENANT_ID, slug="tenant-one")
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+    )
     _seed_tenant(
         client,
         tenant_id=OTHER_TENANT_ID,

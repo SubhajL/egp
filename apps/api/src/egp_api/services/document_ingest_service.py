@@ -283,9 +283,9 @@ class DocumentIngestService:
         expires_in: int = 300,
     ) -> str:
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
-                capability="document downloads",
+                capability="document_downloads",
             )
         return self._repository.get_download_url(
             tenant_id=tenant_id,
@@ -300,9 +300,9 @@ class DocumentIngestService:
         document_id: str,
     ) -> DocumentContentResult:
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
-                capability="document downloads",
+                capability="document_downloads",
             )
         return self._repository.get_document_content(
             tenant_id=tenant_id,
@@ -323,9 +323,9 @@ class DocumentIngestService:
         ``chunk_size`` defaults to the artifact store layer's default.
         """
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
-                capability="document downloads",
+                capability="document_downloads",
             )
         if chunk_size is None:
             return self._repository.iter_document_bytes(
@@ -350,9 +350,9 @@ class DocumentIngestService:
         without ever fetching the artifact bytes.
         """
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
-                capability="document downloads",
+                capability="document_downloads",
             )
         document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
         if document is None:
@@ -376,9 +376,9 @@ class DocumentIngestService:
         caller is expected to fall back to the proxied download endpoint.
         """
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
-                capability="document downloads",
+                capability="document_downloads",
             )
         document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
         if document is None:

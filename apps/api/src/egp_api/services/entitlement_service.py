@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 
 ENTITLEMENT_SOURCE = "billing_subscriptions + crawl_profile_keywords"
+CapabilityKey = Literal["exports", "document_downloads", "notifications"]
 
 
 class EntitlementError(PermissionError):
@@ -43,6 +44,25 @@ class TenantEntitlementSnapshot:
     document_download_allowed: bool
     notifications_allowed: bool
     source: str = ENTITLEMENT_SOURCE
+
+
+@dataclass(frozen=True, slots=True)
+class _CapabilitySpec:
+    snapshot_field: str
+    label: str
+
+
+_CAPABILITY_SPECS: dict[str, _CapabilitySpec] = {
+    "exports": _CapabilitySpec(snapshot_field="exports_allowed", label="exports"),
+    "document_downloads": _CapabilitySpec(
+        snapshot_field="document_download_allowed",
+        label="document downloads",
+    ),
+    "notifications": _CapabilitySpec(
+        snapshot_field="notifications_allowed",
+        label="notifications",
+    ),
+}
 
 
 def _select_current_subscription(
@@ -145,6 +165,22 @@ class TenantEntitlementService:
             raise EntitlementError(f"active subscription required for {capability}")
         return snapshot
 
+    def require_capability(
+        self, *, tenant_id: str, capability: CapabilityKey
+    ) -> TenantEntitlementSnapshot:
+        spec = _CAPABILITY_SPECS.get(capability)
+        if spec is None:
+            raise ValueError(f"unknown entitlement capability: {capability}")
+        snapshot = self.require_active_subscription(
+            tenant_id=tenant_id,
+            capability=spec.label,
+        )
+        if not bool(getattr(snapshot, spec.snapshot_field)):
+            raise EntitlementError(
+                f"{spec.label} capability is not included in current plan"
+            )
+        return snapshot
+
     def require_discover_keyword(
         self, *, tenant_id: str, keyword: str
     ) -> TenantEntitlementSnapshot:
@@ -163,7 +199,11 @@ class TenantEntitlementService:
         return snapshot
 
     def notifications_allowed(self, *, tenant_id: str) -> bool:
-        return self.get_snapshot(tenant_id=tenant_id).notifications_allowed
+        try:
+            self.require_capability(tenant_id=tenant_id, capability="notifications")
+        except EntitlementError:
+            return False
+        return True
 
 
 class EntitlementAwareNotificationDispatcher:
@@ -183,7 +223,12 @@ class EntitlementAwareNotificationDispatcher:
         project_id: str | None = None,
         template_vars: dict[str, str] | None = None,
     ) -> Notification | None:
-        if not self._entitlement_service.notifications_allowed(tenant_id=tenant_id):
+        try:
+            self._entitlement_service.require_capability(
+                tenant_id=tenant_id,
+                capability="notifications",
+            )
+        except EntitlementError:
             return None
         return self._dispatcher.dispatch(
             tenant_id=tenant_id,
