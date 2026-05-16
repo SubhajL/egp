@@ -8,6 +8,7 @@ from fastapi import FastAPI
 
 from egp_api.bootstrap.repositories import RepositoryBundle
 from egp_api.config import (
+    BackgroundRuntimeMode,
     get_payment_base_url,
     get_payment_callback_secret,
     get_payment_provider,
@@ -61,8 +62,9 @@ def configure_services(
     resolved_web_allowed_origins: list[str],
     discover_spawner_factory: Callable[..., Callable[..., None]],
     discovery_dispatcher_factory: Callable[[FastAPI], DiscoveryDispatcher],
-    discovery_loop_enabled: Callable[[str], bool],
-    discovery_route_kick_enabled: Callable[[str], bool],
+    discovery_loop_enabled: Callable[..., bool],
+    discovery_route_kick_enabled: Callable[..., bool],
+    background_runtime_mode: BackgroundRuntimeMode,
 ) -> None:
     notification_service = NotificationService(
         smtp_config=get_smtp_config(smtp_config),
@@ -144,12 +146,17 @@ def configure_services(
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
     app.state.webhook_delivery_processor = webhook_delivery_processor
-    app.state.webhook_delivery_processor_enabled = not is_sqlite_url(bundle.resolved_database_url)
+    app.state.background_runtime_mode = background_runtime_mode
+    app.state.webhook_delivery_processor_enabled = (
+        background_runtime_mode == "embedded" and not is_sqlite_url(bundle.resolved_database_url)
+    )
     app.state.discovery_dispatch_processor_enabled = discovery_loop_enabled(
-        bundle.resolved_database_url
+        bundle.resolved_database_url,
+        background_runtime_mode=background_runtime_mode,
     )
     app.state.discovery_dispatch_route_kick_enabled = discovery_route_kick_enabled(
-        bundle.resolved_database_url
+        bundle.resolved_database_url,
+        background_runtime_mode=background_runtime_mode,
     )
     app.state.support_service = SupportService(bundle.support_repository)
     app.state.webhook_service = WebhookService(
