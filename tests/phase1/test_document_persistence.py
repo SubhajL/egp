@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import sqlite3
 from unittest.mock import patch
@@ -29,6 +30,30 @@ from egp_shared_types.enums import (
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROJECT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def test_document_repository_is_split_behind_compatibility_facade() -> None:
+    facade = importlib.import_module("egp_db.repositories.document_repo")
+    split_modules = [
+        "egp_db.repositories.document_models",
+        "egp_db.repositories.document_schema",
+        "egp_db.repositories.document_utils",
+        "egp_db.repositories.document_persistence",
+        "egp_db.repositories.document_diffs",
+        "egp_db.repositories.document_reviews",
+        "egp_db.repositories.document_delivery",
+    ]
+
+    for module_name in split_modules:
+        importlib.import_module(module_name)
+
+    assert facade.SqlDocumentRepository is SqlDocumentRepository
+    assert facade.FilesystemDocumentRepository is FilesystemDocumentRepository
+    assert facade.DocumentArtifactReadError is DocumentArtifactReadError
+    assert facade.DOCUMENTS_TABLE.name == "documents"
+    assert facade.DOCUMENT_DIFFS_TABLE.name == "document_diffs"
+    assert facade.DOCUMENT_DIFF_REVIEWS_TABLE.name == "document_diff_reviews"
+    assert facade.DOCUMENT_REVIEW_EVENTS_TABLE.name == "document_review_events"
 
 
 class FakeGoogleDriveClient:
