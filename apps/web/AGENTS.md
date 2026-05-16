@@ -10,12 +10,13 @@
 ```bash
 cd apps/web && npm install
 cd apps/web && npm run dev
+cd apps/web && npm run test:unit
 cd apps/web && npm run typecheck
 cd apps/web && npm run build
 cd apps/web && npm run lint
 ```
 
-Current test status: Playwright browser smoke tests are configured in [`package.json`](package.json) and cover the auth lifecycle pages plus a protected-route auth gate.
+Current test status: fast Vitest unit/contract tests now cover shared frontend helpers, while Playwright browser smoke tests cover the auth lifecycle pages plus a protected-route auth gate.
 
 ## Patterns & Conventions
 
@@ -52,6 +53,7 @@ rg -n "fetch[A-Z]|use[A-Z].*Query|readRuntimeEnv" apps/web/src
 
 ## Common Gotchas
 
+- Run `npm run test:unit` for the fast contract layer.
 - Run `npm test` or `npm run test:e2e` to execute the Playwright browser smoke suite.
 - Keep new code inside `src/` or TypeScript will ignore it.
 - `next-env.d.ts` and `.next/types` are part of the expected Next.js TypeScript setup; don't remove them to quiet the tree.
@@ -61,5 +63,5 @@ rg -n "fetch[A-Z]|use[A-Z].*Query|readRuntimeEnv" apps/web/src
 Current frontend gate:
 
 ```bash
-cd apps/web && npm test && npm run typecheck && npm run lint && npm run build
+cd apps/web && npm run test:unit && npm test && npm run typecheck && npm run lint && npm run build
 ```

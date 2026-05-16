@@ -6,6 +6,7 @@
     "build": "npm --prefix apps/web run build",
     "lint": "npm --prefix apps/web run lint",
     "typecheck": "npm --prefix apps/web run typecheck",
+    "test:unit": "npm --prefix apps/web run test:unit",
     "test:e2e": "npm --prefix apps/web run test:e2e"
   }
 }
