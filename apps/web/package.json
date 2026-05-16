@@ -9,6 +9,7 @@
     "start": "node .next/standalone/server.js",
     "lint": "next lint",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test:unit": "vitest run",
     "test": "playwright test",
     "test:e2e": "playwright test"
   },
@@ -37,6 +38,7 @@
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.0.0",
     "tailwindcss": "^4.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.6"
   }
 }

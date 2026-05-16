@@ -31,6 +31,7 @@ import {
   type FetchSupportSummaryParams,
   type FetchSupportTenantsParams,
   type FetchWebhooksParams,
+  type CurrentSessionResponse,
 } from "./api";
 import { clearStoredCurrentSession, writeStoredCurrentSession } from "./auth";
 
@@ -109,21 +110,23 @@ export function useRules() {
   });
 }
 
+export async function fetchCurrentSession(): Promise<CurrentSessionResponse> {
+  try {
+    const session = await fetchMe();
+    writeStoredCurrentSession(session);
+    return session;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      clearStoredCurrentSession();
+    }
+    throw error;
+  }
+}
+
 export function useMe() {
   return useQuery({
     queryKey: ["me"],
-    queryFn: async () => {
-      try {
-        const session = await fetchMe();
-        writeStoredCurrentSession(session);
-        return session;
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
-          clearStoredCurrentSession();
-        }
-        throw error;
-      }
-    },
+    queryFn: fetchCurrentSession,
     retry: false,
   });
 }

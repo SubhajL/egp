@@ -65,6 +65,10 @@ jobs:
         working-directory: apps/web
         run: npm run typecheck
 
+      - name: Run frontend unit tests
+        working-directory: apps/web
+        run: npm run test:unit
+
       - name: Run ESLint
         working-directory: apps/web
         run: npm run lint
