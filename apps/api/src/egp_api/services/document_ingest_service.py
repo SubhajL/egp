@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from dataclasses import dataclass
+import logging
 from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import TenantEntitlementService
@@ -26,6 +27,8 @@ from egp_shared_types.enums import (
 if TYPE_CHECKING:
     from egp_db.repositories.project_repo import SqlProjectRepository
     from egp_notifications.dispatcher import NotificationDispatcher
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -91,11 +94,27 @@ class DocumentIngestService:
         project_state: str | None = None,
         actor_subject: str | None = None,
     ) -> StoreDocumentResult:
+        resolved_actor_subject = actor_subject or "system:api"
         resolved_status_text, resolved_project_state = self._resolve_project_context(
             tenant_id=tenant_id,
             project_id=project_id,
             source_status_text=source_status_text,
             project_state=project_state,
+        )
+        logger.info(
+            "Canonical document ingest started for %s",
+            file_name,
+            extra={
+                "egp_event": "document_ingest_canonical_started",
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "file_name": file_name,
+                "source_label": source_label,
+                "source_status_present": bool(resolved_status_text),
+                "source_page_text_present": bool(source_page_text),
+                "project_state": resolved_project_state,
+                "actor_subject": resolved_actor_subject,
+            },
         )
         result = self._repository.store_document(
             tenant_id=tenant_id,
@@ -115,7 +134,7 @@ class DocumentIngestService:
                 entity_id=result.document.id,
                 project_id=project_id,
                 document_id=result.document.id,
-                actor_subject=actor_subject or "system:api",
+                actor_subject=resolved_actor_subject,
                 event_type="document.created",
                 summary=f"Stored document {result.document.file_name}",
                 metadata_json={
@@ -124,6 +143,23 @@ class DocumentIngestService:
                     "file_name": result.document.file_name,
                 },
             )
+        logger.info(
+            "Canonical document ingest succeeded for %s",
+            file_name,
+            extra={
+                "egp_event": "document_ingest_canonical_succeeded",
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "file_name": file_name,
+                "document_id": result.document.id,
+                "document_sha256": result.document.sha256,
+                "document_type": result.document.document_type.value,
+                "document_phase": result.document.document_phase.value,
+                "document_created": result.created,
+                "diff_record_count": len(result.diff_records),
+                "actor_subject": resolved_actor_subject,
+            },
+        )
         return result
 
     def ingest_document(

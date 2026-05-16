@@ -86,6 +86,95 @@ Lock PR 9's document-ingest contract before the PR 10 canonical-path migration.
 
 Remote/main and local main were not updated because required GitHub checks could not run and branch protection blocked the merge.
 
+## Implementation Summary (2026-05-16 11:23:35 +07)
+
+### Goal
+Implement PR 11 by removing ambiguity around the final document-ingest pipeline and adding replay/duplicate observability to the canonical path.
+
+### What Changed
+- `tests/phase3/test_document_ingest_contract.py`: extended the cross-path retry test to assert structured canonical success events, worker actor attribution, zero diff rows on replay, and a repository duplicate replay event.
+- `apps/api/src/egp_api/services/document_ingest_service.py`: added canonical start/success structured logs around `DocumentIngestService.ingest_document_bytes()`.
+- `packages/db/src/egp_db/repositories/document_repo.py`: added `document_store_duplicate_replay_detected` logging before returning an existing document from the duplicate idempotency branch.
+- `docs/DOCUMENT_INGEST_CONTRACT.md`: documented the final API/worker -> service -> repository pipeline and the expected observability events.
+
+### TDD Evidence
+- RED: `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_cross_path_document_retry_is_idempotent -q`
+  - Result: failed with `StopIteration` because no `document_store_duplicate_replay_detected` event existed yet.
+- GREEN: `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_cross_path_document_retry_is_idempotent -q`
+  - Result: `1 passed in 0.52s`.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_cross_path_document_retry_is_idempotent -q` - red, then green.
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py -q` - `3 passed`.
+- `./.venv/bin/python -m pytest tests/phase1/test_documents_api.py::test_ingest_document_endpoint_is_idempotent_for_duplicate_bytes tests/phase1/test_document_persistence.py::test_store_document_logs_resolved_write_plan_for_managed_storage -q` - `2 passed`.
+- `./.venv/bin/ruff check apps/api/src/egp_api/services/document_ingest_service.py packages/db/src/egp_db/repositories/document_repo.py tests/phase3/test_document_ingest_contract.py` - passed.
+- `./.venv/bin/python -m compileall apps/api/src packages/db/src apps/worker/src` - passed.
+
+### Wiring Verification
+- API route callers still resolve `app.state.document_ingest_service`; no route registration changed.
+- Worker ingestion still enters `ingest_document_artifact()` and delegates to `DocumentIngestService.ingest_document_bytes(actor_subject="system:worker")`.
+- Duplicate replay detection remains inside `SqlDocumentRepository.store_document()` before any artifact write plan is resolved, so retries return the existing document without new blob, diff, or review writes.
+
+### Behavior Changes And Risk Notes
+- No schema, migration, environment, or API response changes.
+- The canonical path now emits structured start/success logs, including `document_created`, `diff_record_count`, actor, document type, document phase, and SHA-256 on success.
+- Duplicate retries now emit `document_store_duplicate_replay_detected`; this is observability-only and preserves fail-closed database behavior.
+- Auggie semantic retrieval was unavailable due to HTTP 429, so implementation used direct file inspection and exact identifier searches.
+
+### Follow-ups / Known Gaps
+- None for PR 11. Larger module decomposition remains planned for later PRs.
+
+## Review (2026-05-16 11:23:35 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working tree
+- Commands Run: `git status -sb`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`; targeted `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- <changed-files>`; focused pytest commands; targeted ruff; compileall.
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: structured logs are acceptable as PR 11 observability without adding schema-backed metrics or counters.
+- Assumption: logging duplicate replay inside the repository is the right level because the idempotency branch is below both API and worker callers.
+
+### Recommended Tests / Validation
+- Keep the extended `test_cross_path_document_retry_is_idempotent` contract test; it now guards both replay behavior and observability.
+- Let GitHub CI run the full repository gates before merge.
+
+### Rollout Notes
+- No rollout flags or migrations.
+- New logs may increase ingest log volume for repeated retries, but only one event is emitted per duplicate ingest attempt.
+
+## Additional Validation (2026-05-16 11:24:00 +07)
+
+- `./.venv/bin/ruff check apps/api packages tests/phase3/test_document_ingest_contract.py` - passed.
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py tests/phase1/test_documents_api.py tests/phase1/test_document_persistence.py -q` - `54 passed, 14 warnings`.
+- `./.venv/bin/python -m compileall apps packages` - passed. This command also traversed installed frontend dependencies under `apps/web/node_modules`, making the output noisy but not failing.
+
+## Submit / Landing Status (2026-05-16 11:26:52 +07)
+
+- Created Graphite branch `05-16-feat_documents_add_ingest_replay_observability`.
+- Submitted PR #83: https://github.com/SubhajL/egp/pull/83
+- Added PR comment with local RED/GREEN, focused test, broader test, ruff, and compileall evidence: https://github.com/SubhajL/egp/pull/83#issuecomment-4465565068
+- GitHub Actions did not execute job steps. The Python Lint & Format job annotation reported: `The job was not started because your account is locked due to a billing issue.`
+- `gh pr checks 83` reported all required CI jobs and `claude-review` as failed after two seconds, with `auto-approve` skipped.
+- `gh pr merge 83 --merge --delete-branch=false` was blocked by base branch policy.
+- Enabled auto-merge with merge method `MERGE`; it will still require CI to rerun and pass after the account/billing blocker is resolved.
+
+Remote/main and local main were not updated because required GitHub checks could not run and branch protection blocked merge eligibility.
+
 ## Review (2026-05-16 10:52:06 +07) - working-tree
 
 ### Reviewed

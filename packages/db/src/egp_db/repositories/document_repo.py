@@ -938,6 +938,20 @@ class SqlDocumentRepository:
                     document_phase=draft_document.document_phase,
                 )
                 if existing is not None:
+                    logger.info(
+                        "Duplicate document replay detected for %s",
+                        file_name,
+                        extra={
+                            "egp_event": "document_store_duplicate_replay_detected",
+                            "tenant_id": tenant_id,
+                            "project_id": project_id,
+                            "file_name": file_name,
+                            "existing_document_id": existing.id,
+                            "document_sha256": draft_document.sha256,
+                            "document_type": draft_document.document_type.value,
+                            "document_phase": draft_document.document_phase.value,
+                        },
+                    )
                     return StoreDocumentResult(
                         created=False,
                         document=existing,
