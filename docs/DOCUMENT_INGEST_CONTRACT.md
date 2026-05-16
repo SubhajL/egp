@@ -1,0 +1,42 @@
+# Document Ingest Contract
+
+This contract freezes the document-ingest behavior that future document-pipeline work must
+preserve.
+
+## Ownership Decision
+
+The API/control-plane path is the canonical owner of document-ingest semantics:
+
+- project context hydration
+- document classification
+- document diffing
+- persistence
+- review creation
+- user-facing notification decisions
+
+The worker is an artifact collector and event producer. During the transition to the canonical
+path, worker-side direct ingestion must remain behaviorally equivalent to API ingestion for the
+same tenant, project, artifact bytes, source label, and source page context.
+
+## Required Behavior
+
+- The ingest path must hydrate missing `source_status_text` and `project_state` from the stored
+  project before classification.
+- A retried artifact with the same bytes, tenant, project, document type, and phase is idempotent:
+  it returns the existing document and creates no new diff or review rows.
+- A changed artifact in the same document type and phase supersedes the current document and
+  creates one diff row.
+- A changed TOR diff creates a pending review. TOR change notifications remain deferred until a
+  review is approved.
+- Worker ingestion must not create a second document for an API-ingested artifact merely because
+  the worker payload omitted project status/state context.
+
+## Locked Tests
+
+The contract is covered by `tests/phase3/test_document_ingest_contract.py`:
+
+- `test_api_and_worker_document_ingest_share_project_context_contract`
+- `test_cross_path_document_retry_is_idempotent`
+
+PR 10 can move worker writes behind a service or event boundary, but these tests should continue
+to pass throughout that migration.

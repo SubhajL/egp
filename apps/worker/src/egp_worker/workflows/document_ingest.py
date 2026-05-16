@@ -22,8 +22,10 @@ from egp_db.repositories.document_repo import (
     create_artifact_store,
     create_document_repository,
 )
+from egp_db.repositories.project_repo import create_project_repository
 from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
+from sqlalchemy.exc import SQLAlchemyError
 
 
 def _google_drive_config_from_env() -> GoogleDriveOAuthConfig | None:
@@ -58,6 +60,32 @@ def _onedrive_config_from_env() -> OneDriveOAuthConfig | None:
     )
 
 
+def _resolve_project_context(
+    *,
+    database_url: str,
+    tenant_id: str,
+    project_id: str,
+    source_status_text: str,
+    project_state: str | None,
+) -> tuple[str, str | None]:
+    if source_status_text and project_state is not None:
+        return (source_status_text, project_state)
+    project_repository = create_project_repository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    try:
+        project = project_repository.get_project(tenant_id=tenant_id, project_id=project_id)
+    except SQLAlchemyError:
+        return (source_status_text, project_state)
+    if project is None:
+        return (source_status_text, project_state)
+    return (
+        source_status_text or (project.source_status_text or ""),
+        project_state if project_state is not None else project.project_state.value,
+    )
+
+
 def ingest_document_artifact(
     *,
     artifact_root: Path | str,
@@ -85,11 +113,11 @@ def ingest_document_artifact(
     project_state: str | None = None,
 ) -> StoreDocumentResult:
     resolved_artifact_root = Path(artifact_root)
+    resolved_database_url = (
+        database_url
+        or f"sqlite+pysqlite:///{resolved_artifact_root / 'document_metadata.sqlite3'}"
+    )
     if repository is None:
-        resolved_database_url = (
-            database_url
-            or f"sqlite+pysqlite:///{resolved_artifact_root / 'document_metadata.sqlite3'}"
-        )
         managed_artifact_store = create_artifact_store(
             storage_backend=artifact_storage_backend,
             artifact_root=resolved_artifact_root,
@@ -132,13 +160,20 @@ def ingest_document_artifact(
             supabase_client=supabase_client,
             artifact_store_resolver=tenant_artifact_store_resolver,
         )
+    resolved_source_status_text, resolved_project_state = _resolve_project_context(
+        database_url=resolved_database_url,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        source_status_text=source_status_text,
+        project_state=project_state,
+    )
     return repository.store_document(
         tenant_id=tenant_id,
         project_id=project_id,
         file_name=file_name,
         file_bytes=file_bytes,
         source_label=source_label,
-        source_status_text=source_status_text,
+        source_status_text=resolved_source_status_text,
         source_page_text=source_page_text,
-        project_state=project_state,
+        project_state=resolved_project_state,
     )
