@@ -151,7 +151,7 @@ class ExportService:
         has_winner: bool | None = None,
     ) -> bytes:
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            self._entitlement_service.require_capability(
                 tenant_id=tenant_id,
                 capability="exports",
             )

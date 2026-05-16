@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import AnyHttpUrl, BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
+from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.webhook_service import WebhookList, WebhookService
 from egp_shared_types.enums import NotificationType
 
@@ -94,6 +95,8 @@ def create_webhook(request: Request, payload: CreateWebhookRequest) -> WebhookRe
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="tenant not found") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     return WebhookResponse(**asdict(created))
 
 

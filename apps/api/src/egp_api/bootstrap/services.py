@@ -164,6 +164,7 @@ def configure_services(
         bundle.admin_repository,
         bundle.notification_repository,
         bundle.audit_repository,
+        entitlement_service,
     )
     app.state.payment_callback_secret = resolved_payment_callback_secret
     app.state.web_base_url = resolved_web_base_url

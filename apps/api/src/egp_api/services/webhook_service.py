@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.admin_repo import SqlAdminRepository
@@ -11,6 +12,9 @@ from egp_db.repositories.notification_repo import (
     WebhookSubscriptionRecord,
 )
 from egp_shared_types.enums import NotificationType
+
+if TYPE_CHECKING:
+    from egp_api.services.entitlement_service import TenantEntitlementService
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,10 +28,12 @@ class WebhookService:
         admin_repository: SqlAdminRepository,
         notification_repository: SqlNotificationRepository,
         audit_repository: SqlAuditRepository | None = None,
+        entitlement_service: TenantEntitlementService | None = None,
     ) -> None:
         self._admin_repository = admin_repository
         self._notification_repository = notification_repository
         self._audit_repository = audit_repository
+        self._entitlement_service = entitlement_service
 
     def list_webhooks(self, *, tenant_id: str) -> WebhookList:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
@@ -50,6 +56,11 @@ class WebhookService:
     ) -> WebhookSubscriptionRecord:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
             raise KeyError(tenant_id)
+        if self._entitlement_service is not None:
+            self._entitlement_service.require_capability(
+                tenant_id=tenant_id,
+                capability="notifications",
+            )
         created = self._notification_repository.create_webhook_subscription(
             tenant_id=tenant_id,
             name=name,

@@ -91,7 +91,13 @@ def _seed_tenant(
         )
 
 
-def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> None:
+def _seed_subscription(
+    client: TestClient,
+    *,
+    tenant_id: str = TENANT_ID,
+    plan_code: str = "monthly_membership",
+    keyword_limit: int = 5,
+) -> None:
     record_id = str(uuid4())
     today = _utc_today()
     now = datetime.now(UTC).isoformat()
@@ -115,7 +121,7 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
                     :id,
                     :tenant_id,
                     :record_number,
-                    'monthly_membership',
+                    :plan_code,
                     'paid',
                     :billing_period_start,
                     :billing_period_end,
@@ -130,6 +136,7 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
                 "id": record_id,
                 "tenant_id": tenant_id,
                 "record_number": f"INV-{record_id[:8]}",
+                "plan_code": plan_code,
                 "billing_period_start": (today - timedelta(days=1)).isoformat(),
                 "billing_period_end": (today + timedelta(days=29)).isoformat(),
                 "created_at": now,
@@ -155,11 +162,11 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
                     :id,
                     :tenant_id,
                     :billing_record_id,
-                    'monthly_membership',
+                    :plan_code,
                     'active',
                     :billing_period_start,
                     :billing_period_end,
-                    5,
+                    :keyword_limit,
                     :activated_at,
                     :created_at,
                     :updated_at
@@ -170,8 +177,10 @@ def _seed_subscription(client: TestClient, *, tenant_id: str = TENANT_ID) -> Non
                 "id": str(uuid4()),
                 "tenant_id": tenant_id,
                 "billing_record_id": record_id,
+                "plan_code": plan_code,
                 "billing_period_start": (today - timedelta(days=1)).isoformat(),
                 "billing_period_end": (today + timedelta(days=29)).isoformat(),
+                "keyword_limit": keyword_limit,
                 "activated_at": now,
                 "created_at": now,
                 "updated_at": now,
@@ -1139,6 +1148,7 @@ def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
 ) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
+    _seed_subscription(client)
 
     created = client.post(
         "/v1/admin/users",
@@ -1202,6 +1212,37 @@ def test_admin_routes_can_create_users_update_preferences_and_patch_settings(
     assert snapshot.json()["settings"]["billing_contact_email"] == "billing@example.com"
     assert snapshot.json()["settings"]["crawl_interval_hours"] == 24
     assert snapshot.json()["users"][0]["notification_preferences"]["run_failed"] is True
+
+
+def test_free_trial_admin_notification_preferences_are_denied(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client, plan_code="free_trial")
+    _seed_subscription(client, plan_code="free_trial", keyword_limit=1)
+
+    created = client.post(
+        "/v1/admin/users",
+        json={
+            "tenant_id": TENANT_ID,
+            "email": "analyst@example.com",
+            "full_name": "Analyst User",
+            "role": "analyst",
+        },
+    )
+    assert created.status_code == 201
+
+    response = client.put(
+        f"/v1/admin/users/{created.json()['id']}/notification-preferences",
+        json={
+            "tenant_id": TENANT_ID,
+            "email_preferences": {"run_failed": True},
+        },
+    )
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "notifications capability is not included in current plan"
+    )
 
 
 def test_storage_settings_default_to_managed_storage(tmp_path) -> None:

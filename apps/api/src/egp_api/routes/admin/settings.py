@@ -21,6 +21,7 @@ from egp_api.routes.admin.schemas import (
     UpdateUserNotificationPreferencesRequest,
 )
 from egp_api.routes.admin.serializers import serialize_settings, serialize_user
+from egp_api.services.entitlement_service import EntitlementError
 
 
 router = APIRouter()
@@ -127,6 +128,10 @@ def update_user_notification_preferences(
         allow_support_override=True,
     )
     try:
+        request.app.state.entitlement_service.require_capability(
+            tenant_id=resolved_tenant_id,
+            capability="notifications",
+        )
         user = service.update_user_notification_preferences(
             tenant_id=resolved_tenant_id,
             user_id=user_id,
@@ -135,6 +140,8 @@ def update_user_notification_preferences(
         )
     except KeyError as exc:
         raise HTTPException(status_code=403, detail="user does not belong to tenant") from exc
+    except EntitlementError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return serialize_user(user)
