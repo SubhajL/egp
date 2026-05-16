@@ -78,6 +78,7 @@ services:
       EGP_SMTP_PASSWORD: ${EGP_SMTP_PASSWORD:-}
       EGP_SMTP_FROM: ${EGP_SMTP_FROM:-}
       EGP_SMTP_USE_TLS: ${EGP_SMTP_USE_TLS:-true}
+      EGP_BACKGROUND_RUNTIME_MODE: ${EGP_BACKGROUND_RUNTIME_MODE:-external}
     expose:
       - "8000"
     volumes:
@@ -94,6 +95,44 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  webhook-executor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - egp_api.executors.webhook_delivery
+
+  discovery-executor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+      EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
+      EGP_ARTIFACT_STORE: ${EGP_ARTIFACT_STORE:-local}
+    volumes:
+      - egp_artifacts:/var/lib/egp/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - egp_api.executors.discovery_dispatch
 
   web:
     build:

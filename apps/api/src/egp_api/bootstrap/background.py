@@ -9,17 +9,33 @@ import logging
 
 from fastapi import FastAPI
 
+from egp_api.config import BackgroundRuntimeMode
 from egp_api.executors.discovery_dispatch import run_discovery_dispatch_loop
 from egp_api.executors.webhook_delivery import run_webhook_delivery_loop
 from egp_db.db_utils import is_sqlite_url
 
 
-def discovery_dispatch_loop_enabled_for_database_url(database_url: str) -> bool:
+def discovery_dispatch_loop_enabled_for_database_url(
+    database_url: str,
+    *,
+    background_runtime_mode: BackgroundRuntimeMode = "embedded",
+) -> bool:
+    if background_runtime_mode == "external":
+        return False
     return not is_sqlite_url(database_url)
 
 
-def discovery_dispatch_route_kick_enabled(database_url: str) -> bool:
-    return not discovery_dispatch_loop_enabled_for_database_url(database_url)
+def discovery_dispatch_route_kick_enabled(
+    database_url: str,
+    *,
+    background_runtime_mode: BackgroundRuntimeMode = "embedded",
+) -> bool:
+    if background_runtime_mode == "external":
+        return False
+    return not discovery_dispatch_loop_enabled_for_database_url(
+        database_url,
+        background_runtime_mode=background_runtime_mode,
+    )
 
 
 def build_lifespan(*, logger: logging.Logger):

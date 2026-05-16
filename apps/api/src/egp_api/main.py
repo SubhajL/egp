@@ -16,6 +16,8 @@ from egp_api.bootstrap.middleware import configure_http_pipeline
 from egp_api.bootstrap.repositories import build_repository_bundle
 from egp_api.bootstrap.services import configure_services
 from egp_api.config import (
+    BackgroundRuntimeMode,
+    get_background_runtime_mode,
     get_web_allow_origin_regex,
     get_web_allowed_origins,
 )
@@ -102,9 +104,11 @@ def create_app(
     payment_callback_secret: str | None = None,
     web_allowed_origins: list[str] | None = None,
     internal_worker_token: str | None = None,
+    background_runtime_mode: BackgroundRuntimeMode | str | None = None,
 ) -> FastAPI:
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
     resolved_web_allow_origin_regex = get_web_allow_origin_regex(None)
+    resolved_background_runtime_mode = get_background_runtime_mode(background_runtime_mode)
     repository_bundle = build_repository_bundle(
         artifact_root=artifact_root,
         database_url=database_url,
@@ -147,6 +151,7 @@ def create_app(
         discovery_dispatcher_factory=_make_discovery_dispatcher,
         discovery_loop_enabled=_discovery_dispatch_loop_enabled_for_database_url,
         discovery_route_kick_enabled=_discovery_dispatch_route_kick_enabled,
+        background_runtime_mode=resolved_background_runtime_mode,
     )
     configure_http_pipeline(
         app=app,

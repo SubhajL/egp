@@ -8,6 +8,22 @@ from typing import Literal
 
 from egp_notifications.service import SmtpConfig
 
+BackgroundRuntimeMode = Literal["embedded", "external"]
+
+
+def get_background_runtime_mode(
+    override: str | None = None,
+) -> BackgroundRuntimeMode:
+    if override is not None:
+        raw = override.strip().lower()
+    else:
+        raw = os.getenv("EGP_BACKGROUND_RUNTIME_MODE", "embedded").strip().lower()
+    if not raw:
+        return "embedded"
+    if raw in {"embedded", "external"}:
+        return raw
+    raise RuntimeError("EGP_BACKGROUND_RUNTIME_MODE must be one of: embedded, external")
+
 
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:

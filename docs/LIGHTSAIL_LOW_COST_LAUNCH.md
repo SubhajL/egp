@@ -21,8 +21,10 @@ The current repo is not shaped like a pure scale-to-zero/serverless app.
 
 From the checked-in code:
 
-- the FastAPI app starts **lifespan background loops** in [`apps/api/src/egp_api/main.py`](../apps/api/src/egp_api/main.py)
-- the API **spawns worker subprocesses locally** via `_make_discover_spawner(...)`
+- background execution is controlled by `EGP_BACKGROUND_RUNTIME_MODE`
+- in `embedded` mode, the FastAPI app starts lifespan background loops from [`apps/api/src/egp_api/bootstrap/background.py`](../apps/api/src/egp_api/bootstrap/background.py)
+- in `external` mode, standalone executor processes run webhook delivery and discovery dispatch outside the HTTP server
+- discovery dispatch still spawns worker subprocesses locally via `_make_discover_spawner(...)`
 - worker jobs run through `python -m egp_worker.main`
 - browser-driven discovery lives in the worker package and expects a normal host/container runtime
 
@@ -40,7 +42,8 @@ That makes a small always-on VM a better fit than a cold-start-heavy serverless 
 - **Reverse proxy / TLS**: Caddy
 - **DNS**: Cloudflare DNS (or Route 53 if you already use AWS DNS)
 - **OPN webhook endpoint**: served by the main FastAPI app on the same instance
-- **Scheduled discovery**: cron or systemd timer on the same instance
+- **Background executors**: Compose services on the same instance
+- **Scheduled discovery**: cron or systemd timer on the same instance if needed
 
 ### Recommended starting size
 
@@ -73,6 +76,10 @@ Users
 api.yourdomain.com
   -> Caddy on Lightsail
   -> FastAPI app
+
+background executors on the same VM
+  -> webhook delivery executor
+  -> discovery dispatch executor
   -> local spawned worker subprocesses
   -> local PostgreSQL
 
@@ -196,6 +203,7 @@ EGP_WEB_ALLOWED_ORIGINS=https://app.yourdomain.com,https://www.yourdomain.com
 EGP_WEB_BASE_URL=https://app.yourdomain.com
 NEXT_PUBLIC_EGP_API_BASE_URL=https://api.yourdomain.com
 EGP_ARTIFACT_ROOT=/srv/egp/artifacts
+EGP_BACKGROUND_RUNTIME_MODE=external
 ```
 
 ### Notes
@@ -234,6 +242,8 @@ It includes:
 - `redis`
 - `migrate`
 - `api`
+- `webhook-executor`
+- `discovery-executor`
 - `web`
 - `caddy`
 
@@ -255,13 +265,33 @@ docker compose --env-file .deploy/egp.env up -d --build
 
 ### Important runtime behavior from the codebase
 
-The API process does more than serve HTTP:
+The production-oriented Compose file runs background work outside the API process:
 
-- starts background dispatch loops
-- claims discovery jobs
-- spawns worker subprocesses locally
+- `api` serves HTTP with `EGP_BACKGROUND_RUNTIME_MODE=external`
+- `webhook-executor` runs `python -m egp_api.executors.webhook_delivery`
+- `discovery-executor` runs `python -m egp_api.executors.discovery_dispatch`
+- the discovery executor claims discovery jobs and spawns worker subprocesses locally
 
-So it should run as a **single always-on service** on this host.
+This avoids duplicate queue processing while keeping all services on one cheap host.
+
+### Rollback to embedded mode
+
+If you need to simplify the runtime during an incident:
+
+1. stop the executor services:
+
+```bash
+docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor
+```
+
+2. set `EGP_BACKGROUND_RUNTIME_MODE=embedded` in `.deploy/egp.env`
+3. restart the API:
+
+```bash
+docker compose --env-file .deploy/egp.env up -d api
+```
+
+In embedded mode the API resumes the legacy in-process background behavior. Do not leave external executors running while the API is in embedded mode.
 
 ---
 
@@ -333,10 +363,11 @@ That means:
 
 - user creates or updates a profile / recrawl action
 - the API queues discovery jobs
-- the API dispatch loop claims jobs
-- the API spawns a worker subprocess per keyword
+- in external mode, the discovery executor claims jobs
+- in embedded mode, the API dispatch loop claims jobs
+- the active discovery dispatch path spawns a worker subprocess per keyword
 
-This behavior is already in the code and does **not** require a separate always-on worker service for the initial launch.
+This behavior is already in the code. The checked-in Compose runtime now runs the dispatch loop as a separate always-on executor service while staying on the same VM.
 
 ## Scheduled crawl
 

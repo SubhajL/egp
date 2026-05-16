@@ -570,8 +570,46 @@ def test_discovery_dispatch_runtime_uses_single_dispatch_path_per_database_backe
     sqlite_url = "sqlite+pysqlite:///test.sqlite3"
     postgres_url = "postgresql://egp:egp_dev@localhost:5432/egp"
 
-    assert _discovery_dispatch_loop_enabled_for_database_url(sqlite_url) is False
-    assert _discovery_dispatch_route_kick_enabled(sqlite_url) is True
+    assert (
+        _discovery_dispatch_loop_enabled_for_database_url(
+            sqlite_url,
+            background_runtime_mode="embedded",
+        )
+        is False
+    )
+    assert (
+        _discovery_dispatch_route_kick_enabled(
+            sqlite_url,
+            background_runtime_mode="embedded",
+        )
+        is True
+    )
 
-    assert _discovery_dispatch_loop_enabled_for_database_url(postgres_url) is True
-    assert _discovery_dispatch_route_kick_enabled(postgres_url) is False
+    assert (
+        _discovery_dispatch_loop_enabled_for_database_url(
+            postgres_url,
+            background_runtime_mode="embedded",
+        )
+        is True
+    )
+    assert (
+        _discovery_dispatch_route_kick_enabled(
+            postgres_url,
+            background_runtime_mode="embedded",
+        )
+        is False
+    )
+    assert (
+        _discovery_dispatch_loop_enabled_for_database_url(
+            postgres_url,
+            background_runtime_mode="external",
+        )
+        is False
+    )
+    assert (
+        _discovery_dispatch_route_kick_enabled(
+            postgres_url,
+            background_runtime_mode="external",
+        )
+        is False
+    )
