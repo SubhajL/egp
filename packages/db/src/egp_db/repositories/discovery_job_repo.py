@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -281,23 +282,30 @@ class SqlDiscoveryJobRepository:
         *,
         limit: int = 10,
         stale_after_seconds: float = 60.0,
+        exclude_job_ids: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
         stale_started_at = datetime.fromtimestamp(
             now.timestamp() - max(1.0, float(stale_after_seconds)), UTC
         )
         normalized_limit = max(1, int(limit))
+        excluded_job_ids = {
+            normalize_uuid_string(job_id) for job_id in (exclude_job_ids or ())
+        }
+        pending_conditions = [
+            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
+        ]
+        if excluded_job_ids:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
+            )
         claimed_ids: list[str] = []
         with self._engine.begin() as connection:
             rows = (
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE)
-                    .where(
-                        and_(
-                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
-                            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
-                        )
-                    )
+                    .where(and_(*pending_conditions))
                     .order_by(
                         DISCOVERY_JOBS_TABLE.c.next_attempt_at,
                         DISCOVERY_JOBS_TABLE.c.created_at,

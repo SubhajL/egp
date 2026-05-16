@@ -12,6 +12,7 @@ from egp_api.config import (
     get_payment_base_url,
     get_payment_callback_secret,
     get_payment_provider,
+    get_discovery_worker_count,
     get_promptpay_proxy_id,
     get_opn_public_key,
     get_opn_secret_key,
@@ -220,7 +221,9 @@ def configure_services(
     )
     discovery_dispatcher = discovery_dispatcher_factory(app)
     app.state.discovery_dispatcher = discovery_dispatcher
+    app.state.discovery_dispatch_worker_count = get_discovery_worker_count()
     app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
         repository=bundle.discovery_job_repository,
         dispatcher=discovery_dispatcher,
+        worker_count=app.state.discovery_dispatch_worker_count,
     )

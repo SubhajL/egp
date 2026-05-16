@@ -65,7 +65,7 @@ async def test_run_discovery_dispatch_loop_processes_until_stop_event() -> None:
 
 
 def test_main_once_builds_runtime_from_database_url_and_artifact_root(tmp_path) -> None:
-    built_args: list[tuple[str | None, Path | None]] = []
+    built_args: list[tuple[str | None, Path | None, int | None]] = []
     processor = RecordingDiscoveryProcessor()
     run_service = RecordingRunService()
 
@@ -73,8 +73,9 @@ def test_main_once_builds_runtime_from_database_url_and_artifact_root(tmp_path) 
         database_url: str | None = None,
         *,
         artifact_root: Path | None = None,
+        worker_count: int | None = None,
     ) -> discovery_dispatch.DiscoveryDispatchRuntime:
-        built_args.append((database_url, artifact_root))
+        built_args.append((database_url, artifact_root, worker_count))
         return discovery_dispatch.DiscoveryDispatchRuntime(
             processor=processor,
             run_service=run_service,
@@ -89,13 +90,15 @@ def test_main_once_builds_runtime_from_database_url_and_artifact_root(tmp_path) 
             "--once",
             "--limit",
             "7",
+            "--worker-count",
+            "3",
         ],
         runtime_factory=runtime_factory,
         owner_pid=91011,
     )
 
     assert exit_code == 0
-    assert built_args == [("sqlite+pysqlite:///discovery-executor.sqlite3", tmp_path)]
+    assert built_args == [("sqlite+pysqlite:///discovery-executor.sqlite3", tmp_path, 3)]
     assert processor.limits == [7]
     assert run_service.owner_pids == [91011, 91011]
 

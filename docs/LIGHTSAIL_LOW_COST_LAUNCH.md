@@ -239,7 +239,6 @@ Use the checked-in single-host production-oriented Compose stack:
 It includes:
 
 - `postgres`
-- `redis`
 - `migrate`
 - `api`
 - `webhook-executor`

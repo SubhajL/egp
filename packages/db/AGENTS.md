@@ -8,7 +8,7 @@
 ## Setup & Run
 
 ```bash
-docker compose -f docker-compose-localdev.yml up -d postgres redis
+docker compose -f docker-compose-localdev.yml up -d postgres
 python -m egp_db.migration_runner --database-url postgresql://egp:egp_dev@localhost:5432/egp --migrations-dir packages/db/src/migrations
 python -m compileall packages/db/src
 ```

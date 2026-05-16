@@ -11,7 +11,7 @@
 
 ```bash
 ./scripts/bootstrap_python_env.sh
-docker compose -f docker-compose-localdev.yml up -d postgres redis
+docker compose -f docker-compose-localdev.yml up -d postgres
 ./.venv/bin/python -m egp_db.migration_runner --database-url postgresql://egp:egp_dev@localhost:5432/egp --migrations-dir packages/db/src/migrations
 ./.venv/bin/python scripts/run_phase1_postgres_smoke.py
 ./.venv/bin/python scripts/check_main_sync.py --json

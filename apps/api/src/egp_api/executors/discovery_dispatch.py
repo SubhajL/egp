@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from egp_api.config import get_artifact_root, get_database_url
+from egp_api.config import get_artifact_root, get_database_url, get_discovery_worker_count
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
 from egp_api.services.run_service import RunService
@@ -41,6 +41,7 @@ def build_discovery_dispatch_runtime(
     database_url: str | None = None,
     *,
     artifact_root: Path | None = None,
+    worker_count: int | str | None = None,
 ) -> DiscoveryDispatchRuntime:
     """Build repository-backed discovery dispatch runtime dependencies."""
 
@@ -70,6 +71,7 @@ def build_discovery_dispatch_runtime(
             engine=shared_engine,
         ),
         dispatcher=dispatcher,
+        worker_count=get_discovery_worker_count(worker_count),
     )
     return DiscoveryDispatchRuntime(
         processor=processor,
@@ -208,6 +210,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Polling interval for long-running mode.",
     )
+    parser.add_argument(
+        "--worker-count",
+        type=int,
+        default=None,
+        help="Concurrent discovery workers. Defaults to EGP_DISCOVERY_WORKER_COUNT or 1.",
+    )
     return parser
 
 
@@ -222,6 +230,7 @@ def main(
     runtime = runtime_factory(
         args.database_url,
         artifact_root=args.artifact_root,
+        worker_count=args.worker_count,
     )
     resolved_owner_pid = os.getpid() if owner_pid is None else owner_pid
     if args.once:

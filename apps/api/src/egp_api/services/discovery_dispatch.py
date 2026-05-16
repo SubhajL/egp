@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
@@ -19,6 +21,7 @@ class DiscoveryJobStore(Protocol):
         *,
         limit: int = 10,
         stale_after_seconds: float = 60.0,
+        exclude_job_ids: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]: ...
 
     def record_discovery_job_attempt(
@@ -54,17 +57,48 @@ class DiscoveryDispatchProcessor:
     retry_delay_seconds: float = 30.0
     claim_limit: int = 10
     claim_stale_after_seconds: float = 60.0
+    worker_count: int = 1
 
     def process_pending(self, *, limit: int | None = None) -> int:
-        jobs = self.repository.claim_pending_discovery_jobs(
-            limit=self.claim_limit if limit is None else max(1, int(limit)),
-            stale_after_seconds=self.claim_stale_after_seconds,
-        )
+        worker_count = max(1, int(self.worker_count))
+        requested_limit = self.claim_limit if limit is None else max(1, int(limit))
         processed = 0
-        for job in jobs:
-            self.process_job(job=job)
-            processed += 1
+        processed_job_ids: set[str] = set()
+        while processed < requested_limit:
+            batch_limit = min(worker_count, requested_limit - processed)
+            jobs = self.repository.claim_pending_discovery_jobs(
+                limit=batch_limit,
+                stale_after_seconds=self.claim_stale_after_seconds,
+                exclude_job_ids=processed_job_ids,
+            )
+            if not jobs:
+                break
+            processed_job_ids.update(job.id for job in jobs)
+            self._process_claimed_jobs(jobs=jobs, worker_count=worker_count)
+            processed += len(jobs)
+            if len(jobs) < batch_limit:
+                break
         return processed
+
+    def _process_claimed_jobs(
+        self,
+        *,
+        jobs: list[DiscoveryJobRecord],
+        worker_count: int,
+    ) -> None:
+        if worker_count == 1 or len(jobs) == 1:
+            for job in jobs:
+                self.process_job(job=job)
+            return
+
+        max_workers = min(worker_count, len(jobs))
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="egp-discovery-dispatch",
+        ) as executor:
+            futures = [executor.submit(self.process_job, job=job) for job in jobs]
+            for future in as_completed(futures):
+                future.result()
 
     def process_job(self, *, job: DiscoveryJobRecord) -> None:
         try:

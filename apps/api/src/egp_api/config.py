@@ -25,6 +25,22 @@ def get_background_runtime_mode(
     raise RuntimeError("EGP_BACKGROUND_RUNTIME_MODE must be one of: embedded, external")
 
 
+def get_discovery_worker_count(override: int | str | None = None) -> int:
+    """Return the bounded discovery-dispatch worker count."""
+
+    if override is None:
+        raw: int | str = os.getenv("EGP_DISCOVERY_WORKER_COUNT", "1")
+    else:
+        raw = override
+    try:
+        worker_count = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("EGP_DISCOVERY_WORKER_COUNT must be a positive integer") from exc
+    if worker_count < 1:
+        raise RuntimeError("EGP_DISCOVERY_WORKER_COUNT must be a positive integer")
+    return worker_count
+
+
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:
         return override.expanduser().resolve()

@@ -17,21 +17,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
-    container_name: egp-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    ports:
-      - "${EGP_REDIS_PORT:-6380}:6379"
-    volumes:
-      - egp_redisdata:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   migrate:
     build:
       context: .
@@ -81,8 +66,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     healthcheck:
@@ -119,6 +102,7 @@ services:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:-egp_dev}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: local
+      EGP_DISCOVERY_WORKER_COUNT: ${EGP_DISCOVERY_WORKER_COUNT:-2}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:
@@ -156,5 +140,4 @@ services:
 
 volumes:
   egp_pgdata:
-  egp_redisdata:
   egp_artifacts:
