@@ -36,6 +36,11 @@ domains now derive their public TypeScript response and request types from
 - projects
 - documents
 - rules and entitlements
+- runs and dashboard
+- billing and payment
+- admin and support
+- storage and webhooks
+- auth and session
 
 Keep wrapper functions stable for pages/hooks, and migrate additional domains by replacing manual
 facade types with generated `paths` or `components` aliases plus focused unit/type coverage.

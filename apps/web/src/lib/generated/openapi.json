@@ -2723,9 +2723,7 @@
       "DashboardSummaryResponse": {
         "properties": {
           "cost_summary": {
-            "additionalProperties": true,
-            "title": "Cost Summary",
-            "type": "object"
+            "$ref": "#/components/schemas/SupportCostSummaryResponse"
           },
           "daily_discovery": {
             "items": {
@@ -5014,9 +5012,7 @@
       "SupportCostSummaryResponse": {
         "properties": {
           "crawl": {
-            "additionalProperties": true,
-            "title": "Crawl",
-            "type": "object"
+            "$ref": "#/components/schemas/SupportCrawlCostResponse"
           },
           "currency": {
             "title": "Currency",
@@ -5027,19 +5023,13 @@
             "type": "string"
           },
           "notifications": {
-            "additionalProperties": true,
-            "title": "Notifications",
-            "type": "object"
+            "$ref": "#/components/schemas/SupportNotificationCostResponse"
           },
           "payments": {
-            "additionalProperties": true,
-            "title": "Payments",
-            "type": "object"
+            "$ref": "#/components/schemas/SupportPaymentCostResponse"
           },
           "storage": {
-            "additionalProperties": true,
-            "title": "Storage",
-            "type": "object"
+            "$ref": "#/components/schemas/SupportStorageCostResponse"
           },
           "window_days": {
             "title": "Window Days",
@@ -5056,6 +5046,34 @@
           "payments"
         ],
         "title": "SupportCostSummaryResponse",
+        "type": "object"
+      },
+      "SupportCrawlCostResponse": {
+        "properties": {
+          "estimated_cost_thb": {
+            "title": "Estimated Cost Thb",
+            "type": "string"
+          },
+          "failed_run_count": {
+            "title": "Failed Run Count",
+            "type": "integer"
+          },
+          "run_count": {
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "task_count": {
+            "title": "Task Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "estimated_cost_thb",
+          "run_count",
+          "task_count",
+          "failed_run_count"
+        ],
+        "title": "SupportCrawlCostResponse",
         "type": "object"
       },
       "SupportFailedRunResponse": {
@@ -5138,6 +5156,57 @@
         "title": "SupportFailedWebhookResponse",
         "type": "object"
       },
+      "SupportNotificationCostResponse": {
+        "properties": {
+          "estimated_cost_thb": {
+            "title": "Estimated Cost Thb",
+            "type": "string"
+          },
+          "failed_webhook_delivery_count": {
+            "title": "Failed Webhook Delivery Count",
+            "type": "integer"
+          },
+          "sent_count": {
+            "title": "Sent Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "estimated_cost_thb",
+          "sent_count",
+          "failed_webhook_delivery_count"
+        ],
+        "title": "SupportNotificationCostResponse",
+        "type": "object"
+      },
+      "SupportPaymentCostResponse": {
+        "properties": {
+          "billing_record_count": {
+            "title": "Billing Record Count",
+            "type": "integer"
+          },
+          "collected_amount_thb": {
+            "title": "Collected Amount Thb",
+            "type": "string"
+          },
+          "estimated_cost_thb": {
+            "title": "Estimated Cost Thb",
+            "type": "string"
+          },
+          "payment_request_count": {
+            "title": "Payment Request Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "estimated_cost_thb",
+          "billing_record_count",
+          "payment_request_count",
+          "collected_amount_thb"
+        ],
+        "title": "SupportPaymentCostResponse",
+        "type": "object"
+      },
       "SupportPendingReviewResponse": {
         "properties": {
           "created_at": {
@@ -5164,6 +5233,29 @@
           "created_at"
         ],
         "title": "SupportPendingReviewResponse",
+        "type": "object"
+      },
+      "SupportStorageCostResponse": {
+        "properties": {
+          "document_count": {
+            "title": "Document Count",
+            "type": "integer"
+          },
+          "estimated_cost_thb": {
+            "title": "Estimated Cost Thb",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "estimated_cost_thb",
+          "document_count",
+          "total_bytes"
+        ],
+        "title": "SupportStorageCostResponse",
         "type": "object"
       },
       "SupportStorageDiagnosticsResponse": {

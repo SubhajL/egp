@@ -15,33 +15,9 @@ export type ProjectStatusEvent = components["schemas"]["ProjectStatusEventRespon
 export type ProjectDetailResponse =
   paths["/v1/projects/{project_id}"]["get"]["responses"][200]["content"]["application/json"];
 
-export type AuthenticatedUser = {
-  id: string | null;
-  subject: string;
-  email: string | null;
-  full_name: string | null;
-  role: string | null;
-  status: string | null;
-  email_verified: boolean;
-  email_verified_at: string | null;
-  mfa_enabled: boolean;
-};
-
-export type AuthTenant = {
-  id: string;
-  name: string;
-  slug: string;
-  plan_code: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-export type CurrentSessionResponse = {
-  user: AuthenticatedUser;
-  tenant: AuthTenant;
-  requires_billing_update: boolean;
-};
+export type AuthenticatedUser = components["schemas"]["AuthenticatedUserResponse"];
+export type AuthTenant = components["schemas"]["AuthTenantResponse"];
+export type CurrentSessionResponse = components["schemas"]["CurrentSessionResponse"];
 
 export type ProjectListResponse =
   paths["/v1/projects"]["get"]["responses"][200]["content"]["application/json"];
@@ -61,45 +37,11 @@ export type ProjectCrawlEvidence = components["schemas"]["ProjectCrawlEvidenceRe
 export type ProjectCrawlEvidenceListResponse =
   paths["/v1/projects/{project_id}/crawl-evidence"]["get"]["responses"][200]["content"]["application/json"];
 
-export type RunSummary = {
-  id: string;
-  tenant_id: string;
-  trigger_type: string;
-  status: string;
-  profile_id: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  summary_json: Record<string, unknown> | null;
-  error_count: number;
-  created_at: string;
-};
-
-export type TaskSummary = {
-  id: string;
-  run_id: string;
-  task_type: string;
-  project_id: string | null;
-  keyword: string | null;
-  status: string;
-  attempts: number;
-  started_at: string | null;
-  finished_at: string | null;
-  payload: Record<string, unknown> | null;
-  result_json: Record<string, unknown> | null;
-  created_at: string;
-};
-
-export type RunDetailResponse = {
-  run: RunSummary;
-  tasks: TaskSummary[];
-};
-
-export type RunListResponse = {
-  runs: RunDetailResponse[];
-  total: number;
-  limit: number;
-  offset: number;
-};
+export type RunSummary = components["schemas"]["RunResponse"];
+export type TaskSummary = components["schemas"]["TaskResponse"];
+export type RunDetailResponse = components["schemas"]["RunDetailResponse"];
+export type RunListResponse =
+  paths["/v1/runs"]["get"]["responses"][200]["content"]["application/json"];
 
 export type RuleProfile = components["schemas"]["RuleProfileResponse"];
 export type ClosureRulesSummary = components["schemas"]["ClosureRulesResponse"];
@@ -114,437 +56,73 @@ export type ProjectExportResponse = {
   filename: string;
 };
 
-export type DashboardKpis = {
-  active_projects: number;
-  discovered_today: number;
-  winner_projects_this_week: number;
-  closed_today: number;
-  changed_tor_projects: number;
-  crawl_success_rate_percent: number;
-  failed_runs_recent: number;
-  crawl_success_window_runs: number;
-};
+export type DashboardKpis = components["schemas"]["DashboardKpisResponse"];
+export type DashboardRecentRun = components["schemas"]["DashboardRecentRunResponse"];
+export type DashboardRecentProjectChange =
+  components["schemas"]["DashboardRecentProjectChangeResponse"];
+export type DashboardWinnerProject =
+  components["schemas"]["DashboardWinnerProjectResponse"];
+export type DashboardDailyDiscoveryPoint =
+  components["schemas"]["DashboardDailyDiscoveryPointResponse"];
+export type DashboardStateBreakdownPoint =
+  components["schemas"]["DashboardStateBreakdownPointResponse"];
+export type DashboardCrawlCostSummary = components["schemas"]["SupportCrawlCostResponse"];
+export type DashboardStorageCostSummary = components["schemas"]["SupportStorageCostResponse"];
+export type DashboardNotificationCostSummary =
+  components["schemas"]["SupportNotificationCostResponse"];
+export type DashboardPaymentCostSummary = components["schemas"]["SupportPaymentCostResponse"];
+export type DashboardCostSummary = components["schemas"]["SupportCostSummaryResponse"];
+export type DashboardSummaryResponse =
+  paths["/v1/dashboard/summary"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DashboardRecentRun = {
-  id: string;
-  trigger_type: string;
-  status: string;
-  profile_id: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  created_at: string;
-  error_count: number;
-  discovered_projects: number;
-};
+export type BillingRecord = components["schemas"]["BillingRecordResponse"];
+export type BillingSubscription = components["schemas"]["BillingSubscriptionResponse"];
+export type BillingPayment = components["schemas"]["BillingPaymentResponse"];
+export type BillingEvent = components["schemas"]["BillingEventResponse"];
+export type BillingPaymentRequest = components["schemas"]["BillingPaymentRequestResponse"];
+export type BillingRecordDetail = components["schemas"]["BillingRecordDetailResponse"];
+export type BillingSummary = components["schemas"]["BillingSummaryResponse"];
+export type BillingListResponse =
+  paths["/v1/billing/records"]["get"]["responses"][200]["content"]["application/json"];
+export type BillingPlan = components["schemas"]["BillingPlanResponse"];
+export type BillingPlansResponse =
+  paths["/v1/billing/plans"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DashboardRecentProjectChange = {
-  project_id: string;
-  project_name: string;
-  project_state: string;
-  last_changed_at: string;
-};
+export type AdminTenantSummary = components["schemas"]["AdminTenantResponse"];
+export type AdminTenantSettings = components["schemas"]["AdminTenantSettingsResponse"];
+export type AdminTenantStorageSettings =
+  components["schemas"]["AdminTenantStorageSettingsResponse"];
+export type AdminUser = components["schemas"]["AdminUserResponse"];
+export type ActionStatusResponse = components["schemas"]["ActionStatusResponse"];
+export type EmailVerificationResponse = components["schemas"]["EmailVerificationResponse"];
+export type MfaSetupResponse = components["schemas"]["MfaSetupResponse"];
+export type MfaStatusResponse = components["schemas"]["MfaStatusResponse"];
+export type AdminInviteUserResponse = components["schemas"]["AdminInviteUserResponse"];
+export type AdminBillingOverview = components["schemas"]["AdminBillingResponse"];
+export type AdminSnapshotResponse =
+  paths["/v1/admin"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DashboardWinnerProject = {
-  project_id: string;
-  project_name: string;
-  project_state: string;
-  awarded_at: string;
-};
+export type WebhookSubscription = components["schemas"]["WebhookResponse"];
+export type WebhookListResponse =
+  paths["/v1/webhooks"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DashboardDailyDiscoveryPoint = {
-  date: string;
-  count: number;
-};
+export type AuditLogEvent = components["schemas"]["AuditLogEventResponse"];
+export type AuditLogListResponse =
+  paths["/v1/admin/audit-log"]["get"]["responses"][200]["content"]["application/json"];
 
-export type DashboardStateBreakdownPoint = {
-  bucket: string;
-  count: number;
-};
-
-export type DashboardCrawlCostSummary = {
-  estimated_cost_thb: string;
-  run_count: number;
-  task_count: number;
-  failed_run_count: number;
-};
-
-export type DashboardStorageCostSummary = {
-  estimated_cost_thb: string;
-  document_count: number;
-  total_bytes: number;
-};
-
-export type DashboardNotificationCostSummary = {
-  estimated_cost_thb: string;
-  sent_count: number;
-  failed_webhook_delivery_count: number;
-};
-
-export type DashboardPaymentCostSummary = {
-  estimated_cost_thb: string;
-  billing_record_count: number;
-  payment_request_count: number;
-  collected_amount_thb: string;
-};
-
-export type DashboardCostSummary = {
-  window_days: number;
-  currency: string;
-  estimated_total_thb: string;
-  crawl: DashboardCrawlCostSummary;
-  storage: DashboardStorageCostSummary;
-  notifications: DashboardNotificationCostSummary;
-  payments: DashboardPaymentCostSummary;
-};
-
-export type DashboardSummaryResponse = {
-  kpis: DashboardKpis;
-  recent_runs: DashboardRecentRun[];
-  recent_changes: DashboardRecentProjectChange[];
-  winner_projects: DashboardWinnerProject[];
-  daily_discovery: DashboardDailyDiscoveryPoint[];
-  project_state_breakdown: DashboardStateBreakdownPoint[];
-  cost_summary: DashboardCostSummary;
-};
-
-export type BillingRecord = {
-  id: string;
-  tenant_id: string;
-  record_number: string;
-  plan_code: string;
-  status: string;
-  billing_period_start: string;
-  billing_period_end: string;
-  due_at: string | null;
-  issued_at: string | null;
-  paid_at: string | null;
-  currency: string;
-  amount_due: string;
-  reconciled_total: string;
-  outstanding_balance: string;
-  upgrade_from_subscription_id: string | null;
-  upgrade_mode: string;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type BillingSubscription = {
-  id: string;
-  tenant_id: string;
-  billing_record_id: string;
-  plan_code: string;
-  subscription_status: string;
-  billing_period_start: string;
-  billing_period_end: string;
-  keyword_limit: number | null;
-  activated_at: string;
-  activated_by_payment_id: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type BillingPayment = {
-  id: string;
-  billing_record_id: string;
-  payment_method: string;
-  payment_status: string;
-  amount: string;
-  currency: string;
-  reference_code: string | null;
-  received_at: string;
-  recorded_at: string;
-  reconciled_at: string | null;
-  note: string | null;
-  recorded_by: string | null;
-  reconciled_by: string | null;
-};
-
-export type BillingEvent = {
-  id: string;
-  billing_record_id: string;
-  payment_id: string | null;
-  event_type: string;
-  actor_subject: string | null;
-  note: string | null;
-  from_status: string | null;
-  to_status: string | null;
-  created_at: string;
-};
-
-export type BillingPaymentRequest = {
-  id: string;
-  billing_record_id: string;
-  provider: string;
-  payment_method: string;
-  status: string;
-  provider_reference: string;
-  payment_url: string;
-  qr_payload: string;
-  qr_svg: string;
-  amount: string;
-  currency: string;
-  expires_at: string | null;
-  settled_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-export type BillingRecordDetail = {
-  record: BillingRecord;
-  payment_requests: BillingPaymentRequest[];
-  payments: BillingPayment[];
-  events: BillingEvent[];
-  subscription: BillingSubscription | null;
-};
-
-export type BillingSummary = {
-  open_records: number;
-  awaiting_reconciliation: number;
-  outstanding_amount: string;
-  collected_amount: string;
-};
-
-export type BillingListResponse = {
-  records: BillingRecordDetail[];
-  total: number;
-  limit: number;
-  offset: number;
-  summary: BillingSummary;
-};
-
-export type BillingPlan = {
-  code: string;
-  label: string;
-  description: string;
-  currency: string;
-  amount_due: string;
-  billing_interval: string;
-  keyword_limit: number;
-  duration_days: number | null;
-  duration_months: number | null;
-};
-
-export type BillingPlansResponse = {
-  plans: BillingPlan[];
-};
-
-export type AdminTenantSummary = {
-  id: string;
-  name: string;
-  slug: string;
-  plan_code: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-};
-
-export type AdminTenantSettings = {
-  support_email: string | null;
-  billing_contact_email: string | null;
-  timezone: string;
-  locale: string;
-  daily_digest_enabled: boolean;
-  weekly_digest_enabled: boolean;
-  crawl_interval_hours: number | null;
-  created_at: string | null;
-  updated_at: string | null;
-};
-
-export type AdminTenantStorageSettings = {
-  provider: string;
-  connection_status: string;
-  account_email: string | null;
-  folder_label: string | null;
-  folder_path_hint: string | null;
-  provider_folder_id: string | null;
-  provider_folder_url: string | null;
-  managed_fallback_enabled: boolean;
-  managed_backup_enabled: boolean;
-  last_validated_at: string | null;
-  last_validation_error: string | null;
-  has_credentials: boolean;
-  credential_type: string | null;
-  credential_updated_at: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-};
-
-export type AdminUser = {
-  id: string;
-  email: string;
-  full_name: string | null;
-  role: string;
-  status: string;
-  email_verified_at: string | null;
-  mfa_enabled: boolean;
-  created_at: string;
-  updated_at: string;
-  notification_preferences: Record<string, boolean>;
-};
-
-export type ActionStatusResponse = {
-  status: string;
-};
-
-export type EmailVerificationResponse = {
-  email_verified: boolean;
-};
-
-export type MfaSetupResponse = {
-  secret: string;
-  otpauth_uri: string;
-};
-
-export type MfaStatusResponse = {
-  mfa_enabled: boolean;
-};
-
-export type AdminInviteUserResponse = {
-  status: string;
-  delivery_email: string;
-};
-
-export type AdminBillingOverview = {
-  summary: BillingSummary;
-  current_subscription: BillingSubscription | null;
-  upcoming_subscription: BillingSubscription | null;
-  records: BillingRecord[];
-};
-
-export type AdminSnapshotResponse = {
-  tenant: AdminTenantSummary;
-  settings: AdminTenantSettings;
-  users: AdminUser[];
-  billing: AdminBillingOverview;
-};
-
-export type WebhookSubscription = {
-  id: string;
-  name: string;
-  url: string;
-  notification_types: string[];
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  last_delivery_status: string | null;
-  last_delivery_attempted_at: string | null;
-  last_delivered_at: string | null;
-  last_response_status_code: number | null;
-};
-
-export type WebhookListResponse = {
-  webhooks: WebhookSubscription[];
-};
-
-export type AuditLogEvent = {
-  id: string;
-  tenant_id: string;
-  source: string;
-  entity_type: string;
-  entity_id: string;
-  project_id: string | null;
-  document_id: string | null;
-  actor_subject: string | null;
-  event_type: string;
-  summary: string;
-  metadata_json: Record<string, unknown> | null;
-  occurred_at: string;
-  created_at: string;
-};
-
-export type AuditLogListResponse = {
-  items: AuditLogEvent[];
-  total: number;
-  limit: number;
-  offset: number;
-};
-
-export type SupportTenant = {
-  id: string;
-  name: string;
-  slug: string;
-  plan_code: string;
-  is_active: boolean;
-  support_email: string | null;
-  billing_contact_email: string | null;
-  active_user_count: number;
-};
-
-export type SupportTenantListResponse = {
-  tenants: SupportTenant[];
-};
-
-export type SupportTriageSummary = {
-  failed_runs_recent: number;
-  pending_document_reviews: number;
-  failed_webhook_deliveries: number;
-  outstanding_billing_records: number;
-};
-
-export type SupportFailedRun = {
-  id: string;
-  trigger_type: string;
-  status: string;
-  error_count: number;
-  created_at: string;
-};
-
-export type SupportPendingReview = {
-  id: string;
-  project_id: string;
-  status: string;
-  created_at: string;
-};
-
-export type SupportFailedWebhook = {
-  id: string;
-  webhook_subscription_id: string;
-  delivery_status: string;
-  last_response_status_code: number | null;
-  last_attempted_at: string | null;
-};
-
-export type SupportBillingIssue = {
-  id: string;
-  record_number: string;
-  status: string;
-  amount_due: string;
-  due_at: string | null;
-  created_at: string;
-};
-
-export type SupportStorageDiagnostics = {
-  provider: string;
-  connection_status: string;
-  account_email: string | null;
-  provider_folder_id: string | null;
-  provider_folder_url: string | null;
-  managed_fallback_enabled: boolean;
-  managed_backup_enabled: boolean;
-  has_credentials: boolean;
-  last_validated_at: string | null;
-  last_validation_error: string | null;
-};
-
-export type SupportAlert = {
-  severity: string;
-  code: string;
-  title: string;
-  detail: string;
-};
-
-export type SupportSummaryResponse = {
-  tenant: SupportTenant;
-  triage: SupportTriageSummary;
-  cost_summary: DashboardCostSummary;
-  storage_diagnostics: SupportStorageDiagnostics;
-  alerts: SupportAlert[];
-  recent_failed_runs: SupportFailedRun[];
-  pending_reviews: SupportPendingReview[];
-  failed_webhooks: SupportFailedWebhook[];
-  billing_issues: SupportBillingIssue[];
-};
+export type SupportTenant = components["schemas"]["SupportTenantResponse"];
+export type SupportTenantListResponse =
+  paths["/v1/admin/support/tenants"]["get"]["responses"][200]["content"]["application/json"];
+export type SupportTriageSummary = components["schemas"]["SupportTriageResponse"];
+export type SupportFailedRun = components["schemas"]["SupportFailedRunResponse"];
+export type SupportPendingReview = components["schemas"]["SupportPendingReviewResponse"];
+export type SupportFailedWebhook = components["schemas"]["SupportFailedWebhookResponse"];
+export type SupportBillingIssue = components["schemas"]["SupportBillingIssueResponse"];
+export type SupportStorageDiagnostics =
+  components["schemas"]["SupportStorageDiagnosticsResponse"];
+export type SupportAlert = components["schemas"]["SupportAlertResponse"];
+export type SupportSummaryResponse =
+  paths["/v1/admin/support/tenants/{tenant_id}/summary"]["get"]["responses"][200]["content"]["application/json"];
 
 /* ------------------------------------------------------------------ */
 /*  Config                                                             */
@@ -1016,217 +594,144 @@ export async function fetchProjectCrawlEvidence(
 }
 
 export type FetchRunsParams = {
-  limit?: number;
-  offset?: number;
+  [Key in keyof NonNullable<
+    paths["/v1/runs"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<NonNullable<paths["/v1/runs"]["get"]["parameters"]["query"]>[Key]>;
 };
 
 export type FetchBillingParams = {
-  limit?: number;
-  offset?: number;
+  [Key in keyof NonNullable<
+    paths["/v1/billing/records"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<
+    NonNullable<paths["/v1/billing/records"]["get"]["parameters"]["query"]>[Key]
+  >;
 };
 
 export type FetchAuditLogParams = {
-  tenant_id?: string;
-  source?: string;
-  entity_type?: string;
-  limit?: number;
-  offset?: number;
+  [Key in keyof NonNullable<
+    paths["/v1/admin/audit-log"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<
+    NonNullable<paths["/v1/admin/audit-log"]["get"]["parameters"]["query"]>[Key]
+  >;
 };
 
 export type FetchDashboardSummaryParams = {
 };
 
 export type FetchAdminSnapshotParams = {
-  tenant_id?: string;
+  [Key in keyof NonNullable<
+    paths["/v1/admin"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<NonNullable<paths["/v1/admin"]["get"]["parameters"]["query"]>[Key]>;
 };
 
 export type FetchWebhooksParams = {
-  tenant_id?: string;
+  [Key in keyof NonNullable<
+    paths["/v1/webhooks"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<
+    NonNullable<paths["/v1/webhooks"]["get"]["parameters"]["query"]>[Key]
+  >;
 };
 
 export type FetchSupportTenantsParams = {
   query: string;
-  limit?: number;
+  limit?: NonNullable<
+    paths["/v1/admin/support/tenants"]["get"]["parameters"]["query"]
+  >["limit"];
 };
 
 export type FetchSupportSummaryParams = {
   tenant_id: string;
-  window_days?: number;
+  window_days?: NonNullable<
+    paths["/v1/admin/support/tenants/{tenant_id}/summary"]["get"]["parameters"]["query"]
+  >["window_days"];
 };
 
-export type RegisterInput = {
-  company_name: string;
-  email: string;
-  password: string;
+export type RegisterInput = components["schemas"]["RegisterRequest"];
+export type LoginInput = components["schemas"]["LoginRequest"];
+export type AcceptInviteInput = components["schemas"]["AcceptInviteRequest"];
+export type ForgotPasswordInput = components["schemas"]["ForgotPasswordRequest"];
+export type ResetPasswordInput = components["schemas"]["ResetPasswordRequest"];
+
+type CreateBillingRecordRequest = components["schemas"]["CreateBillingRecordRequest"];
+export type CreateBillingRecordInput = Omit<CreateBillingRecordRequest, "status"> & {
+  status?: CreateBillingRecordRequest["status"] | string;
 };
 
-export type LoginInput = {
-  tenant_slug?: string;
-  email: string;
-  password: string;
-  mfa_code?: string;
+export type CreateBillingUpgradeInput = components["schemas"]["CreateBillingUpgradeRequest"];
+
+type CreateBillingPaymentRequest = components["schemas"]["CreateBillingPaymentRequest"];
+export type RecordBillingPaymentInput = Omit<
+  CreateBillingPaymentRequest,
+  "currency" | "payment_method"
+> & {
+  currency?: CreateBillingPaymentRequest["currency"];
+  payment_method?: CreateBillingPaymentRequest["payment_method"] | string;
 };
 
-export type AcceptInviteInput = {
-  token: string;
-  password: string;
+export type ReconcileBillingPaymentInput =
+  components["schemas"]["ReconcileBillingPaymentRequest"];
+
+type TransitionBillingRecordRequest = components["schemas"]["TransitionBillingRecordRequest"];
+export type TransitionBillingRecordInput = Omit<
+  TransitionBillingRecordRequest,
+  "status"
+> & {
+  status: TransitionBillingRecordRequest["status"] | string;
 };
 
-export type ForgotPasswordInput = {
-  tenant_slug: string;
-  email: string;
+type CreateBillingPaymentRequestRequest =
+  components["schemas"]["CreateBillingPaymentRequestRequest"];
+export type CreateBillingPaymentRequestInput = Omit<
+  CreateBillingPaymentRequestRequest,
+  "provider" | "payment_method" | "expires_in_minutes"
+> & {
+  provider: CreateBillingPaymentRequestRequest["provider"] | string;
+  payment_method?: CreateBillingPaymentRequestRequest["payment_method"] | string;
+  expires_in_minutes?: CreateBillingPaymentRequestRequest["expires_in_minutes"];
 };
 
-export type ResetPasswordInput = {
-  token: string;
-  password: string;
+type CreateAdminUserRequest = components["schemas"]["CreateAdminUserRequest"];
+export type CreateAdminUserInput = Omit<CreateAdminUserRequest, "role" | "status"> & {
+  role?: CreateAdminUserRequest["role"] | string;
+  status?: CreateAdminUserRequest["status"];
 };
 
-export type CreateBillingRecordInput = {
-  record_number: string;
-  plan_code: string;
-  status?: string;
-  billing_period_start: string;
-  billing_period_end?: string;
-  due_at?: string;
-  issued_at?: string;
-  amount_due?: string;
-  currency?: string;
-  notes?: string;
+type UpdateAdminUserRequest = components["schemas"]["UpdateAdminUserRequest"];
+export type UpdateAdminUserInput = Omit<UpdateAdminUserRequest, "role"> & {
+  role?: NonNullable<UpdateAdminUserRequest["role"]> | string;
 };
 
-export type CreateBillingUpgradeInput = {
-  target_plan_code: string;
-  billing_period_start: string;
-  record_number?: string;
-  notes?: string;
-};
+export type UpdateAdminUserNotificationPreferencesInput =
+  components["schemas"]["UpdateUserNotificationPreferencesRequest"];
 
-export type RecordBillingPaymentInput = {
-  payment_method?: string;
-  amount: string;
-  currency?: string;
-  reference_code?: string;
-  received_at: string;
-  note?: string;
-};
-
-export type ReconcileBillingPaymentInput = {
-  status: string;
-  note?: string;
-};
-
-export type TransitionBillingRecordInput = {
-  status: string;
-  note?: string;
-};
-
-export type CreateBillingPaymentRequestInput = {
-  provider: string;
-  payment_method?: string;
-  expires_in_minutes?: number;
-};
-
-export type CreateAdminUserInput = {
-  tenant_id?: string;
-  email: string;
-  full_name?: string;
-  role?: string;
-  status?: string;
-};
-
-export type UpdateAdminUserInput = {
-  tenant_id?: string;
-  full_name?: string;
-  role?: string;
-  status?: string;
-  password?: string;
-};
-
-export type UpdateAdminUserNotificationPreferencesInput = {
-  tenant_id?: string;
-  email_preferences: Record<string, boolean>;
-};
-
-export type UpdateTenantSettingsInput = {
-  tenant_id?: string;
-  support_email?: string;
-  billing_contact_email?: string;
-  timezone?: string;
-  locale?: string;
-  daily_digest_enabled?: boolean;
-  weekly_digest_enabled?: boolean;
-  crawl_interval_hours?: number | null;
-};
+export type UpdateTenantSettingsInput =
+  components["schemas"]["UpdateTenantSettingsRequest"];
 
 export type FetchTenantStorageSettingsParams = {
-  tenant_id?: string;
+  [Key in keyof NonNullable<
+    paths["/v1/admin/storage"]["get"]["parameters"]["query"]
+  >]?: ApiQueryInput<
+    NonNullable<paths["/v1/admin/storage"]["get"]["parameters"]["query"]>[Key]
+  >;
 };
 
-export type UpdateTenantStorageSettingsInput = {
-  tenant_id?: string;
-  provider?: string;
-  connection_status?: string;
-  account_email?: string;
-  folder_label?: string;
-  folder_path_hint?: string;
-  provider_folder_id?: string | null;
-  provider_folder_url?: string | null;
-  managed_fallback_enabled?: boolean;
-  managed_backup_enabled?: boolean;
-  last_validated_at?: string | null;
-  last_validation_error?: string | null;
-};
-
-export type ConnectTenantStorageInput = {
-  tenant_id?: string;
-  provider: string;
-  credential_type: string;
-  credentials: Record<string, string>;
-};
-
-export type DisconnectTenantStorageInput = {
-  tenant_id?: string;
-  provider: string;
-};
-
-export type TestTenantStorageWriteInput = {
-  tenant_id?: string;
-};
-
-export type GoogleDriveOAuthStartResponse = {
-  provider: string;
-  authorization_url: string;
-  state: string;
-};
-
-export type StartGoogleDriveOAuthInput = {
-  tenant_id?: string;
-};
-
-export type OneDriveOAuthStartResponse = {
-  provider: string;
-  authorization_url: string;
-  state: string;
-};
-
-export type StartOneDriveOAuthInput = {
-  tenant_id?: string;
-};
-
-export type SelectGoogleDriveFolderInput = {
-  tenant_id?: string;
-  folder_id: string;
-  folder_label?: string;
-  folder_url?: string;
-};
-
-export type SelectOneDriveFolderInput = {
-  tenant_id?: string;
-  folder_id: string;
-  folder_label?: string;
-  folder_url?: string;
-};
+export type UpdateTenantStorageSettingsInput =
+  components["schemas"]["UpdateTenantStorageSettingsRequest"];
+export type ConnectTenantStorageInput = components["schemas"]["ConnectTenantStorageRequest"];
+export type DisconnectTenantStorageInput =
+  components["schemas"]["DisconnectTenantStorageRequest"];
+export type TestTenantStorageWriteInput = components["schemas"]["TestTenantStorageRequest"];
+export type GoogleDriveOAuthStartResponse =
+  components["schemas"]["GoogleDriveOAuthStartResponse"];
+export type StartGoogleDriveOAuthInput =
+  components["schemas"]["StartGoogleDriveOAuthRequest"];
+export type OneDriveOAuthStartResponse =
+  components["schemas"]["OneDriveOAuthStartResponse"];
+export type StartOneDriveOAuthInput = components["schemas"]["StartOneDriveOAuthRequest"];
+export type SelectGoogleDriveFolderInput =
+  components["schemas"]["SelectGoogleDriveFolderRequest"];
+export type SelectOneDriveFolderInput =
+  components["schemas"]["SelectOneDriveFolderRequest"];
 
 type CreateRuleProfileRequest = components["schemas"]["CreateRuleProfileRequest"];
 
@@ -1240,12 +745,9 @@ export type TriggerManualRecrawlInput = Partial<
 export type TriggerManualRecrawlResponse =
   paths["/v1/rules/recrawl"]["post"]["responses"][200]["content"]["application/json"];
 
-export type CreateWebhookInput = {
-  tenant_id?: string;
-  name: string;
-  url: string;
+type CreateWebhookRequest = components["schemas"]["CreateWebhookRequest"];
+export type CreateWebhookInput = Omit<CreateWebhookRequest, "notification_types"> & {
   notification_types: string[];
-  signing_secret: string;
 };
 
 export async function fetchRuns(
