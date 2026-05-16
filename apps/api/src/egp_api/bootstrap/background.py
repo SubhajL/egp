@@ -10,23 +10,9 @@ import logging
 
 from fastapi import FastAPI
 
+from egp_api.executors.webhook_delivery import run_webhook_delivery_loop
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_db.db_utils import is_sqlite_url
-from egp_notifications.webhook_delivery import WebhookDeliveryProcessor
-
-
-async def _run_webhook_delivery_loop(
-    *,
-    processor: WebhookDeliveryProcessor,
-    stop_event: asyncio.Event,
-    poll_interval_seconds: float,
-) -> None:
-    while not stop_event.is_set():
-        processor.process_pending()
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
-        except TimeoutError:
-            continue
 
 
 async def _run_discovery_dispatch_loop(
@@ -70,7 +56,7 @@ def build_lifespan(*, logger: logging.Logger):
         ):
             poller_stop_event = asyncio.Event()
             poller_task = asyncio.create_task(
-                _run_webhook_delivery_loop(
+                run_webhook_delivery_loop(
                     processor=processor,
                     stop_event=poller_stop_event,
                     poll_interval_seconds=1.0,
