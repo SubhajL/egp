@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
@@ -18,6 +21,7 @@ from egp_worker.workflows.discover import run_discover_workflow
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "99999999-9999-9999-9999-999999999999"
 JWT_SECRET = "phase1-test-secret"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeS3Client:
@@ -33,6 +37,24 @@ class FakeS3Client:
 
     def generate_presigned_url(self, client_method: str, *, Params, ExpiresIn: int):
         return f"https://signed.example/{Params['Bucket']}/{Params['Key']}"
+
+
+def test_worker_boundary_imports_no_api_services() -> None:
+    worker_files = sorted((REPO_ROOT / "apps/worker/src").rglob("*.py"))
+    forbidden_imports: list[str] = []
+    for path in worker_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "egp_api.services"
+            ):
+                forbidden_imports.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("egp_api.services"):
+                        forbidden_imports.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+
+    assert forbidden_imports == []
 
 
 class FakeSupabaseBucket:

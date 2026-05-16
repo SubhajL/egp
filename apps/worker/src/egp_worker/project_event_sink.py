@@ -16,10 +16,10 @@ from egp_worker.config import (
 )
 
 if TYPE_CHECKING:
-    from egp_api.services.project_ingest_service import ProjectIngestService
     from egp_db.repositories.project_repo import SqlProjectRepository
     from egp_db.repositories.project_repo import ProjectRecord
     from egp_notifications.dispatcher import NotificationDispatcher
+    from egp_domain.project_ingest import ProjectIngestService
 
 
 class ProjectEventSink(Protocol):
@@ -162,7 +162,7 @@ def create_service_backed_project_event_sink(
     database_url: str,
     notification_dispatcher: "NotificationDispatcher | None" = None,
 ) -> ProjectEventSink:
-    from egp_api.services.project_ingest_service import create_project_ingest_service
+    from egp_domain.project_ingest import create_project_ingest_service
 
     service = create_project_ingest_service(
         database_url=database_url,
@@ -176,7 +176,7 @@ def create_service_backed_project_event_sink_from_repository(
     repository: "SqlProjectRepository",
     notification_dispatcher: "NotificationDispatcher | None" = None,
 ) -> ProjectEventSink:
-    from egp_api.services.project_ingest_service import ProjectIngestService
+    from egp_domain.project_ingest import ProjectIngestService
 
     service = ProjectIngestService(
         repository,
