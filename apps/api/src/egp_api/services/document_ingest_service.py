@@ -62,15 +62,21 @@ class DocumentIngestService:
         self._audit_repository = audit_repository
 
     def _resolve_project_context(
-        self, *, tenant_id: str, project_id: str, source_status_text: str
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        source_status_text: str,
+        project_state: str | None = None,
     ) -> tuple[str, str | None]:
         if self._project_repository is None:
-            return (source_status_text, None)
+            return (source_status_text, project_state)
         project = self._project_repository.get_project(tenant_id=tenant_id, project_id=project_id)
         if project is None:
-            return (source_status_text, None)
+            return (source_status_text, project_state)
         resolved_status_text = source_status_text or (project.source_status_text or "")
-        return (resolved_status_text, project.project_state.value)
+        resolved_project_state = project_state or project.project_state.value
+        return (resolved_status_text, resolved_project_state)
 
     def ingest_document_bytes(
         self,
@@ -82,12 +88,14 @@ class DocumentIngestService:
         source_label: str,
         source_status_text: str,
         source_page_text: str = "",
+        project_state: str | None = None,
         actor_subject: str | None = None,
     ) -> StoreDocumentResult:
-        resolved_status_text, project_state = self._resolve_project_context(
+        resolved_status_text, resolved_project_state = self._resolve_project_context(
             tenant_id=tenant_id,
             project_id=project_id,
             source_status_text=source_status_text,
+            project_state=project_state,
         )
         result = self._repository.store_document(
             tenant_id=tenant_id,
@@ -97,7 +105,7 @@ class DocumentIngestService:
             source_label=source_label,
             source_status_text=resolved_status_text,
             source_page_text=source_page_text,
-            project_state=project_state,
+            project_state=resolved_project_state,
         )
         if self._audit_repository is not None and result.created:
             self._audit_repository.record_event(

@@ -14,9 +14,9 @@ The API/control-plane path is the canonical owner of document-ingest semantics:
 - review creation
 - user-facing notification decisions
 
-The worker is an artifact collector and event producer. During the transition to the canonical
-path, worker-side direct ingestion must remain behaviorally equivalent to API ingestion for the
-same tenant, project, artifact bytes, source label, and source page context.
+The worker is an artifact collector and event producer. Its compatibility ingest helper must
+delegate document writes through the canonical `DocumentIngestService` path instead of owning
+classification, diffing, persistence, review creation, or audit semantics itself.
 
 ## Required Behavior
 
@@ -37,6 +37,7 @@ The contract is covered by `tests/phase3/test_document_ingest_contract.py`:
 
 - `test_api_and_worker_document_ingest_share_project_context_contract`
 - `test_cross_path_document_retry_is_idempotent`
+- `test_worker_document_ingest_routes_through_canonical_service_boundary`
 
-PR 10 can move worker writes behind a service or event boundary, but these tests should continue
-to pass throughout that migration.
+PR 10 moved worker writes behind the canonical service boundary; these tests should continue to
+pass during later cleanup and observability work.

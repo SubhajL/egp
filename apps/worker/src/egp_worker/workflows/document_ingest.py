@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_db.google_drive import (
     GoogleDriveClient,
     GoogleDriveOAuthConfig,
@@ -16,6 +17,7 @@ from egp_db.onedrive import (
     normalize_onedrive_scopes,
 )
 from egp_db.repositories.admin_repo import create_admin_repository
+from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.document_repo import (
     SqlDocumentRepository,
     StoreDocumentResult,
@@ -25,7 +27,6 @@ from egp_db.repositories.document_repo import (
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
-from sqlalchemy.exc import SQLAlchemyError
 
 
 def _google_drive_config_from_env() -> GoogleDriveOAuthConfig | None:
@@ -57,32 +58,6 @@ def _onedrive_config_from_env() -> OneDriveOAuthConfig | None:
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         scopes=normalize_onedrive_scopes(scopes),
-    )
-
-
-def _resolve_project_context(
-    *,
-    database_url: str,
-    tenant_id: str,
-    project_id: str,
-    source_status_text: str,
-    project_state: str | None,
-) -> tuple[str, str | None]:
-    if source_status_text and project_state is not None:
-        return (source_status_text, project_state)
-    project_repository = create_project_repository(
-        database_url=database_url,
-        bootstrap_schema=False,
-    )
-    try:
-        project = project_repository.get_project(tenant_id=tenant_id, project_id=project_id)
-    except SQLAlchemyError:
-        return (source_status_text, project_state)
-    if project is None:
-        return (source_status_text, project_state)
-    return (
-        source_status_text or (project.source_status_text or ""),
-        project_state if project_state is not None else project.project_state.value,
     )
 
 
@@ -160,20 +135,22 @@ def ingest_document_artifact(
             supabase_client=supabase_client,
             artifact_store_resolver=tenant_artifact_store_resolver,
         )
-    resolved_source_status_text, resolved_project_state = _resolve_project_context(
-        database_url=resolved_database_url,
-        tenant_id=tenant_id,
-        project_id=project_id,
-        source_status_text=source_status_text,
-        project_state=project_state,
+    document_ingest_service = DocumentIngestService(
+        repository,
+        project_repository=create_project_repository(
+            database_url=resolved_database_url,
+            bootstrap_schema=False,
+        ),
+        audit_repository=create_audit_repository(database_url=resolved_database_url),
     )
-    return repository.store_document(
+    return document_ingest_service.ingest_document_bytes(
         tenant_id=tenant_id,
         project_id=project_id,
         file_name=file_name,
         file_bytes=file_bytes,
         source_label=source_label,
-        source_status_text=resolved_source_status_text,
+        source_status_text=source_status_text,
         source_page_text=source_page_text,
-        project_state=resolved_project_state,
+        project_state=project_state,
+        actor_subject="system:worker",
     )

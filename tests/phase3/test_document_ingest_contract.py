@@ -9,6 +9,7 @@ from sqlalchemy import text
 from egp_api.main import create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ProcurementType, ProjectState
+from egp_worker.workflows import document_ingest as worker_document_ingest
 from egp_worker.workflows.document_ingest import ingest_document_artifact
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -134,6 +135,61 @@ def _stable_worker_diff_contract(result) -> dict[str, Any]:
         "old_document_phase": summary_json.get("old_document_phase"),
         "new_document_phase": summary_json.get("new_document_phase"),
         "text_diff_available": summary_json.get("text_diff_available"),
+    }
+
+
+def test_worker_document_ingest_routes_through_canonical_service_boundary(
+    tmp_path, monkeypatch
+) -> None:
+    captured: dict[str, Any] = {}
+    expected_result = object()
+
+    class ExplodingRepository:
+        def store_document(self, **kwargs: object) -> object:
+            raise AssertionError("worker must delegate to DocumentIngestService")
+
+    class RecordingDocumentIngestService:
+        def __init__(self, repository: object, **kwargs: object) -> None:
+            captured["repository"] = repository
+            captured["service_kwargs"] = kwargs
+
+        def ingest_document_bytes(self, **kwargs: object) -> object:
+            captured["ingest_kwargs"] = kwargs
+            return expected_result
+
+    repository = ExplodingRepository()
+    monkeypatch.setattr(
+        worker_document_ingest,
+        "DocumentIngestService",
+        RecordingDocumentIngestService,
+    )
+
+    result = ingest_document_artifact(
+        artifact_root=tmp_path / "artifacts",
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'canonical-service.sqlite3'}",
+        repository=repository,
+        tenant_id=TENANT_ID,
+        project_id="project-1",
+        file_name="tor.pdf",
+        file_bytes=b"tor-bytes",
+        source_label="เอกสารประกวดราคา",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+        source_page_text="detail-page",
+        project_state=ProjectState.OPEN_PUBLIC_HEARING.value,
+    )
+
+    assert result is expected_result
+    assert captured["repository"] is repository
+    assert captured["ingest_kwargs"] == {
+        "tenant_id": TENANT_ID,
+        "project_id": "project-1",
+        "file_name": "tor.pdf",
+        "file_bytes": b"tor-bytes",
+        "source_label": "เอกสารประกวดราคา",
+        "source_status_text": "เปิดรับฟังคำวิจารณ์",
+        "source_page_text": "detail-page",
+        "project_state": ProjectState.OPEN_PUBLIC_HEARING.value,
+        "actor_subject": "system:worker",
     }
 
 
