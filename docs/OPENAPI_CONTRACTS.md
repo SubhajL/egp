@@ -26,3 +26,16 @@ npm run check:api-types
 
 `check:api-types` regenerates the schema and TypeScript types in a temporary directory and fails if
 the committed artifacts drift.
+
+## Adopted Frontend Domains
+
+`apps/web/src/lib/api.ts` keeps the hand-written fetch wrapper functions, but the first migrated
+domains now derive their public TypeScript response and request types from
+`apps/web/src/lib/generated/api-types.ts`:
+
+- projects
+- documents
+- rules and entitlements
+
+Keep wrapper functions stable for pages/hooks, and migrate additional domains by replacing manual
+facade types with generated `paths` or `components` aliases plus focused unit/type coverage.
