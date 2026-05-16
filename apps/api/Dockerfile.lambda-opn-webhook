@@ -7,6 +7,7 @@ COPY apps/api/src ./apps/api/src
 COPY apps/worker/src ./apps/worker/src
 COPY packages/shared-types/src ./packages/shared-types/src
 COPY packages/crawler-core/src ./packages/crawler-core/src
+COPY packages/domain/src ./packages/domain/src
 COPY packages/document-classifier/src ./packages/document-classifier/src
 COPY packages/db/src ./packages/db/src
 COPY packages/notification-core/src ./packages/notification-core/src

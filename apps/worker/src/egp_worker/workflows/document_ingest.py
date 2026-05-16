@@ -5,12 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_db.google_drive import (
     GoogleDriveClient,
     GoogleDriveOAuthConfig,
     normalize_google_drive_scopes,
 )
+from egp_domain.document_ingest import DocumentIngestService
 from egp_db.onedrive import (
     OneDriveClient,
     OneDriveOAuthConfig,

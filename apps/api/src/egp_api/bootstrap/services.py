@@ -27,14 +27,14 @@ from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_api.services.discovery_dispatch import DiscoveryDispatcher
-from egp_api.services.document_ingest_service import DocumentIngestService
 from egp_api.services.entitlement_service import (
     EntitlementAwareNotificationDispatcher,
     TenantEntitlementService,
 )
 from egp_api.services.export_service import ExportService
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
-from egp_api.services.project_ingest_service import ProjectIngestService
+from egp_domain.document_ingest import DocumentIngestService
+from egp_domain.project_ingest import ProjectIngestService
 from egp_api.services.project_service import ProjectService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService

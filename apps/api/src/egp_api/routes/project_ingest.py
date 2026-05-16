@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from egp_api.auth import require_internal_worker_token
 from egp_api.routes.projects import ProjectResponse, _serialize_project
-from egp_api.services.project_ingest_service import (
+from egp_domain.project_ingest import (
     DiscoverProjectIngestResult,
     ProjectIngestService,
 )

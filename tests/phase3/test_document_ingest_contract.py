@@ -251,7 +251,7 @@ def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
     project_id = _seed_public_hearing_project(
         client, project_number="EGP-2026-CONTRACT-RETRY"
     )
-    caplog.set_level(logging.INFO, logger="egp_api.services.document_ingest_service")
+    caplog.set_level(logging.INFO, logger="egp_domain.document_ingest")
     caplog.set_level(logging.INFO, logger="egp_db.repositories.document_repo")
     api_result = _api_ingest(
         client,

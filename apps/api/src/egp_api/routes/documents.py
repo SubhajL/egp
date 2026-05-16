@@ -12,7 +12,6 @@ from starlette.concurrency import run_in_threadpool
 
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
-from egp_api.services.document_ingest_service import DocumentDownloadLink, DocumentIngestService
 from egp_db.repositories.document_repo import (
     DocumentArtifactReadError,
     DocumentDiffRecord,
@@ -22,6 +21,7 @@ from egp_db.repositories.document_repo import (
     DocumentReviewPage,
     StoreDocumentResult,
 )
+from egp_domain.document_ingest import DocumentDownloadLink, DocumentIngestService
 from egp_shared_types.enums import DocumentReviewAction, DocumentReviewStatus
 
 
