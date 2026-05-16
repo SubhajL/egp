@@ -85,3 +85,85 @@ Lock PR 9's document-ingest contract before the PR 10 canonical-path migration.
 - Added PR comment with local validation evidence and the GitHub Actions billing blocker.
 
 Remote/main and local main were not updated because required GitHub checks could not run and branch protection blocked the merge.
+
+## Review (2026-05-16 10:52:06 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working tree
+- Commands Run: `git status --porcelain=v1`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- apps/api/src/egp_api/services/document_ingest_service.py apps/worker/src/egp_worker/workflows/document_ingest.py docs/DOCUMENT_INGEST_CONTRACT.md tests/phase3/test_document_ingest_contract.py`; `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py tests/phase1/test_document_infrastructure.py tests/phase1/test_phase1_wiring.py tests/phase1/test_worker_entrypoint.py tests/phase1/test_documents_api.py -q`; `./.venv/bin/ruff check apps/api apps/worker packages tests/phase3/test_document_ingest_contract.py`; `./.venv/bin/python -m compileall apps/api/src/egp_api/services apps/worker/src/egp_worker/workflows`; exact wiring searches for `DocumentIngestService`, `ingest_document_bytes`, `store_document`, `ingest_document_artifact`, and `ingest_downloaded_documents`.
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: importing the API service from the worker is acceptable for PR 10 because the root package and worker Dockerfile install both app packages, and the roadmap explicitly chose the API/control-plane service as the canonical document-ingest owner.
+- Assumption: preserving caller-supplied `project_state` inside `DocumentIngestService` is intentional transition compatibility for worker-collected context.
+
+### Recommended Tests / Validation
+- Keep the new service-boundary test in `tests/phase3/test_document_ingest_contract.py`; it fails if worker ingestion returns to direct repository writes.
+- Let GitHub CI run the normal Python, database, frontend, and Docker gates before merge.
+
+### Rollout Notes
+- No schema or environment changes.
+- Worker document ingestion now records document-created audit rows through the same service path as API ingestion when a document is newly created.
+
+## Implementation Summary (2026-05-16 10:52:47 +07)
+
+### Goal
+Implement PR 10 by routing worker document writes through the canonical API/control-plane document-ingest service while keeping the PR 9 contract green.
+
+### What Changed
+- `tests/phase3/test_document_ingest_contract.py`: added a service-boundary contract test that monkeypatches `DocumentIngestService` and installs an exploding repository, proving worker ingestion delegates to the canonical service instead of calling `store_document()` itself.
+- `apps/api/src/egp_api/services/document_ingest_service.py`: extended `DocumentIngestService.ingest_document_bytes()` to accept optional `project_state`, preserving worker-collected context while keeping project status/state hydration inside the canonical service.
+- `apps/worker/src/egp_worker/workflows/document_ingest.py`: removed worker-local project-context resolution and direct repository writes; `ingest_document_artifact()` now constructs `DocumentIngestService` with project and audit repositories and calls `ingest_document_bytes(actor_subject="system:worker")`.
+- `docs/DOCUMENT_INGEST_CONTRACT.md`: updated the contract to state that PR 10 moved worker writes behind `DocumentIngestService`.
+
+### TDD Evidence
+- RED: `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_worker_document_ingest_routes_through_canonical_service_boundary -q`
+  - Result: failed with `AssertionError: worker must delegate to DocumentIngestService` from `apps/worker/src/egp_worker/workflows/document_ingest.py:170`, proving the worker still called `repository.store_document()` directly.
+- GREEN: `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py -q`
+  - Result: `3 passed in 0.66s`.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_worker_document_ingest_routes_through_canonical_service_boundary -q` - `1 passed`.
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py -q` - `3 passed`.
+- `./.venv/bin/python -m pytest tests/phase1/test_document_infrastructure.py tests/phase1/test_phase1_wiring.py tests/phase1/test_worker_entrypoint.py -q` - `20 passed`.
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py tests/phase1/test_document_infrastructure.py tests/phase1/test_phase1_wiring.py tests/phase1/test_worker_entrypoint.py tests/phase1/test_documents_api.py -q` - `51 passed` on three consecutive runs.
+- `./.venv/bin/ruff check apps/api apps/worker packages tests/phase3/test_document_ingest_contract.py` - passed.
+- `./.venv/bin/python -m compileall apps/api/src/egp_api/services apps/worker/src/egp_worker/workflows` - passed.
+
+### Wiring Verification
+- `rg -n "DocumentIngestService|ingest_document_bytes|store_document\\(" apps/api/src apps/worker/src packages/db/src -g '*.py'` shows production `store_document()` calls only in `DocumentIngestService` and the repository implementation; worker production code calls `DocumentIngestService.ingest_document_bytes()`.
+- `rg -n "ingest_document_artifact\\(|ingest_downloaded_documents\\(" apps/worker/src tests/phase3/test_document_ingest_contract.py -g '*.py'` confirms the runtime call path remains `egp_worker.main` / `browser_downloads` -> `ingest_document_artifact()` -> canonical service.
+
+### Behavior Changes And Risk Notes
+- Worker-created documents now flow through the canonical service and receive `document.created` audit events with actor `system:worker`.
+- API ingest behavior is unchanged for route callers; `project_state` is optional and defaults to the stored project state when omitted.
+- No schema, migration, environment, or frontend changes.
+- Auggie semantic retrieval was unavailable due to HTTP 429, so context gathering used direct file inspection and exact identifier searches.
+
+### Follow-ups / Known Gaps
+- PR 11 should remove or slim remaining transition-only compatibility surfaces and add replay/duplicate observability around the now-canonical path.
+
+## Submit / Landing Status (2026-05-16 10:55:41 +07)
+
+- Created Graphite branch `05-16-feat_document_ingest_canonical_service` with commit `7d30574f`.
+- Submitted PR #82: https://github.com/SubhajL/egp/pull/82
+- Enabled GitHub auto-merge with merge method `MERGE`.
+- Added PR comment with local RED/GREEN, focused test, lint, and compile evidence: https://github.com/SubhajL/egp/pull/82#issuecomment-4465459955
+- GitHub Actions did not execute job steps. The Python Lint & Format check annotation reported: `The job was not started because your account is locked due to a billing issue.`
+- Attempted immediate merge with `gh pr merge 82 --merge --delete-branch=false`; GitHub blocked the merge because base branch policy requirements were not met.
+
+Remote/main and local main were not updated because required GitHub checks could not run and branch protection blocked the merge.
