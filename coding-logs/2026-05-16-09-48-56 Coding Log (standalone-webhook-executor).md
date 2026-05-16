@@ -202,3 +202,84 @@ LOW
 - No schema, endpoint, env-var, or compose changes.
 - New optional operational entrypoint: `python -m egp_api.executors.webhook_delivery`.
 - Embedded API behavior remains unchanged until a later runtime-mode PR.
+
+
+## Review (2026-05-16 10:08:54 +07) - working-tree PR 7 discovery executor
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working tree before Graphite branch creation
+- Commands Run: `git status --porcelain=v1`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`; targeted `nl -ba` reads for `apps/api/src/egp_api/executors/discovery_dispatch.py`, `apps/api/src/egp_api/bootstrap/background.py`, and `tests/phase2/test_discovery_executor.py`; `./.venv/bin/python -m pytest tests/phase2/test_discovery_executor.py tests/phase2/test_discovery_dispatch.py tests/phase2/test_immediate_discover.py tests/phase2/test_webhook_executor.py tests/phase1/test_high_risk_architecture.py tests/phase1/test_api_discovery_spawn.py -q`; `./.venv/bin/ruff check apps/api tests/phase2/test_discovery_executor.py`; `./.venv/bin/python -m compileall apps/api/src`
+- Auggie: attempted review-context retrieval, received HTTP 429, used direct inspection fallback.
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: PR 8 will add the explicit embedded/external runtime mode and deployment wiring; this PR intentionally only creates the standalone runnable executor while preserving existing embedded startup behavior.
+
+### Recommended Tests / Validation
+- Completed focused discovery/background validation: 38 tests passed.
+- Completed API ruff and compileall gates.
+- CI should still run the broader repo gates after PR submission.
+
+### Rollout Notes
+- `python -m egp_api.executors.discovery_dispatch` now supports standalone execution with `--database-url`, `--artifact-root`, `--once`, `--limit`, and `--poll-interval-seconds`.
+- FastAPI embedded mode still starts the discovery loop when the existing database-backend flag enables it, but that loop now comes from the standalone executor module.
+
+
+## Implementation Summary (2026-05-16 10:09:23 +07) - PR 7 standalone discovery executor
+
+### Goal
+Extract discovery dispatch polling from FastAPI lifespan into a standalone runnable executor while preserving the existing embedded API behavior, retry processing, and missing-worker reconciliation.
+
+### What Changed
+- `apps/api/src/egp_api/executors/discovery_dispatch.py`
+  - Added a standalone discovery dispatch runtime builder backed by discovery job, run, and profile repositories.
+  - Added one-shot and long-running executor functions.
+  - Added missing-worker reconciliation before and after each processing batch, matching the prior embedded loop behavior.
+  - Added CLI support for `python -m egp_api.executors.discovery_dispatch` with database URL, artifact root, once, limit, and poll interval options.
+- `apps/api/src/egp_api/bootstrap/background.py`
+  - Removed the embedded discovery loop implementation from lifespan.
+  - Rewired embedded API startup to call the standalone executor loop with the existing app-state processor and run service.
+- `tests/phase2/test_discovery_executor.py`
+  - Added tests for one-shot dispatch, long-running dispatch, CLI runtime construction, and lifespan reuse of the standalone loop.
+
+### TDD Evidence
+- RED: `./.venv/bin/python -m pytest tests/phase2/test_discovery_executor.py -q`
+  - Failed during collection with `ImportError: cannot import name 'discovery_dispatch' from 'egp_api.executors'` because the standalone executor did not exist yet.
+- GREEN: `./.venv/bin/python -m pytest tests/phase2/test_discovery_executor.py -q`
+  - Passed: 4 tests.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase2/test_discovery_executor.py -q` - passed, 4 tests.
+- `./.venv/bin/python -m pytest tests/phase2/test_discovery_dispatch.py tests/phase2/test_immediate_discover.py tests/phase2/test_webhook_executor.py -q` - passed, 21 tests.
+- `./.venv/bin/python -m pytest tests/phase1/test_high_risk_architecture.py tests/phase1/test_api_discovery_spawn.py -q` - passed, 13 tests.
+- `./.venv/bin/python -m pytest tests/phase2/test_discovery_executor.py tests/phase2/test_discovery_dispatch.py tests/phase2/test_immediate_discover.py tests/phase2/test_webhook_executor.py tests/phase1/test_high_risk_architecture.py tests/phase1/test_api_discovery_spawn.py -q` - passed, 38 tests.
+- `./.venv/bin/ruff check apps/api tests/phase2/test_discovery_executor.py` - passed.
+- `./.venv/bin/python -m compileall apps/api/src` - passed.
+
+### Wiring Verification
+- Entry point: `python -m egp_api.executors.discovery_dispatch` calls `main()` and can run one batch or poll indefinitely.
+- Embedded API registration: `build_lifespan()` imports `run_discovery_dispatch_loop` from the executor module and passes `app.state.discovery_dispatch_processor`, `app.state.run_service`, and `os.getpid()`.
+- Dispatcher abstraction: `build_discovery_dispatch_runtime()` constructs `SubprocessDiscoveryDispatcher` and injects it into `DiscoveryDispatchProcessor`.
+- Schema/table: no schema changes; executor uses the existing discovery jobs and crawl runs repositories.
+
+### Behavior / Risk Notes
+- Embedded API discovery behavior remains enabled by the existing database-backend flag.
+- Standalone loop catches unexpected per-tick exceptions and logs them so a transient repository/dispatch error does not permanently stop the external executor.
+- Runtime mode selection and compose/deployment wiring remain follow-up work for PR 8.
+
+### Follow-ups / Known Gaps
+- PR 8 should add explicit embedded/external runtime configuration and deployment documentation.

@@ -4,34 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 import logging
 
 from fastapi import FastAPI
 
+from egp_api.executors.discovery_dispatch import run_discovery_dispatch_loop
 from egp_api.executors.webhook_delivery import run_webhook_delivery_loop
-from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_db.db_utils import is_sqlite_url
-
-
-async def _run_discovery_dispatch_loop(
-    *,
-    processor: DiscoveryDispatchProcessor,
-    stop_event: asyncio.Event,
-    poll_interval_seconds: float,
-    tick_callback: Callable[[], None] | None = None,
-) -> None:
-    while not stop_event.is_set():
-        if tick_callback is not None:
-            tick_callback()
-        processor.process_pending()
-        if tick_callback is not None:
-            tick_callback()
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, poll_interval_seconds))
-        except TimeoutError:
-            continue
 
 
 def discovery_dispatch_loop_enabled_for_database_url(database_url: str) -> bool:
@@ -65,31 +45,15 @@ def build_lifespan(*, logger: logging.Logger):
         if discovery_processor is not None and getattr(
             app.state, "discovery_dispatch_processor_enabled", False
         ):
-
-            def _reconcile_missing_workers() -> None:
-                try:
-                    failed_runs = app.state.run_service.reconcile_missing_workers(
-                        owner_pid=os.getpid()
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to reconcile missing discover workers",
-                        exc_info=True,
-                    )
-                    return
-                for failed_run in failed_runs:
-                    logger.warning(
-                        "Marked discover run %s failed (worker_lost)",
-                        failed_run.id,
-                    )
-
             discovery_stop_event = asyncio.Event()
             discovery_task = asyncio.create_task(
-                _run_discovery_dispatch_loop(
+                run_discovery_dispatch_loop(
                     processor=discovery_processor,
+                    run_service=app.state.run_service,
+                    owner_pid=os.getpid(),
                     stop_event=discovery_stop_event,
                     poll_interval_seconds=1.0,
-                    tick_callback=_reconcile_missing_workers,
+                    logger=logger,
                 )
             )
         try:
