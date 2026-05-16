@@ -134,6 +134,7 @@ class BillingListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+    current_subscription: BillingSubscriptionResponse | None
     summary: BillingSummaryResponse
 
 
@@ -367,6 +368,11 @@ def _serialize_page(page: BillingPage) -> BillingListResponse:
         total=page.total,
         limit=page.limit,
         offset=page.offset,
+        current_subscription=(
+            _serialize_subscription(page.current_subscription)
+            if page.current_subscription is not None
+            else None
+        ),
         summary=_serialize_summary(page.summary),
     )
 

@@ -301,6 +301,44 @@ def test_invoice_transitions_and_activation_remain_tenant_scoped(tmp_path) -> No
     assert foreign_transition.status_code == 403
 
 
+def test_billing_records_include_effective_current_subscription_outside_page_window(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    subscription_id = _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=29),
+        keyword_limit=5,
+    )
+    extra_record = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-PAGED-0001",
+            "plan_code": "one_time_search_pack",
+            "status": "draft",
+            "billing_period_start": (today + timedelta(days=40)).isoformat(),
+        },
+    )
+    assert extra_record.status_code == 201
+
+    response = client.get(
+        "/v1/billing/records",
+        params={"tenant_id": TENANT_ID, "limit": 1, "offset": 0},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["records"]) == 1
+    assert body["records"][0]["record"]["id"] != subscription_id
+    assert body["current_subscription"]["id"] == subscription_id
+    assert body["current_subscription"]["plan_code"] == "monthly_membership"
+    assert body["current_subscription"]["subscription_status"] == "active"
+
+
 def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = _utc_today()
@@ -383,6 +421,64 @@ def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
     assert detail["record"]["plan_code"] == "monthly_membership"
     assert detail["record"]["amount_due"] == "25.00"
     assert detail["record"]["upgrade_from_subscription_id"] == one_time_subscription_id
+    assert detail["record"]["upgrade_mode"] == "replace_now"
+
+
+def test_expired_one_time_can_request_renewal_to_one_time_search_pack(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    expired_subscription_id = _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        billing_period_start=today - timedelta(days=5),
+        billing_period_end=today - timedelta(days=3),
+        keyword_limit=1,
+        status="expired",
+    )
+
+    response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+
+    assert response.status_code == 201
+    detail = response.json()
+    assert detail["record"]["plan_code"] == "one_time_search_pack"
+    assert detail["record"]["amount_due"] == "20.00"
+    assert detail["record"]["upgrade_from_subscription_id"] == expired_subscription_id
+    assert detail["record"]["upgrade_mode"] == "replace_now"
+
+
+def test_expired_monthly_membership_can_request_one_time_search_pack(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    expired_subscription_id = _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        billing_period_start=today - timedelta(days=35),
+        billing_period_end=today - timedelta(days=6),
+        keyword_limit=5,
+        status="expired",
+    )
+
+    response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+
+    assert response.status_code == 201
+    detail = response.json()
+    assert detail["record"]["plan_code"] == "one_time_search_pack"
+    assert detail["record"]["amount_due"] == "20.00"
+    assert detail["record"]["upgrade_from_subscription_id"] == expired_subscription_id
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
 

@@ -217,3 +217,86 @@ test("projects page shows worker-backed crawl activity after manual recrawl", as
   await expect(page.getByText("ค้นพบแล้ว 2 โครงการ")).toBeVisible();
   await expect(page.getByRole("link", { name: "ดูหน้าการทำงานทั้งหมด" })).toBeVisible();
 });
+
+test("project detail links expired document-download failures to billing", async ({ page }) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, {
+          ...RULES_RESPONSE,
+          entitlements: {
+            ...RULES_RESPONSE.entitlements,
+            plan_code: "one_time_search_pack",
+            plan_label: "One-Time Search Pack",
+            subscription_status: "expired",
+            has_active_subscription: false,
+            runs_allowed: false,
+            exports_allowed: false,
+            document_download_allowed: false,
+            notifications_allowed: false,
+          },
+        });
+        return;
+      case "GET /v1/projects/project-1":
+        await fulfillJson(route, 200, {
+          project: PROJECTS_RESPONSE.projects[0],
+          aliases: [],
+          status_events: [],
+        });
+        return;
+      case "GET /v1/documents/projects/project-1":
+        await fulfillJson(route, 200, {
+          documents: [
+            {
+              id: "document-1",
+              project_id: "project-1",
+              document_type: "tor",
+              document_phase: "final",
+              source_label: "เอกสารประกวดราคา",
+              source_url: null,
+              source_status_text: null,
+              published_at: null,
+              file_name: "tor.pdf",
+              mime_type: "application/pdf",
+              size_bytes: 1024,
+              sha256: "abc123",
+              storage_key: "tenant/project/tor.pdf",
+              is_current: true,
+              supersedes_document_id: null,
+              extracted_text_key: null,
+              created_at: "2026-05-13T00:00:00Z",
+            },
+          ],
+        });
+        return;
+      case "GET /v1/projects/project-1/crawl-evidence":
+        await fulfillJson(route, 200, { evidence: [] });
+        return;
+      case "GET /v1/documents/document-1/download-link":
+        await fulfillJson(route, 403, {
+          detail: "active subscription required for document downloads",
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/projects/project-1");
+  await page.getByRole("button", { name: "ดาวน์โหลดเอกสาร" }).click();
+
+  await expect(
+    page.getByText("แพ็กเกจ One-Time Search Pack หมดอายุแล้ว กรุณาต่ออายุเพื่อดาวน์โหลดเอกสาร"),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "ไปที่หน้าบิลและชำระเงิน" })).toHaveAttribute(
+    "href",
+    "/billing",
+  );
+});

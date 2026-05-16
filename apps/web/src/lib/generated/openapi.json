@@ -1153,6 +1153,16 @@
       },
       "BillingListResponse": {
         "properties": {
+          "current_subscription": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BillingSubscriptionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limit": {
             "title": "Limit",
             "type": "integer"
@@ -1181,6 +1191,7 @@
           "total",
           "limit",
           "offset",
+          "current_subscription",
           "summary"
         ],
         "title": "BillingListResponse",

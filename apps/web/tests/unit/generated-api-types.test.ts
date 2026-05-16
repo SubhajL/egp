@@ -213,6 +213,7 @@ describe("generated API contract", () => {
       total: 0,
       limit: 50,
       offset: 0,
+      current_subscription: null,
       summary: {
         open_records: 0,
         awaiting_reconciliation: 0,

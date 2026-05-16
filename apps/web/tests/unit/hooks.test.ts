@@ -26,7 +26,7 @@ vi.mock("../../src/lib/auth", async () => {
   };
 });
 
-import { fetchCurrentSession } from "../../src/lib/hooks";
+import { fetchCurrentSession, shouldRetryCurrentSession } from "../../src/lib/hooks";
 
 const SESSION: CurrentSessionResponse = {
   user: {
@@ -81,5 +81,17 @@ describe("fetchCurrentSession", () => {
     await expect(fetchCurrentSession()).rejects.toEqual(new ApiError(500, "server error"));
     expect(clearStoredCurrentSession).not.toHaveBeenCalled();
     expect(writeStoredCurrentSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("shouldRetryCurrentSession", () => {
+  it("does not retry unauthorized sessions", () => {
+    expect(shouldRetryCurrentSession(0, new ApiError(401, "unauthorized"))).toBe(false);
+  });
+
+  it("retries transient failures only a bounded number of times", () => {
+    expect(shouldRetryCurrentSession(0, new ApiError(500, "server error"))).toBe(true);
+    expect(shouldRetryCurrentSession(1, new TypeError("network error"))).toBe(true);
+    expect(shouldRetryCurrentSession(2, new ApiError(500, "server error"))).toBe(false);
   });
 });

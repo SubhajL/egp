@@ -123,11 +123,18 @@ export async function fetchCurrentSession(): Promise<CurrentSessionResponse> {
   }
 }
 
+export function shouldRetryCurrentSession(failureCount: number, error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 401) {
+    return false;
+  }
+  return failureCount < 2;
+}
+
 export function useMe() {
   return useQuery({
     queryKey: ["me"],
     queryFn: fetchCurrentSession,
-    retry: false,
+    retry: shouldRetryCurrentSession,
   });
 }
 

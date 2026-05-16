@@ -1476,6 +1476,7 @@ export interface components {
         };
         /** BillingListResponse */
         BillingListResponse: {
+            current_subscription: components["schemas"]["BillingSubscriptionResponse"] | null;
             /** Limit */
             limit: number;
             /** Offset */

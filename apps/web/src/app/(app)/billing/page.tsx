@@ -152,8 +152,39 @@ function getUpgradeOptions(
       .map((detail) => detail.record.plan_code),
   );
   const currentPlanCode = entitlements?.plan_code;
+  const subscriptionStatus = entitlements?.subscription_status;
   let options: UpgradeOption[] = [];
-  if (currentPlanCode === "free_trial") {
+  if (
+    subscriptionStatus === "expired" &&
+    (currentPlanCode === "one_time_search_pack" || currentPlanCode === "monthly_membership")
+  ) {
+    options = ["one_time_search_pack", "monthly_membership"]
+      .map((targetPlanCode) => {
+        const plan = planMap.get(targetPlanCode);
+        if (!plan) {
+          return null;
+        }
+        const isRenewal = targetPlanCode === currentPlanCode;
+        return {
+          targetPlanCode,
+          title: `${isRenewal ? "ต่ออายุ" : "เปลี่ยนเป็น"} ${plan.label}`,
+          description:
+            targetPlanCode === "one_time_search_pack"
+              ? "เริ่มรอบใช้งานแบบจ่ายครั้งเดียวใหม่ พร้อมปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนหลังชำระสำเร็จ"
+              : "เริ่มรอบสมาชิกรายเดือนใหม่ พร้อมโควต้า 5 คำค้นและสิทธิ์ใช้งานครบทุกช่องทางหลังชำระสำเร็จ",
+          immediateChangeCopy:
+            targetPlanCode === "one_time_search_pack"
+              ? "สิทธิ์ one-shot รอบใหม่จะเริ่มทันทีหลังชำระสำเร็จ"
+              : "สิทธิ์สมาชิกรายเดือนรอบใหม่จะเริ่มทันทีหลังชำระสำเร็จ",
+          beforePaymentCopy:
+            targetPlanCode === "one_time_search_pack"
+              ? "เมื่อชำระสำเร็จ ระบบจะเปิดแพ็กเกจ one-shot รอบใหม่ให้ทันที"
+              : "เมื่อชำระสำเร็จ ระบบจะเปิดแพ็กเกจรายเดือนรอบใหม่ให้ทันที",
+          waitInsteadCopy: "หากยังไม่ต้องการใช้งานต่อ สามารถกลับมาชำระภายหลังได้",
+        };
+      })
+      .filter((option): option is UpgradeOption => option !== null);
+  } else if (currentPlanCode === "free_trial") {
     options = ["one_time_search_pack", "monthly_membership"]
       .map((targetPlanCode) => {
         const plan = planMap.get(targetPlanCode);
@@ -250,7 +281,9 @@ function UpgradeCallout({
     return null;
   }
   const title =
-    entitlements?.plan_code === "free_trial"
+    entitlements?.subscription_status === "expired"
+      ? "ต่ออายุหรือเปลี่ยนแพ็กเกจ"
+      : entitlements?.plan_code === "free_trial"
       ? "อัปเกรดจาก Free Trial"
       : "อัปเกรดจาก One-Time Search Pack";
   return (
@@ -341,6 +374,7 @@ export default function BillingPage() {
 
   const records = data?.records ?? EMPTY_RECORDS;
   const billingPlans = plansData?.plans ?? [];
+  const currentSubscription = data?.current_subscription ?? null;
   const selectedPlan = billingPlans.find((plan) => plan.code === planCode) ?? null;
   const planLabels = new Map(billingPlans.map((plan) => [plan.code, plan.label]));
   const summary = data?.summary ?? {
@@ -683,6 +717,19 @@ export default function BillingPage() {
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
         <div className="space-y-6">
+          {rulesData?.entitlements.subscription_status === "expired" &&
+          currentSubscription ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-[var(--shadow-soft)]">
+              <p className="font-semibold">
+                {rulesData.entitlements.plan_label ?? currentSubscription.plan_code} หมดอายุเมื่อ{" "}
+                {formatThaiDate(currentSubscription.billing_period_end)}
+              </p>
+              <p className="mt-1">
+                สิทธิ์ใช้งานแบบชำระเงินหยุดลงแล้ว เลือกต่ออายุหรือเปลี่ยนแพ็กเกจด้านล่างเพื่อกลับมาใช้งานต่อ
+              </p>
+            </div>
+          ) : null}
+
           <UpgradeCallout
             entitlements={rulesData?.entitlements}
             billingPlans={billingPlans}

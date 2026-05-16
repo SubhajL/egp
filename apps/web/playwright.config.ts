@@ -19,6 +19,7 @@ export default defineConfig({
     port: PORT,
     reuseExistingServer: !process.env.CI,
     env: {
+      NEXT_DIST_DIR: ".next-playwright",
       NEXT_PUBLIC_EGP_API_BASE_URL: API_BASE_URL,
     },
   },

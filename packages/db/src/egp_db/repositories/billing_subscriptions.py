@@ -243,11 +243,25 @@ class BillingSubscriptionMixin:
             )
 
         normalized_target_plan_code = str(target_plan_code).strip()
-        allowed_transitions = {
+        active_or_pending_transitions = {
             ("free_trial", "one_time_search_pack"),
             ("free_trial", "monthly_membership"),
             ("one_time_search_pack", "monthly_membership"),
         }
+        expired_transitions = {
+            ("free_trial", "one_time_search_pack"),
+            ("free_trial", "monthly_membership"),
+            ("one_time_search_pack", "one_time_search_pack"),
+            ("one_time_search_pack", "monthly_membership"),
+            ("monthly_membership", "one_time_search_pack"),
+            ("monthly_membership", "monthly_membership"),
+        }
+        allowed_transitions = (
+            expired_transitions
+            if current_subscription.subscription_status
+            is BillingSubscriptionStatus.EXPIRED
+            else active_or_pending_transitions
+        )
         if (
             current_subscription.plan_code,
             normalized_target_plan_code,
