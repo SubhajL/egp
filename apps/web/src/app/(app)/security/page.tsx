@@ -33,6 +33,7 @@ export default function SecurityPage() {
   const { data: currentSession, isLoading, isError, error } = useMe();
   const isUnauthorized = error instanceof ApiError && error.status === 401;
   const shouldShowQueryError = isError && !isUnauthorized;
+  const queryError = error instanceof Error ? error : null;
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -137,7 +138,7 @@ export default function SecurityPage() {
         </div>
       ) : null}
 
-      <QueryState isLoading={isLoading} isError={shouldShowQueryError} error={error}>
+      <QueryState isLoading={isLoading} isError={shouldShowQueryError} error={queryError}>
         {currentSession && !isUnauthorized ? (
           <div className="space-y-6">
             <SecurityCard

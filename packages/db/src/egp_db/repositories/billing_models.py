@@ -128,6 +128,7 @@ class BillingPage:
     total: int
     limit: int
     offset: int
+    current_subscription: BillingSubscriptionRecord | None
     summary: BillingSummary
 
 

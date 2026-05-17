@@ -177,6 +177,9 @@ class BillingInvoiceMixin:
             total=len(all_rows),
             limit=normalized_limit,
             offset=normalized_offset,
+            current_subscription=self.get_effective_subscription_for_tenant(
+                tenant_id=tenant_id
+            ),
             summary=BillingSummary(
                 open_records=open_records,
                 awaiting_reconciliation=awaiting_reconciliation,

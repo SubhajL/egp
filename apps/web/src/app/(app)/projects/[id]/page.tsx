@@ -10,8 +10,13 @@ import {
   STATE_BADGE_CONFIG,
   PROCUREMENT_TYPE_LABELS,
 } from "@/lib/constants";
-import { fetchDocumentDownloadLink, localizeApiError, type ProjectCrawlEvidence } from "@/lib/api";
-import { useProjectDetail, useDocuments, useProjectCrawlEvidence } from "@/lib/hooks";
+import {
+  ApiError,
+  fetchDocumentDownloadLink,
+  localizeApiError,
+  type ProjectCrawlEvidence,
+} from "@/lib/api";
+import { useProjectDetail, useDocuments, useProjectCrawlEvidence, useRules } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const CLOSED_STATES = [
@@ -97,6 +102,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const { id } = use(params);
   const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloadNeedsBillingAction, setDownloadNeedsBillingAction] = useState(false);
   const {
     data: detailData,
     isLoading,
@@ -114,6 +120,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     isError: isEvidenceError,
     error: evidenceError,
   } = useProjectCrawlEvidence(id);
+  const { data: rulesData } = useRules();
 
   const project = detailData?.project;
   const aliases = detailData?.aliases ?? [];
@@ -160,6 +167,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
   async function handleDownload(documentId: string) {
     setDownloadError(null);
+    setDownloadNeedsBillingAction(false);
     setDownloadingDocumentId(documentId);
     try {
       const link = await fetchDocumentDownloadLink(documentId);
@@ -180,8 +188,25 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       anchor.click();
       anchor.remove();
     } catch (downloadException) {
-      const message = localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้");
-      setDownloadError(message);
+      if (downloadException instanceof ApiError) {
+        const detail = downloadException.detail.toLowerCase();
+        if (
+          detail.includes("active subscription required for document downloads") &&
+          rulesData?.entitlements.subscription_status === "expired"
+        ) {
+          setDownloadError(
+            `แพ็กเกจ ${rulesData.entitlements.plan_label ?? "ปัจจุบัน"} หมดอายุแล้ว กรุณาต่ออายุเพื่อดาวน์โหลดเอกสาร`,
+          );
+        } else {
+          setDownloadError(localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้"));
+        }
+        setDownloadNeedsBillingAction(
+          detail.includes("active subscription required for document downloads") ||
+            detail.includes("document downloads capability is not included in current plan"),
+        );
+      } else {
+        setDownloadError(localizeApiError(downloadException, "ไม่สามารถดาวน์โหลดเอกสารได้"));
+      }
     } finally {
       setDownloadingDocumentId(null);
     }
@@ -363,6 +388,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                     <div>
                       <p className="font-semibold">ดาวน์โหลดเอกสารไม่สำเร็จ</p>
                       <p className="mt-1">{downloadError}</p>
+                      {downloadNeedsBillingAction ? (
+                        <Link
+                          href="/billing"
+                          className="mt-2 inline-flex font-semibold underline underline-offset-2"
+                        >
+                          ไปที่หน้าบิลและชำระเงิน
+                        </Link>
+                      ) : null}
                       <p className="mt-1 text-xs text-red-700">
                         หากเอกสารถูกเก็บไว้บน Google Drive หรือ OneDrive ให้ตรวจสอบแท็บ
                         {" "}Support ในหน้า Admin หรือติดต่อทีม support เพื่อเช็กการเชื่อมต่อของ
