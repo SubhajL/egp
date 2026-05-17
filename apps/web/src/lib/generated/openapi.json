@@ -1606,6 +1606,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_stale_unpaid": {
+            "title": "Is Stale Unpaid",
+            "type": "boolean"
+          },
           "issued_at": {
             "anyOf": [
               {
@@ -1698,6 +1702,7 @@
           "amount_due",
           "reconciled_total",
           "outstanding_balance",
+          "is_stale_unpaid",
           "upgrade_from_subscription_id",
           "upgrade_mode",
           "notes",
@@ -7855,6 +7860,26 @@
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_stale_unpaid",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Stale Unpaid",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "stale_unpaid_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Stale Unpaid Only",
+              "type": "boolean"
             }
           }
         ],

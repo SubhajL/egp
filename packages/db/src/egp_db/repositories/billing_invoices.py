@@ -30,6 +30,7 @@ from .billing_utils import (
     _group_payment_requests,
     _group_payments,
     _group_subscriptions,
+    _is_stale_unpaid_upgrade,
     _MONEY_QUANTUM,
     _normalize_amount,
     _normalize_date,
@@ -116,7 +117,13 @@ class BillingInvoiceMixin:
         return detail
 
     def list_billing_records(
-        self, *, tenant_id: str, limit: int = 50, offset: int = 0
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        include_stale_unpaid: bool = True,
+        stale_unpaid_only: bool = False,
     ) -> BillingPage:
         normalized_limit = max(1, min(int(limit), 200))
         normalized_offset = max(0, int(offset))
@@ -124,23 +131,42 @@ class BillingInvoiceMixin:
         all_record_ids = [row.id for row in all_rows]
         all_payments = self._load_payments_for_records(all_record_ids)
         all_payments_by_record = _group_payments(all_payments)
+        stale_flags = {
+            row.id: _is_stale_unpaid_upgrade(
+                row,
+                all_payments_by_record.get(row.id, []),
+            )
+            for row in all_rows
+        }
+        if stale_unpaid_only:
+            visible_rows = [row for row in all_rows if stale_flags[row.id]]
+        elif include_stale_unpaid:
+            visible_rows = all_rows
+        else:
+            visible_rows = [row for row in all_rows if not stale_flags[row.id]]
+        visible_record_ids = {row.id for row in visible_rows}
+        visible_payments = [
+            payment
+            for payment in all_payments
+            if payment.billing_record_id in visible_record_ids
+        ]
 
         collected_amount = sum(
             (
                 Decimal(payment.amount)
-                for payment in all_payments
+                for payment in visible_payments
                 if payment.payment_status is BillingPaymentStatus.RECONCILED
             ),
             Decimal("0.00"),
         ).quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_UP)
         awaiting_reconciliation = sum(
             1
-            for payment in all_payments
+            for payment in visible_payments
             if payment.payment_status is BillingPaymentStatus.PENDING_RECONCILIATION
         )
         outstanding_amount = Decimal("0.00")
         open_records = 0
-        for row in all_rows:
+        for row in visible_rows:
             reconciled_total = _reconciled_total_for_payments(
                 all_payments_by_record.get(row.id, [])
             )
@@ -150,7 +176,7 @@ class BillingInvoiceMixin:
             if row.status not in _TERMINAL_BILLING_STATUSES:
                 open_records += 1
 
-        page_rows = all_rows[normalized_offset : normalized_offset + normalized_limit]
+        page_rows = visible_rows[normalized_offset : normalized_offset + normalized_limit]
         page_ids = [row.id for row in page_rows]
         page_requests_by_record = _group_payment_requests(
             self._load_payment_requests_for_records(page_ids)
@@ -174,7 +200,7 @@ class BillingInvoiceMixin:
         ]
         return BillingPage(
             items=details,
-            total=len(all_rows),
+            total=len(visible_rows),
             limit=normalized_limit,
             offset=normalized_offset,
             current_subscription=self.get_effective_subscription_for_tenant(

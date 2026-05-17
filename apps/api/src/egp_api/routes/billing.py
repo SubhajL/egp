@@ -46,6 +46,7 @@ class BillingRecordResponse(BaseModel):
     amount_due: str
     reconciled_total: str
     outstanding_balance: str
+    is_stale_unpaid: bool
     upgrade_from_subscription_id: str | None
     upgrade_mode: str
     notes: str | None
@@ -255,6 +256,7 @@ def _serialize_record(record: BillingRecordRecord) -> BillingRecordResponse:
         amount_due=record.amount_due,
         reconciled_total=record.reconciled_total,
         outstanding_balance=record.outstanding_balance,
+        is_stale_unpaid=record.is_stale_unpaid,
         upgrade_from_subscription_id=record.upgrade_from_subscription_id,
         upgrade_mode=record.upgrade_mode,
         notes=record.notes,
@@ -469,6 +471,8 @@ def list_billing_records(
     tenant_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    include_stale_unpaid: bool = False,
+    stale_unpaid_only: bool = False,
 ) -> BillingListResponse:
     require_admin_role(request)
     service = _service_from_request(request)
@@ -478,7 +482,13 @@ def list_billing_records(
         allow_support_override=True,
     )
     return _serialize_page(
-        service.list_snapshot(tenant_id=resolved_tenant_id, limit=limit, offset=offset)
+        service.list_snapshot(
+            tenant_id=resolved_tenant_id,
+            limit=limit,
+            offset=offset,
+            include_stale_unpaid=include_stale_unpaid,
+            stale_unpaid_only=stale_unpaid_only,
+        )
     )
 
 

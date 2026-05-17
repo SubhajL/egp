@@ -393,12 +393,14 @@ describe("runs, dashboard, billing, admin, storage, webhook, and auth wrappers",
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(Response.json(billing))
+      .mockResolvedValueOnce(Response.json(billing))
       .mockResolvedValueOnce(Response.json(plans))
       .mockResolvedValueOnce(Response.json({ record: {}, payment_requests: [], payments: [], events: [], subscription: null }))
       .mockResolvedValueOnce(Response.json({ record: {}, payment_requests: [], payments: [], events: [], subscription: null }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchBillingRecords()).resolves.toEqual(billing);
+    await expect(fetchBillingRecords({ stale_unpaid_only: true })).resolves.toEqual(billing);
     await expect(fetchBillingPlans()).resolves.toEqual(plans);
     await createBillingRecord({
       record_number: "INV-1",
@@ -410,15 +412,20 @@ describe("runs, dashboard, billing, admin, storage, webhook, and auth wrappers",
     expect(new URL(fetchMock.mock.calls[0][0] as string).pathname).toBe(
       "/v1/billing/records",
     );
-    expect(new URL(fetchMock.mock.calls[1][0] as string).pathname).toBe(
+    expect(
+      new URL(fetchMock.mock.calls[1][0] as string).searchParams.get(
+        "stale_unpaid_only",
+      ),
+    ).toBe("true");
+    expect(new URL(fetchMock.mock.calls[2][0] as string).pathname).toBe(
       "/v1/billing/plans",
     );
-    expect(JSON.parse(fetchMock.mock.calls[2][1]?.body as string)).toMatchObject({
+    expect(JSON.parse(fetchMock.mock.calls[3][1]?.body as string)).toMatchObject({
       record_number: "INV-1",
       status: "awaiting_payment",
       currency: "THB",
     });
-    expect(JSON.parse(fetchMock.mock.calls[3][1]?.body as string)).toStrictEqual({
+    expect(JSON.parse(fetchMock.mock.calls[4][1]?.body as string)).toStrictEqual({
       provider: "opn",
       payment_method: "promptpay_qr",
       expires_in_minutes: 30,

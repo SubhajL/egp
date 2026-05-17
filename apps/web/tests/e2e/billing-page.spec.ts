@@ -796,6 +796,95 @@ test("billing page hides duplicate one-time CTA when a one-time upgrade is alrea
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
 });
 
+test("billing page keeps stale unpaid upgrades in history and restores both expired renewal CTAs", async ({
+  page,
+}) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+    const staleUnpaidOnly = url.searchParams.get("stale_unpaid_only") === "true";
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/dashboard/summary":
+        await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, buildPlansResponse());
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, buildExpiredRulesResponse("monthly_membership"));
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, {
+          ...buildBillingRecordsResponse(),
+          current_subscription: {
+            ...buildBillingRecordsResponse().current_subscription,
+            id: "sub-monthly-expired",
+            billing_record_id: "record-monthly-expired",
+            plan_code: "monthly_membership",
+            subscription_status: "expired",
+            billing_period_start: "2026-04-16",
+            billing_period_end: "2026-05-15",
+            keyword_limit: 5,
+          },
+          records: staleUnpaidOnly
+            ? [
+                {
+                  record: {
+                    id: "record-stale-upgrade-one-time-1",
+                    tenant_id: "tenant-1",
+                    record_number: "UPG-ONE-TIME-STALE",
+                    plan_code: "one_time_search_pack",
+                    status: "awaiting_payment",
+                    billing_period_start: "2026-04-08",
+                    billing_period_end: "2026-04-10",
+                    due_at: null,
+                    issued_at: "2026-04-08T00:00:00Z",
+                    paid_at: null,
+                    currency: "THB",
+                    amount_due: "20.00",
+                    reconciled_total: "0.00",
+                    outstanding_balance: "20.00",
+                    is_stale_unpaid: true,
+                    upgrade_from_subscription_id: "sub-monthly-expired",
+                    upgrade_mode: "replace_now",
+                    notes: null,
+                    created_at: "2026-04-08T00:00:00Z",
+                    updated_at: "2026-04-08T00:00:00Z",
+                  },
+                  payment_requests: [],
+                  payments: [],
+                  events: [],
+                  subscription: null,
+                },
+              ]
+            : [],
+          total: staleUnpaidOnly ? 1 : 0,
+          summary: {
+            open_records: staleUnpaidOnly ? 1 : 0,
+            awaiting_reconciliation: 0,
+            outstanding_amount: staleUnpaidOnly ? "20.00" : "0.00",
+            collected_amount: "0.00",
+          },
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/billing");
+
+  await expect(page.getByRole("button", { name: "เปลี่ยนเป็น One-Time Search Pack" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ต่ออายุ Monthly Membership" })).toBeVisible();
+  await expect(page.getByText("ประวัติใบแจ้งหนี้ที่หมดอายุ", { exact: true })).toBeVisible();
+  await expect(page.getByText("UPG-ONE-TIME-STALE", { exact: true })).toHaveCount(1);
+});
+
 test("billing page shows pending activation copy for future-start upgrades", async ({ page }) => {
   await page.route("**/v1/**", async (route) => {
     const request = route.request();

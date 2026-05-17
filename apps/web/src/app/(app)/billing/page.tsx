@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRightLeft, Landmark, ReceiptText } from "lucide-react";
 import { useSearchParams } from "next/navigation";
@@ -146,6 +146,7 @@ function getUpgradeOptions(
     records
       .filter(
         (detail) =>
+          !detail.record.is_stale_unpaid &&
           detail.record.upgrade_from_subscription_id !== null &&
           !["paid", "cancelled", "refunded"].includes(detail.record.status),
       )
@@ -343,6 +344,9 @@ export default function BillingPage() {
   const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useBillingRecords();
+  const { data: historyData, isLoading: isHistoryLoading } = useBillingRecords({
+    stale_unpaid_only: true,
+  });
   const { data: plansData } = useBillingPlans();
   const { data: rulesData } = useRules();
   const notice = searchParams.get("notice");
@@ -373,6 +377,17 @@ export default function BillingPage() {
   const [upgradeCopy, setUpgradeCopy] = useState<string | null>(null);
 
   const records = data?.records ?? EMPTY_RECORDS;
+  const staleHistoryRecords = useMemo(
+    () =>
+      (historyData?.records ?? EMPTY_RECORDS).filter(
+        (detail) => detail.record.is_stale_unpaid,
+      ),
+    [historyData?.records],
+  );
+  const selectableRecords = useMemo(
+    () => [...records, ...staleHistoryRecords],
+    [records, staleHistoryRecords],
+  );
   const billingPlans = plansData?.plans ?? [];
   const currentSubscription = data?.current_subscription ?? null;
   const selectedPlan = billingPlans.find((plan) => plan.code === planCode) ?? null;
@@ -399,26 +414,36 @@ export default function BillingPage() {
       return;
     }
     const requestedRecord = requestedRecordId
-      ? records.find((item) => item.record.id === requestedRecordId) ?? null
+      ? selectableRecords.find((item) => item.record.id === requestedRecordId) ?? null
       : null;
     if (requestedRecord && selectedRecordId !== requestedRecord.record.id) {
       setSelectedRecordId(requestedRecord.record.id);
       setPaymentAmount(requestedRecord.record.outstanding_balance);
       return;
     }
-    if (!selectedRecordId || !records.some((item) => item.record.id === selectedRecordId)) {
-      const fallbackRecord = requestedRecord ?? records[0];
-      setSelectedRecordId(fallbackRecord.record.id);
-      setPaymentAmount(fallbackRecord.record.outstanding_balance);
+    if (
+      !selectedRecordId ||
+      !selectableRecords.some((item) => item.record.id === selectedRecordId)
+    ) {
+      const fallbackRecord = requestedRecord ?? records[0] ?? null;
+      if (fallbackRecord) {
+        setSelectedRecordId(fallbackRecord.record.id);
+        setPaymentAmount(fallbackRecord.record.outstanding_balance);
+      } else {
+        setSelectedRecordId("");
+      }
     }
-  }, [records, requestedRecordId, selectedRecordId]);
+  }, [records, requestedRecordId, selectableRecords, selectedRecordId]);
 
   const selectedRecord =
-    records.find((item) => item.record.id === selectedRecordId) ?? records[0] ?? null;
+    selectableRecords.find((item) => item.record.id === selectedRecordId) ??
+    records[0] ??
+    null;
   const latestPaymentRequest = selectedRecord?.payment_requests[0] ?? null;
   const latestRequestIsPromptPay = latestPaymentRequest?.payment_method === "promptpay_qr";
   const latestRequestIsCard = latestPaymentRequest?.payment_method === "card";
-  const liveStatusPolling = latestPaymentRequest?.status === "pending";
+  const liveStatusPolling =
+    !selectedRecord?.record.is_stale_unpaid && latestPaymentRequest?.status === "pending";
 
   useEffect(() => {
     let cancelled = false;
@@ -660,7 +685,9 @@ export default function BillingPage() {
   const canGeneratePaymentRequest = selectedRecord
     ? ["draft", "issued", "awaiting_payment", "overdue", "payment_detected"].includes(
         selectedRecord.record.status,
-      ) && selectedRecord.record.outstanding_balance !== "0.00"
+      ) &&
+      !selectedRecord.record.is_stale_unpaid &&
+      selectedRecord.record.outstanding_balance !== "0.00"
     : false;
 
   return (
@@ -883,66 +910,131 @@ export default function BillingPage() {
           isLoading={isLoading}
           isError={isError}
           error={error instanceof Error ? error : undefined}
-          isEmpty={!isLoading && records.length === 0}
+          isEmpty={!isLoading && !isHistoryLoading && records.length === 0 && staleHistoryRecords.length === 0}
           emptyMessage="ยังไม่มีรายการเรียกเก็บใน tenant นี้"
         >
           <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.1fr)_minmax(420px,0.9fr)]">
-            <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
-              <div className="mb-4 flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-lg font-bold text-[var(--text-primary)]">รายการเรียกเก็บ</h2>
-                  <p className="mt-1 text-sm text-[var(--text-muted)]">
-                    เลือกรายการเพื่อดูประวัติการชำระและการกระทบยอด
-                  </p>
+            <div className="space-y-6">
+              <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+                <div className="mb-4 flex items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-[var(--text-primary)]">รายการเรียกเก็บ</h2>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">
+                      เลือกรายการเพื่อดูประวัติการชำระและการกระทบยอด
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-[var(--bg-surface-secondary)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                    {data?.total ?? 0} รายการ
+                  </span>
                 </div>
-                <span className="rounded-full bg-[var(--bg-surface-secondary)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-                  {data?.total ?? 0} รายการ
-                </span>
+
+                <div className="space-y-3">
+                  {records.length === 0 ? (
+                    <p className="rounded-2xl border border-dashed border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-muted)]">
+                      ไม่มีรายการที่ต้องดำเนินการตอนนี้
+                    </p>
+                  ) : (
+                    records.map((detail) => {
+                      const isSelected = detail.record.id === selectedRecord?.record.id;
+                      return (
+                        <button
+                          key={detail.record.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedRecordId(detail.record.id);
+                            setPaymentAmount(detail.record.outstanding_balance);
+                          }}
+                          className={`w-full rounded-2xl border p-4 text-left transition-colors ${
+                            isSelected
+                              ? "border-primary bg-primary/5"
+                              : "border-[var(--border-default)] bg-[var(--bg-surface-secondary)] hover:border-primary/40"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-mono text-sm font-semibold text-[var(--text-primary)]">
+                                  {detail.record.record_number}
+                                </p>
+                                <StatusBadge state={detail.record.status} variant="billing" />
+                              </div>
+                              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                                แผน {planLabels.get(detail.record.plan_code) ?? detail.record.plan_code} • รอบ{" "}
+                                {detail.record.billing_period_start} ถึง {detail.record.billing_period_end}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-mono text-lg font-bold text-[var(--text-primary)]">
+                                {formatBudget(detail.record.amount_due)}
+                              </p>
+                              <p className="text-xs text-[var(--text-muted)]">
+                                คงค้าง {formatBudget(detail.record.outstanding_balance)}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
               </div>
 
-              <div className="space-y-3">
-                {records.map((detail) => {
-                  const isSelected = detail.record.id === selectedRecord?.record.id;
-                  return (
-                    <button
-                      key={detail.record.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedRecordId(detail.record.id);
-                        setPaymentAmount(detail.record.outstanding_balance);
-                      }}
-                      className={`w-full rounded-2xl border p-4 text-left transition-colors ${
-                        isSelected
-                          ? "border-primary bg-primary/5"
-                          : "border-[var(--border-default)] bg-[var(--bg-surface-secondary)] hover:border-primary/40"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-mono text-sm font-semibold text-[var(--text-primary)]">
-                              {detail.record.record_number}
-                            </p>
-                            <StatusBadge state={detail.record.status} variant="billing" />
+              {staleHistoryRecords.length > 0 ? (
+                <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
+                  <div className="mb-4">
+                    <h2 className="text-lg font-bold text-[var(--text-primary)]">
+                      ประวัติใบแจ้งหนี้ที่หมดอายุ
+                    </h2>
+                    <p className="mt-1 text-sm text-[var(--text-muted)]">
+                      รายการเหล่านี้เก็บไว้เพื่ออ้างอิงย้อนหลังเท่านั้น และไม่ใช้สำหรับการชำระเงินรอบใหม่
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {staleHistoryRecords.map((detail) => {
+                      const isSelected = detail.record.id === selectedRecord?.record.id;
+                      return (
+                        <button
+                          key={detail.record.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedRecordId(detail.record.id);
+                            setPaymentAmount(detail.record.outstanding_balance);
+                          }}
+                          className={`w-full rounded-2xl border p-4 text-left transition-colors ${
+                            isSelected
+                              ? "border-primary bg-primary/5"
+                              : "border-[var(--border-default)] bg-[var(--bg-surface-secondary)] hover:border-primary/40"
+                          }`}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="font-mono text-sm font-semibold text-[var(--text-primary)]">
+                                  {detail.record.record_number}
+                                </p>
+                                <StatusBadge state={detail.record.status} variant="billing" />
+                              </div>
+                              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                                แผน {planLabels.get(detail.record.plan_code) ?? detail.record.plan_code} • รอบ{" "}
+                                {detail.record.billing_period_start} ถึง {detail.record.billing_period_end}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p className="font-mono text-lg font-bold text-[var(--text-primary)]">
+                                {formatBudget(detail.record.amount_due)}
+                              </p>
+                              <p className="text-xs text-[var(--text-muted)]">
+                                คงค้าง {formatBudget(detail.record.outstanding_balance)}
+                              </p>
+                            </div>
                           </div>
-                          <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                            แผน {planLabels.get(detail.record.plan_code) ?? detail.record.plan_code} • รอบ{" "}
-                            {detail.record.billing_period_start} ถึง {detail.record.billing_period_end}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="font-mono text-lg font-bold text-[var(--text-primary)]">
-                            {formatBudget(detail.record.amount_due)}
-                          </p>
-                          <p className="text-xs text-[var(--text-muted)]">
-                            คงค้าง {formatBudget(detail.record.outstanding_balance)}
-                          </p>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             {selectedRecord ? (

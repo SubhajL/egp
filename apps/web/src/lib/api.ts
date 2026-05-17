@@ -825,6 +825,8 @@ export async function fetchBillingRecords(
   const url = buildUrl("/v1/billing/records", {
     limit: params.limit ?? 50,
     offset: params.offset ?? 0,
+    include_stale_unpaid: params.include_stale_unpaid,
+    stale_unpaid_only: params.stale_unpaid_only,
   });
   return apiFetch<BillingListResponse>(url);
 }

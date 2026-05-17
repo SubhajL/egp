@@ -40,6 +40,9 @@ function shouldAutoRefreshBilling(snapshot: BillingListResponse | undefined): bo
     return false;
   }
   return snapshot.records.some((detail) => {
+    if (detail.record.is_stale_unpaid) {
+      return false;
+    }
     const isPayableRecord = ["issued", "awaiting_payment", "overdue", "payment_detected"].includes(
       detail.record.status,
     );
