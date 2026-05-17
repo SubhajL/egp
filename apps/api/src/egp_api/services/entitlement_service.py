@@ -9,18 +9,19 @@ from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
     normalize_keyword as _normalize_discovery_keyword,
     require_discovery_authorization,
+    resolve_effective_discovery_entitlement,
 )
 from egp_shared_types.billing_plans import get_billing_plan_definition
-from egp_shared_types.enums import BillingSubscriptionStatus
 
 if TYPE_CHECKING:
-    from egp_db.repositories.billing_repo import BillingSubscriptionRecord, SqlBillingRepository
+    from egp_db.repositories.billing_repo import SqlBillingRepository
     from egp_db.repositories.profile_repo import SqlProfileRepository
     from egp_notifications.dispatcher import NotificationDispatcher
     from egp_notifications.service import Notification
 
 
 ENTITLEMENT_SOURCE = "billing_subscriptions + crawl_profile_keywords"
+_PAID_ARCHIVE_PLAN_CODES = {"one_time_search_pack", "monthly_membership"}
 CapabilityKey = Literal["exports", "document_downloads", "notifications"]
 
 
@@ -65,28 +66,6 @@ _CAPABILITY_SPECS: dict[str, _CapabilitySpec] = {
 }
 
 
-def _select_current_subscription(
-    subscriptions: list[BillingSubscriptionRecord],
-) -> BillingSubscriptionRecord | None:
-    if not subscriptions:
-        return None
-    priorities = {
-        BillingSubscriptionStatus.ACTIVE: 0,
-        BillingSubscriptionStatus.PENDING_ACTIVATION: 1,
-        BillingSubscriptionStatus.EXPIRED: 2,
-        BillingSubscriptionStatus.CANCELLED: 3,
-    }
-    return min(
-        subscriptions,
-        key=lambda subscription: (
-            priorities.get(subscription.subscription_status, 99),
-            -int(subscription.billing_period_end.replace("-", "")),
-            -int(subscription.billing_period_start.replace("-", "")),
-            subscription.created_at,
-        ),
-    )
-
-
 def _normalize_keyword(value: str) -> str:
     return _normalize_discovery_keyword(value)
 
@@ -102,11 +81,20 @@ class TenantEntitlementService:
 
     def get_snapshot(self, *, tenant_id: str) -> TenantEntitlementSnapshot:
         subscriptions = self._billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
-        subscription = _select_current_subscription(subscriptions)
+        entitlement = resolve_effective_discovery_entitlement(subscriptions=subscriptions)
+        if entitlement.profile_cycle_started_at is not None:
+            self._profile_repository.deactivate_active_profiles_created_before(
+                tenant_id=tenant_id,
+                created_before=entitlement.profile_cycle_started_at,
+            )
         active_keywords = self._profile_repository.list_active_keywords(tenant_id=tenant_id)
         active_keyword_count = len(active_keywords)
+        has_paid_archive_access = any(
+            subscription.plan_code in _PAID_ARCHIVE_PLAN_CODES
+            for subscription in subscriptions
+        )
 
-        if subscription is None:
+        if entitlement.plan_code is None:
             return TenantEntitlementSnapshot(
                 plan_code=None,
                 plan_label=None,
@@ -123,11 +111,9 @@ class TenantEntitlementService:
                 notifications_allowed=False,
             )
 
-        plan_definition = get_billing_plan_definition(subscription.plan_code)
-        keyword_limit = subscription.keyword_limit
-        has_active_subscription = (
-            subscription.subscription_status is BillingSubscriptionStatus.ACTIVE
-        )
+        plan_definition = get_billing_plan_definition(entitlement.plan_code)
+        keyword_limit = entitlement.keyword_limit
+        has_active_subscription = entitlement.has_active_subscription
         over_keyword_limit = keyword_limit is not None and active_keyword_count > int(keyword_limit)
         remaining_keyword_slots = None
         if keyword_limit is not None:
@@ -136,15 +122,18 @@ class TenantEntitlementService:
         exports_allowed = has_active_subscription
         document_download_allowed = has_active_subscription
         notifications_allowed = has_active_subscription
-        if has_active_subscription and subscription.plan_code == "free_trial":
-            exports_allowed = False
-            document_download_allowed = False
+        if has_active_subscription and entitlement.plan_code == "free_trial":
+            exports_allowed = has_paid_archive_access
+            document_download_allowed = has_paid_archive_access
             notifications_allowed = False
+        if not has_active_subscription and has_paid_archive_access:
+            exports_allowed = True
+            document_download_allowed = True
 
         return TenantEntitlementSnapshot(
-            plan_code=subscription.plan_code,
+            plan_code=entitlement.plan_code,
             plan_label=plan_definition.label if plan_definition is not None else None,
-            subscription_status=subscription.subscription_status.value,
+            subscription_status=entitlement.subscription_status,
             has_active_subscription=has_active_subscription,
             keyword_limit=keyword_limit,
             active_keyword_count=active_keyword_count,
@@ -171,11 +160,10 @@ class TenantEntitlementService:
         spec = _CAPABILITY_SPECS.get(capability)
         if spec is None:
             raise ValueError(f"unknown entitlement capability: {capability}")
-        snapshot = self.require_active_subscription(
-            tenant_id=tenant_id,
-            capability=spec.label,
-        )
+        snapshot = self.get_snapshot(tenant_id=tenant_id)
         if not bool(getattr(snapshot, spec.snapshot_field)):
+            if not snapshot.has_active_subscription:
+                raise EntitlementError(f"active subscription required for {spec.label}")
             raise EntitlementError(
                 f"{spec.label} capability is not included in current plan"
             )

@@ -1916,6 +1916,12 @@ export interface components {
         };
         /** CurrentSessionResponse */
         CurrentSessionResponse: {
+            /** Effective Plan Code */
+            effective_plan_code: string | null;
+            /** Effective Plan Label */
+            effective_plan_label: string | null;
+            /** Effective Subscription Status */
+            effective_subscription_status: string | null;
             /** Requires Billing Update */
             requires_billing_update: boolean;
             tenant: components["schemas"]["AuthTenantResponse"];

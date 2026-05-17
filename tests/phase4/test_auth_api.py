@@ -241,6 +241,33 @@ def test_login_sets_http_only_session_cookie_and_me_reads_session(tmp_path) -> N
     assert me.json()["user"]["role"] == "owner"
 
 
+def test_me_includes_effective_subscription_summary(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_user(client)
+    client.app.state.billing_repository.activate_free_trial_subscription(
+        tenant_id=TENANT_ID,
+        actor_subject="test-suite",
+    )
+
+    login = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "owner@acme.example",
+            "password": PASSWORD,
+        },
+    )
+
+    assert login.status_code == 200
+    me = client.get("/v1/me")
+
+    assert me.status_code == 200
+    assert me.json()["effective_plan_code"] == "free_trial"
+    assert me.json()["effective_plan_label"] == "Free Trial"
+    assert me.json()["effective_subscription_status"] == "active"
+
+
 def test_login_accepts_email_and_password_without_tenant_slug(tmp_path) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)

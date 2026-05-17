@@ -15,7 +15,12 @@ import {
   getRunDiscoveredCount,
 } from "@/lib/run-progress";
 import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
-import { fetchProjectExport, localizeApiError, triggerManualRecrawl } from "@/lib/api";
+import {
+  createRuleProfile,
+  fetchProjectExport,
+  localizeApiError,
+  triggerManualRecrawl,
+} from "@/lib/api";
 import type {
   ExportProjectsParams,
   FetchProjectsParams,
@@ -198,6 +203,10 @@ export default function ProjectsPage() {
   const [isRecrawling, setIsRecrawling] = useState(false);
   const [recrawlError, setRecrawlError] = useState<string | null>(null);
   const [recrawlNotice, setRecrawlNotice] = useState<string | null>(null);
+  const [isKeywordPromptOpen, setIsKeywordPromptOpen] = useState(false);
+  const [keywordDraft, setKeywordDraft] = useState("");
+  const [isSavingKeyword, setIsSavingKeyword] = useState(false);
+  const [keywordPromptError, setKeywordPromptError] = useState<string | null>(null);
   const [manualRecrawlTracking, setManualRecrawlTracking] =
     useState<ManualRecrawlTracking | null>(null);
   const rowsPerPage = 50;
@@ -359,6 +368,11 @@ export default function ProjectsPage() {
   }
 
   async function handleRecrawl() {
+    if ((rulesData?.entitlements.active_keyword_count ?? 0) === 0) {
+      setKeywordPromptError(null);
+      setIsKeywordPromptOpen(true);
+      return;
+    }
     setIsRecrawling(true);
     setRecrawlError(null);
     setRecrawlNotice(null);
@@ -390,9 +404,38 @@ export default function ProjectsPage() {
     }
   }
 
-  const canRecrawl =
-    !!rulesData?.entitlements.runs_allowed &&
-    (rulesData?.entitlements.active_keyword_count ?? 0) > 0;
+  async function handleCreateFirstKeyword() {
+    const normalizedKeyword = keywordDraft.trim();
+    if (!normalizedKeyword) {
+      setKeywordPromptError("กรุณาใส่คำค้นใหม่ก่อนเริ่มค้นหา");
+      return;
+    }
+
+    setIsSavingKeyword(true);
+    setKeywordPromptError(null);
+    try {
+      await createRuleProfile({
+        name: "คำค้นหลัก",
+        profile_type: "custom",
+        is_active: true,
+        keywords: [normalizedKeyword],
+      });
+      setIsKeywordPromptOpen(false);
+      setKeywordDraft("");
+      setRecrawlError(null);
+      setRecrawlNotice("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["rules"] }),
+        queryClient.invalidateQueries({ queryKey: ["runs"] }),
+      ]);
+    } catch (error) {
+      setKeywordPromptError(localizeApiError(error, "ยังไม่สามารถเพิ่มคำค้นใหม่ได้"));
+    } finally {
+      setIsSavingKeyword(false);
+    }
+  }
+
+  const canRequestRecrawl = !!rulesData?.entitlements.runs_allowed;
 
   return (
     <>
@@ -413,7 +456,7 @@ export default function ProjectsPage() {
             <button
               type="button"
               onClick={() => void handleRecrawl()}
-              disabled={isRecrawling || isLoading || isRulesLoading || !canRecrawl}
+              disabled={isRecrawling || isLoading || isRulesLoading || !canRequestRecrawl}
               className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isRecrawling ? "กำลังเริ่ม crawl..." : "Crawl ใหม่"}
@@ -431,6 +474,63 @@ export default function ProjectsPage() {
       {recrawlNotice ? (
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           {recrawlNotice}
+        </div>
+      ) : null}
+
+      {isKeywordPromptOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="keyword-prompt-title"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/35 p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-6 shadow-2xl">
+            <h2
+              id="keyword-prompt-title"
+              className="text-lg font-semibold text-[var(--text-primary)]"
+            >
+              เพิ่มคำค้นก่อนเริ่ม crawl
+            </h2>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">
+              รอบสิทธิ์ใหม่นี้ยังไม่มีคำค้นที่ใช้งานอยู่ กรุณาใส่ 1 คำค้นใหม่ก่อนเริ่มค้นหา
+            </p>
+            <label
+              htmlFor="first-cycle-keyword"
+              className="mt-5 block text-sm font-medium text-[var(--text-secondary)]"
+            >
+              คำค้นใหม่
+            </label>
+            <input
+              id="first-cycle-keyword"
+              value={keywordDraft}
+              onChange={(event) => setKeywordDraft(event.target.value)}
+              className="mt-2 w-full rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none ring-0 focus:border-primary"
+            />
+            {keywordPromptError ? (
+              <p className="mt-3 text-sm text-red-700">{keywordPromptError}</p>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsKeywordPromptOpen(false);
+                  setKeywordPromptError(null);
+                }}
+                disabled={isSavingKeyword}
+                className="rounded-xl border border-[var(--border-default)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleCreateFirstKeyword()}
+                disabled={isSavingKeyword}
+                className="rounded-xl bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSavingKeyword ? "กำลังบันทึก..." : "บันทึกและเริ่มค้นหา"}
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
 

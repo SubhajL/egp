@@ -104,6 +104,9 @@ export function AppHeader() {
               </p>
               <p className="truncate text-[10px] uppercase tracking-[0.12em] text-[var(--text-muted)]">
                 {currentSession?.tenant.slug ?? "session"}
+                {currentSession?.effective_plan_label
+                  ? ` • ${currentSession.effective_plan_label}`
+                  : ""}
               </p>
             </div>
             <button

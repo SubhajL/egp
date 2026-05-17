@@ -441,3 +441,106 @@ LOW
 - No schema migration is required; the renewal behavior is applied at reconciliation time using existing profile state.
 - Historical data remains preserved because profiles are deactivated rather than deleted and project listing remains tenant-scoped.
 - The operational behavior is narrow and reversible: if product later wants a different reset policy, the new logic is isolated to the reconciliation path.
+
+
+## Implementation (2026-05-18 06:23:44 +07) - cycle-aware renewal entitlements
+
+### Goal
+- Make renewed one-time packs start with a fresh single-keyword slate without deleting historical crawl data.
+- Preserve archive export/download access for previously paid tenants, including monthly members who lapse into free-trial mode.
+- Prevent new/manual crawl starts until the current cycle has a keyword, and expose the effective plan in the user header.
+
+### What changed
+- `packages/crawler-core/src/egp_crawler_core/discovery_authorization.py`: added shared effective-entitlement resolution for active subscriptions, renewed one-time cycles, and expired-monthly → free-trial fallback so API and worker paths use the same rule.
+- `packages/db/src/egp_db/repositories/profile_repo.py`: added cycle repair support that deactivates only stale active profiles created before the new cycle boundary; projects/documents remain untouched.
+- `apps/api/src/egp_api/services/entitlement_service.py`: applied cycle repair before counting keywords, added archive access retention for paid history, and changed capability checks so archive-only access can remain valid after active crawling entitlement ends.
+- `apps/api/src/egp_api/services/rules_service.py` and `run_service.py`: count only current-cycle keywords, show repaired profile state, and reject run/recrawl starts when no active current-cycle keyword exists.
+- `apps/worker/src/egp_worker/scheduler.py` and `workflows/discover.py`: reused the same cycle resolver and repair stale profiles before scheduled/live discovery authorization.
+- `apps/api/src/egp_api/services/auth_service.py`, `routes/auth.py`, and bootstrap wiring: added effective-plan summary fields to `/v1/me`.
+- `apps/web/src/app/(app)/projects/page.tsx`: replaced the dead-end disabled recrawl state with a first-keyword modal that creates the new keyword before scraping can proceed.
+- `apps/web/src/components/layout/app-header.tsx`: shows the effective subscription label beside the tenant slug.
+- Regenerated `apps/web/src/lib/generated/openapi.json` and `api-types.ts` after the `/v1/me` contract change.
+
+### TDD evidence
+- Added/changed tests:
+  - `test_active_one_time_pack_retires_profiles_from_before_current_cycle`
+  - `test_expired_monthly_membership_falls_back_to_free_trial_with_archive_access`
+  - `test_run_creation_requires_keyword_in_current_cycle`
+  - `test_me_includes_effective_subscription_summary`
+  - Playwright: `projects page prompts for a new keyword before crawling an empty cycle`
+- RED command:
+  - `./.venv/bin/python -m pytest tests/phase4/test_entitlements.py tests/phase4/test_auth_api.py -q`
+  - Initial failures proved the old behavior: renewed one-time packs still counted old keywords, expired monthly still reported monthly membership, runs could start with no current-cycle keyword, and `/v1/me` lacked effective-plan fields.
+- GREEN commands:
+  - `./.venv/bin/python -m pytest tests/phase4/test_entitlements.py tests/phase4/test_auth_api.py tests/phase1/test_worker_live_discovery.py -q`
+  - `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py tests/phase3/test_invoice_lifecycle.py tests/phase4/test_entitlements.py tests/phase4/test_auth_api.py tests/phase1/test_worker_live_discovery.py -q`
+  - `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`
+  - `cd apps/web && npm test`
+
+### Validation run
+- `./.venv/bin/ruff check apps/api apps/worker packages tests/phase4/test_entitlements.py tests/phase4/test_auth_api.py` ✅
+- `./.venv/bin/python -m compileall apps/api/src apps/worker/src packages` ✅
+- `cd apps/web && npm run test:unit` ✅
+- `cd apps/web && npm run typecheck` ✅
+- `cd apps/web && npm run lint` ✅
+- `cd apps/web && npm run build` ✅
+- `cd apps/web && npm test` ✅
+
+### Wiring verification
+- `/v1/me` now carries effective plan fields from `AuthService` → `CurrentSessionResponse` → generated web types → `AppHeader`.
+- Both API entitlement checks and worker discovery paths call the same shared resolver before authorizing new crawl work.
+- The projects-page modal calls the existing `createRuleProfile()` API, whose backend path already enqueues first discovery jobs for active profiles.
+
+### Behavior and risk notes
+- Historical scraped projects/documents are preserved; only stale active watchlists are retired when the relevant cycle boundary requires a fresh slate.
+- Fail-closed behavior remains for fresh crawling: no current-cycle keyword means no new run/recrawl.
+- Archive access is intentionally broader than before for tenants with paid history: exports/downloads remain available even when active crawl entitlement has lapsed.
+- I attempted Auggie semantic retrieval before editing, but it returned HTTP 429 repeatedly; this change was implemented from direct file inspection and exact-string searches instead.
+
+### Follow-ups / known gaps
+- The monthly fallback currently models ongoing free-trial behavior after lapse, per the requested product rule; if you later want that fallback to expire after a separate grace window, that should be specified as an explicit policy.
+
+
+## Review (2026-05-18 06:24:55 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working-tree
+- Commands Run: `git status --short`, `git diff --stat`, targeted `git diff -- <paths>`, targeted pytest suites, Ruff, web unit/typecheck/lint/build/Playwright suites
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No remaining findings after review. During review I found and fixed one edge case before finalizing: a future pending one-time renewal could have been mistaken for an older renewal cycle and prematurely retired the current active keyword. The resolver now requires the comparison cycle to start earlier, and `test_future_one_time_renewal_does_not_retire_current_cycle_profile` covers it.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- I treated expired monthly → free-trial fallback as an ongoing product state, not a separate seven-day grace window, because that is the rule the user specified.
+- Archive access is intentionally retained for tenants with prior paid history even when fresh crawling is no longer allowed.
+
+### Recommended Tests / Validation
+- Already run: focused backend suites, worker discovery suite, Ruff, compileall, web unit tests, typecheck, lint, build, targeted projects-page Playwright, and full web Playwright suite.
+- If this policy is later expanded again, add an explicit product test for the new transition rather than reusing the monthly fallback implicitly.
+
+### Rollout Notes
+- Existing historical projects/documents are preserved; only stale active watchlists are deactivated at cycle boundaries.
+- `/v1/me` response shape changed; web generated API types were regenerated in the same change.
+- Auggie semantic retrieval was attempted for review but returned HTTP 429, so review relied on direct diff inspection and executed tests.
+
+
+## Delivery (2026-05-18 06:27:01 +07) - PR submission status
+
+- Created Graphite branch `05-18-fix_entitlements_align_renewal_cycles_and_archive_access` with commit `dd971eb1`.
+- Submitted PR #97: `fix(entitlements): align renewal cycles and archive access`.
+- Remote merge is currently blocked by GitHub Actions infrastructure behavior, not by local code failures:
+  - PR #97 `CI Pipeline` failed every job in 1–2 seconds with empty `steps` arrays.
+  - The latest `main` CI run shows the same pattern, so the gate is failing before jobs actually execute.
+- Per merge-train policy, I did **not** bypass required checks or merge while the required remote gate is red.

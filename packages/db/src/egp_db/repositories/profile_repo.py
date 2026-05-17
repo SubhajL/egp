@@ -212,6 +212,24 @@ class SqlProfileRepository:
                 ordered.append(normalized)
         return ordered
 
+    def deactivate_active_profiles_created_before(
+        self,
+        *,
+        tenant_id: str,
+        created_before: datetime,
+    ) -> int:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(CRAWL_PROFILES_TABLE)
+                .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
+                .where(CRAWL_PROFILES_TABLE.c.is_active.is_(True))
+                .where(CRAWL_PROFILES_TABLE.c.created_at < created_before)
+                .values(is_active=False, updated_at=now)
+            )
+        return int(result.rowcount or 0)
+
     def get_profile_detail(
         self, *, tenant_id: str, profile_id: str
     ) -> CrawlProfileDetail | None:

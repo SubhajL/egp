@@ -42,6 +42,9 @@ class AuthenticatedUserView:
 class CurrentSessionView:
     user: AuthenticatedUserView
     tenant: TenantRecord
+    effective_plan_code: str | None
+    effective_plan_label: str | None
+    effective_subscription_status: str | None
     requires_billing_update: bool
 
 
@@ -65,6 +68,7 @@ class AuthService:
         notification_service: NotificationService | None = None,
         notification_repository: SqlNotificationRepository | None = None,
         billing_service=None,  # BillingService — avoid circular import
+        entitlement_service=None,  # TenantEntitlementService — avoid circular import
         web_base_url: str = "http://localhost:3000",
     ) -> None:
         self._repository = repository
@@ -73,6 +77,7 @@ class AuthService:
         self._notification_service = notification_service
         self._notification_repository = notification_repository
         self._billing_service = billing_service
+        self._entitlement_service = entitlement_service
         self._web_base_url = web_base_url.rstrip("/")
 
     def login(
@@ -376,6 +381,11 @@ class AuthService:
         tenant = self._admin_repository.get_tenant(tenant_id=auth_context.tenant_id)
         if tenant is None:
             raise KeyError(auth_context.tenant_id)
+        entitlement_snapshot = (
+            self._entitlement_service.get_snapshot(tenant_id=auth_context.tenant_id)
+            if self._entitlement_service is not None
+            else None
+        )
         email_verified_at = auth_context.email_verified_at or _string_claim(
             auth_context.claims,
             "email_verified_at",
@@ -395,6 +405,17 @@ class AuthService:
                 ),
             ),
             tenant=tenant,
+            effective_plan_code=(
+                entitlement_snapshot.plan_code if entitlement_snapshot is not None else None
+            ),
+            effective_plan_label=(
+                entitlement_snapshot.plan_label if entitlement_snapshot is not None else None
+            ),
+            effective_subscription_status=(
+                entitlement_snapshot.subscription_status
+                if entitlement_snapshot is not None
+                else None
+            ),
             requires_billing_update=self._requires_billing_update(auth_context.tenant_id),
         )
 

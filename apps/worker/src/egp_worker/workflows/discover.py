@@ -12,6 +12,7 @@ from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
+    resolve_effective_discovery_entitlement,
 )
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
@@ -64,6 +65,12 @@ def _load_discovery_authorization_snapshot(
         bootstrap_schema=False,
     )
     subscriptions = billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
+    entitlement = resolve_effective_discovery_entitlement(subscriptions=subscriptions)
+    if entitlement.profile_cycle_started_at is not None:
+        profile_repository.deactivate_active_profiles_created_before(
+            tenant_id=tenant_id,
+            created_before=entitlement.profile_cycle_started_at,
+        )
     active_keywords = profile_repository.list_active_keywords(tenant_id=tenant_id)
     return build_discovery_authorization_snapshot(
         subscriptions=subscriptions,

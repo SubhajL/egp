@@ -84,6 +84,9 @@ class AuthTenantResponse(BaseModel):
 class CurrentSessionResponse(BaseModel):
     user: AuthenticatedUserResponse
     tenant: AuthTenantResponse
+    effective_plan_code: str | None
+    effective_plan_label: str | None
+    effective_subscription_status: str | None
     requires_billing_update: bool
 
 
@@ -125,6 +128,9 @@ def _serialize_current(view: CurrentSessionView) -> CurrentSessionResponse:
     return CurrentSessionResponse(
         user=AuthenticatedUserResponse(**asdict(view.user)),
         tenant=AuthTenantResponse(**asdict(view.tenant)),
+        effective_plan_code=view.effective_plan_code,
+        effective_plan_label=view.effective_plan_label,
+        effective_subscription_status=view.effective_subscription_status,
         requires_billing_update=view.requires_billing_update,
     )
 
