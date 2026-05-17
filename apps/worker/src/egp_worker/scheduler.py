@@ -9,6 +9,7 @@ from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
+    resolve_effective_discovery_entitlement,
 )
 from egp_db.repositories.admin_repo import SqlAdminRepository, create_admin_repository
 from egp_db.repositories.billing_repo import SqlBillingRepository, create_billing_repository
@@ -79,9 +80,26 @@ def run_scheduled_discovery(
     runner = job_runner or (lambda job: job)
 
     tenants: list[dict[str, object]] = []
+    authorization_snapshots: dict[str, DiscoveryAuthorizationSnapshot] = {}
     for tenant in resolved_admin_repository.list_active_tenants():
         settings = resolved_admin_repository.get_tenant_settings(tenant_id=tenant.id)
+        subscriptions = resolved_billing_repository.list_subscriptions_for_tenant(
+            tenant_id=tenant.id
+        )
+        entitlement = resolve_effective_discovery_entitlement(
+            subscriptions=subscriptions,
+        )
+        if entitlement.profile_cycle_started_at is not None:
+            resolved_profile_repository.deactivate_active_profiles_created_before(
+                tenant_id=tenant.id,
+                created_before=entitlement.profile_cycle_started_at,
+            )
         profiles = resolved_profile_repository.list_profiles_with_keywords(tenant_id=tenant.id)
+        active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant.id)
+        authorization_snapshots[tenant.id] = build_discovery_authorization_snapshot(
+            subscriptions=subscriptions,
+            active_keywords=active_keywords,
+        )
         recent_runs = resolved_run_repository.list_runs(tenant_id=tenant.id, limit=50, offset=0)
         last_scheduled_run_at = _latest_scheduled_run_at(recent_runs.items)
         tenants.append(
@@ -103,19 +121,9 @@ def run_scheduled_discovery(
 
     due_jobs = build_scheduled_discovery_jobs(tenants=tenants, now=now)
     filtered_jobs: list[dict[str, object]] = []
-    authorization_snapshots: dict[str, DiscoveryAuthorizationSnapshot] = {}
     for job in due_jobs:
         tenant_id = str(job["tenant_id"])
-        snapshot = authorization_snapshots.get(tenant_id)
-        if snapshot is None:
-            active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant_id)
-            snapshot = build_discovery_authorization_snapshot(
-                subscriptions=resolved_billing_repository.list_subscriptions_for_tenant(
-                    tenant_id=tenant_id
-                ),
-                active_keywords=active_keywords,
-            )
-            authorization_snapshots[tenant_id] = snapshot
+        snapshot = authorization_snapshots[tenant_id]
         try:
             require_discovery_authorization(snapshot=snapshot, keyword=str(job["keyword"]))
         except PermissionError:

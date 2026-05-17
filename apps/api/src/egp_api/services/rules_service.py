@@ -138,14 +138,12 @@ class RulesService:
             raise ValueError("at least one keyword is required")
 
         if is_active and self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            snapshot = self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
                 capability="runs",
             )
-            existing_details = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
-            existing_keywords = _active_keywords_from_details(existing_details)
+            existing_keywords = snapshot.active_keywords
             prospective_keywords = _merge_keywords(existing_keywords, normalized_keywords)
-            snapshot = self._entitlement_service.get_snapshot(tenant_id=tenant_id)
             if snapshot.keyword_limit is not None and len(prospective_keywords) > int(
                 snapshot.keyword_limit
             ):
@@ -165,8 +163,6 @@ class RulesService:
         return _map_profile(detail)
 
     def get_rules(self, *, tenant_id: str) -> RulesSnapshot:
-        profiles = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
-        closure_metadata = describe_closure_rules()
         entitlements = (
             self._entitlement_service.get_snapshot(tenant_id=tenant_id)
             if self._entitlement_service is not None
@@ -186,6 +182,8 @@ class RulesService:
                 notifications_allowed=False,
             )
         )
+        profiles = self._repository.list_profiles_with_keywords(tenant_id=tenant_id)
+        closure_metadata = describe_closure_rules()
         tenant_settings = (
             self._admin_repository.get_tenant_settings(tenant_id=tenant_id)
             if self._admin_repository is not None
@@ -227,10 +225,12 @@ class RulesService:
 
     def queue_active_discovery_jobs(self, *, tenant_id: str) -> ManualRecrawlRequest:
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            snapshot = self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
                 capability="runs",
             )
+            if snapshot.active_keyword_count == 0:
+                raise ValueError("at least one active keyword is required")
         if self._discovery_job_repository is None:
             raise RuntimeError("discovery job repository is not configured")
 

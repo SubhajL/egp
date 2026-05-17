@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from egp_api.services.entitlement_service import TenantEntitlementService
+from egp_api.services.entitlement_service import EntitlementError, TenantEntitlementService
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
     CrawlRunRecord,
@@ -51,10 +51,12 @@ class RunService:
         summary_json: dict[str, object] | None = None,
     ) -> CrawlRunDetail:
         if self._entitlement_service is not None:
-            self._entitlement_service.require_active_subscription(
+            snapshot = self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
                 capability="runs",
             )
+            if snapshot.active_keyword_count == 0:
+                raise EntitlementError("at least one active keyword is required for runs")
         run = self._repository.create_run(
             tenant_id=tenant_id,
             trigger_type=trigger_type,

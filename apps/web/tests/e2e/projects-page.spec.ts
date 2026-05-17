@@ -21,6 +21,10 @@ const CURRENT_SESSION = {
     created_at: "2026-04-06T00:00:00Z",
     updated_at: "2026-04-06T00:00:00Z",
   },
+  effective_plan_code: "monthly_membership",
+  effective_plan_label: "Monthly Membership",
+  effective_subscription_status: "active",
+  requires_billing_update: false,
 };
 
 const RULES_RESPONSE = {
@@ -204,6 +208,7 @@ test("projects page shows worker-backed crawl activity after manual recrawl", as
   await page.goto("/projects");
 
   await expect(page.getByRole("button", { name: "Crawl ใหม่" })).toBeVisible();
+  await expect(page.getByText("Monthly Membership")).toBeVisible();
 
   await page.getByRole("button", { name: "Crawl ใหม่" }).click();
 
@@ -216,6 +221,100 @@ test("projects page shows worker-backed crawl activity after manual recrawl", as
   ).toBeVisible();
   await expect(page.getByText("ค้นพบแล้ว 2 โครงการ")).toBeVisible();
   await expect(page.getByRole("link", { name: "ดูหน้าการทำงานทั้งหมด" })).toBeVisible();
+});
+
+test("projects page prompts for a new keyword before crawling an empty cycle", async ({
+  page,
+}) => {
+  let createdKeywordPayload: unknown = null;
+  let rulesRequestCount = 0;
+
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/rules":
+        rulesRequestCount += 1;
+        await fulfillJson(route, 200, {
+          ...RULES_RESPONSE,
+          profiles:
+            rulesRequestCount === 1
+              ? []
+              : [
+                  {
+                    id: "profile-1",
+                    name: "คำค้นหลัก",
+                    profile_type: "custom",
+                    is_active: true,
+                    max_pages_per_keyword: 15,
+                    close_consulting_after_days: 30,
+                    close_stale_after_days: 45,
+                    keywords: ["พลังงาน"],
+                    created_at: "2026-05-18T00:00:00Z",
+                    updated_at: "2026-05-18T00:00:00Z",
+                  },
+                ],
+          entitlements:
+            rulesRequestCount === 1
+              ? {
+                  ...RULES_RESPONSE.entitlements,
+                  active_keyword_count: 0,
+                  remaining_keyword_slots: 1,
+                  active_keywords: [],
+                }
+              : {
+                  ...RULES_RESPONSE.entitlements,
+                  active_keyword_count: 1,
+                  remaining_keyword_slots: 0,
+                  active_keywords: ["พลังงาน"],
+                },
+        });
+        return;
+      case "GET /v1/projects":
+        await fulfillJson(route, 200, PROJECTS_RESPONSE);
+        return;
+      case "GET /v1/runs":
+        await fulfillJson(route, 200, EMPTY_RUNS_RESPONSE);
+        return;
+      case "POST /v1/rules/profiles":
+        createdKeywordPayload = request.postDataJSON();
+        await fulfillJson(route, 200, {
+          id: "profile-1",
+          name: "คำค้นหลัก",
+          profile_type: "custom",
+          is_active: true,
+          max_pages_per_keyword: 15,
+          close_consulting_after_days: 30,
+          close_stale_after_days: 45,
+          keywords: ["พลังงาน"],
+          created_at: "2026-05-18T00:00:00Z",
+          updated_at: "2026-05-18T00:00:00Z",
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/projects");
+  await page.getByRole("button", { name: "Crawl ใหม่" }).click();
+
+  await expect(page.getByRole("heading", { name: "เพิ่มคำค้นก่อนเริ่ม crawl" })).toBeVisible();
+  await page.getByLabel("คำค้นใหม่").fill("พลังงาน");
+  await page.getByRole("button", { name: "บันทึกและเริ่มค้นหา" }).click();
+
+  await expect(page.getByText("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที")).toBeVisible();
+  expect(createdKeywordPayload).toMatchObject({
+    name: "คำค้นหลัก",
+    profile_type: "custom",
+    is_active: true,
+    keywords: ["พลังงาน"],
+  });
 });
 
 test("project detail links expired document-download failures to billing", async ({ page }) => {

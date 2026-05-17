@@ -110,6 +110,7 @@ def configure_services(
             bundle.billing_repository,
             payment_provider=resolved_payment_provider,
         ),
+        entitlement_service=entitlement_service,
         web_base_url=resolved_web_base_url,
     )
     storage_settings_service = StorageSettingsService(

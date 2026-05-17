@@ -10,8 +10,10 @@ from .discovery_authorization import (
     build_discovery_authorization_snapshot,
     DiscoveryAuthorizationError,
     DiscoveryAuthorizationSnapshot,
+    EffectiveDiscoveryEntitlement,
     normalize_keyword,
     require_discovery_authorization,
+    resolve_effective_discovery_entitlement,
     SubscriptionLike,
 )
 from .document_hasher import hash_file
@@ -25,10 +27,12 @@ __all__ = [
     "build_discovery_authorization_snapshot",
     "DiscoveryAuthorizationError",
     "DiscoveryAuthorizationSnapshot",
+    "EffectiveDiscoveryEntitlement",
     "generate_canonical_id",
     "hash_file",
     "normalize_keyword",
     "require_discovery_authorization",
+    "resolve_effective_discovery_entitlement",
     "SubscriptionLike",
     "transition_state",
 ]

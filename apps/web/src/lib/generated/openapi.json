@@ -2531,6 +2531,39 @@
       },
       "CurrentSessionResponse": {
         "properties": {
+          "effective_plan_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Plan Code"
+          },
+          "effective_plan_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Plan Label"
+          },
+          "effective_subscription_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Subscription Status"
+          },
           "requires_billing_update": {
             "title": "Requires Billing Update",
             "type": "boolean"
@@ -2545,6 +2578,9 @@
         "required": [
           "user",
           "tenant",
+          "effective_plan_code",
+          "effective_plan_label",
+          "effective_subscription_status",
           "requires_billing_update"
         ],
         "title": "CurrentSessionResponse",

@@ -316,6 +316,130 @@ def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path
     assert body["entitlements"]["notifications_allowed"] is False
 
 
+def test_active_one_time_pack_retires_profiles_from_before_current_cycle(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=7),
+        billing_period_end=today - timedelta(days=5),
+        status="expired",
+    )
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=1),
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Previous one-time cycle",
+        is_active=True,
+        keywords=["ระบบสารสนเทศ"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["plan_code"] == "one_time_search_pack"
+    assert body["entitlements"]["active_keyword_count"] == 0
+    assert body["entitlements"]["remaining_keyword_slots"] == 1
+    assert body["entitlements"]["active_keywords"] == []
+    assert body["profiles"][0]["is_active"] is False
+
+
+def test_future_one_time_renewal_does_not_retire_current_cycle_profile(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=1),
+    )
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today + timedelta(days=2),
+        billing_period_end=today + timedelta(days=4),
+        status="pending_activation",
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Current one-time cycle",
+        is_active=True,
+        keywords=["ระบบสารสนเทศ"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["plan_code"] == "one_time_search_pack"
+    assert body["entitlements"]["active_keyword_count"] == 1
+    assert body["entitlements"]["remaining_keyword_slots"] == 0
+    assert body["entitlements"]["active_keywords"] == ["ระบบสารสนเทศ"]
+    assert body["profiles"][0]["is_active"] is True
+
+
+def test_expired_monthly_membership_falls_back_to_free_trial_with_archive_access(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=35),
+        billing_period_end=today - timedelta(days=6),
+        status="expired",
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Expired monthly profile",
+        is_active=True,
+        keywords=["ระบบข้อมูล", "สุขภาพ"],
+    )
+    project = _seed_project(client)
+    created = _ingest_document(client, project_id=project.id, content=b"tor-v1")
+    document_id = created["document"]["id"]
+
+    rules_response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    export_response = client.get("/v1/exports/excel", params={"tenant_id": TENANT_ID})
+    download_response = client.get(
+        f"/v1/documents/{document_id}/download",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert rules_response.status_code == 200
+    body = rules_response.json()
+    assert body["entitlements"]["plan_code"] == "free_trial"
+    assert body["entitlements"]["plan_label"] == "Free Trial"
+    assert body["entitlements"]["subscription_status"] == "active"
+    assert body["entitlements"]["has_active_subscription"] is True
+    assert body["entitlements"]["keyword_limit"] == 1
+    assert body["entitlements"]["active_keyword_count"] == 0
+    assert body["entitlements"]["remaining_keyword_slots"] == 1
+    assert body["entitlements"]["active_keywords"] == []
+    assert body["entitlements"]["runs_allowed"] is True
+    assert body["entitlements"]["exports_allowed"] is True
+    assert body["entitlements"]["document_download_allowed"] is True
+    assert body["entitlements"]["notifications_allowed"] is False
+    assert body["profiles"][0]["is_active"] is False
+    assert export_response.status_code == 200
+    assert download_response.status_code == 200
+
+
 def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = date.today()
@@ -354,6 +478,26 @@ def test_run_creation_requires_active_subscription(tmp_path) -> None:
 
     assert response.status_code == 403
     assert response.json()["detail"] == "active subscription required for runs"
+
+
+def test_run_creation_requires_keyword_in_current_cycle(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=1),
+    )
+
+    response = client.post(
+        "/v1/runs",
+        json={"tenant_id": TENANT_ID, "trigger_type": "manual"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "at least one active keyword is required for runs"
 
 
 def test_discover_task_keyword_must_be_entitled(tmp_path) -> None:
