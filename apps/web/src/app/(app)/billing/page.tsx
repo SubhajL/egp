@@ -21,9 +21,9 @@ import {
   transitionBillingRecord,
   type BillingPlan,
   type BillingRecordDetail,
-  type EntitlementSummary,
+  type BillingSubscription,
 } from "@/lib/api";
-import { useBillingPlans, useBillingRecords, useRules } from "@/lib/hooks";
+import { useBillingPlans, useBillingRecords } from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const EMPTY_RECORDS: BillingRecordDetail[] = [];
@@ -137,7 +137,7 @@ function todayIsoDate(): string {
 }
 
 function getUpgradeOptions(
-  entitlements: EntitlementSummary | undefined,
+  currentSubscription: BillingSubscription | null,
   billingPlans: BillingPlan[],
   records: BillingRecordDetail[],
 ): UpgradeOption[] {
@@ -152,8 +152,8 @@ function getUpgradeOptions(
       )
       .map((detail) => detail.record.plan_code),
   );
-  const currentPlanCode = entitlements?.plan_code;
-  const subscriptionStatus = entitlements?.subscription_status;
+  const currentPlanCode = currentSubscription?.plan_code;
+  const subscriptionStatus = currentSubscription?.subscription_status;
   let options: UpgradeOption[] = [];
   if (
     subscriptionStatus === "expired" &&
@@ -259,7 +259,7 @@ function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
 }
 
 function UpgradeCallout({
-  entitlements,
+  currentSubscription,
   billingPlans,
   records,
   busy,
@@ -268,7 +268,7 @@ function UpgradeCallout({
   statusMessage,
   onUpgrade,
 }: {
-  entitlements: EntitlementSummary | undefined;
+  currentSubscription: BillingSubscription | null;
   billingPlans: BillingPlan[];
   records: BillingRecordDetail[];
   busy: boolean;
@@ -277,14 +277,14 @@ function UpgradeCallout({
   statusMessage: string | null;
   onUpgrade: (targetPlanCode: string, optionTitle: string) => Promise<void>;
 }) {
-  const options = getUpgradeOptions(entitlements, billingPlans, records);
+  const options = getUpgradeOptions(currentSubscription, billingPlans, records);
   if (options.length === 0) {
     return null;
   }
   const title =
-    entitlements?.subscription_status === "expired"
+    currentSubscription?.subscription_status === "expired"
       ? "ต่ออายุหรือเปลี่ยนแพ็กเกจ"
-      : entitlements?.plan_code === "free_trial"
+      : currentSubscription?.plan_code === "free_trial"
       ? "อัปเกรดจาก Free Trial"
       : "อัปเกรดจาก One-Time Search Pack";
   return (
@@ -348,7 +348,6 @@ export default function BillingPage() {
     stale_unpaid_only: true,
   });
   const { data: plansData } = useBillingPlans();
-  const { data: rulesData } = useRules();
   const notice = searchParams.get("notice");
   const paymentReturn = searchParams.get("payment_return");
   const requestedRecordId = searchParams.get("record_id")?.trim() ?? "";
@@ -744,11 +743,10 @@ export default function BillingPage() {
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
         <div className="space-y-6">
-          {rulesData?.entitlements.subscription_status === "expired" &&
-          currentSubscription ? (
+          {currentSubscription?.subscription_status === "expired" ? (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 shadow-[var(--shadow-soft)]">
               <p className="font-semibold">
-                {rulesData.entitlements.plan_label ?? currentSubscription.plan_code} หมดอายุเมื่อ{" "}
+                {planLabels.get(currentSubscription.plan_code) ?? currentSubscription.plan_code} หมดอายุเมื่อ{" "}
                 {formatThaiDate(currentSubscription.billing_period_end)}
               </p>
               <p className="mt-1">
@@ -758,7 +756,7 @@ export default function BillingPage() {
           ) : null}
 
           <UpgradeCallout
-            entitlements={rulesData?.entitlements}
+            currentSubscription={currentSubscription}
             billingPlans={billingPlans}
             records={records}
             busy={actionBusy}

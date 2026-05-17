@@ -262,3 +262,182 @@ LOW
   - `./.venv/bin/ruff check apps/api packages && ./.venv/bin/python -m compileall apps/api/src packages && ./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase3/test_payment_links.py tests/phase4/test_billing_repository_decomposition.py -q`
   - `(cd apps/web && npm run test:unit && npm test && npm run typecheck && npm run lint && npm run build)`
 - Result: all green.
+
+
+## Merge Train (2026-05-17T09:02:42+07:00)
+
+### Landed
+- PR #95 `fix(billing): archive stale unpaid upgrade invoices`
+- GitHub checks failed before executing any workflow steps (all relevant jobs reported empty `steps` arrays), matching the prior repo-wide CI infrastructure pattern observed earlier on May 17, 2026.
+- Local gates were fully green, so PR #95 was merged with admin override.
+- Merge commit on `main`: `e5070f2825e48950012e48baa913d9c14696fa12`
+
+### Sync / Stack Actions
+- Ran `gt submit --publish --no-interactive` to create PR #95.
+- Verified failed remote checks with compact GitHub metadata and empty-step workflow payloads.
+- Ran `gh pr merge 95 --merge --admin --delete-branch=false`.
+- Ran `gt sync --no-interactive`; local `main` fast-forwarded to `e5070f28`.
+- Switched back to `main` and restored the pre-existing unrelated coding-log edit that was present before this task began.
+
+### Result
+- Local branch: `main`
+- Local `main` and `origin/main` are aligned at `e5070f2825e48950012e48baa913d9c14696fa12`.
+- `scripts/check_main_sync.py --json` confirms `branch_synced=true`, `ahead=0`, `behind=0`; `ok=false` only because the restored pre-existing coding-log edit keeps the worktree intentionally dirty.
+
+
+## Implementation Update (2026-05-17T11:29:25+07:00)
+
+### Goal
+Fix the billing page’s contradictory post-payment state so an already-paid active One-Time Search Pack no longer renders an expired warning or a stale one-time renewal CTA while webhook-driven refreshes are settling.
+
+### What Changed
+- `apps/web/src/app/(app)/billing/page.tsx`
+  - moved billing-page warning and upgrade-option decisions from `rules.entitlements` to the billing snapshot’s `current_subscription`
+  - removed the `useRules()` dependency from this page so billing-specific UI is driven by a single fresh source of truth during payment polling
+  - warning labels now come from the billing plan map plus `current_subscription`, avoiding mixed expired/future-date copy
+- `apps/web/tests/e2e/billing-page.spec.ts`
+  - added a regression scenario where `/v1/rules` still says `expired` while `/v1/billing/records` already reports an active paid one-time subscription
+  - tightened active one-time/monthly billing fixtures so mocked billing state matches the scenario under test instead of relying on contradictory free-trial data
+
+### TDD Evidence
+- RED:
+  - `npm run test:e2e -- --grep 'rules cache still says expired'`
+  - failed because the page did not render the active one-time CTA state when billing was active but cached rules still said expired
+- GREEN:
+  - `npm run test:e2e -- --grep 'rules cache still says expired'`
+  - passed after switching billing-page decisions to `current_subscription`
+- Follow-up regression catch:
+  - `npm run test:e2e -- --grep 'billing page'`
+  - initially exposed an inconsistent existing fixture (`planCode=one_time_search_pack` with a free-trial billing snapshot); the fixture was corrected, then the suite passed
+
+### Tests Run
+- `npm run test:e2e -- --grep 'rules cache still says expired'` — pass
+- `npm run test:e2e -- --grep 'billing page'` — pass (`11 passed`)
+- `npm run test:unit` — pass (`23 passed`)
+- `npm run typecheck` — pass
+- `npm run lint` — pass
+- `npm run build` — pass
+- `npm test` — pass (`33 passed`)
+
+### Wiring Verification Evidence
+- `GET /v1/billing/records` already returns `current_subscription` from the billing repository snapshot; the billing page now uses that same field for both the expired banner and upgrade CTA branching.
+- OPN settlement updates billing records asynchronously, and the existing `useBillingRecords()` polling path refreshes those records every 5 seconds while a payment request is pending. The fix intentionally follows that refreshed billing path rather than a separate cached `/v1/rules` query.
+- Existing expired-state E2E coverage remains green, proving true expired one-time and monthly subscriptions still surface renewal/change options when `current_subscription.subscription_status === "expired"`.
+
+### Behavior / Risk Notes
+- This is a frontend source-of-truth fix, not a commercial-policy change: truly expired one-time packs can still surface the existing renewal path, but active one-time packs no longer inherit stale expired copy after payment.
+- The change narrows inconsistency risk on the billing page by removing cross-endpoint state mixing. It does not alter backend subscription activation, entitlement calculation, or payment reconciliation behavior.
+- Auggie semantic retrieval was attempted twice and returned HTTP 429, so the investigation used direct file inspection plus exact-string searches as the documented fallback.
+
+### Follow-ups / Known Gaps
+- If product wants to remove one-time-to-one-time renewal even after real expiry, that is a separate business-rule change touching both the backend transition allowlist and the true-expired E2E/API tests.
+
+
+## Review (2026-05-17T11:29:25+07:00) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run: `git status --porcelain=v1`, `git diff --name-only`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`, targeted `git diff` for billing page + billing E2E spec, focused/full frontend validation commands
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: the user’s complaint about “ต่ออายุ One-Time Search Pack” refers to the active-post-payment regression shown in the screenshot, not a request to remove same-plan renewal after a genuinely expired one-time subscription.
+- Existing unrelated working-tree edits in `apps/web/next-env.d.ts` and prior coding logs were not part of this review scope.
+
+### Recommended Tests / Validation
+- Keep the new stale-rules regression scenario; it is the behavioral test that would fail if the page started mixing `/v1/rules` and billing snapshots again.
+- Keep the existing true-expired one-time/monthly E2E cases to guard the intentionally preserved expired-state behavior.
+
+### Rollout Notes
+- No API or schema changes; frontend-only behavior correction.
+- After deploy, manually settle one OPN test payment and confirm the billing page transitions from expired to active without retaining the amber warning or one-time renewal CTA.
+
+
+## Implementation Update (2026-05-17T11:58:04+07:00)
+
+### Goal
+Let a renewed One-Time Search Pack begin a fresh search cycle without hiding the tenant's previously scraped project history.
+
+### What Changed
+- `packages/db/src/egp_db/repositories/billing_payments.py`
+  - added renewal-specific profile reset logic inside payment reconciliation
+  - when an active `one_time_search_pack` is activated from a prior `one_time_search_pack`, previously active crawl profiles for that tenant are marked inactive instead of deleted
+- `tests/phase3/test_invoice_lifecycle.py`
+  - added end-to-end renewal coverage proving the old profile is preserved but inactive, the renewed pack has one available keyword slot, a new keyword can be created, and prior projects remain visible
+
+### TDD Evidence
+- RED:
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py -q`
+  - failed in `test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot` because `active_keyword_count` stayed `1` after renewal instead of resetting to `0`
+- GREEN:
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py::test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot -q`
+  - `./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py -q`
+  - both passed after renewal activation deactivated the prior active profile set
+
+### Tests Run
+- `./.venv/bin/ruff check packages tests/phase3/test_invoice_lifecycle.py` — pass
+- `./.venv/bin/python -m compileall packages/db/src apps/api/src` — pass
+- `./.venv/bin/ruff check apps/api packages tests/phase3/test_invoice_lifecycle.py && ./.venv/bin/python -m pytest tests/phase3/test_invoice_lifecycle.py tests/phase2/test_rules_api.py tests/phase4/test_entitlements.py -q` — pass (`45 passed`)
+- `(cd apps/web && npm run test:unit && npm test && npm run typecheck && npm run lint && npm run build)` — pass
+
+### Wiring Verification Evidence
+- The behavior is wired at the shared repository reconciliation layer, so both normal API reconciliation and provider-webhook/Lambda reconciliation paths inherit it through `BillingPaymentMixin.reconcile_payment`.
+- `RulesService` and `TenantEntitlementService` already count only active profiles, so deactivating the previous watchlist immediately frees the one-keyword quota for the renewed pack.
+- `ProjectQueryMixin.list_projects` is tenant-scoped and independent of crawl-profile activity, which is why historical projects remain queryable after the reset.
+
+### Behavior / Risk Notes
+- This is intentionally narrow: only active `one_time_search_pack -> one_time_search_pack` renewals reset the active watchlist. Other plan changes keep their current behavior.
+- The reset is fail-closed for future crawling but non-destructive for customer history: old profiles remain stored, and prior projects remain available.
+- Auggie semantic retrieval was attempted twice and returned HTTP 429, so the implementation used direct file inspection plus exact-string search as the documented fallback.
+
+### Follow-ups / Known Gaps
+- If product later wants expired `monthly_membership -> one_time_search_pack` downgrades to also start with a clean one-keyword slate, that should be a separate explicit policy decision and test.
+
+
+## Review (2026-05-17T11:58:32+0700) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree at `e5070f2825e48950012e48baa913d9c14696fa12`
+- Commands Run: `git status --porcelain=v1`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --name-only`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`, targeted `git diff` inspection for billing page / billing E2E / billing reconciliation / invoice lifecycle test, focused backend and full frontend validation commands
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: the requested policy change is intentionally scoped to `one_time_search_pack -> one_time_search_pack` renewals only; expired monthly-to-one-time downgrades keep their existing semantics until product decides otherwise.
+- Auggie semantic retrieval was attempted for review and returned HTTP 429, so this review used direct diff inspection plus previously gathered code/test context.
+
+### Recommended Tests / Validation
+- Keep `test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot`; it is the regression lock for both customer-history retention and fresh-keyword access after renewal.
+- Keep the stale-rules billing-page E2E case from the pre-existing frontend change; it guards against post-payment UI regressions caused by mixing billing and rules snapshots.
+
+### Rollout Notes
+- No schema migration is required; the renewal behavior is applied at reconciliation time using existing profile state.
+- Historical data remains preserved because profiles are deactivated rather than deleted and project listing remains tenant-scoped.
+- The operational behavior is narrow and reversible: if product later wants a different reset policy, the new logic is isolated to the reconciliation path.

@@ -8,6 +8,8 @@ from sqlalchemy import text
 
 from egp_api.main import create_app
 from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.project_repo import build_project_upsert_record
+from egp_shared_types.enums import ProcurementType, ProjectState
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
@@ -121,6 +123,90 @@ def _seed_subscription(
             },
         )
     return subscription_id
+
+
+def _seed_active_profile(client: TestClient, *, keyword: str) -> str:
+    profile_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profiles (
+                    id,
+                    tenant_id,
+                    name,
+                    profile_type,
+                    is_active,
+                    max_pages_per_keyword,
+                    close_consulting_after_days,
+                    close_stale_after_days,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :id,
+                    :tenant_id,
+                    'TOR',
+                    'tor',
+                    1,
+                    15,
+                    30,
+                    45,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "id": profile_id,
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-08T00:00:00+00:00",
+                "updated_at": "2026-04-08T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profile_keywords (
+                    id,
+                    profile_id,
+                    keyword,
+                    position,
+                    created_at
+                ) VALUES (
+                    :id,
+                    :profile_id,
+                    :keyword,
+                    1,
+                    :created_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "profile_id": profile_id,
+                "keyword": keyword,
+                "created_at": "2026-04-08T00:00:00+00:00",
+            },
+        )
+    return profile_id
+
+
+def _seed_project(client: TestClient):
+    return client.app.state.project_repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number=f"EGP-2026-{uuid4().hex[:6]}",
+            search_name="โครงการเดิม",
+            detail_name="โครงการเดิม",
+            project_name="โครงการเดิม",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1000000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="ประกาศเชิญชวน",
+    )
 
 
 def test_invoice_lifecycle_uses_pricing_defaults_and_activates_one_time_subscription(
@@ -549,6 +635,85 @@ def test_expired_one_time_can_request_renewal_to_one_time_search_pack(tmp_path) 
     assert detail["record"]["amount_due"] == "20.00"
     assert detail["record"]["upgrade_from_subscription_id"] == expired_subscription_id
     assert detail["record"]["upgrade_mode"] == "replace_now"
+
+
+def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        billing_period_start=today - timedelta(days=5),
+        billing_period_end=today - timedelta(days=3),
+        keyword_limit=1,
+        status="expired",
+    )
+    old_profile_id = _seed_active_profile(client, keyword="hospital")
+    old_project = _seed_project(client)
+
+    renewal_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+    assert renewal_response.status_code == 201
+    renewal = renewal_response.json()
+
+    payment_response = client.post(
+        f"/v1/billing/records/{renewal['record']['id']}/payments",
+        json={
+            "tenant_id": TENANT_ID,
+            "payment_method": "bank_transfer",
+            "amount": "20.00",
+            "currency": "THB",
+            "reference_code": "KBANK-RENEW-001",
+            "received_at": f"{today.isoformat()}T03:30:00+00:00",
+            "note": "Customer transfer",
+        },
+    )
+    assert payment_response.status_code == 201
+    payment = payment_response.json()
+
+    reconciled_response = client.post(
+        f"/v1/billing/payments/{payment['id']}/reconcile",
+        json={
+            "tenant_id": TENANT_ID,
+            "status": "reconciled",
+            "note": "Matched against statement",
+        },
+    )
+    assert reconciled_response.status_code == 200
+    assert reconciled_response.json()["subscription"]["plan_code"] == "one_time_search_pack"
+
+    rules_after_renewal = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    assert rules_after_renewal.status_code == 200
+    rules_body = rules_after_renewal.json()
+    assert rules_body["entitlements"]["active_keyword_count"] == 0
+    assert rules_body["entitlements"]["remaining_keyword_slots"] == 1
+    old_profile = next(profile for profile in rules_body["profiles"] if profile["id"] == old_profile_id)
+    assert old_profile["is_active"] is False
+    assert old_profile["keywords"] == ["hospital"]
+
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    new_profile_response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Renewed Watchlist",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["solar"],
+        },
+    )
+    assert new_profile_response.status_code == 201
+    assert new_profile_response.json()["keywords"] == ["solar"]
+
+    projects_response = client.get("/v1/projects", params={"tenant_id": TENANT_ID})
+    assert projects_response.status_code == 200
+    assert old_project.id in {project["id"] for project in projects_response.json()["projects"]}
 
 
 def test_expired_monthly_membership_can_request_one_time_search_pack(tmp_path) -> None:
