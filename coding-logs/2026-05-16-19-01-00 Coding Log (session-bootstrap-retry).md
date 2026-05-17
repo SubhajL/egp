@@ -357,3 +357,21 @@ LOW
 - API addition is backward-compatible (`current_subscription` is additive).
 - Frontend dev-server isolation changes affect local/test infrastructure only.
 - Subscription-renewal UX behavior changes are covered by backend lifecycle tests and Playwright expectations.
+
+
+## Merge Train (2026-05-17 07:02:30 +07)
+
+### Landed
+- PR #94 `fix(billing): restore expired renewal flow and harden web dev`
+- Merged with admin override because all GitHub checks failed before executing any steps; local validation had already passed and the failing workflow jobs had empty step lists.
+- Merge commit on `main`: `50dd744e6379228b438b091bcd0c50c2c546ab57`
+
+### Sync / Stack Actions
+- Ran `gh pr merge 94 --merge --admin --delete-branch=false`.
+- Ran `gt sync --no-interactive`; local `main` fast-forwarded to `50dd744e`.
+- Switched the working tree back to `main` with `gt checkout main`.
+
+### Result
+- Local branch: `main`
+- Local `main` and `origin/main` are aligned at `50dd744e`.
+- Remaining stacked branches were restacked by Graphite where applicable.

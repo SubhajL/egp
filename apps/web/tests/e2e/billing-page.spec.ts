@@ -254,6 +254,84 @@ function buildBillingRecordsResponse() {
   };
 }
 
+function buildOneTimeBillingRecordsResponse() {
+  const base = buildBillingRecordsResponse();
+  return {
+    ...base,
+    current_subscription: {
+      ...base.current_subscription,
+      id: "sub-one-time-active",
+      billing_record_id: "record-one-time-active",
+      plan_code: "one_time_search_pack",
+      subscription_status: "active",
+      billing_period_start: "2026-05-17",
+      billing_period_end: "2026-05-19",
+    },
+    records: [
+      {
+        ...base.records[0],
+        record: {
+          ...base.records[0].record,
+          id: "record-one-time-active",
+          record_number: "OTP-2026-0002",
+          plan_code: "one_time_search_pack",
+          billing_period_start: "2026-05-17",
+          billing_period_end: "2026-05-19",
+        },
+        subscription: {
+          ...base.records[0].subscription,
+          id: "sub-one-time-active",
+          billing_record_id: "record-one-time-active",
+          plan_code: "one_time_search_pack",
+          subscription_status: "active",
+          billing_period_start: "2026-05-17",
+          billing_period_end: "2026-05-19",
+        },
+      },
+    ],
+  };
+}
+
+function buildMonthlyBillingRecordsResponse() {
+  const base = buildBillingRecordsResponse();
+  return {
+    ...base,
+    current_subscription: {
+      ...base.current_subscription,
+      id: "sub-monthly-active",
+      billing_record_id: "record-monthly-active",
+      plan_code: "monthly_membership",
+      subscription_status: "active",
+      billing_period_start: "2026-05-01",
+      billing_period_end: "2026-05-30",
+      keyword_limit: 5,
+    },
+    records: [
+      {
+        ...base.records[0],
+        record: {
+          ...base.records[0].record,
+          id: "record-monthly-active",
+          record_number: "MONTHLY-2026-0002",
+          plan_code: "monthly_membership",
+          billing_period_start: "2026-05-01",
+          billing_period_end: "2026-05-30",
+        },
+        subscription: {
+          ...base.records[0].subscription,
+          id: "sub-monthly-active",
+          billing_record_id: "record-monthly-active",
+          plan_code: "monthly_membership",
+          subscription_status: "active",
+          billing_period_start: "2026-05-01",
+          billing_period_end: "2026-05-30",
+          keyword_limit: 5,
+        },
+      },
+    ],
+  };
+}
+
 function buildUpgradeResponse() {
   return {
     record: {
@@ -347,7 +425,12 @@ async function mockBillingApp(
     failUpgradePaymentRequest?: boolean;
   } = {},
 ) {
-  let latestBillingRecords = buildBillingRecordsResponse();
+  let latestBillingRecords =
+    planCode === "one_time_search_pack"
+      ? buildOneTimeBillingRecordsResponse()
+      : planCode === "monthly_membership"
+        ? buildMonthlyBillingRecordsResponse()
+        : buildBillingRecordsResponse();
   let latestRules = buildRulesResponse(planCode);
   let upgradePayload: unknown;
   let paymentRequestPayload: unknown;
@@ -551,6 +634,43 @@ test("billing page shows one-time upgrade CTA only for monthly membership", asyn
     }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น One-Time Search Pack" })).toHaveCount(0);
+});
+
+test("billing page keeps active one-time copy when rules cache still says expired", async ({
+  page,
+}) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/dashboard/summary":
+        await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
+        return;
+      case "GET /v1/billing/plans":
+        await fulfillJson(route, 200, buildPlansResponse());
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, buildExpiredRulesResponse("one_time_search_pack"));
+        return;
+      case "GET /v1/billing/records":
+        await fulfillJson(route, 200, buildOneTimeBillingRecordsResponse());
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/billing");
+
+  await expect(page.getByText("One-Time Search Pack หมดอายุเมื่อ 19 พ.ค. 2569", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("อัปเกรดจาก One-Time Search Pack", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "ต่ออายุ One-Time Search Pack" })).toHaveCount(0);
 });
 
 test("billing page hides upgrade CTA for monthly membership", async ({ page }) => {

@@ -24,6 +24,7 @@ from .billing_schema import (
     BILLING_RECORDS_TABLE,
     BILLING_SUBSCRIPTIONS_TABLE,
 )
+from .profile_repo import CRAWL_PROFILES_TABLE
 from .billing_utils import (
     _normalize_amount,
     _normalize_datetime,
@@ -37,6 +38,48 @@ from .billing_utils import (
 
 
 class BillingPaymentMixin:
+    def _deactivate_profiles_for_one_time_renewal(
+        self,
+        *,
+        connection,
+        tenant_id: str,
+        source_subscription_id: str | None,
+        target_plan_code: str,
+        new_subscription_status: BillingSubscriptionStatus,
+        now,
+    ) -> None:
+        if (
+            source_subscription_id is None
+            or target_plan_code != "one_time_search_pack"
+            or new_subscription_status is not BillingSubscriptionStatus.ACTIVE
+        ):
+            return
+        source_subscription_row = (
+            connection.execute(
+                select(BILLING_SUBSCRIPTIONS_TABLE.c.plan_code)
+                .where(
+                    BILLING_SUBSCRIPTIONS_TABLE.c.id
+                    == normalize_uuid_string(source_subscription_id)
+                )
+                .limit(1)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            source_subscription_row is None
+            or str(source_subscription_row["plan_code"]) != "one_time_search_pack"
+        ):
+            return
+        connection.execute(
+            update(CRAWL_PROFILES_TABLE)
+            .where(
+                CRAWL_PROFILES_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                CRAWL_PROFILES_TABLE.c.is_active.is_(True),
+            )
+            .values(is_active=False, updated_at=now)
+        )
+
     def _load_payments_for_records(
         self, record_ids: list[str]
     ) -> list[BillingPaymentRecord]:
@@ -329,6 +372,14 @@ class BillingPaymentMixin:
                         note=note,
                         from_status=None,
                         to_status=subscription_status.value,
+                    )
+                    self._deactivate_profiles_for_one_time_renewal(
+                        connection=connection,
+                        tenant_id=tenant_id,
+                        source_subscription_id=record_before.upgrade_from_subscription_id,
+                        target_plan_code=record_before.plan_code,
+                        new_subscription_status=subscription_status,
+                        now=now,
                     )
                     if (
                         record_before.upgrade_mode == "replace_now"
