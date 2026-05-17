@@ -339,6 +339,104 @@ def test_billing_records_include_effective_current_subscription_outside_page_win
     assert body["current_subscription"]["subscription_status"] == "active"
 
 
+def test_billing_records_exclude_stale_unpaid_by_default(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    stale_start = _utc_today() - timedelta(days=40)
+    active_start = _utc_today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        billing_period_start=active_start,
+        billing_period_end=active_start + timedelta(days=6),
+        keyword_limit=1,
+    )
+
+    stale_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-STALE-0001",
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": stale_start.isoformat(),
+        },
+    )
+    active_response = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-ACTIVE-0001",
+            "plan_code": "monthly_membership",
+            "status": "awaiting_payment",
+            "billing_period_start": active_start.isoformat(),
+        },
+    )
+    assert stale_response.status_code == 201
+    assert active_response.status_code == 201
+
+    response = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["records"][0]["record"]["record_number"] == "INV-ACTIVE-0001"
+    assert body["records"][0]["record"]["is_stale_unpaid"] is False
+    assert all(
+        detail["record"]["record_number"] != "INV-STALE-0001"
+        for detail in body["records"]
+    )
+    assert body["total"] == 2
+    assert body["summary"] == {
+        "open_records": 1,
+        "awaiting_reconciliation": 0,
+        "outstanding_amount": "25.00",
+        "collected_amount": "0.00",
+    }
+
+
+def test_billing_records_include_stale_unpaid_in_history_view(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    stale_start = _utc_today() - timedelta(days=40)
+    today = _utc_today()
+    _seed_subscription(
+        client,
+        plan_code="free_trial",
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=6),
+        keyword_limit=1,
+    )
+
+    stale_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-STALE-0002",
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": stale_start.isoformat(),
+        },
+    )
+    assert stale_response.status_code == 201
+
+    response = client.get(
+        "/v1/billing/records",
+        params={"tenant_id": TENANT_ID, "stale_unpaid_only": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    stale_record = next(
+        detail["record"]
+        for detail in body["records"]
+        if detail["record"]["record_number"] == "INV-STALE-0002"
+    )
+    assert stale_record["is_stale_unpaid"] is True
+    assert body["summary"] == {
+        "open_records": 1,
+        "awaiting_reconciliation": 0,
+        "outstanding_amount": "20.00",
+        "collected_amount": "0.00",
+    }
+
+
 def test_free_trial_can_request_upgrade_to_one_time_search_pack(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = _utc_today()

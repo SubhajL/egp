@@ -1622,6 +1622,8 @@ export interface components {
             due_at: string | null;
             /** Id */
             id: string;
+            /** Is Stale Unpaid */
+            is_stale_unpaid: boolean;
             /** Issued At */
             issued_at: string | null;
             /** Notes */
@@ -4251,6 +4253,8 @@ export interface operations {
                 tenant_id?: string | null;
                 limit?: number;
                 offset?: number;
+                include_stale_unpaid?: boolean;
+                stale_unpaid_only?: boolean;
             };
             header?: never;
             path?: never;

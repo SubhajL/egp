@@ -304,6 +304,37 @@ def test_create_payment_request_rejects_terminal_billing_record(tmp_path) -> Non
     assert response.status_code == 400
 
 
+def test_create_payment_request_rejects_stale_unpaid_record(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    stale_start = _utc_today() - timedelta(days=40)
+    trial_response = client.post(
+        "/v1/billing/trial/start",
+        json={"tenant_id": TENANT_ID},
+    )
+    assert trial_response.status_code == 201
+    response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": "INV-STALE-PAY-0001",
+            "target_plan_code": "one_time_search_pack",
+            "billing_period_start": stale_start.isoformat(),
+        },
+    )
+    assert response.status_code == 201
+
+    payment_response = client.post(
+        f"/v1/billing/records/{response.json()['record']['id']}/payment-requests",
+        json={
+            "tenant_id": TENANT_ID,
+            "provider": "mock_promptpay",
+        },
+    )
+
+    assert payment_response.status_code == 400
+    assert payment_response.json()["detail"] == "stale unpaid billing record is not payable"
+
+
 def test_callback_settles_invoice_and_activates_subscription_once(tmp_path) -> None:
     client = _create_client(tmp_path)
     created = _create_billing_record(client)

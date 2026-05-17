@@ -62,11 +62,21 @@ class BillingService:
             note="Free trial activation",
         )
 
-    def list_snapshot(self, *, tenant_id: str, limit: int = 50, offset: int = 0) -> BillingPage:
+    def list_snapshot(
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 50,
+        offset: int = 0,
+        include_stale_unpaid: bool = False,
+        stale_unpaid_only: bool = False,
+    ) -> BillingPage:
         return self._repository.list_billing_records(
             tenant_id=tenant_id,
             limit=limit,
             offset=offset,
+            include_stale_unpaid=include_stale_unpaid,
+            stale_unpaid_only=stale_unpaid_only,
         )
 
     def has_overdue_records(self, *, tenant_id: str) -> bool:
@@ -246,6 +256,8 @@ class BillingService:
             BillingRecordStatus.REFUNDED,
         }:
             raise ValueError("billing record is not payable")
+        if detail.record.is_stale_unpaid:
+            raise ValueError("stale unpaid billing record is not payable")
         if Decimal(detail.record.outstanding_balance) <= Decimal("0.00"):
             raise ValueError("billing record has no outstanding balance")
         try:

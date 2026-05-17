@@ -373,6 +373,21 @@ def _reconciled_total_for_payments(payments: list[BillingPaymentRecord]) -> Deci
     return total.quantize(_MONEY_QUANTUM, rounding=ROUND_HALF_UP)
 
 
+def _is_stale_unpaid_upgrade(
+    row: _BillingRecordRow,
+    payments: list[BillingPaymentRecord],
+) -> bool:
+    if row.upgrade_from_subscription_id is None:
+        return False
+    if row.status in _TERMINAL_BILLING_STATUSES:
+        return False
+    reconciled_total = _reconciled_total_for_payments(payments)
+    outstanding = max(row.amount_due - reconciled_total, Decimal("0.00"))
+    if outstanding <= Decimal("0.00"):
+        return False
+    return date.fromisoformat(row.billing_period_end) < _now().date()
+
+
 def _detail_from_row(
     row: _BillingRecordRow,
     payment_requests: list[BillingPaymentRequestRecord],
@@ -397,6 +412,7 @@ def _detail_from_row(
         amount_due=_decimal_to_str(row.amount_due),
         reconciled_total=_decimal_to_str(reconciled_total),
         outstanding_balance=_decimal_to_str(outstanding),
+        is_stale_unpaid=_is_stale_unpaid_upgrade(row, payments),
         upgrade_from_subscription_id=row.upgrade_from_subscription_id,
         upgrade_mode=row.upgrade_mode,
         notes=row.notes,

@@ -32,6 +32,7 @@ class BillingRecordRecord:
     amount_due: str
     reconciled_total: str
     outstanding_balance: str
+    is_stale_unpaid: bool
     upgrade_from_subscription_id: str | None
     upgrade_mode: str
     notes: str | None
