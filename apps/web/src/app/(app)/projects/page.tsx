@@ -61,7 +61,7 @@ type ManualRecrawlTracking = {
   timedOut: boolean;
 };
 
-type ActiveRunCard = {
+type RunActivityCard = {
   id: string;
   displayId: string;
   status: string;
@@ -174,17 +174,52 @@ function formatRunTriggerLabel(triggerType: string): string {
   }
 }
 
-function buildActiveRunCard(runDetail: RunDetailResponse): ActiveRunCard {
+function buildRunActivityCard(runDetail: RunDetailResponse): RunActivityCard {
   const activity = getRunActivitySnapshot(runDetail);
   return {
     id: runDetail.run.id,
     displayId: runDetail.run.id.slice(0, 12),
     status: runDetail.run.status,
     triggerLabel: formatRunTriggerLabel(runDetail.run.trigger_type),
-    detail: activity.detail ?? "worker เริ่ม run แล้ว แต่ยังไม่มีสถานะล่าสุดให้แสดง",
-    updatedAt: activity.updatedAt,
+    detail:
+      activity.detail ??
+      (runDetail.run.status === "succeeded"
+        ? "worker ทำงานเสร็จแล้ว"
+        : runDetail.run.status === "partial"
+          ? "worker ทำงานเสร็จบางส่วน"
+          : runDetail.run.status === "failed"
+            ? "worker จบงานด้วยข้อผิดพลาด"
+            : "worker เริ่ม run แล้ว แต่ยังไม่มีสถานะล่าสุดให้แสดง"),
+    updatedAt:
+      activity.updatedAt ??
+      runDetail.run.finished_at ??
+      runDetail.run.started_at ??
+      runDetail.run.created_at,
     discoveredCount: getRunDiscoveredCount(runDetail.run),
   };
+}
+
+function formatLatestCompletedRunLabel(status: string): string {
+  switch (status) {
+    case "succeeded":
+      return "ค้นหาเสร็จแล้ว 1 งานล่าสุด";
+    case "partial":
+      return "งานล่าสุดเสร็จบางส่วน";
+    case "failed":
+      return "งานล่าสุดจบด้วยข้อผิดพลาด";
+    default:
+      return "งานล่าสุดจบแล้ว";
+  }
+}
+
+function latestCompletedRunBadgeClass(status: string): string {
+  if (status === "failed") {
+    return "bg-[var(--badge-red-bg)] text-[var(--badge-red-text)]";
+  }
+  if (status === "partial") {
+    return "bg-[var(--badge-amber-bg)] text-[var(--badge-amber-text)]";
+  }
+  return "bg-[var(--badge-green-bg)] text-[var(--badge-green-text)]";
 }
 
 export default function ProjectsPage() {
@@ -264,7 +299,18 @@ export default function ProjectsPage() {
   const rangeStart = totalProjects === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
   const rangeEnd = totalProjects === 0 ? 0 : rangeStart + displayProjects.length - 1;
   const activeRuns = getActiveRuns(runsData?.runs ?? []);
-  const activeRunCards = activeRuns.slice(0, 3).map(buildActiveRunCard);
+  const activeRunCards = activeRuns.slice(0, 3).map(buildRunActivityCard);
+  const latestRun = runsData?.runs[0] ?? null;
+  const latestRunStartedAfterManualRequest =
+    latestRun !== null &&
+    manualRecrawlTracking !== null &&
+    Date.parse(latestRun.run.created_at) >= manualRecrawlTracking.requestedAt;
+  const latestCompletedRunCard =
+    latestRun &&
+    activeRuns.length === 0 &&
+    (manualRecrawlTracking === null || latestRunStartedAfterManualRequest)
+      ? buildRunActivityCard(latestRun)
+      : null;
   const runningRunCount = activeRuns.filter((detail) => detail.run.status === "running").length;
   const queuedRunCount = activeRuns.filter((detail) => detail.run.status === "queued").length;
   const waitingForManualRun =
@@ -274,6 +320,7 @@ export default function ProjectsPage() {
   const shouldShowRunActivity =
     activeRuns.length > 0 ||
     manualRecrawlTracking !== null ||
+    latestCompletedRunCard !== null ||
     (recrawlNotice !== null && isRunsError);
   const tabs = [
     { key: "all" as const, label: "ทั้งหมด" },
@@ -282,11 +329,14 @@ export default function ProjectsPage() {
   ];
 
   useEffect(() => {
-    if (activeRuns.length === 0 || manualRecrawlTracking === null) {
+    if (
+      manualRecrawlTracking === null ||
+      (activeRuns.length === 0 && latestCompletedRunCard === null)
+    ) {
       return;
     }
     setManualRecrawlTracking(null);
-  }, [activeRuns.length, manualRecrawlTracking]);
+  }, [activeRuns.length, latestCompletedRunCard, manualRecrawlTracking]);
 
   useEffect(() => {
     if (!waitingForManualRun && activeRuns.length === 0) {
@@ -395,6 +445,7 @@ export default function ProjectsPage() {
         queryClient.invalidateQueries({ queryKey: ["rules"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
       ]);
+      await refetchRuns();
     } catch (error) {
       setRecrawlError(
         localizeApiError(error, "ยังไม่สามารถเริ่ม crawl ใหม่ได้"),
@@ -424,10 +475,17 @@ export default function ProjectsPage() {
       setKeywordDraft("");
       setRecrawlError(null);
       setRecrawlNotice("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที");
+      setManualRecrawlTracking({
+        queuedJobCount: 1,
+        queuedKeywords: [normalizedKeyword],
+        requestedAt: Date.now(),
+        timedOut: false,
+      });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["rules"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
       ]);
+      await refetchRuns();
     } catch (error) {
       setKeywordPromptError(localizeApiError(error, "ยังไม่สามารถเพิ่มคำค้นใหม่ได้"));
     } finally {
@@ -542,7 +600,8 @@ export default function ProjectsPage() {
                 สถานะการ crawl ล่าสุด
               </h2>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
-                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิวหรือกำลังทำอะไรอยู่
+                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิว กำลังทำอะไรอยู่
+                หรือจบลงอย่างไร
               </p>
             </div>
             <Link
@@ -593,7 +652,7 @@ export default function ProjectsPage() {
                 ))}
               </div>
             </>
-          ) : manualRecrawlTracking ? (
+          ) : manualRecrawlTracking && latestCompletedRunCard === null ? (
             <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
               <p className="font-medium text-[var(--text-primary)]">
                 {manualRecrawlTracking.timedOut
@@ -619,6 +678,44 @@ export default function ProjectsPage() {
                 </p>
               )}
             </div>
+          ) : latestCompletedRunCard ? (
+            <>
+              <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                <span
+                  className={`rounded-full px-3 py-1 font-medium ${latestCompletedRunBadgeClass(
+                    latestCompletedRunCard.status,
+                  )}`}
+                >
+                  {formatLatestCompletedRunLabel(latestCompletedRunCard.status)}
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                <article className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <StatusBadge state={latestCompletedRunCard.status} variant="run" />
+                      <span className="font-mono text-sm text-[var(--text-primary)]">
+                        {latestCompletedRunCard.displayId}
+                      </span>
+                      <span className="text-sm text-[var(--text-muted)]">
+                        ทริกเกอร์: {latestCompletedRunCard.triggerLabel}
+                      </span>
+                    </div>
+                    <span className="text-sm text-[var(--text-muted)]">
+                      ค้นพบแล้ว {latestCompletedRunCard.discoveredCount} โครงการ
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                    {latestCompletedRunCard.detail}
+                  </p>
+                  {latestCompletedRunCard.updatedAt ? (
+                    <p className="mt-2 text-xs text-[var(--text-muted)]">
+                      อัปเดตล่าสุด {formatThaiDate(latestCompletedRunCard.updatedAt)}
+                    </p>
+                  ) : null}
+                </article>
+              </div>
+            </>
           ) : isRunsError ? (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               {localizeApiError(runsError, "ไม่สามารถโหลดสถานะการ crawl ล่าสุดได้")}

@@ -59,6 +59,7 @@ RESULTS_TABLE_REQUIRED_HEADERS = [
 SEARCH_CONTROLS_STABLE_SECONDS = 2.0
 SEARCH_CONTROLS_SETTLE_TIMEOUT_S = 10.0
 NO_RESULTS_MARKERS = ("ไม่พบข้อมูล", "จำนวนโครงการที่พบ : 0")
+NO_RESULTS_STABLE_POLLS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +203,11 @@ def crawl_live_discovery(
                         clear_search(page, resolved_settings)
                     search_keyword(page, active_keyword, resolved_settings)
                     if is_no_results_page(page):
+                        log_results_debug_snapshot(
+                            page,
+                            active_keyword,
+                            "keyword_no_results",
+                        )
                         _log_live_progress(
                             "keyword_no_results",
                             keyword=active_keyword,
@@ -1524,15 +1530,38 @@ def wait_for_results_ready(page, settings: BrowserDiscoverySettings) -> None:
         page.wait_for_selector("table", state="attached", timeout=settings.nav_timeout_ms)
     except Exception:
         pass
-    for _ in range(3):
+    no_results_polls = 0
+    for _ in range(NO_RESULTS_STABLE_POLLS):
         try:
             if get_results_rows(page):
                 return
         except Exception:
             pass
         if is_no_results_page(page):
-            return
+            no_results_polls += 1
+            if no_results_polls >= NO_RESULTS_STABLE_POLLS:
+                return
+        else:
+            no_results_polls = 0
         _logged_sleep(1.0)
+
+
+def _wait_for_search_results_stable(page) -> None:
+    last_count: int | None = None
+    stable_polls = 0
+    for _ in range(10):
+        try:
+            current_count = len(get_results_rows(page))
+        except Exception:
+            current_count = -1
+        if current_count == last_count:
+            stable_polls += 1
+        else:
+            stable_polls = 0
+        if current_count > 0 and stable_polls >= 2:
+            return
+        last_count = current_count
+        _logged_sleep(0.5)
 
 
 def _search_controls_ready(page) -> bool:
@@ -1706,6 +1735,7 @@ def search_keyword(
         return
     _raise_on_site_error_toast(page, action="search submit")
     wait_for_results_ready(page, settings)
+    _wait_for_search_results_stable(page)
     if has_site_error_toast(page) and _retry_search_from_clean_page(page, keyword, settings):
         return
     _raise_on_site_error_toast(page, action="search results load")

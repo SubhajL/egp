@@ -35,6 +35,8 @@ from egp_worker.browser_discovery import (
     restore_results_page,
     search_keyword,
     wait_for_cloudflare,
+    wait_for_results_ready,
+    _wait_for_search_results_stable,
     _wait_for_search_controls_ready,
 )
 
@@ -1264,6 +1266,50 @@ def test_get_results_rows_filters_placeholder_no_results_row() -> None:
 
     assert get_results_rows(page) == []
     assert is_no_results_page(page) is True
+
+
+def test_wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive(
+    monkeypatch,
+) -> None:
+    page = FakePage()
+    row_states = iter([[], [object()]])
+    row_checks: list[list[object]] = []
+    no_results_checks: list[bool] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_rows",
+        lambda page: row_checks.append(next(row_states)) or row_checks[-1],
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page",
+        lambda page: no_results_checks.append(True) or True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    wait_for_results_ready(page, BrowserDiscoverySettings())
+
+    assert len(row_checks) == 2
+    assert len(no_results_checks) == 1
+
+
+def test_wait_for_search_results_stable_waits_for_late_rows(monkeypatch) -> None:
+    page = FakePage()
+    row_states = iter([[], [], [object()], [object()], [object()]])
+    row_checks: list[list[object]] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_rows",
+        lambda page: row_checks.append(next(row_states)) or row_checks[-1],
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    _wait_for_search_results_stable(page)
+
+    assert [len(rows) for rows in row_checks] == [0, 0, 1, 1, 1]
 
 
 def test_navigate_to_project_by_row_uses_results_table_only() -> None:
