@@ -100,6 +100,26 @@ const PROJECTS_RESPONSE = {
   offset: 0,
 };
 
+const UPDATED_PROJECTS_RESPONSE = {
+  ...PROJECTS_RESPONSE,
+  projects: [
+    {
+      ...PROJECTS_RESPONSE.projects[0],
+      id: "project-2",
+      canonical_project_id: "egp-consulting",
+      project_number: "EGP-002",
+      project_name: "จ้างที่ปรึกษาระบบใหม่",
+      first_seen_at: "2026-05-18T10:12:00Z",
+      last_seen_at: "2026-05-18T10:12:00Z",
+      last_changed_at: "2026-05-18T10:12:00Z",
+      created_at: "2026-05-18T10:12:00Z",
+      updated_at: "2026-05-18T10:12:00Z",
+    },
+    ...PROJECTS_RESPONSE.projects,
+  ],
+  total: 2,
+};
+
 const EMPTY_RUNS_RESPONSE = {
   runs: [],
   total: 0,
@@ -359,6 +379,59 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
     is_active: true,
     keywords: ["พลังงาน"],
   });
+});
+
+test("projects page refreshes table after a completed crawl becomes visible", async ({
+  page,
+}) => {
+  let projectRequestCount = 0;
+  let hasTriggeredRecrawl = false;
+
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, RULES_RESPONSE);
+        return;
+      case "GET /v1/projects":
+        projectRequestCount += 1;
+        await fulfillJson(
+          route,
+          200,
+          projectRequestCount === 1 ? PROJECTS_RESPONSE : UPDATED_PROJECTS_RESPONSE,
+        );
+        return;
+      case "GET /v1/runs":
+        await fulfillJson(
+          route,
+          200,
+          hasTriggeredRecrawl ? NO_RESULTS_RUNS_RESPONSE : EMPTY_RUNS_RESPONSE,
+        );
+        return;
+      case "POST /v1/rules/recrawl":
+        hasTriggeredRecrawl = true;
+        await fulfillJson(route, 202, {
+          queued_job_count: 1,
+          queued_keywords: ["ที่ปรึกษา"],
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/projects");
+  await page.getByRole("button", { name: "Crawl ใหม่" }).click();
+
+  await expect(page.getByText("ค้นหาเสร็จแล้ว 1 งานล่าสุด")).toBeVisible();
+  await expect(page.getByText("จ้างที่ปรึกษาระบบใหม่")).toBeVisible();
+  await expect(page.getByText("แสดง 1-2 จาก 2 โครงการ")).toBeVisible();
 });
 
 test("project detail links expired document-download failures to billing", async ({ page }) => {
