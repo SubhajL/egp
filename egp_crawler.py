@@ -427,6 +427,7 @@ SKIP_KEYWORDS_IN_PROJECT = [
     "ทางหลวง",
     "วิธีคัดเลือก",
     "บำรุงรักษา",
+    "วิธีเฉพาะเจาะจง",
 ]  # Skip projects containing these in name or org
 NEXT_PAGE_SELECTOR = (
     "a:has-text('ถัดไป'), "

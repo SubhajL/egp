@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
-from egp_worker.browser_close_check import _find_matching_observation_on_page
+from egp_worker.browser_close_check import (
+    _collect_documents_for_observation,
+    _find_matching_observation_on_page,
+)
 from egp_worker.browser_discovery import (
     BrowserClosedDuringKeyword,
     BrowserDiscoverySettings,
@@ -1390,6 +1393,56 @@ def test_navigate_to_project_by_row_prefers_anchor_target_over_cell_fallback(
     assert page.url.endswith("/procurement/abc")
 
 
+def test_collect_keyword_projects_skips_specific_method_projects(monkeypatch) -> None:
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการจัดซื้อด้วยวิธีเฉพาะเจาะจง",
+                    ),
+                    _results_row(
+                        index="2",
+                        organization="หน่วยงาน B",
+                        project_name="โครงการระบบข้อมูลกลาง",
+                    ),
+                ],
+            )
+        ]
+    )
+    opened_rows: list[int] = []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project",
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: (
+            opened_rows.append(row_index)
+            or {
+                "project_name": f"row-{row_index}",
+                "project_number": f"EGP-{row_index}",
+                "source_status_text": source_status_text,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+
+    results = _collect_keyword_projects(
+        page=page,
+        keyword="ระบบข้อมูล",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+    )
+
+    assert opened_rows == [1]
+    assert [result["project_name"] for result in results] == ["row-1"]
+
+
 def test_collect_keyword_projects_processes_all_eligible_rows_on_mixed_status_page(
     monkeypatch,
 ) -> None:
@@ -2621,6 +2674,76 @@ def test_close_check_matching_uses_results_table_only() -> None:
     assert match is not None
     assert match["project_id"] == "project-1"
     assert match["search_name"] == "โครงการที่ตรงกัน"
+
+
+def test_close_check_document_revisit_collects_documents_after_prelim_status(
+    monkeypatch,
+) -> None:
+    class FakeDocumentRevisitPage:
+        def __init__(self) -> None:
+            self.goto_calls: list[tuple[str, str | None, int | None]] = []
+
+        def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
+            self.goto_calls.append((url, wait_until, timeout))
+
+    page = FakeDocumentRevisitPage()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "egp_worker.browser_close_check._open_project_from_results_cell",
+        lambda page, cell: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_close_check._build_source_page_text",
+        lambda page: "รายละเอียดโครงการ",
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_close_check.collect_downloaded_documents",
+        lambda page, source_status_text, source_page_text, project_state: (
+            captured.update(
+                {
+                    "source_status_text": source_status_text,
+                    "source_page_text": source_page_text,
+                    "project_state": project_state,
+                }
+            )
+            or [
+                {
+                    "file_name": "mid-price.pdf",
+                    "file_bytes": b"mid-price",
+                    "source_label": "ประกาศราคากลาง",
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_close_check.wait_for_cloudflare", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_close_check._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    updated = _collect_documents_for_observation(
+        page,
+        project={
+            "project_id": "project-1",
+            "project_state": ProjectState.PRELIM_PRICING_SEEN.value,
+        },
+        observation={
+            "project_id": "project-1",
+            "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+        },
+        cells=[object(), object(), object(), object(), object(), object()],
+        settings=BrowserDiscoverySettings(),
+    )
+
+    assert updated["downloaded_documents"][0]["source_label"] == "ประกาศราคากลาง"
+    assert captured == {
+        "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+        "source_page_text": "รายละเอียดโครงการ",
+        "project_state": ProjectState.PRELIM_PRICING_SEEN.value,
+    }
+    assert page.goto_calls
 
 
 def test_open_and_extract_project_promotes_state_from_downloaded_artifacts(

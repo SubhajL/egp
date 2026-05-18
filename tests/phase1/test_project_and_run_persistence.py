@@ -5,6 +5,8 @@ import sqlite3
 
 import pytest
 
+from egp_db.artifact_store import LocalArtifactStore
+from egp_db.repositories.document_repo import SqlDocumentRepository
 from egp_db.repositories.project_repo import (
     SqlProjectRepository,
     build_project_upsert_record,
@@ -128,6 +130,75 @@ def test_list_projects_is_tenant_scoped_and_returns_newest_first(tmp_path) -> No
     assert [project.id for project in project_page.items] == [newer.id, older.id]
     assert all(project.tenant_id == TENANT_ID for project in project_page.items)
     assert project_page.total == 2
+
+
+def test_list_projects_can_filter_to_invitation_stage_document_evidence(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    project_repository = SqlProjectRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    document_repository = SqlDocumentRepository(
+        database_url=database_url,
+        artifact_store=LocalArtifactStore(tmp_path / "artifacts"),
+        bootstrap_schema=False,
+    )
+
+    eligible = project_repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-INVITE",
+            search_name="โครงการมีเอกสาร",
+            detail_name="โครงการมีเอกสาร",
+            project_name="โครงการมีเอกสาร",
+            organization_name="กรมหนึ่ง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1000",
+            procurement_type=ProcurementType.GOODS,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+    late_only = project_repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-LATE",
+            search_name="โครงการช้าเกินไป",
+            detail_name="โครงการช้าเกินไป",
+            project_name="โครงการช้าเกินไป",
+            organization_name="กรมสอง",
+            proposal_submission_date="2026-05-02",
+            budget_amount="2000",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.PRELIM_PRICING_SEEN,
+        ),
+        source_status_text="สรุปข้อมูลการเสนอราคาเบื้องต้น",
+    )
+
+    document_repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=eligible.id,
+        file_name="invite.pdf",
+        file_bytes=b"invite",
+        source_label="ประกาศเชิญชวน",
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+    document_repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=late_only.id,
+        file_name="mid-price.pdf",
+        file_bytes=b"mid-price",
+        source_label="ประกาศราคากลาง",
+        source_status_text="สรุปข้อมูลการเสนอราคาเบื้องต้น",
+    )
+
+    project_page = project_repository.list_projects(
+        tenant_id=TENANT_ID,
+        has_invitation_stage_documents=True,
+    )
+
+    assert [project.id for project in project_page.items] == [eligible.id]
 
 
 def test_project_repository_persists_alias_and_status_event_rows(tmp_path) -> None:

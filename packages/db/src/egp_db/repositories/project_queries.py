@@ -113,6 +113,7 @@ class ProjectQueryMixin:
         budget_max: Decimal | float | int | str | None = None,
         updated_after: datetime | str | None = None,
         has_changed_tor: bool | None = None,
+        has_invitation_stage_documents: bool | None = None,
         has_winner: bool | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -178,6 +179,16 @@ class ProjectQueryMixin:
             )
             .distinct()
         )
+        invitation_stage_document_project_ids = (
+            select(DOCUMENTS_TABLE.c.project_id)
+            .where(
+                and_(
+                    DOCUMENTS_TABLE.c.tenant_id == normalized_tenant_id,
+                    DOCUMENTS_TABLE.c.source_status_text.ilike("%ประกาศเชิญชวน%"),
+                )
+            )
+            .distinct()
+        )
         has_changed_tor_column = PROJECTS_TABLE.c.id.in_(changed_tor_project_ids).label(
             "has_changed_tor"
         )
@@ -195,6 +206,15 @@ class ProjectQueryMixin:
                 conditions.append(PROJECTS_TABLE.c.id.in_(changed_tor_project_ids))
             else:
                 conditions.append(PROJECTS_TABLE.c.id.not_in(changed_tor_project_ids))
+        if has_invitation_stage_documents is not None:
+            if has_invitation_stage_documents:
+                conditions.append(
+                    PROJECTS_TABLE.c.id.in_(invitation_stage_document_project_ids)
+                )
+            else:
+                conditions.append(
+                    PROJECTS_TABLE.c.id.not_in(invitation_stage_document_project_ids)
+                )
         if normalized_keyword is not None:
             keyword_like = f"%{normalized_keyword}%"
             alias_project_ids = select(PROJECT_ALIASES_TABLE.c.project_id).where(

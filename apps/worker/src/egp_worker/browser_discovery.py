@@ -40,7 +40,12 @@ from .profiles import resolve_profile_keywords
 MAIN_PAGE_URL = "https://www.gprocurement.go.th/new_index.html"
 SEARCH_URL = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
 TARGET_STATUS = "หนังสือเชิญชวน/ประกาศเชิญชวน"
-SKIP_KEYWORDS_IN_PROJECT = ["ทางหลวง", "วิธีคัดเลือก", "บำรุงรักษา"]
+SKIP_KEYWORDS_IN_PROJECT = [
+    "ทางหลวง",
+    "วิธีคัดเลือก",
+    "บำรุงรักษา",
+    "วิธีเฉพาะเจาะจง",
+]
 NEXT_PAGE_SELECTOR = (
     "a:has-text('ถัดไป'), "
     "button:has-text('ถัดไป'), "
