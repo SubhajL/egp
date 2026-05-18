@@ -688,6 +688,11 @@ export default function BillingPage() {
       !selectedRecord.record.is_stale_unpaid &&
       selectedRecord.record.outstanding_balance !== "0.00"
     : false;
+  const canStartFreeTrial =
+    !isLoading &&
+    currentSubscription === null &&
+    records.length === 0 &&
+    staleHistoryRecords.length === 0;
 
   return (
     <>
@@ -770,25 +775,49 @@ export default function BillingPage() {
             onSubmit={(event) => void handleCreateRecord(event)}
             className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]"
           >
-            <div className="flex items-center justify-between gap-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h2 className="text-lg font-bold text-[var(--text-primary)]">สร้างรายการเรียกเก็บ</h2>
+                <p className="text-xs font-semibold uppercase tracking-wider text-primary">
+                  Manual billing
+                </p>
+                <h2 className="mt-1 text-lg font-bold text-[var(--text-primary)]">
+                  ร่างใบแจ้งหนี้ใหม่
+                </h2>
                 <p className="mt-1 text-sm text-[var(--text-muted)]">
-                  เริ่มจากร่างใบแจ้งหนี้ แล้วค่อยออกบิลและรอชำระตาม lifecycle จริง
+                  ใช้สำหรับออกบิลแพ็กเกจที่ต้องชำระ เลือกแผน ราคา และรอบบิลก่อนส่งให้ลูกค้าชำระ
                 </p>
               </div>
               <div className="flex items-center gap-3">
+                <span className="rounded-full bg-[var(--bg-surface-secondary)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                  Draft first
+                </span>
                 <StatusBadge state="draft" variant="billing" />
-                <button
-                  type="button"
-                  disabled={actionBusy}
-                  onClick={() => void handleStartFreeTrial()}
-                  className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  เริ่ม Free Trial
-                </button>
               </div>
             </div>
+
+            {canStartFreeTrial ? (
+              <div className="mt-5 rounded-2xl border border-primary/15 bg-primary/5 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-[var(--text-primary)]">
+                      ยังไม่มีแพ็กเกจใน tenant นี้?
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                      Free Trial เป็น flow เปิดสิทธิ์ทดลองใช้ 7 วันแบบมูลค่า 0 บาท
+                      แยกจากการออกบิลชำระเงินด้านล่าง
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={actionBusy}
+                    onClick={() => void handleStartFreeTrial()}
+                    className="rounded-xl border border-primary/30 bg-[var(--bg-surface)] px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    เริ่มทดลองใช้ 7 วัน
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-5 grid grid-cols-1 gap-4">
               <label className="text-sm text-[var(--text-secondary)]">

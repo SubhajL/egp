@@ -1000,3 +1000,62 @@ LOW
 ### Rollout Notes
 - Behavioral change is intentionally stricter: projects first observed outside invitation stage will no longer enter tracking, and projects without invitation-stage document evidence will not be revisited in later statuses.
 - No schema migration is required for this patch.
+
+
+## Implementation (2026-05-18 20:28:14 local) - billing manual invoice panel redesign
+
+### Goal
+- Redesign the left-column billing form so it reads as a manual invoice draft panel, not a mixed invoice/free-trial action panel.
+
+### What Changed
+- `apps/web/src/app/(app)/billing/page.tsx`
+  - Renamed the panel from generic `สร้างรายการเรียกเก็บ` to `ร่างใบแจ้งหนี้ใหม่`.
+  - Added a `Manual billing` eyebrow and `Draft first` pill to match the lifecycle/status style used elsewhere on the billing page.
+  - Removed the always-visible `เริ่ม Free Trial` button from the panel header.
+  - Preserved Free Trial functionality as a separate contextual callout shown only when the tenant has no current subscription and no billing records/history.
+- `apps/web/tests/e2e/billing-page.spec.ts`
+  - Added regression assertions that the manual invoice heading is visible and the old `เริ่ม Free Trial` header button is absent when an active Free Trial subscription already exists.
+
+### TDD Evidence
+- RED: `cd apps/web && npx playwright test tests/e2e/billing-page.spec.ts -g "billing page shows free-trial upgrade CTA"` failed because `ร่างใบแจ้งหนี้ใหม่` was not found in the old UI.
+- GREEN: `cd apps/web && npx playwright test tests/e2e/billing-page.spec.ts -g "billing page shows free-trial upgrade CTA"` passed after the redesign.
+
+### Tests Run
+- `cd apps/web && npx playwright test tests/e2e/billing-page.spec.ts -g "billing page shows free-trial upgrade CTA"` — passed.
+- `cd apps/web && npm run typecheck` — passed.
+- `cd apps/web && npm run lint` — passed, with Next.js deprecation notice for `next lint`.
+
+### Wiring Verification
+- The redesigned copy and conditional Free Trial callout are wired directly in the existing `/billing` route component.
+- Existing handlers remain connected: `handleCreateRecord` still owns manual invoice creation; `handleStartFreeTrial` is still available only through the new contextual empty-tenant callout.
+
+### Review (2026-05-18 20:28:14 local) - working tree
+
+#### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run: `git diff --stat`, targeted `git diff`, targeted Playwright test, `npm run typecheck`, `npm run lint`
+
+#### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+#### Open Questions / Assumptions
+- Assumption: Free Trial should not be offered from this panel once a tenant already has any current subscription, including active Free Trial.
+- Auggie semantic retrieval was attempted but returned HTTP 429, so review used direct file inspection and exact-string searches.
+
+#### Recommended Tests / Validation
+- Optional visual smoke in browser at `/billing` to confirm the card rhythm matches the surrounding billing panels at mobile and desktop widths.
+
+#### Rollout Notes
+- No API or data-model changes. This is a frontend presentation/visibility change only.
