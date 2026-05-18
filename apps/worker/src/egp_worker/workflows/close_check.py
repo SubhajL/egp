@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import check_winner_closure
+from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.enums import ProjectState
 from egp_shared_types.project_events import CloseCheckProjectEvent
+from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_close_check import crawl_live_close_check
 from egp_worker.json_safety import make_json_safe
 from egp_worker.project_event_sink import (
@@ -28,6 +32,16 @@ if TYPE_CHECKING:
 class CloseCheckWorkflowResult:
     run: CrawlRunDetail
     updated_projects: list[ProjectRecord]
+
+
+REVISITABLE_PROJECT_STATES = [
+    ProjectState.DISCOVERED,
+    ProjectState.OPEN_INVITATION,
+    ProjectState.OPEN_CONSULTING,
+    ProjectState.OPEN_PUBLIC_HEARING,
+    ProjectState.TOR_DOWNLOADED,
+    ProjectState.PRELIM_PRICING_SEEN,
+]
 
 
 def _task_safe_payload(observation: dict[str, object]) -> dict[str, object]:
@@ -51,6 +65,13 @@ def run_close_check_workflow(
     live_projects: list[dict[str, object]] | None = None,
     live_observation_sweep: Callable[[list[dict[str, object]]], list[dict[str, object]]]
     | None = None,
+    live_include_documents: bool = True,
+    artifact_root: Path | str = Path("artifacts"),
+    storage_credentials_secret: str | None = None,
+    google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
+    google_drive_client: object | None = None,
+    onedrive_oauth_config: OneDriveOAuthConfig | None = None,
+    onedrive_client: object | None = None,
 ) -> CloseCheckWorkflowResult:
     if run_repository is None:
         if database_url is None:
@@ -89,14 +110,20 @@ def run_close_check_workflow(
             }
             for project in project_repository.list_projects(
                 tenant_id=tenant_id,
-                project_states=[ProjectState.OPEN_INVITATION, ProjectState.OPEN_CONSULTING],
+                project_states=REVISITABLE_PROJECT_STATES,
+                has_invitation_stage_documents=True,
                 limit=200,
             ).items
         ]
 
     resolved_observations = list(observations)
     if not resolved_observations and live and live_observation_sweep is None:
-        resolved_observations = list(crawl_live_close_check(projects=resolved_live_projects))
+        resolved_observations = list(
+            crawl_live_close_check(
+                projects=resolved_live_projects,
+                include_documents=live_include_documents,
+            )
+        )
     elif live_observation_sweep is not None and not resolved_observations:
         resolved_observations = list(live_observation_sweep(resolved_live_projects))
 
@@ -118,12 +145,29 @@ def run_close_check_workflow(
                     payload=safe_observation,
                 )
                 run_repository.mark_task_started(task.id)
+                downloaded_documents = list(observation.get("downloaded_documents") or [])
+                if downloaded_documents:
+                    ingest_downloaded_documents(
+                        artifact_root=artifact_root,
+                        database_url=database_url,
+                        storage_credentials_secret=storage_credentials_secret,
+                        google_drive_oauth_config=google_drive_oauth_config,
+                        google_drive_client=google_drive_client,
+                        onedrive_oauth_config=onedrive_oauth_config,
+                        onedrive_client=onedrive_client,
+                        tenant_id=tenant_id,
+                        project_id=str(observation["project_id"]),
+                        downloaded_documents=downloaded_documents,
+                    )
                 closed_reason = check_winner_closure(
                     str(observation.get("source_status_text") or "")
                 )
                 if closed_reason is None:
+                    result_json: dict[str, object] = {"matched": False}
+                    if downloaded_documents:
+                        result_json["document_count"] = len(downloaded_documents)
                     run_repository.mark_task_finished(
-                        task.id, status="skipped", result_json={"matched": False}
+                        task.id, status="skipped", result_json=result_json
                     )
                     continue
                 project = project_event_sink.record_close_check(
@@ -142,6 +186,11 @@ def run_close_check_workflow(
                     result_json={
                         "project_id": project.id,
                         "next_state": project.project_state.value,
+                        **(
+                            {"document_count": len(downloaded_documents)}
+                            if downloaded_documents
+                            else {}
+                        ),
                     },
                 )
                 updated_projects.append(project)

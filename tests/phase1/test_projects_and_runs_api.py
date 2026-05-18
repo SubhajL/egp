@@ -579,6 +579,44 @@ def test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects(
     assert notifications[0].notification_type is NotificationType.NEW_PROJECT
 
 
+def test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-project-ingest-late.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+        )
+    )
+    _seed_active_subscription(client)
+
+    response = client.post(
+        "/internal/worker/projects/discover",
+        headers=_internal_worker_headers(),
+        json={
+            "tenant_id": TENANT_ID,
+            "run_id": str(uuid4()),
+            "keyword": "โรงพยาบาล",
+            "project_number": "EGP-2026-LATE",
+            "search_name": "ระบบข้อมูลกลาง",
+            "detail_name": "โครงการระบบข้อมูลกลาง",
+            "project_name": "โครงการระบบข้อมูลกลาง",
+            "organization_name": "กรมตัวอย่าง",
+            "proposal_submission_date": "2026-05-01",
+            "budget_amount": "1500000.00",
+            "procurement_type": ProcurementType.SERVICES.value,
+            "project_state": ProjectState.PRELIM_PRICING_SEEN.value,
+            "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "discovery must originate from invitation stage"
+
+
 def test_project_ingest_close_check_endpoint_transitions_project_state(
     tmp_path,
 ) -> None:

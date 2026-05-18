@@ -574,6 +574,7 @@ class TestConstants:
 
     def test_skip_keywords_include_maintenance(self):
         assert "บำรุงรักษา" in SKIP_KEYWORDS_IN_PROJECT
+        assert "วิธีเฉพาะเจาะจง" in SKIP_KEYWORDS_IN_PROJECT
 
 
 # ---------------------------------------------------------------------------

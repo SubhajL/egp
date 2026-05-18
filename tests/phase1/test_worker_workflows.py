@@ -354,6 +354,56 @@ def test_close_check_workflow_skips_non_matching_status_without_sink_call(
     assert run_detail.tasks[0].result_json == {"matched": False}
 
 
+def test_close_check_workflow_ingests_revisited_documents_without_close_match(
+    monkeypatch, tmp_path
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    sink = FakeProjectEventSink()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.close_check.ingest_downloaded_documents",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+
+    result = run_close_check_workflow(
+        database_url=database_url,
+        tenant_id=TENANT_ID,
+        project_event_sink=sink,
+        artifact_root=tmp_path / "artifacts",
+        observations=[
+            {
+                "project_id": "11111111-1111-1111-1111-111111111112",
+                "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+                "downloaded_documents": [
+                    {
+                        "file_name": "mid-price.pdf",
+                        "file_bytes": b"mid-price",
+                        "source_label": "ประกาศราคากลาง",
+                        "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+                    }
+                ],
+            }
+        ],
+    )
+
+    run_repository = SqlRunRepository(database_url=database_url, bootstrap_schema=False)
+    run_detail = run_repository.get_run_detail(
+        tenant_id=TENANT_ID, run_id=result.run.run.id
+    )
+
+    assert sink.close_check_events == []
+    assert captured["tenant_id"] == TENANT_ID
+    assert captured["project_id"] == "11111111-1111-1111-1111-111111111112"
+    assert captured["downloaded_documents"][0]["source_label"] == "ประกาศราคากลาง"
+    assert run_detail is not None
+    assert run_detail.tasks[0].status == "skipped"
+    assert run_detail.tasks[0].result_json == {
+        "matched": False,
+        "document_count": 1,
+    }
+
+
 def test_discover_workflow_uses_service_backed_sink_for_notifications(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
     repository, dispatcher = _notification_dispatcher(database_url)

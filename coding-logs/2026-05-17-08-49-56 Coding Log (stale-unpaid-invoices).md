@@ -841,3 +841,162 @@ LOW
 ### Rollout Notes
 - Frontend-only change; no schema or API migration risk.
 - An already-open tab on the old frontend bundle can remain stale until refresh, but new sessions after deploy will self-refresh after completed runs.
+
+## Review (2026-05-18 18:09:24 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working-tree
+- Commands Run: `git status --porcelain=v1`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --name-only`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`, targeted `git diff -- <paths>`, `./.venv/bin/ruff check apps/worker packages test_egp_crawler.py tests/phase1/test_worker_browser_discovery.py tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py`, `./.venv/bin/python -m compileall apps/worker/src packages`, `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py test_egp_crawler.py -q`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumed live close-check is the intended recurring revisit path for tracked projects that remain non-closed.
+- Auggie semantic retrieval was unavailable in-session (HTTP 429), so review used direct file inspection plus targeted searches.
+
+### Recommended Tests / Validation
+- Keep the added revisit tests as regression coverage for later-stage document collection and non-closing document ingest.
+- Consider a future live-browser smoke pass against e-GP because the new path now reopens detail pages during close-check sweeps.
+
+### Rollout Notes
+- The change increases work done during live close-check runs because tracked revisitable projects now reopen their detail pages and attempt document collection.
+- Document persistence remains content-deduplicated by the existing ingest path, so revisits should not create duplicate stored files for identical bytes.
+
+## Implementation Summary (2026-05-18 18:09:24 +07)
+
+### Goal
+- Add `วิธีเฉพาะเจาะจง` to crawler blacklists and ensure already-tracked projects can revisit detail pages to collect available documents such as `ประกาศราคากลาง` even after advancing beyond the initial invitation stage.
+
+### What Changed
+- `apps/worker/src/egp_worker/browser_discovery.py`: added `วิธีเฉพาะเจาะจง` to the modern project-name blacklist.
+- `egp_crawler.py`: mirrored the new blacklist term in the legacy fallback crawler.
+- `apps/worker/src/egp_worker/browser_close_check.py`: extended live close-check revisits so matched tracked projects can reopen detail pages, collect documents, and return to the search page afterward.
+- `apps/worker/src/egp_worker/workflows/close_check.py`: broadened revisitable states to include discovered/public-hearing/TOR-downloaded/prelim-pricing projects and ingests revisited documents even when no close transition occurs.
+- `apps/worker/src/egp_worker/main.py`: wired close-check worker payloads to pass document-revisit options and artifact storage parameters.
+- Added regression coverage in `tests/phase1/test_worker_browser_discovery.py`, `tests/phase1/test_worker_live_discovery.py`, `tests/phase1/test_worker_workflows.py`, and `test_egp_crawler.py`.
+
+### TDD Evidence
+- RED: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k "specific_method_projects"` failed because `วิธีเฉพาะเจาะจง` projects were still processed.
+- RED: `./.venv/bin/python -m pytest test_egp_crawler.py -q -k "skip_keywords_include_maintenance"` failed because the legacy blacklist lacked `วิธีเฉพาะเจาะจง`.
+- RED: `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py -q -k "live_document_revisit or loads_open_projects_for_live_sweep_when_needed or ingests_revisited_documents_without_close_match"` failed because close-check neither revisited later states nor ingested revisit documents.
+- GREEN: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k "specific_method_projects" && ./.venv/bin/python -m pytest test_egp_crawler.py -q -k "skip_keywords_include_maintenance"`.
+- GREEN: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k "specific_method_projects or document_revisit_collects_documents_after_prelim_status" && ./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py -q -k "live_document_revisit or loads_open_projects_for_live_sweep_when_needed or ingests_revisited_documents_without_close_match" && ./.venv/bin/python -m pytest test_egp_crawler.py -q -k "skip_keywords_include_maintenance"`.
+
+### Tests Run
+- `./.venv/bin/ruff check apps/worker packages test_egp_crawler.py tests/phase1/test_worker_browser_discovery.py tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py` → passed.
+- `./.venv/bin/python -m compileall apps/worker/src packages` → passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py test_egp_crawler.py -q` → `285 passed`.
+
+### Wiring Verification
+- `apps/worker/src/egp_worker/main.py` now passes `live_include_documents`, `artifact_root`, and storage credentials into `run_close_check_workflow`.
+- `run_close_check_workflow` passes `include_documents=True` into `crawl_live_close_check` by default for live sweeps.
+- `crawl_live_close_check` now calls `collect_downloaded_documents` after reopening matched project detail pages, and the workflow feeds those artifacts into `ingest_downloaded_documents`.
+
+### Behavior / Risk Notes
+- Revisit sweeps now cover `discovered`, `open_invitation`, `open_consulting`, `open_public_hearing`, `tor_downloaded`, and `prelim_pricing_seen` states instead of only the earliest open states.
+- Revisited document ingestion is intentionally fail-closed at the task level: if document persistence raises, the close-check task is marked failed rather than silently claiming success.
+- Existing document dedupe remains the safety valve for repeated revisits of unchanged files.
+- Auggie semantic retrieval was unavailable (HTTP 429), so implementation used direct inspection and targeted exact-string searches per fallback policy.
+
+### Follow-ups / Known Gaps
+- A live-browser smoke run against the real e-GP site would still be valuable to confirm the detail-page reopen + return-to-search loop under production DOM timing.
+- The active branch is `main`; per repo guidance, move this work to a feature branch before committing or opening a PR.
+
+## Implementation Summary (2026-05-18 18:39:44 +07:00)
+
+### Goal
+Align project lifecycle handling with the clarified business rule: discover/download during `ประกาศเชิญชวน`, ignore projects first seen after that stage, and only revisit later statuses for projects with invitation-stage document evidence.
+
+### What changed
+- `packages/crawler-core/src/egp_crawler_core/invitation_rules.py`, `packages/crawler-core/src/egp_crawler_core/__init__.py`
+  - Added reusable invitation-stage status detection.
+- `apps/worker/src/egp_worker/workflows/discover.py`, `apps/worker/src/egp_worker/main.py`
+  - Made live discovery collect documents by default.
+  - Ignored discovery payloads that do not originate from invitation stage and exposed an `ignored_late_stage_projects` run-summary counter.
+- `packages/domain/src/egp_domain/project_ingest.py`, `apps/api/src/egp_api/routes/project_ingest.py`
+  - Added a fail-closed ingest guard and translated invalid direct worker-ingest attempts into HTTP 422.
+- `packages/db/src/egp_db/repositories/project_queries.py`, `apps/worker/src/egp_worker/workflows/close_check.py`
+  - Added invitation-stage document evidence filtering and used it when selecting projects for later-status live revisits.
+- Tests updated in `tests/phase1/test_worker_live_discovery.py`, `tests/phase1/test_project_and_run_persistence.py`, and `tests/phase1/test_projects_and_runs_api.py`.
+- Existing related work already present on the branch continues to add later-status document revisits in close-check flows and skip specific-method projects during discovery.
+
+### TDD evidence
+- RED command:
+  - `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py::test_run_discover_workflow_downloads_live_browser_documents_by_default tests/phase1/test_worker_live_discovery.py::test_run_discover_workflow_ignores_projects_first_seen_after_invitation_stage tests/phase1/test_worker_live_discovery.py::test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed tests/phase1/test_worker_live_discovery.py::test_run_worker_job_defaults_live_include_documents_to_true_for_discover tests/phase1/test_project_and_run_persistence.py::test_list_projects_can_filter_to_invitation_stage_document_evidence tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery -q`
+  - Key failures: discovery still deferred documents by default, later-stage payloads were still persisted, close-check did not request invitation-stage evidence, discover worker jobs defaulted to `False`, the repository lacked the new filter, and API ingest accepted late-stage discovery.
+- GREEN commands:
+  - `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py::test_run_discover_workflow_uses_metadata_only_browser_discovery_for_live_runs tests/phase1/test_worker_live_discovery.py::test_run_discover_workflow_downloads_live_browser_documents_by_default tests/phase1/test_worker_live_discovery.py::test_run_discover_workflow_ignores_projects_first_seen_after_invitation_stage tests/phase1/test_worker_live_discovery.py::test_run_close_check_workflow_loads_open_projects_for_live_sweep_when_needed tests/phase1/test_worker_live_discovery.py::test_run_worker_job_defaults_live_include_documents_to_true_for_discover tests/phase1/test_project_and_run_persistence.py::test_list_projects_can_filter_to_invitation_stage_document_evidence tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery -q`
+  - `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py tests/phase1/test_worker_browser_discovery.py tests/phase1/test_project_and_run_persistence.py tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery -q`
+
+### Tests run
+- `./.venv/bin/ruff check apps/api apps/worker packages` → passed
+- `./.venv/bin/python -m compileall apps packages` → passed
+- Focused regression suite above → 149 passed
+- Broader API slice `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py tests/phase1/test_project_and_run_persistence.py tests/phase1/test_projects_and_runs_api.py -q` surfaced two unrelated pre-existing API test failures around `/v1/runs` creation/listing that are outside this change set.
+
+### Wiring verification
+- Discover CLI payload → `apps/worker/src/egp_worker/main.py::run_worker_job()` → `run_discover_workflow(... live_include_documents=True)`.
+- Live discovery callback → `run_discover_workflow()` → late-stage guard before event emission / document ingest.
+- Internal worker API route → `project_ingest.ingest_discovered_project()` → `ProjectIngestService.ingest_discovered_project()` guard.
+- Later-stage revisit selection → `run_close_check_workflow()` → `SqlProjectRepository.list_projects(... has_invitation_stage_documents=True)`.
+
+### Behavior changes and risk notes
+- Fail-closed: discovery payloads without invitation-stage status evidence are now ignored/rejected instead of entering the project set.
+- Later-status follow-up now depends on persisted invitation-stage document evidence (`documents.source_status_text` containing `ประกาศเชิญชวน`). Existing valid invitation-stage documents created through the worker satisfy this path.
+- Auggie semantic retrieval was unavailable due repeated HTTP 429 responses, so the work used direct file inspection plus exact-string search fallback.
+
+### Follow-ups / known gaps
+- Historical documents with missing or malformed `source_status_text` will not qualify for later-status revisit selection until backfilled or handled by a future reconciliation job.
+- The unrelated `/v1/runs` API test failures should be investigated separately before relying on the full phase1 API suite as a branch gate.
+
+## Review (2026-05-18 18:39:44 +07:00) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run:
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`
+  - targeted `git diff -- <path>` inspection for changed worker/domain/api/repository files
+  - `./.venv/bin/python -m pytest tests/phase1/test_worker_live_discovery.py tests/phase1/test_worker_workflows.py tests/phase1/test_worker_browser_discovery.py tests/phase1/test_project_and_run_persistence.py tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_upserts_and_notifies_new_projects tests/phase1/test_projects_and_runs_api.py::test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery -q`
+  - `./.venv/bin/ruff check apps/api apps/worker packages`
+  - `./.venv/bin/python -m compileall apps packages`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- The later-status eligibility rule intentionally uses persisted invitation-stage document evidence, not merely “project was once discovered at invitation stage.”
+- Historical documents missing `source_status_text` are treated as not proven eligible; that is a deliberate fail-closed choice, but it may need a separate backfill/reconciliation path if old data exists.
+- Auggie semantic retrieval was unavailable during review due repeated HTTP 429 responses, so review relied on direct inspection plus exact-string search fallback.
+
+### Recommended Tests / Validation
+- Keep the focused 149-test regression slice as the minimum gate for this behavior.
+- If historical data migration/backfill is introduced later, add an integration test proving qualifying old projects still enter the close-check sweep after reconciliation.
+
+### Rollout Notes
+- Behavioral change is intentionally stricter: projects first observed outside invitation stage will no longer enter tracking, and projects without invitation-stage document evidence will not be revisited in later statuses.
+- No schema migration is required for this patch.

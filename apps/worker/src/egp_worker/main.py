@@ -84,7 +84,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             live=bool(payload.get("live", False)),
             profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
             browser_settings=_build_browser_settings(payload),
-            live_include_documents=bool(payload.get("live_include_documents", False)),
+            live_include_documents=bool(payload.get("live_include_documents", True)),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
             storage_credentials_secret=(
                 str(payload["storage_credentials_secret"])
@@ -109,6 +109,13 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             observations=list(payload.get("observations") or []),
             trigger_type=str(payload.get("trigger_type") or "manual"),
             live=bool(payload.get("live", False)),
+            live_include_documents=bool(payload.get("live_include_documents", True)),
+            artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
+            storage_credentials_secret=(
+                str(payload["storage_credentials_secret"])
+                if payload.get("storage_credentials_secret") is not None
+                else None
+            ),
         )
         return {
             "command": command,

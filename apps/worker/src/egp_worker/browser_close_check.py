@@ -17,7 +17,9 @@ from .browser_discovery import (
     NEXT_PAGE_SELECTOR,
     SEARCH_URL,
     BrowserDiscoverySettings,
+    _build_source_page_text,
     _logged_sleep,
+    _open_project_from_results_cell,
     click_search_button,
     clear_search,
     connect_playwright_to_chrome,
@@ -31,12 +33,14 @@ from .browser_discovery import (
     wait_for_results_page_change,
     wait_for_results_ready,
 )
+from .browser_downloads import collect_downloaded_documents
 
 
 def crawl_live_close_check(
     *,
     projects: list[dict[str, object]],
     settings: BrowserDiscoverySettings | None = None,
+    include_documents: bool = False,
 ) -> list[dict[str, object]]:
     resolved_settings = settings or BrowserDiscoverySettings()
     if not projects:
@@ -66,7 +70,10 @@ def crawl_live_close_check(
             if index > 0:
                 clear_search(page, resolved_settings)
             observation = _search_and_observe_project(
-                page, project=project, settings=resolved_settings
+                page,
+                project=project,
+                settings=resolved_settings,
+                include_documents=include_documents,
             )
             if observation is not None:
                 observations.append(observation)
@@ -76,7 +83,11 @@ def crawl_live_close_check(
 
 
 def _search_and_observe_project(
-    page, *, project: dict[str, object], settings: BrowserDiscoverySettings
+    page,
+    *,
+    project: dict[str, object],
+    settings: BrowserDiscoverySettings,
+    include_documents: bool = False,
 ):
     term = str(project.get("project_number") or project.get("project_name") or "").strip()
     if not term:
@@ -97,9 +108,18 @@ def _search_and_observe_project(
 
     page_number = 1
     while page_number <= settings.max_pages_per_keyword:
-        match = _find_matching_observation_on_page(page, project=project)
+        match = _find_matching_result_on_page(page, project=project)
         if match is not None:
-            return match
+            observation, cells = match
+            if include_documents:
+                observation = _collect_documents_for_observation(
+                    page,
+                    project=project,
+                    observation=observation,
+                    cells=cells,
+                    settings=settings,
+                )
+            return observation
         previous_marker = get_results_page_marker(page)
         next_button = page.query_selector(NEXT_PAGE_SELECTOR)
         if not (next_button and next_button.is_visible()):
@@ -145,6 +165,13 @@ def _search_and_observe_project(
 def _find_matching_observation_on_page(
     page, *, project: dict[str, object]
 ) -> dict[str, object] | None:
+    match = _find_matching_result_on_page(page, project=project)
+    return match[0] if match is not None else None
+
+
+def _find_matching_result_on_page(
+    page, *, project: dict[str, object]
+) -> tuple[dict[str, object], list] | None:
     expected_number = str(project.get("project_number") or "").strip()
     expected_name = str(project.get("project_name") or "").strip()
     for row in get_results_rows(page):
@@ -154,27 +181,74 @@ def _find_matching_observation_on_page(
         search_name = cells[2].inner_text().strip()
         status_text = cells[4].inner_text().strip()
         if expected_number and expected_number in row.inner_text():
-            return {
-                "project_id": str(project["project_id"]),
-                "source_status_text": status_text,
-                "search_name": search_name,
-                "raw_snapshot": {
-                    "project_number": expected_number,
-                    "project_name": expected_name,
-                    "search_name": search_name,
-                    "source_status_text": status_text,
-                },
-            }
+            return (
+                _build_observation(
+                    project=project,
+                    expected_number=expected_number,
+                    expected_name=expected_name,
+                    search_name=search_name,
+                    status_text=status_text,
+                ),
+                cells,
+            )
         if expected_name and expected_name in search_name:
-            return {
-                "project_id": str(project["project_id"]),
-                "source_status_text": status_text,
-                "search_name": search_name,
-                "raw_snapshot": {
-                    "project_number": expected_number,
-                    "project_name": expected_name,
-                    "search_name": search_name,
-                    "source_status_text": status_text,
-                },
-            }
+            return (
+                _build_observation(
+                    project=project,
+                    expected_number=expected_number,
+                    expected_name=expected_name,
+                    search_name=search_name,
+                    status_text=status_text,
+                ),
+                cells,
+            )
     return None
+
+
+def _build_observation(
+    *,
+    project: dict[str, object],
+    expected_number: str,
+    expected_name: str,
+    search_name: str,
+    status_text: str,
+) -> dict[str, object]:
+    return {
+        "project_id": str(project["project_id"]),
+        "source_status_text": status_text,
+        "search_name": search_name,
+        "raw_snapshot": {
+            "project_number": expected_number,
+            "project_name": expected_name,
+            "search_name": search_name,
+            "source_status_text": status_text,
+        },
+    }
+
+
+def _collect_documents_for_observation(
+    page,
+    *,
+    project: dict[str, object],
+    observation: dict[str, object],
+    cells: list,
+    settings: BrowserDiscoverySettings,
+) -> dict[str, object]:
+    if len(cells) < 6 or not _open_project_from_results_cell(page, cells[5]):
+        return {**observation, "downloaded_documents": []}
+    try:
+        downloaded_documents = collect_downloaded_documents(
+            page,
+            source_status_text=str(observation.get("source_status_text") or ""),
+            source_page_text=_build_source_page_text(page),
+            project_state=(
+                str(project["project_state"])
+                if project.get("project_state") is not None
+                else None
+            ),
+        )
+        return {**observation, "downloaded_documents": downloaded_documents}
+    finally:
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
+        _logged_sleep(1)
+        wait_for_cloudflare(page, settings.cloudflare_timeout_ms)

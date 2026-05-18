@@ -76,24 +76,27 @@ def ingest_discovered_project(
     service = _service_from_request(request)
     require_internal_worker_token(request)
     resolved_tenant_id = normalize_uuid_string(payload.tenant_id)
-    result = service.ingest_discovered_project(
-        event=DiscoveredProjectEvent(
-            tenant_id=resolved_tenant_id,
-            run_id=payload.run_id,
-            keyword=payload.keyword,
-            project_number=payload.project_number,
-            search_name=payload.search_name,
-            detail_name=payload.detail_name,
-            project_name=payload.project_name,
-            organization_name=payload.organization_name,
-            proposal_submission_date=payload.proposal_submission_date,
-            budget_amount=payload.budget_amount,
-            procurement_type=payload.procurement_type,
-            project_state=payload.project_state,
-            source_status_text=payload.source_status_text,
-            raw_snapshot=payload.raw_snapshot,
+    try:
+        result = service.ingest_discovered_project(
+            event=DiscoveredProjectEvent(
+                tenant_id=resolved_tenant_id,
+                run_id=payload.run_id,
+                keyword=payload.keyword,
+                project_number=payload.project_number,
+                search_name=payload.search_name,
+                detail_name=payload.detail_name,
+                project_name=payload.project_name,
+                organization_name=payload.organization_name,
+                proposal_submission_date=payload.proposal_submission_date,
+                budget_amount=payload.budget_amount,
+                procurement_type=payload.procurement_type,
+                project_state=payload.project_state,
+                source_status_text=payload.source_status_text,
+                raw_snapshot=payload.raw_snapshot,
+            )
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
     return _serialize_discover_result(result)
 

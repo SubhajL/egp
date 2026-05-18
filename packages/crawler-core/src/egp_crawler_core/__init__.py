@@ -17,6 +17,7 @@ from .discovery_authorization import (
     SubscriptionLike,
 )
 from .document_hasher import hash_file
+from .invitation_rules import is_invitation_stage_status
 from .project_lifecycle import transition_state
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "EffectiveDiscoveryEntitlement",
     "generate_canonical_id",
     "hash_file",
+    "is_invitation_stage_status",
     "normalize_keyword",
     "require_discovery_authorization",
     "resolve_effective_discovery_entitlement",

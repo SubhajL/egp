@@ -14,6 +14,7 @@ from egp_crawler_core.discovery_authorization import (
     require_discovery_authorization,
     resolve_effective_discovery_entitlement,
 )
+from egp_crawler_core.invitation_rules import is_invitation_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.billing_repo import create_billing_repository
@@ -163,7 +164,7 @@ def run_discover_workflow(
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
     browser_settings: BrowserDiscoverySettings | None = None,
-    live_include_documents: bool = False,
+    live_include_documents: bool = True,
     artifact_root: Path | str = Path("artifacts"),
     storage_credentials_secret: str | None = None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None = None,
@@ -207,12 +208,15 @@ def run_discover_workflow(
         run = run_repository.mark_run_started(run_id)
     persisted_projects: list[ProjectRecord] = []
     persisted_project_keys: set[str] = set()
+    ignored_late_stage_projects = 0
     error_count = 0
     run_level_error: str | None = None
     live_progress: dict[str, object] | None = None
 
     def _current_summary() -> dict[str, object]:
         summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
+        if ignored_late_stage_projects:
+            summary["ignored_late_stage_projects"] = ignored_late_stage_projects
         if live_progress is not None:
             summary["live_progress"] = live_progress
         return summary
@@ -229,7 +233,23 @@ def run_discover_workflow(
         return str(discovered.get("project_number") or discovered["project_name"]).casefold()
 
     def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
-        nonlocal error_count, run_level_error
+        nonlocal error_count, ignored_late_stage_projects, run_level_error
+        source_status_text = str(discovered.get("source_status_text") or "")
+        if not is_invitation_stage_status(source_status_text):
+            ignored_late_stage_projects += 1
+            logger.info(
+                "Ignored discovery payload outside invitation stage for %s",
+                discovered.get("project_number") or discovered.get("project_name"),
+                extra={
+                    "egp_event": "late_stage_discovery_ignored",
+                    "tenant_id": tenant_id,
+                    "keyword": str(discovered.get("keyword") or keyword),
+                    "project_number": discovered.get("project_number"),
+                    "project_name": discovered.get("project_name"),
+                    "source_status_text": source_status_text,
+                },
+            )
+            return None
         project_key = _discovered_project_key(discovered)
         if project_key in persisted_project_keys:
             return None
