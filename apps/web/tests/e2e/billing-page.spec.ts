@@ -503,6 +503,8 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
 
   await page.goto("/billing");
 
+  await expect(page.getByText("ร่างใบแจ้งหนี้ใหม่", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "เริ่ม Free Trial" })).toHaveCount(0);
   await expect(page.getByText("อัปเกรดจาก Free Trial", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
   await expect(
