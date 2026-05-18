@@ -544,3 +544,190 @@ LOW
   - PR #97 `CI Pipeline` failed every job in 1–2 seconds with empty `steps` arrays.
   - The latest `main` CI run shows the same pattern, so the gate is failing before jobs actually execute.
 - Per merge-train policy, I did **not** bypass required checks or merge while the required remote gate is red.
+
+
+## Implementation (2026-05-18 09:40:38 +07) - completed crawl visibility after first keyword
+
+### Goal
+- Investigate the reported “crawler stopped” behavior for `vbs.pod@gmail.com` after adding `ที่ปรึกษา`.
+- Fix the actual gap if the runtime was healthy but the product misrepresented the outcome.
+
+### Investigation result
+- Live PostgreSQL inspection showed the tenant had the expected active one-time pack, the old `ระบบสารสนเทศ` profile was inactive, and the new `ที่ปรึกษา` profile was active.
+- Discovery job `e4bff914-0d1b-4dea-b59d-9a672b6d263d` was dispatched.
+- Run `801359f0-536a-46b3-8693-d5e52d68faaa` finished successfully on May 18, 2026 with `projects_seen = 0` and `live_progress.stage = keyword_no_results`.
+- Therefore the worker did not stall; the Projects page hid the completed zero-result outcome, making success look like silence.
+
+### What changed
+- `apps/web/src/app/(app)/projects/page.tsx`
+  - keeps a latest completed-run card visible when there are no active runs;
+  - shows terminal progress such as `ไม่พบผลลัพธ์ · คำค้น "..."` instead of disappearing;
+  - starts manual run tracking after first-keyword creation, refetches runs immediately, and clears tracking once a terminal run is observed;
+  - uses status-aware labels/colors for succeeded, partial, and failed latest runs;
+  - updates the panel copy so it promises queue/active/completed state, not only active work.
+- `apps/web/tests/e2e/projects-page.spec.ts`
+  - added a regression proving that after the first keyword is created, a fast succeeded zero-result run remains visible to the user.
+
+### TDD evidence
+- Added/changed test: `projects page prompts for a new keyword before crawling an empty cycle` now asserts the completed zero-result run card.
+- RED command:
+  - `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`
+  - Failure: after first-keyword creation, the page showed only “waiting for worker” and never surfaced the completed run result.
+- GREEN commands:
+  - `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`
+  - `cd apps/web && npm run test:unit && npm run lint && npm run build && npm test`
+
+### Tests run
+- `cd apps/web && npm run typecheck` ✅
+- `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts` ✅
+- `cd apps/web && npm run test:unit && npm run lint && npm run build && npm test` ✅
+
+### Wiring verification
+- The first-keyword modal still calls `createRuleProfile()`; after success it now seeds the same tracking state used by manual recrawl and refetches the existing `/v1/runs` query.
+- The existing `RunDetailResponse` / `live_progress` contract is reused; no new backend API surface was introduced.
+
+### Behavior and risk notes
+- The system remains fail-closed for actual crawl authorization; this change only improves observability of successful/failed terminal outcomes.
+- The user will now see when e-GP returns zero results instead of interpreting a hidden completed run as a crawler stop.
+- Auggie semantic retrieval was attempted before editing and again returned HTTP 429, so the work used direct inspection plus live DB/runtime evidence.
+
+
+## Review (2026-05-18 09:41:43 +07) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: working-tree
+- Commands Run: `git status --short`, `git diff --stat`, targeted `git diff -- <paths>`, `npm run typecheck`, targeted Playwright, and the previously completed full web unit/lint/build/Playwright suite
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No remaining findings after review. During review I tightened two terminal-state edge cases before finalizing: first-keyword tracking now clears when a terminal run is observed, and terminal fallback copy now distinguishes succeeded / partial / failed instead of reusing an “already started” message for failed runs.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- The live `ที่ปรึกษา` run truly returned zero current e-GP results; this change does not alter crawler search semantics, only how the already-recorded outcome is surfaced.
+- I assume keeping the latest completed crawl visible on the Projects page is desirable product behavior for all tenants, not only one-time renewal flows.
+
+### Recommended Tests / Validation
+- Already run: web unit tests, typecheck, lint, production build, targeted Projects page Playwright suite, and full web Playwright suite.
+- If future UX work changes run visibility again, preserve a regression for `keyword_no_results` so zero-result success never becomes silent again.
+
+### Rollout Notes
+- No API or database migration is required; this is a web-only observability fix reusing existing run data.
+- Auggie review retrieval was attempted but returned HTTP 429, so review relied on direct diff inspection plus executed tests and live runtime evidence.
+
+
+## Implementation Summary (2026-05-18 16:33:04 +07) - transient no-results recovery
+
+### Goal
+- Investigate why tenant `vbs.pod@gmail.com` received a successful zero-project crawl for keyword `ที่ปรึกษา` despite a visible matching e-GP result.
+- Prevent the live worker from classifying a transient empty shell as a final no-results response before real rows finish loading.
+
+### What changed
+- `apps/worker/src/egp_worker/browser_discovery.py`
+  - Added `NO_RESULTS_STABLE_POLLS = 3` and changed `wait_for_results_ready()` so no-results must remain stable across three polls before being accepted; real rows still win immediately when they appear.
+  - Added `log_results_debug_snapshot(..., "keyword_no_results")` before emitting the terminal no-results progress event so future worker logs include table/header/row diagnostics instead of only a bare zero-result outcome.
+- `tests/phase1/test_worker_browser_discovery.py`
+  - Added a regression test proving that one transient no-results shell does not end readiness waiting when rows arrive on the next poll.
+
+### TDD evidence
+- RED: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive'`
+  - Failed because the old implementation returned after the first no-results shell (`assert len(row_checks) == 2`, observed `1`).
+- GREEN: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive or retries_same_keyword_no_results_shell_from_clean_search_page or get_results_rows_filters_placeholder_no_results_row'`
+  - Passed after requiring stable no-results detection.
+
+### Tests run
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive'` — RED, then fixed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive or retries_same_keyword_no_results_shell_from_clean_search_page or get_results_rows_filters_placeholder_no_results_row'` — 3 passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q` — 68 passed.
+- `./.venv/bin/ruff check apps/worker/src/egp_worker/browser_discovery.py tests/phase1/test_worker_browser_discovery.py` — passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py -q` — 11 passed.
+- `cd apps/web && npm run typecheck` — passed.
+- `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts` — 3 passed.
+
+### Wiring verification
+- `crawl_live_discovery()` calls `search_keyword()` and then `is_no_results_page()` before `_collect_keyword_projects()`; hardening `wait_for_results_ready()` changes the exact gate that prematurely skipped project collection for this tenant.
+- Existing worker log evidence for run `801359f0-536a-46b3-8693-d5e52d68faaa` showed only `keyword_start -> keyword_no_results` with no `page_scan_finished` or pagination events, confirming the bug was pre-pagination rather than a 15-page cap issue.
+
+### Behavior / risk notes
+- The fix intentionally adds up to roughly two extra seconds before accepting a true no-results page, favoring correctness over a slightly faster empty-search exit.
+- Future false no-results cases will now leave richer diagnostics in `worker.log` so we can distinguish table-shape problems from genuinely empty searches.
+- Auggie semantic retrieval was attempted first for this edit but returned HTTP 429, so the investigation used direct file inspection and exact-string searches as the documented fallback.
+
+
+## Implementation Summary (2026-05-18 16:36:26 +07) - restore post-search stabilization
+
+### Goal
+- Close the remaining gap after the first no-results fix by restoring the stabilization phase that existed in the legacy crawler but had been lost in the worker extraction.
+
+### What changed
+- `apps/worker/src/egp_worker/browser_discovery.py`
+  - Added `_wait_for_search_results_stable()` and wired it into `search_keyword()` after `wait_for_results_ready()`.
+  - The helper waits for late-arriving rows to become stable before the worker decides whether the keyword really has zero results.
+- `tests/phase1/test_worker_browser_discovery.py`
+  - Added a regression test covering rows that appear only after several initial empty polls.
+
+### TDD evidence
+- RED: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_search_results_stable_waits_for_late_rows'`
+  - Failed at collection because `_wait_for_search_results_stable` did not exist yet.
+- GREEN: `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive or wait_for_search_results_stable_waits_for_late_rows or retries_same_keyword_no_results_shell_from_clean_search_page'`
+  - Passed after adding and wiring the stabilization helper.
+
+### Tests run
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_search_results_stable_waits_for_late_rows'` — RED.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q -k 'wait_for_results_ready_waits_past_transient_no_results_shell_until_rows_arrive or wait_for_search_results_stable_waits_for_late_rows or retries_same_keyword_no_results_shell_from_clean_search_page'` — 3 passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q` — 69 passed.
+- `./.venv/bin/ruff check apps/worker/src/egp_worker/browser_discovery.py tests/phase1/test_worker_browser_discovery.py` — passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py -q` — 11 passed.
+
+### Wiring verification
+- The new helper is called directly from `search_keyword()` before the subsequent `is_no_results_page()` gate used by `crawl_live_discovery()`.
+- This restores the legacy crawler's post-search stabilization behavior in the modern worker path instead of relying only on the first render check.
+
+### Behavior / risk notes
+- True zero-result searches can now take several extra seconds to settle, but late-rendering real rows are materially less likely to be discarded as false no-results.
+- This change is deliberately conservative: it favors finding real projects over shaving a few seconds from empty searches.
+
+
+## Review (2026-05-18 16:37:00 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run: `git diff --name-only`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`, targeted `git diff` reads for worker/web changes, `./.venv/bin/python -m pytest tests/phase1/test_worker_browser_discovery.py -q`, `./.venv/bin/ruff check apps/worker/src/egp_worker/browser_discovery.py tests/phase1/test_worker_browser_discovery.py`, `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py -q`, `cd apps/web && npm run typecheck`, `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- The live e-GP site can transiently render an empty-state shell before rows arrive; the new worker behavior deliberately treats that as provisional until it has stayed empty across repeated polls and a stabilization window.
+- Real-site timing can still vary more than local tests model, but the worker now mirrors the older crawler's missing stabilization behavior and records a debug snapshot whenever it still concludes `keyword_no_results`.
+- Auggie retrieval was attempted for the review and returned HTTP 429, so the review used direct diff inspection and exact-string searches as fallback.
+
+### Recommended Tests / Validation
+- Re-run a manual crawl for `ที่ปรึกษา` under tenant `vbs.pod@gmail.com` after deploying this worker change and confirm the worker log shows `page_scan_finished` events plus discovery of the visible consulting project.
+- If the live site still reports zero projects, inspect the newly added `DEBUG [keyword_no_results]` lines in `worker.log`; they should now expose whether the procurement table is absent, empty, or malformed at decision time.
+
+### Rollout Notes
+- True zero-result searches now wait a few seconds longer before finishing; that is an intentional correctness tradeoff.
+- No schema or API changes are involved. The web observability changes remain backwards-compatible and make completed zero-result runs visible instead of disappearing from the page.

@@ -107,6 +107,10 @@ const EMPTY_RUNS_RESPONSE = {
   offset: 0,
 };
 
+const NO_RESULTS_RUN_FINISHED_AT = new Date(Date.now() + 60_000).toISOString();
+const NO_RESULTS_RUN_STARTED_AT = new Date(Date.now() + 30_000).toISOString();
+const NO_RESULTS_RUN_CREATED_AT = new Date(Date.now() + 15_000).toISOString();
+
 const ACTIVE_RUNS_RESPONSE = {
   runs: [
     {
@@ -147,6 +151,36 @@ const ACTIVE_RUNS_RESPONSE = {
           created_at: "2026-04-24T02:00:00Z",
         },
       ],
+    },
+  ],
+  total: 1,
+  limit: 10,
+  offset: 0,
+};
+
+const NO_RESULTS_RUNS_RESPONSE = {
+  runs: [
+    {
+      run: {
+        id: "run-no-results-1",
+        tenant_id: "tenant-1",
+        trigger_type: "manual",
+        status: "succeeded",
+        profile_id: "profile-1",
+        started_at: NO_RESULTS_RUN_STARTED_AT,
+        finished_at: NO_RESULTS_RUN_FINISHED_AT,
+        summary_json: {
+          projects_seen: 0,
+          live_progress: {
+            stage: "keyword_no_results",
+            keyword: "ที่ปรึกษา",
+            updated_at: NO_RESULTS_RUN_FINISHED_AT,
+          },
+        },
+        error_count: 0,
+        created_at: NO_RESULTS_RUN_CREATED_AT,
+      },
+      tasks: [],
     },
   ],
   total: 1,
@@ -227,6 +261,7 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
   page,
 }) => {
   let createdKeywordPayload: unknown = null;
+  let hasCreatedKeyword = false;
   let rulesRequestCount = 0;
 
   await page.route("**/v1/**", async (route) => {
@@ -279,9 +314,14 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
         await fulfillJson(route, 200, PROJECTS_RESPONSE);
         return;
       case "GET /v1/runs":
-        await fulfillJson(route, 200, EMPTY_RUNS_RESPONSE);
+        await fulfillJson(
+          route,
+          200,
+          hasCreatedKeyword ? NO_RESULTS_RUNS_RESPONSE : EMPTY_RUNS_RESPONSE,
+        );
         return;
       case "POST /v1/rules/profiles":
+        hasCreatedKeyword = true;
         createdKeywordPayload = request.postDataJSON();
         await fulfillJson(route, 200, {
           id: "profile-1",
@@ -309,6 +349,10 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
   await page.getByRole("button", { name: "บันทึกและเริ่มค้นหา" }).click();
 
   await expect(page.getByText("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "สถานะการ crawl ล่าสุด" })).toBeVisible();
+  await expect(page.getByText("ค้นหาเสร็จแล้ว 1 งานล่าสุด")).toBeVisible();
+  await expect(page.getByText('ไม่พบผลลัพธ์ · คำค้น "ที่ปรึกษา"')).toBeVisible();
+  await expect(page.getByText("ค้นพบแล้ว 0 โครงการ")).toBeVisible();
   expect(createdKeywordPayload).toMatchObject({
     name: "คำค้นหลัก",
     profile_type: "custom",
