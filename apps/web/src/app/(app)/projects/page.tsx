@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
@@ -244,6 +244,7 @@ export default function ProjectsPage() {
   const [keywordPromptError, setKeywordPromptError] = useState<string | null>(null);
   const [manualRecrawlTracking, setManualRecrawlTracking] =
     useState<ManualRecrawlTracking | null>(null);
+  const refreshedCompletedRunIdRef = useRef<string | null>(null);
   const rowsPerPage = 50;
   const { data: rulesData, isLoading: isRulesLoading } = useRules();
 
@@ -285,7 +286,7 @@ export default function ProjectsPage() {
     offset: (currentPage - 1) * rowsPerPage,
   };
 
-  const { data, isLoading, isError, error } = useProjects(projectQuery);
+  const { data, isLoading, isError, error, refetch: refetchProjects } = useProjects(projectQuery);
   const {
     data: runsData,
     error: runsError,
@@ -337,6 +338,17 @@ export default function ProjectsPage() {
     }
     setManualRecrawlTracking(null);
   }, [activeRuns.length, latestCompletedRunCard, manualRecrawlTracking]);
+
+  useEffect(() => {
+    if (
+      latestCompletedRunCard === null ||
+      refreshedCompletedRunIdRef.current === latestCompletedRunCard.id
+    ) {
+      return;
+    }
+    refreshedCompletedRunIdRef.current = latestCompletedRunCard.id;
+    void refetchProjects();
+  }, [latestCompletedRunCard, refetchProjects]);
 
   useEffect(() => {
     if (!waitingForManualRun && activeRuns.length === 0) {

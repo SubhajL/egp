@@ -731,3 +731,113 @@ LOW
 ### Rollout Notes
 - True zero-result searches now wait a few seconds longer before finishing; that is an intentional correctness tradeoff.
 - No schema or API changes are involved. The web observability changes remain backwards-compatible and make completed zero-result runs visible instead of disappearing from the page.
+
+
+## Implementation Summary (2026-05-18 17:27:37 +07) - refresh projects after completed crawl
+
+### Goal
+- Investigate why the projects page showed a completed crawl with 6 discovered projects while the table still displayed only the previous 14 projects for tenant `vbs.pod@gmail.com`.
+
+### Findings
+- Live database inspection showed the worker path is correct: run `24db26a5-ed9a-4292-a575-827c7f11b2e7` completed with `projects_seen: 6`, and the six `ที่ปรึกษา` projects were persisted as new project rows on 2026-05-18 between 17:12 and 17:17 Asia/Bangkok.
+- The stale behavior was frontend-only: the projects page kept polling run status, but once a run became terminal it did not refresh the projects query, so the table retained the pre-run cache until a manual reload.
+
+### What changed
+- `apps/web/src/app/(app)/projects/page.tsx`
+  - Added a one-time completed-run refresh guard using `useRef`.
+  - When a completed run card becomes visible, the page now refetches the active projects query once for that run ID so newly persisted projects appear without a manual reload.
+- `apps/web/tests/e2e/projects-page.spec.ts`
+  - Added an end-to-end regression test that starts from an old project list, surfaces a completed crawl, and verifies the table refreshes to show the newly discovered project and updated total.
+
+### TDD evidence
+- RED: `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts -g 'refreshes table after a completed crawl becomes visible'`
+  - Failed because the new project never appeared after the completed run became visible.
+- GREEN: `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts -g 'refreshes table after a completed crawl becomes visible'`
+  - Passed after wiring the completed-run project refetch.
+
+### Tests run
+- `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts -g 'refreshes table after a completed crawl becomes visible'` — RED, then GREEN.
+- `cd apps/web && npm run typecheck` — passed.
+- `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts` — 4 passed.
+- `cd apps/web && npm run test:unit` — 23 passed.
+- `cd apps/web && npm run lint` — passed.
+- `cd apps/web && npm run build` — passed.
+
+### Wiring verification
+- `useRuns()` already drove the completed-run card; the new effect hooks that same terminal card to `refetchProjects()` from the active `useProjects(projectQuery)` query.
+- The refresh is guarded by completed run ID, so a visible terminal card does not trigger an endless refetch loop.
+
+### Behavior / risk notes
+- Users who remain on the projects page during a crawl now see the project table catch up automatically when the run completes.
+- This is intentionally UI-local; no API or persistence semantics changed.
+- Auggie semantic retrieval was attempted first for this edit but returned HTTP 429, so the investigation used direct file inspection and exact-string searches as documented fallback.
+
+
+## Review (2026-05-18 17:28:10 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run: targeted `git diff --stat`, targeted diff reads for `apps/web/src/app/(app)/projects/page.tsx` and `apps/web/tests/e2e/projects-page.spec.ts`, `cd apps/web && npm run typecheck`, `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`, `cd apps/web && npm run test:unit`, `cd apps/web && npm run lint`, `cd apps/web && npm run build`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- The intended behavior is that a completed crawl refreshes the currently visible project list once; changing filters/pages already creates a new React Query key and fetches independently.
+- The terminal-run refresh is guarded by run ID to avoid a refetch loop while the completed run card remains visible.
+- Auggie retrieval was attempted for review and returned HTTP 429, so this review used direct diff inspection and exact-string searches as fallback.
+
+### Recommended Tests / Validation
+- The added Playwright case covers the previously missing path: old project list -> completed run visible -> table refreshes to updated project list.
+- Manual browser validation for `vbs.pod@gmail.com`: reload `/projects` and confirm total changes from 14 to 20 and the newly crawled `ที่ปรึกษา` projects appear.
+
+### Rollout Notes
+- Frontend-only change; no schema or API compatibility impact.
+- Users with an already stale open tab still need one reload until this frontend change is deployed; after deployment, future terminal runs will self-refresh the table.
+
+
+## Review (2026-05-18 17:43:59 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree
+- Commands Run: `git diff --name-only`, `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`, targeted `git diff` reads for `apps/web/src/app/(app)/projects/page.tsx` and `apps/web/tests/e2e/projects-page.spec.ts`, `cd apps/web && npm run typecheck`, `cd apps/web && npx playwright test tests/e2e/projects-page.spec.ts`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- The intended refresh scope is the currently visible `projectQuery`; filter/page changes already use separate React Query keys and will fetch normally.
+- The one-time guard by completed run ID is sufficient to prevent a repeated-refetch loop while a terminal run card remains visible.
+- Auggie retrieval was attempted first and returned HTTP 429, so this review used direct diff inspection and exact-string searches as the fallback path.
+
+### Recommended Tests / Validation
+- Existing validation already covers the critical regression: stale project list before crawl, terminal run visible, refreshed table with updated total.
+- After deploy, manually verify `/projects` for `vbs.pod@gmail.com` shows 20 projects without requiring a second reload after future runs.
+
+### Rollout Notes
+- Frontend-only change; no schema or API migration risk.
+- An already-open tab on the old frontend bundle can remain stale until refresh, but new sessions after deploy will self-refresh after completed runs.
