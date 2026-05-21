@@ -162,6 +162,80 @@ class RulesService:
         )
         return _map_profile(detail)
 
+    def update_profile(
+        self,
+        *,
+        tenant_id: str,
+        profile_id: str,
+        name: str | None = None,
+        is_active: bool | None = None,
+        keywords: list[str] | None = None,
+        max_pages_per_keyword: int | None = None,
+        close_consulting_after_days: int | None = None,
+        close_stale_after_days: int | None = None,
+    ) -> RuleProfile:
+        existing = self._repository.get_profile_detail(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+        )
+        if existing is None:
+            raise KeyError(profile_id)
+
+        normalized_name = None
+        if name is not None:
+            normalized_name = name.strip()
+            if not normalized_name:
+                raise ValueError("profile name is required")
+
+        normalized_keywords = (
+            _normalize_keywords(keywords) if keywords is not None else None
+        )
+        current_keywords = [keyword.keyword for keyword in existing.keywords]
+        effective_keywords = (
+            normalized_keywords if normalized_keywords is not None else current_keywords
+        )
+        effective_is_active = existing.profile.is_active if is_active is None else is_active
+        if effective_is_active and not effective_keywords:
+            raise ValueError("at least one keyword is required")
+
+        if effective_is_active and self._entitlement_service is not None:
+            snapshot = self._entitlement_service.require_active_subscription(
+                tenant_id=tenant_id,
+                capability="runs",
+            )
+            existing_active_keywords = _remove_keywords(
+                snapshot.active_keywords,
+                current_keywords if existing.profile.is_active else [],
+            )
+            prospective_keywords = _merge_keywords(
+                existing_active_keywords,
+                effective_keywords,
+            )
+            if snapshot.keyword_limit is not None and len(prospective_keywords) > int(
+                snapshot.keyword_limit
+            ):
+                raise EntitlementError("active keyword configuration exceeds plan limit")
+
+        detail = self._repository.update_profile(
+            tenant_id=tenant_id,
+            profile_id=profile_id,
+            name=normalized_name,
+            is_active=effective_is_active,
+            keywords=normalized_keywords,
+            max_pages_per_keyword=max_pages_per_keyword,
+            close_consulting_after_days=close_consulting_after_days,
+            close_stale_after_days=close_stale_after_days,
+        )
+        updated = _map_profile(detail)
+        self._queue_profile_update_jobs(
+            tenant_id=tenant_id,
+            previous_keywords=current_keywords,
+            previous_is_active=existing.profile.is_active,
+            updated=updated,
+            keywords_were_replaced=normalized_keywords is not None,
+        )
+        return updated
+
     def get_rules(self, *, tenant_id: str) -> RulesSnapshot:
         entitlements = (
             self._entitlement_service.get_snapshot(tenant_id=tenant_id)
@@ -283,6 +357,39 @@ class RulesService:
             queued_keywords=queued_keywords,
         )
 
+    def _queue_profile_update_jobs(
+        self,
+        *,
+        tenant_id: str,
+        previous_keywords: list[str],
+        previous_is_active: bool,
+        updated: RuleProfile,
+        keywords_were_replaced: bool,
+    ) -> None:
+        if self._discovery_job_repository is None or not updated.is_active:
+            return
+        if previous_is_active and not keywords_were_replaced:
+            return
+        previous_keyword_keys = {keyword.casefold() for keyword in previous_keywords}
+        keywords_to_queue = updated.keywords
+        if previous_is_active and keywords_were_replaced:
+            keywords_to_queue = [
+                keyword
+                for keyword in updated.keywords
+                if keyword.casefold() not in previous_keyword_keys
+            ]
+        if not keywords_to_queue:
+            return
+        for keyword in keywords_to_queue:
+            self._discovery_job_repository.create_pending_discovery_job_if_absent(
+                tenant_id=tenant_id,
+                profile_id=updated.id,
+                profile_type=updated.profile_type,
+                keyword=keyword,
+                trigger_type="profile_updated",
+                live=True,
+            )
+
 
 def _normalize_keywords(values: list[str]) -> list[str]:
     ordered: list[str] = []
@@ -325,3 +432,8 @@ def _merge_keywords(existing: list[str], new_values: list[str]) -> list[str]:
         seen.add(dedupe_key)
         ordered.append(value)
     return ordered
+
+
+def _remove_keywords(values: list[str], values_to_remove: list[str]) -> list[str]:
+    removed = {value.casefold() for value in values_to_remove}
+    return [value for value in values if value.casefold() not in removed]

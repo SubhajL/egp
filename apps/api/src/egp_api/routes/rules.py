@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, BackgroundTasks, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,16 @@ class CreateRuleProfileRequest(BaseModel):
     close_stale_after_days: int = Field(default=45, ge=1, le=365)
 
 
+class UpdateRuleProfileRequest(BaseModel):
+    tenant_id: str | None = None
+    name: str | None = None
+    is_active: bool | None = None
+    keywords: list[str] | None = None
+    max_pages_per_keyword: int | None = Field(default=None, ge=1, le=100)
+    close_consulting_after_days: int | None = Field(default=None, ge=1, le=365)
+    close_stale_after_days: int | None = Field(default=None, ge=1, le=365)
+
+
 class ManualRecrawlRequest(BaseModel):
     tenant_id: str | None = None
 
@@ -185,6 +195,46 @@ def create_rule_profile(
         background_tasks.add_task(processor.process_pending)
 
     response.status_code = status.HTTP_201_CREATED
+    return RuleProfileResponse(**asdict(profile))
+
+
+@router.patch("/profiles/{profile_id}", response_model=RuleProfileResponse)
+def update_rule_profile(
+    profile_id: str,
+    payload: UpdateRuleProfileRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> RuleProfileResponse:
+    require_admin_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
+    try:
+        profile = service.update_profile(
+            tenant_id=resolved_tenant_id,
+            profile_id=profile_id,
+            name=payload.name,
+            is_active=payload.is_active,
+            keywords=payload.keywords,
+            max_pages_per_keyword=payload.max_pages_per_keyword,
+            close_consulting_after_days=payload.close_consulting_after_days,
+            close_stale_after_days=payload.close_stale_after_days,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="profile not found") from exc
+    except EntitlementError as exc:
+        detail = str(exc)
+        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
+    except ValueError as exc:
+        detail = str(exc)
+        return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
+
+    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
+    route_kick_enabled = bool(
+        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
+    )
+    if processor is not None and route_kick_enabled and profile.is_active and profile.keywords:
+        background_tasks.add_task(processor.process_pending)
+
     return RuleProfileResponse(**asdict(profile))
 
 

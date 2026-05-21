@@ -1023,6 +1023,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rules/profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Rule Profile */
+        patch: operations["update_rule_profile_v1_rules_profiles__profile_id__patch"];
+        trace?: never;
+    };
     "/v1/rules/recrawl": {
         parameters: {
             query?: never;
@@ -1586,7 +1603,7 @@ export interface components {
             /** Duration Months */
             duration_months: number | null;
             /** Keyword Limit */
-            keyword_limit: number;
+            keyword_limit: number | null;
             /** Label */
             label: string;
         };
@@ -2959,6 +2976,23 @@ export interface components {
             role?: components["schemas"]["UserRole"] | null;
             /** Status */
             status?: string | null;
+            /** Tenant Id */
+            tenant_id?: string | null;
+        };
+        /** UpdateRuleProfileRequest */
+        UpdateRuleProfileRequest: {
+            /** Close Consulting After Days */
+            close_consulting_after_days?: number | null;
+            /** Close Stale After Days */
+            close_stale_after_days?: number | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Keywords */
+            keywords?: string[] | null;
+            /** Max Pages Per Keyword */
+            max_pages_per_keyword?: number | null;
+            /** Name */
+            name?: string | null;
             /** Tenant Id */
             tenant_id?: string | null;
         };
@@ -5008,6 +5042,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateRuleProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleProfileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_rule_profile_v1_rules_profiles__profile_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRuleProfileRequest"];
             };
         };
         responses: {

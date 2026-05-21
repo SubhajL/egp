@@ -15,7 +15,7 @@ class BillingPlanDefinition:
     currency: str
     amount_due: str
     billing_interval: str
-    keyword_limit: int
+    keyword_limit: int | None
     duration_days: int | None = None
     duration_months: int | None = None
 
@@ -44,11 +44,11 @@ _BILLING_PLANS = (
     BillingPlanDefinition(
         code="monthly_membership",
         label="Monthly Membership",
-        description="Up to 5 active keywords during the prepaid billing period",
+        description="Unlimited active keywords during the prepaid billing period",
         currency="THB",
         amount_due="1500.00",
         billing_interval="monthly",
-        keyword_limit=5,
+        keyword_limit=None,
         duration_months=1,
     ),
 )

@@ -31,7 +31,7 @@ def _seed_subscription(
     *,
     tenant_id: str = TENANT_ID,
     plan_code: str,
-    keyword_limit: int,
+    keyword_limit: int | None,
     billing_period_start: date,
     billing_period_end: date,
     status: str = "active",
@@ -257,7 +257,14 @@ def test_rules_snapshot_includes_subscription_and_keyword_usage(tmp_path) -> Non
         profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         name="TOR",
         is_active=True,
-        keywords=["ระบบข้อมูล", "สุขภาพ"],
+        keywords=[
+            "ระบบข้อมูล",
+            "สุขภาพ",
+            "analytics",
+            "cloud",
+            "procurement",
+            "erp",
+        ],
     )
     _seed_profile(
         client,
@@ -274,11 +281,18 @@ def test_rules_snapshot_includes_subscription_and_keyword_usage(tmp_path) -> Non
     assert body["entitlements"]["plan_code"] == "monthly_membership"
     assert body["entitlements"]["subscription_status"] == "active"
     assert body["entitlements"]["has_active_subscription"] is True
-    assert body["entitlements"]["keyword_limit"] == 5
-    assert body["entitlements"]["active_keyword_count"] == 2
-    assert body["entitlements"]["remaining_keyword_slots"] == 3
+    assert body["entitlements"]["keyword_limit"] is None
+    assert body["entitlements"]["active_keyword_count"] == 6
+    assert body["entitlements"]["remaining_keyword_slots"] is None
     assert body["entitlements"]["over_keyword_limit"] is False
-    assert body["entitlements"]["active_keywords"] == ["ระบบข้อมูล", "สุขภาพ"]
+    assert body["entitlements"]["active_keywords"] == [
+        "ระบบข้อมูล",
+        "สุขภาพ",
+        "analytics",
+        "cloud",
+        "procurement",
+        "erp",
+    ]
     assert body["entitlements"]["runs_allowed"] is True
     assert body["entitlements"]["exports_allowed"] is True
     assert body["entitlements"]["document_download_allowed"] is True
@@ -440,6 +454,46 @@ def test_expired_monthly_membership_falls_back_to_free_trial_with_archive_access
     assert download_response.status_code == 200
 
 
+def test_expired_one_time_pack_falls_back_to_free_trial_with_archive_access(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        keyword_limit=1,
+        billing_period_start=today - timedelta(days=8),
+        billing_period_end=today - timedelta(days=6),
+        status="expired",
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Expired one-time profile",
+        is_active=True,
+        keywords=["ระบบสารสนเทศ"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["plan_code"] == "free_trial"
+    assert body["entitlements"]["plan_label"] == "Free Trial"
+    assert body["entitlements"]["subscription_status"] == "active"
+    assert body["entitlements"]["has_active_subscription"] is True
+    assert body["entitlements"]["keyword_limit"] == 1
+    assert body["entitlements"]["active_keyword_count"] == 0
+    assert body["entitlements"]["remaining_keyword_slots"] == 1
+    assert body["entitlements"]["active_keywords"] == []
+    assert body["entitlements"]["runs_allowed"] is True
+    assert body["entitlements"]["exports_allowed"] is True
+    assert body["entitlements"]["document_download_allowed"] is True
+    assert body["entitlements"]["notifications_allowed"] is False
+    assert body["profiles"][0]["is_active"] is False
+
+
 def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = date.today()
@@ -454,7 +508,7 @@ def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_
     _seed_subscription(
         client,
         plan_code="monthly_membership",
-        keyword_limit=5,
+        keyword_limit=None,
         billing_period_start=today,
         billing_period_end=today + timedelta(days=29),
         status="active",
@@ -465,7 +519,7 @@ def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_
     assert response.status_code == 200
     body = response.json()
     assert body["entitlements"]["plan_code"] == "monthly_membership"
-    assert body["entitlements"]["keyword_limit"] == 5
+    assert body["entitlements"]["keyword_limit"] is None
 
 
 def test_run_creation_requires_active_subscription(tmp_path) -> None:
@@ -506,7 +560,7 @@ def test_discover_task_keyword_must_be_entitled(tmp_path) -> None:
     _seed_subscription(
         client,
         plan_code="monthly_membership",
-        keyword_limit=5,
+        keyword_limit=None,
         billing_period_start=today - timedelta(days=1),
         billing_period_end=today + timedelta(days=29),
     )
@@ -546,8 +600,8 @@ def test_over_limit_profiles_block_new_discover_tasks(tmp_path) -> None:
     today = date.today()
     _seed_subscription(
         client,
-        plan_code="monthly_membership",
-        keyword_limit=5,
+        plan_code="free_trial",
+        keyword_limit=1,
         billing_period_start=today - timedelta(days=1),
         billing_period_end=today + timedelta(days=29),
     )

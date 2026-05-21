@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
+_EXPIRED_PLAN_CODES_THAT_FALL_BACK_TO_TRIAL = {
+    "one_time_search_pack",
+    "monthly_membership",
+}
+
 
 class DiscoveryAuthorizationError(PermissionError):
     """Raised when discovery execution is not currently entitled."""
@@ -96,14 +101,17 @@ def resolve_effective_discovery_entitlement(
             plan_code=current_plan_code or None,
             subscription_status=current_status,
             has_active_subscription=True,
-            keyword_limit=getattr(current_subscription, "keyword_limit", None),
+            keyword_limit=_effective_keyword_limit(current_subscription),
             profile_cycle_started_at=_profile_cycle_start_for_active_subscription(
                 current_subscription=current_subscription,
                 subscriptions=subscriptions,
             ),
         )
 
-    if current_status == "expired" and current_plan_code == "monthly_membership":
+    if (
+        current_status == "expired"
+        and current_plan_code in _EXPIRED_PLAN_CODES_THAT_FALL_BACK_TO_TRIAL
+    ):
         fallback_start = datetime.combine(
             date.fromisoformat(str(current_subscription.billing_period_end)) + timedelta(days=1),
             time.min,
@@ -121,9 +129,16 @@ def resolve_effective_discovery_entitlement(
         plan_code=current_plan_code or None,
         subscription_status=current_status,
         has_active_subscription=False,
-        keyword_limit=getattr(current_subscription, "keyword_limit", None),
+        keyword_limit=_effective_keyword_limit(current_subscription),
         profile_cycle_started_at=None,
     )
+
+
+def _effective_keyword_limit(subscription: SubscriptionLike) -> int | None:
+    plan_code = str(getattr(subscription, "plan_code", "") or "")
+    if plan_code == "monthly_membership":
+        return None
+    return getattr(subscription, "keyword_limit", None)
 
 
 def _profile_cycle_start_for_active_subscription(

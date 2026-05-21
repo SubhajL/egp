@@ -146,7 +146,7 @@ class BillingPlanResponse(BaseModel):
     currency: str
     amount_due: str
     billing_interval: str
-    keyword_limit: int
+    keyword_limit: int | None
     duration_days: int | None
     duration_months: int | None
 

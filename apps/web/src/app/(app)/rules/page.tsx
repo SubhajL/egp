@@ -9,11 +9,18 @@ import {
   ShieldCheck,
   Sparkles,
   Tag,
+  Trash2,
+  X,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { QueryState } from "@/components/ui/query-state";
 import { useRules } from "@/lib/hooks";
-import { createRuleProfile, localizeApiError, updateTenantSettings } from "@/lib/api";
+import {
+  createRuleProfile,
+  localizeApiError,
+  updateRuleProfile,
+  updateTenantSettings,
+} from "@/lib/api";
 import type {
   EntitlementSummary,
   NotificationRulesSummary,
@@ -76,6 +83,22 @@ function CapabilityBadge({
   );
 }
 
+function formatKeywordLimit(limit: number | null): string {
+  return limit === null ? "ไม่จำกัด" : String(limit);
+}
+
+function formatKeywordQuota(entitlements: EntitlementSummary): string {
+  return `${entitlements.active_keyword_count} / ${formatKeywordLimit(
+    entitlements.keyword_limit,
+  )}`;
+}
+
+function formatRemainingKeywordSlots(entitlements: EntitlementSummary): string {
+  return entitlements.remaining_keyword_slots === null
+    ? "ไม่จำกัด"
+    : `${entitlements.remaining_keyword_slots} คำค้น`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Profile Card — customer-facing version                            */
 /* ------------------------------------------------------------------ */
@@ -83,9 +106,15 @@ function CapabilityBadge({
 function WatchlistCard({
   profile,
   entitlements,
+  busy,
+  onRemoveKeyword,
+  onDeactivateProfile,
 }: {
   profile: RuleProfile;
   entitlements: EntitlementSummary;
+  busy: boolean;
+  onRemoveKeyword: (profile: RuleProfile, keyword: string) => Promise<void>;
+  onDeactivateProfile: (profile: RuleProfile) => Promise<void>;
 }) {
   const updatedAt = profile.updated_at
     ? new Date(profile.updated_at).toLocaleDateString("th-TH", {
@@ -94,6 +123,7 @@ function WatchlistCard({
         day: "numeric",
       })
     : null;
+  const canEdit = entitlements.has_active_subscription && profile.is_active;
 
   return (
     <div
@@ -125,9 +155,20 @@ function WatchlistCard({
             {profile.keywords.map((keyword) => (
               <span
                 key={keyword}
-                className="rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
+                className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
               >
                 {keyword}
+                {canEdit ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void onRemoveKeyword(profile, keyword)}
+                    className="rounded-full p-0.5 text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={`ลบคำค้น ${keyword}`}
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                ) : null}
               </span>
             ))}
           </div>
@@ -140,6 +181,17 @@ function WatchlistCard({
           <Tag className="size-3.5" />
           {profile.keywords.length} / {entitlements.keyword_limit ?? "ไม่จำกัด"} คำค้น
         </span>
+        {canEdit ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void onDeactivateProfile(profile)}
+            className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--badge-red-text)] transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="size-3.5" aria-hidden="true" />
+            ปิดใช้งาน
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -195,7 +247,7 @@ function PlanSummaryCard({
             คำค้นที่ใช้ได้
           </p>
           <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
-            {entitlements.active_keyword_count} / {entitlements.keyword_limit ?? "—"}
+            {formatKeywordQuota(entitlements)}
           </p>
         </div>
         <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4">
@@ -203,7 +255,7 @@ function PlanSummaryCard({
             เพิ่มได้อีก
           </p>
           <p className="mt-1 text-2xl font-bold text-[var(--text-primary)]">
-            {entitlements.remaining_keyword_slots ?? "—"} คำค้น
+            {formatRemainingKeywordSlots(entitlements)}
           </p>
         </div>
         <div className="rounded-2xl bg-[var(--bg-surface)] px-4 py-4 lg:col-span-2">
@@ -473,6 +525,7 @@ export default function RulesPage() {
   const [profileName, setProfileName] = useState("คำค้นหลัก");
   const [keywordDraft, setKeywordDraft] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
+  const [profileActionBusyId, setProfileActionBusyId] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileNotice, setProfileNotice] = useState<string | null>(null);
   const [scheduleChoice, setScheduleChoice] = useState<string>("default");
@@ -534,6 +587,43 @@ export default function RulesPage() {
     }
   }
 
+  async function handleRemoveKeyword(profile: RuleProfile, keyword: string) {
+    const remainingKeywords = profile.keywords.filter((entry) => entry !== keyword);
+    setProfileError(null);
+    setProfileNotice(null);
+    setProfileActionBusyId(profile.id);
+    try {
+      await updateRuleProfile(profile.id, {
+        keywords: remainingKeywords,
+        is_active: remainingKeywords.length > 0 ? profile.is_active : false,
+      });
+      setProfileNotice("อัปเดตคำค้นเรียบร้อยแล้ว");
+      await refreshRules();
+    } catch (mutationError) {
+      setProfileError(localizeApiError(mutationError, "ไม่สามารถอัปเดตคำค้นได้"));
+    } finally {
+      setProfileActionBusyId(null);
+    }
+  }
+
+  async function handleDeactivateProfile(profile: RuleProfile) {
+    setProfileError(null);
+    setProfileNotice(null);
+    setProfileActionBusyId(profile.id);
+    try {
+      await updateRuleProfile(profile.id, {
+        is_active: false,
+        keywords: [],
+      });
+      setProfileNotice("ปิดใช้งานกลุ่มคำค้นแล้ว");
+      await refreshRules();
+    } catch (mutationError) {
+      setProfileError(localizeApiError(mutationError, "ไม่สามารถปิดใช้งานคำค้นได้"));
+    } finally {
+      setProfileActionBusyId(null);
+    }
+  }
+
   async function handleSaveSchedule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setScheduleError(null);
@@ -589,6 +679,9 @@ export default function RulesPage() {
                   key={profile.id}
                   profile={profile}
                   entitlements={data.entitlements}
+                  busy={profileActionBusyId === profile.id}
+                  onRemoveKeyword={handleRemoveKeyword}
+                  onDeactivateProfile={handleDeactivateProfile}
                 />
               ))}
             </div>
@@ -740,8 +833,7 @@ export default function RulesPage() {
             {PLAN_DISPLAY[tier].badge}
           </span>
           <span className="text-sm text-[var(--text-muted)]">
-            {data.entitlements.active_keyword_count} / {data.entitlements.keyword_limit ?? "—"}{" "}
-            คำค้นที่ใช้อยู่
+            {formatKeywordQuota(data.entitlements)} คำค้นที่ใช้อยู่
           </span>
           {data.entitlements.over_keyword_limit ? (
             <span className="text-xs font-semibold text-[var(--badge-red-text)]">

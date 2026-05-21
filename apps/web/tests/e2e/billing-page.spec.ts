@@ -522,7 +522,11 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
 
   await expect(page.getByText("PromptPay Request", { exact: true })).toBeVisible();
   await expect(page.getByText("สิ่งที่จะเปลี่ยนทันทีหลังชำระสำเร็จ", { exact: true })).toBeVisible();
-  await expect(page.getByText("ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("ปลดล็อกคำค้นไม่จำกัด ส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(page.getByText("แพ็กเกจเดิมจะถูกแทนที่เมื่อการชำระเงินสำเร็จ", { exact: true })).toBeVisible();
 
   expect(mocks.getUpgradePayload()).toEqual({
@@ -626,7 +630,7 @@ test("billing page shows one-time upgrade CTA only for monthly membership", asyn
   await expect(page.getByText("อัปเกรดจาก One-Time Search Pack", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "อัปเกรดเป็น Monthly Membership" })).toBeVisible();
   await expect(
-    page.getByText("เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และโควต้าคำค้นจะเพิ่มเป็น 5", {
+    page.getByText("เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และคำค้นจะใช้ได้ไม่จำกัด", {
       exact: true,
     }),
   ).toBeVisible();

@@ -68,7 +68,7 @@ export const PLAN_DISPLAY: Record<
   monthly_membership: {
     badge: "สมาชิกรายเดือน",
     color: "bg-emerald-100 text-emerald-800",
-    description: "ติดตามต่อเนื่องสูงสุด 5 คำค้น พร้อมสิทธิ์ใช้งานครบทุกฟีเจอร์",
+    description: "ติดตามต่อเนื่องแบบไม่จำกัดคำค้น พร้อมสิทธิ์ใช้งานครบทุกฟีเจอร์",
     headerSubtitle: "จัดการคำค้น ตั้งค่าการแจ้งเตือน และกำหนดความถี่การติดตามสำหรับสมาชิกรายเดือน",
   },
   unknown_plan: {

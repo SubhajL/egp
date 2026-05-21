@@ -172,7 +172,7 @@ function getUpgradeOptions(
           description:
             targetPlanCode === "one_time_search_pack"
               ? "เริ่มรอบใช้งานแบบจ่ายครั้งเดียวใหม่ พร้อมปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนหลังชำระสำเร็จ"
-              : "เริ่มรอบสมาชิกรายเดือนใหม่ พร้อมโควต้า 5 คำค้นและสิทธิ์ใช้งานครบทุกช่องทางหลังชำระสำเร็จ",
+              : "เริ่มรอบสมาชิกรายเดือนใหม่ พร้อมคำค้นไม่จำกัดและสิทธิ์ใช้งานครบทุกช่องทางหลังชำระสำเร็จ",
           immediateChangeCopy:
             targetPlanCode === "one_time_search_pack"
               ? "สิทธิ์ one-shot รอบใหม่จะเริ่มทันทีหลังชำระสำเร็จ"
@@ -198,7 +198,7 @@ function getUpgradeOptions(
           description:
             targetPlanCode === "one_time_search_pack"
               ? "ชำระครั้งเดียวเพื่อปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนสำหรับรอบแพ็กเกจนี้"
-              : "เปลี่ยนเป็นแพ็กเกจรายเดือนเพื่อเพิ่มโควต้าเป็น 5 คำค้นและปลดล็อกทุกช่องทางการใช้งานทันทีหลังชำระสำเร็จ",
+              : "เปลี่ยนเป็นแพ็กเกจรายเดือนเพื่อใช้คำค้นไม่จำกัดและปลดล็อกทุกช่องทางการใช้งานทันทีหลังชำระสำเร็จ",
           immediateChangeCopy:
             targetPlanCode === "one_time_search_pack"
               ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
@@ -224,10 +224,10 @@ function getUpgradeOptions(
         targetPlanCode: monthlyPlan.code,
         title: `อัปเกรดเป็น ${monthlyPlan.label}`,
         description:
-          "เพิ่มโควต้าเป็น 5 คำค้น และเปลี่ยนเป็นรอบสมาชิกรายเดือนหลังการชำระสำเร็จ",
-        immediateChangeCopy: "โควต้าคำค้นจะเพิ่มเป็น 5 และเปิดสิทธิ์รายเดือนทันที",
+          "ใช้คำค้นไม่จำกัด และเปลี่ยนเป็นรอบสมาชิกรายเดือนหลังการชำระสำเร็จ",
+        immediateChangeCopy: "คำค้นจะใช้ได้ไม่จำกัด และเปิดสิทธิ์รายเดือนทันที",
         beforePaymentCopy:
-          "เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และโควต้าคำค้นจะเพิ่มเป็น 5",
+          "เมื่อชำระสำเร็จ ระบบจะเปลี่ยนจากแพ็กเกจ one-shot เป็นสมาชิกรายเดือนทันที และคำค้นจะใช้ได้ไม่จำกัด",
         waitInsteadCopy:
           "หากต้องการใช้แพ็กเกจ one-shot ปัจจุบันต่อก่อน กรุณารอจนกว่าจะสิ้นสุดแล้วค่อยอัปเกรด",
       },
@@ -252,7 +252,7 @@ function describeUpgradeSettlement(record: BillingRecordDetail["record"]): {
     title: "สิ่งที่จะเปลี่ยนทันทีหลังชำระสำเร็จ",
     primary:
       record.plan_code === "monthly_membership"
-        ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+        ? "ปลดล็อกคำค้นไม่จำกัด ส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
         : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
     secondary: "แพ็กเกจเดิมจะถูกแทนที่เมื่อการชำระเงินสำเร็จ",
   };
@@ -389,6 +389,14 @@ export default function BillingPage() {
   );
   const billingPlans = plansData?.plans ?? [];
   const currentSubscription = data?.current_subscription ?? null;
+  const hasBillingSnapshot = data !== undefined;
+  const currentSubscriptionRevision = [
+    currentSubscription?.id ?? "",
+    currentSubscription?.plan_code ?? "",
+    currentSubscription?.subscription_status ?? "",
+    currentSubscription?.billing_period_end ?? "",
+    currentSubscription?.updated_at ?? "",
+  ].join("|");
   const selectedPlan = billingPlans.find((plan) => plan.code === planCode) ?? null;
   const planLabels = new Map(billingPlans.map((plan) => [plan.code, plan.label]));
   const summary = data?.summary ?? {
@@ -406,6 +414,12 @@ export default function BillingPage() {
       setPeriodEnd(derivedEnd);
     }
   }, [selectedPlan, periodStart]);
+
+  useEffect(() => {
+    if (!hasBillingSnapshot) return;
+    void queryClient.invalidateQueries({ queryKey: ["me"] });
+    void queryClient.invalidateQueries({ queryKey: ["rules"] });
+  }, [currentSubscriptionRevision, hasBillingSnapshot, queryClient]);
 
   useEffect(() => {
     if (records.length === 0) {
@@ -479,6 +493,7 @@ export default function BillingPage() {
 
   async function refreshBilling() {
     await queryClient.invalidateQueries({ queryKey: ["billing-records"] });
+    await queryClient.invalidateQueries({ queryKey: ["me"] });
     await queryClient.invalidateQueries({ queryKey: ["rules"] });
   }
 
@@ -640,7 +655,7 @@ export default function BillingPage() {
       }
       setUpgradeCopy(
         targetPlanCode === "monthly_membership"
-          ? "ปลดล็อกส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
+          ? "ปลดล็อกคำค้นไม่จำกัด ส่งออก Excel ดาวน์โหลดเอกสาร และการแจ้งเตือนทันที"
           : "ปลดล็อก export ดาวน์โหลดเอกสาร และการแจ้งเตือนทันทีหลังชำระสำเร็จ",
       );
     } catch (mutationError) {
