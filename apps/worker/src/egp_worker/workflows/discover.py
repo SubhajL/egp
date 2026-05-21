@@ -52,6 +52,13 @@ class DiscoverWorkflowResult:
 
 LIVE_DOCUMENT_COLLECTION_STATUS = "deferred"
 LIVE_DOCUMENT_COLLECTION_REASON = "live_discovery_metadata_first"
+_LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
+    {
+        "project_detail_invalid",
+        "project_detail_missing_required_fields",
+    }
+)
+_LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
 
 
 def _load_discovery_authorization_snapshot(
@@ -117,6 +124,27 @@ def _mark_live_document_collection_deferred(
             "document_collection_reason": LIVE_DOCUMENT_COLLECTION_REASON,
         }
     return marked
+
+
+def _snapshot_live_progress_event(event: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value
+        for key, value in event.items()
+        if value is not None and not (isinstance(value, str) and not value.strip())
+    }
+
+
+def _live_progress_is_crawl_anomaly(event: dict[str, object]) -> bool:
+    return str(event.get("stage") or "") in _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES
+
+
+def _live_progress_is_terminal_crawl_anomaly(event: dict[str, object]) -> bool:
+    return str(event.get("stage") or "") in _LIVE_CRAWL_TERMINAL_ANOMALY_STAGES
+
+
+def _build_live_crawl_anomaly_error(latest_anomaly: dict[str, object]) -> str:
+    stage = str(latest_anomaly.get("stage") or "unknown")
+    return f"live crawl anomaly: {stage}"
 
 
 def _build_discover_task_failure_result(
@@ -212,6 +240,8 @@ def run_discover_workflow(
     error_count = 0
     run_level_error: str | None = None
     live_progress: dict[str, object] | None = None
+    live_crawl_anomaly_count = 0
+    live_crawl_latest_anomaly: dict[str, object] | None = None
 
     def _current_summary() -> dict[str, object]:
         summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
@@ -219,14 +249,22 @@ def run_discover_workflow(
             summary["ignored_late_stage_projects"] = ignored_late_stage_projects
         if live_progress is not None:
             summary["live_progress"] = live_progress
+        if live_crawl_anomaly_count:
+            summary["live_crawl_anomaly_count"] = live_crawl_anomaly_count
+        if live_crawl_latest_anomaly is not None:
+            summary["live_crawl_latest_anomaly"] = live_crawl_latest_anomaly
         return summary
 
     def _record_live_progress(event: dict[str, object]) -> None:
-        nonlocal live_progress
+        nonlocal live_crawl_anomaly_count, live_crawl_latest_anomaly, live_progress
+        event_snapshot = _snapshot_live_progress_event(event)
         live_progress = {
-            **event,
+            **event_snapshot,
             "updated_at": datetime.now(UTC).isoformat(),
         }
+        if _live_progress_is_crawl_anomaly(event_snapshot):
+            live_crawl_anomaly_count += 1
+            live_crawl_latest_anomaly = event_snapshot
         run_repository.update_run_summary(run.id, summary_json=_current_summary())
 
     def _discovered_project_key(discovered: dict[str, object]) -> str:
@@ -392,16 +430,38 @@ def run_discover_workflow(
         )
         raise
 
+    terminal_live_anomaly = (
+        live
+        and not persisted_projects
+        and live_progress is not None
+        and _live_progress_is_terminal_crawl_anomaly(live_progress)
+    )
+    if terminal_live_anomaly and (
+        live_crawl_latest_anomaly is None
+        or live_crawl_latest_anomaly.get("stage") != live_progress.get("stage")
+    ):
+        live_crawl_anomaly_count += 1
+        live_crawl_latest_anomaly = {
+            key: value for key, value in live_progress.items() if key != "updated_at"
+        }
+    anomaly_error = (
+        _build_live_crawl_anomaly_error(live_crawl_latest_anomaly)
+        if live_crawl_latest_anomaly is not None
+        else None
+    )
+    effective_error_count = error_count + live_crawl_anomaly_count
     summary_json = _current_summary()
     if run_level_error is not None:
         summary_json["error"] = run_level_error
+    elif anomaly_error is not None:
+        summary_json["error"] = anomaly_error
     run_repository.mark_run_finished(
         run.id,
         status="partial"
-        if error_count and persisted_projects
-        else ("failed" if error_count else "succeeded"),
+        if effective_error_count and persisted_projects
+        else ("failed" if effective_error_count else "succeeded"),
         summary_json=summary_json,
-        error_count=error_count,
+        error_count=effective_error_count,
     )
     detail = run_repository.get_run_detail(tenant_id=tenant_id, run_id=run.id)
     if detail is None:

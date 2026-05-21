@@ -79,7 +79,7 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
 function buildRulesResponse(
   planCode: "free_trial" | "one_time_search_pack" | "monthly_membership" | "enterprise_preview",
 ) {
-  const keywordLimit = planCode === "monthly_membership" ? 5 : 1;
+  const keywordLimit = planCode === "monthly_membership" ? null : 1;
   return {
     profiles: [
       {
@@ -109,7 +109,7 @@ function buildRulesResponse(
       has_active_subscription: true,
       keyword_limit: keywordLimit,
       active_keyword_count: 1,
-      remaining_keyword_slots: Math.max(keywordLimit - 1, 0),
+      remaining_keyword_slots: keywordLimit === null ? null : Math.max(keywordLimit - 1, 0),
       active_keywords: ["analytics"],
       over_keyword_limit: false,
       runs_allowed: true,

@@ -734,9 +734,12 @@ export type SelectOneDriveFolderInput =
   components["schemas"]["SelectOneDriveFolderRequest"];
 
 type CreateRuleProfileRequest = components["schemas"]["CreateRuleProfileRequest"];
+type UpdateRuleProfileRequest = components["schemas"]["UpdateRuleProfileRequest"];
 
 export type CreateRuleProfileInput = Pick<CreateRuleProfileRequest, "name" | "keywords"> &
   Partial<Omit<CreateRuleProfileRequest, "name" | "keywords">>;
+
+export type UpdateRuleProfileInput = UpdateRuleProfileRequest;
 
 export type TriggerManualRecrawlInput = Partial<
   components["schemas"]["ManualRecrawlRequest"]
@@ -799,6 +802,25 @@ export async function createRuleProfile(
       name: payload.name,
       profile_type: payload.profile_type ?? "custom",
       is_active: payload.is_active ?? true,
+      keywords: payload.keywords,
+      max_pages_per_keyword: payload.max_pages_per_keyword,
+      close_consulting_after_days: payload.close_consulting_after_days,
+      close_stale_after_days: payload.close_stale_after_days,
+    }),
+  });
+}
+
+export async function updateRuleProfile(
+  profileId: string,
+  payload: UpdateRuleProfileInput,
+): Promise<RuleProfile> {
+  const url = buildUrl(`/v1/rules/profiles/${encodeURIComponent(profileId)}`, {});
+  return apiJsonRequest<RuleProfile>(url, {
+    method: "PATCH",
+    body: JSON.stringify({
+      tenant_id: payload.tenant_id,
+      name: payload.name,
+      is_active: payload.is_active,
       keywords: payload.keywords,
       max_pages_per_keyword: payload.max_pages_per_keyword,
       close_consulting_after_days: payload.close_consulting_after_days,

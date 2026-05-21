@@ -98,7 +98,7 @@ def _seed_active_subscription(
     client: TestClient,
     *,
     plan_code: str,
-    keyword_limit: int,
+    keyword_limit: int | None,
 ) -> None:
     active_start = date.today() - timedelta(days=1)
     active_end = date.today() + timedelta(days=6)
@@ -409,6 +409,7 @@ def test_billing_plans_include_free_trial(tmp_path) -> None:
         "duration_days": 7,
         "duration_months": None,
     }
+    assert plans["monthly_membership"]["keyword_limit"] is None
 
 
 def test_rules_endpoint_returns_tenant_crawl_schedule_override(tmp_path) -> None:
@@ -576,6 +577,75 @@ def test_admin_can_create_custom_profile_from_rules_api(tmp_path) -> None:
         "analytics",
         "cloud procurement",
     ]
+
+
+def test_admin_can_update_profile_keywords_and_deactivate_from_rules_api(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-update.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_profile(
+        client,
+        profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        name="Keyword Watchlist",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("analytics", 1), ("cloud procurement", 2)],
+    )
+
+    updated = client.patch(
+        "/v1/rules/profiles/cccccccc-cccc-cccc-cccc-cccccccccccc",
+        json={
+            "tenant_id": TENANT_ID,
+            "keywords": ["analytics", "ai procurement"],
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["keywords"] == ["analytics", "ai procurement"]
+    with client.app.state.db_engine.connect() as connection:
+        queued_keyword = connection.execute(
+            text(
+                """
+                SELECT keyword
+                FROM discovery_jobs
+                WHERE tenant_id = :tenant_id
+                    AND profile_id = :profile_id
+                    AND trigger_type = 'profile_updated'
+                    AND job_status = 'pending'
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "profile_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            },
+        ).scalar_one()
+    assert queued_keyword == "ai procurement"
+
+    deactivated = client.patch(
+        "/v1/rules/profiles/cccccccc-cccc-cccc-cccc-cccccccccccc",
+        json={
+            "tenant_id": TENANT_ID,
+            "is_active": False,
+            "keywords": [],
+        },
+    )
+
+    assert deactivated.status_code == 200
+    assert deactivated.json()["is_active"] is False
+    assert deactivated.json()["keywords"] == []
+    listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    assert listing.status_code == 200
+    assert listing.json()["entitlements"]["active_keyword_count"] == 0
 
 
 def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:

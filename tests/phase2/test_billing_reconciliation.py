@@ -132,7 +132,7 @@ def test_billing_snapshot_supports_create_record_payment_and_reconcile(
     assert reconciled["record"]["outstanding_balance"] == "0.00"
     assert reconciled["subscription"]["plan_code"] == "monthly_membership"
     assert reconciled["subscription"]["subscription_status"] == "active"
-    assert reconciled["subscription"]["keyword_limit"] == 5
+    assert reconciled["subscription"]["keyword_limit"] is None
     assert [entry["payment_status"] for entry in reconciled["payments"]] == [
         "reconciled"
     ]

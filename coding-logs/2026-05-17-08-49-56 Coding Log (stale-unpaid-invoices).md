@@ -1059,3 +1059,153 @@ LOW
 
 #### Rollout Notes
 - No API or data-model changes. This is a frontend presentation/visibility change only.
+
+## Debug Note - OPN PromptPay Charge Creation Failure (2026-05-21 09:48:41 +07)
+
+### Goal
+Investigate why clicking PromptPay generation in `/billing` shows the Thai OPN connection error and no new charge appears in the OPN test dashboard.
+
+### Findings
+- No product code was changed.
+- Auggie semantic retrieval was attempted first and returned HTTP 429, so the investigation used direct file inspection and exact-string searches.
+- The billing UI calls `createBillingPaymentRequest(..., { provider: "opn", payment_method: "promptpay_qr" })`.
+- Runtime path verified: `apps/web/src/app/(app)/billing/page.tsx` -> `apps/web/src/lib/api.ts` -> `apps/api/src/egp_api/routes/billing.py` -> `BillingService.create_payment_request()` -> `OpnProvider.create_payment_request()`.
+- `.env` has `EGP_PAYMENT_PROVIDER=opn` and a public Cloudflare base URL configured for `EGP_PAYMENT_BASE_URL`.
+- The configured Cloudflare host failed DNS resolution with `curl: (6) Could not resolve host`.
+- The running tunnel helper process still existed, but its child process was defunct, so it was not actually maintaining a live `trycloudflare.com` tunnel.
+
+### TDD Evidence
+- RED: not applicable; no code change was made because the observed failure is caused by stale local tunnel configuration.
+- GREEN: not applicable; no implementation was made.
+
+### Commands Run
+- `curl -sS -i --max-time 5 'https://narrative-england-overnight-cookbook.trycloudflare.com/health' | sed -n '1,40p'` -> DNS resolution failed.
+- `curl -sS -i --max-time 5 'https://narrative-england-overnight-cookbook.trycloudflare.com/v1/billing/providers/opn/webhooks' | sed -n '1,40p'` -> DNS resolution failed.
+- `ps -eo pid,ppid,command | awk '$2==65781 {print}'` -> showed the tunnel child as `<defunct>`.
+
+### Wiring Verification
+- Payment creation is wired through the existing `/v1/billing/records/{record_id}/payment-requests` route.
+- `OpnProvider._build_webhook_endpoint()` derives the per-charge webhook endpoint from `EGP_PAYMENT_BASE_URL` when it looks like public HTTPS.
+
+### Risk Notes
+- The backend can send a syntactically valid but stale Cloudflare webhook endpoint to OPN. OPN may reject the charge before creating it, which leaves no new dashboard charge and surfaces the frontend's generic OPN connection error.
+- Operational fix: restart the Cloudflare tunnel helper, update `EGP_PAYMENT_BASE_URL` to the new tunnel origin, update the OPN test webhook URL if needed, and restart the API process so it picks up the new env value.
+
+## Debug/Fix - Subscription Labels, Monthly Keywords, and Profile Updates (2026-05-21 11:15:20 +07)
+
+### Goal
+Fix the billing/rules behavior reported for `limanond.subhaj@gmail.com`: monthly payment leaving the header on One-Time Search Pack, monthly keyword quota still capped at 5, expired one-time/monthly fallback copy, and lack of keyword deletion/editing during a valid monthly subscription.
+
+### What Changed
+- `packages/shared-types/src/egp_shared_types/billing_plans.py`
+  - Changed `monthly_membership.keyword_limit` to `None` and updated plan copy to unlimited keywords.
+- `packages/crawler-core/src/egp_crawler_core/discovery_authorization.py`
+  - Expired `one_time_search_pack` now falls back to active `free_trial`, matching the existing expired monthly fallback.
+  - Existing monthly subscription rows with the legacy stored `keyword_limit=5` are treated as unlimited at entitlement resolution time.
+- `apps/api/src/egp_api/routes/billing.py`, `apps/web/src/lib/generated/openapi.json`, `apps/web/src/lib/generated/api-types.ts`
+  - Made billing plan `keyword_limit` nullable in the API contract.
+- `apps/api/src/egp_api/services/rules_service.py`, `apps/api/src/egp_api/routes/rules.py`
+  - Added `PATCH /v1/rules/profiles/{profile_id}` to edit keywords, deactivate profiles, enforce active entitlement limits, and enqueue discovery jobs for newly added/reactivated keywords.
+- `apps/web/src/app/(app)/billing/page.tsx`
+  - Invalidates `["me"]` and `["rules"]` after billing refresh and when the current subscription revision changes, so the app header updates after paid subscription activation.
+  - Updated monthly upgrade copy from 5-keyword quota to unlimited keywords.
+- `apps/web/src/app/(app)/rules/page.tsx`, `apps/web/src/app/(app)/rules/view-model.tsx`, `apps/web/src/lib/api.ts`
+  - Shows unlimited monthly quota, adds remove-keyword controls, and allows deactivating a profile from the rules page.
+- Tests updated in `tests/phase2`, `tests/phase4`, and `apps/web/tests/e2e` for the new behavior.
+
+### Local Crawl/Log Finding
+- Local DB tenant for `limanond.subhaj@gmail.com`: `db354496-da2d-4c58-a95b-f75e7055704a`, slug `lll`.
+- Billing state is active monthly as of `2026-05-21 10:41:10 +07`, but the stored subscription still had the old `keyword_limit=5` before this fix.
+- New profile `b8164248-dc49-44c5-912d-bf22a13cf11f` contains 5 active keywords.
+- Five recent runs on `2026-05-21 10:42-10:49 +07` all completed with `projects_seen=0`; worker logs show:
+  - `ระบบสารสนเทศ` and `คลังข้อมูล`: `keyword_no_results`
+  - `ระบบบริหารจัดการ`, `แผน`, and `ที่ปรึกษา`: eligible rows were opened but logged `project_detail_invalid`
+- Existing project rows for this tenant are still the 3 projects from `2026-05-11`; no new rows were persisted from the May 21 runs.
+
+### TDD Evidence
+- RED:
+  - `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py::test_billing_plans_include_free_trial tests/phase2/test_rules_api.py::test_admin_can_update_profile_keywords_and_deactivate_from_rules_api tests/phase2/test_billing_reconciliation.py::test_billing_snapshot_supports_create_record_payment_and_reconcile tests/phase4/test_entitlements.py::test_rules_snapshot_includes_subscription_and_keyword_usage tests/phase4/test_entitlements.py::test_expired_one_time_pack_falls_back_to_free_trial_with_archive_access -q`
+  - Failed because monthly returned `5`, profile PATCH was `404`, monthly activation stored `5`, and expired one-time returned `one_time_search_pack`.
+  - Later legacy-data RED: `./.venv/bin/python -m pytest tests/phase4/test_entitlements.py::test_rules_snapshot_includes_subscription_and_keyword_usage -q` failed when a monthly row stored `keyword_limit=5` but the expected entitlement was unlimited.
+- GREEN:
+  - Same command passed: `5 passed`.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py tests/phase2/test_billing_reconciliation.py tests/phase3/test_invoice_lifecycle.py tests/phase4/test_entitlements.py -q` — `56 passed`.
+- `./.venv/bin/ruff check packages/shared-types/src/egp_shared_types/billing_plans.py packages/crawler-core/src/egp_crawler_core/discovery_authorization.py apps/api/src/egp_api/routes/billing.py apps/api/src/egp_api/routes/rules.py apps/api/src/egp_api/services/rules_service.py tests/phase2/test_rules_api.py tests/phase2/test_billing_reconciliation.py tests/phase4/test_entitlements.py` — passed.
+- `./.venv/bin/python -m compileall apps/api/src packages/shared-types/src packages/crawler-core/src` — passed.
+- `cd apps/web && npm run generate:api-types` — passed.
+- `cd apps/web && npm run check:api-types` — passed.
+- `cd apps/web && npm run typecheck` — passed.
+- `cd apps/web && npm run lint` — passed.
+- `cd apps/web && npm run test:unit` — `23 passed`.
+- `cd apps/web && npx playwright test tests/e2e/rules-page.spec.ts tests/e2e/billing-page.spec.ts` — `15 passed`.
+
+### Wiring Verification
+- Header label source remains `/v1/me` via `useMe()`; billing now invalidates that cache after subscription changes.
+- Entitlements remain centralized through `TenantEntitlementService.get_snapshot()` and `resolve_effective_discovery_entitlement()`.
+- Profile update flow is wired from rules page controls -> `updateRuleProfile()` -> `PATCH /v1/rules/profiles/{profile_id}` -> `RulesService.update_profile()` -> `SqlProfileRepository.update_profile()`.
+- New profile keywords enqueue `profile_updated` discovery jobs through `SqlDiscoveryJobRepository.create_pending_discovery_job_if_absent()`.
+
+### Risk Notes / Follow-ups
+- Auggie semantic retrieval returned HTTP 429, so implementation used direct file inspection and exact searches.
+- The current local tenant's already-created active monthly subscription row still has `keyword_limit=5`, but entitlement resolution now ignores that legacy monthly value and returns unlimited.
+- `project_detail_invalid` is still logged as a successful zero-project run. That is a separate crawler observability/retry issue from the subscription/rules fixes.
+
+## Debug - Monthly Crawl Shows Done But No New Projects (2026-05-21 11:51:51 +0700)
+
+### Goal
+Investigate the reported recurrence of the first one-time-pack symptom for `limanond.subhaj@gmail.com`: discovery runs appear complete, but no new projects show up.
+
+### Findings
+- Tenant/user mapping is correct: `limanond.subhaj@gmail.com` belongs to tenant `db354496-da2d-4c58-a95b-f75e7055704a`.
+- This is not a project-list UI filter problem. The `projects` table has only 3 rows for the tenant, all first seen on `2026-05-11`; `projects_first_seen_today` for `2026-05-21` is `0`.
+- The May 21 monthly profile `b8164248-dc49-44c5-912d-bf22a13cf11f` queued and dispatched five keyword jobs.
+- Run outcomes on `2026-05-21 10:42-10:49 +07`:
+  - `ระบบสารสนเทศ`: `keyword_no_results`, status `succeeded`, `projects_seen=0`.
+  - `ระบบบริหารจัดการ`: one eligible row opened, then `project_detail_invalid`, status `succeeded`, `projects_seen=0`.
+  - `คลังข้อมูล`: `keyword_no_results`, status `succeeded`, `projects_seen=0`.
+  - `แผน`: two eligible rows opened, both `project_detail_invalid`, status `succeeded`, `projects_seen=0`.
+  - `ที่ปรึกษา`: one eligible row opened, then `project_detail_invalid`, status `succeeded`, `projects_seen=0`.
+- The earlier one-time-pack run `597f60a1-d13a-414b-aed7-d46b4db912f7` on `2026-05-08` had the same visible symptom: `keyword_no_results`, status `succeeded`, `projects_seen=0`.
+- The later one-time-pack run `7ffaabe9-f77f-4874-a787-838b27b41939` on `2026-05-11` found and inserted 3 project rows, but each task failed on document ingest because the runtime DB schema lacked `documents.managed_backup_storage_key` at that time. That old schema issue is no longer present locally.
+- Follow-up verification after fetching `origin` showed commit `d88eb2a8` (`fix: harden live discovery no-results handling`) did land on local `main` and `origin/main` through PR #98 on `2026-05-18`.
+- What landed in `d88eb2a8`: `NO_RESULTS_STABLE_POLLS = 3`, debug snapshot logging before `keyword_no_results`, `_wait_for_search_results_stable()`, and tests for transient no-results shell/late rows.
+- What did not land anywhere as code: the stronger May 8 coding-log claim that `wait_for_results_ready()` returns `"rows"`, `"no_results"`, or `"unstable_no_results"`, plus run/UI semantics for ambiguous zero-result outcomes. Searches across local and `origin/*` refs found `unstable_no_results` only in coding-log text, not worker code.
+- Current `origin/main` still has `wait_for_results_ready() -> None`, and zero-result live runs still finish `succeeded` whenever no exception is raised.
+- `project_detail_invalid` currently drops an eligible row by returning `None`, marks the row as seen, and keeps crawling. If every eligible row is invalid, the run still finishes `succeeded` with zero projects. The log does not include the invalid reason, even though valid extracted project fields are present.
+
+### Root-Cause Gaps
+- The prior no-results race fix is partially present on `main`/`origin/main` (`d88eb2a8`), but only as heuristic stabilization and logging. The stronger fail-closed/tri-state outcome semantics described in the May 8 coding log are not present.
+- Eligible rows that reach project detail but are rejected as invalid are treated as a clean empty crawl instead of a partial/failed crawler issue.
+- The invalid-detail path lacks forensic detail, so the current logs cannot distinguish e-GP denial (`ข้อความปฎิเสธ`/`E1530`) from a stale search page/detail navigation anomaly.
+
+### TDD Evidence
+- No RED/GREEN cycle was run because this pass was investigation-only and made no code changes.
+
+### Commands Run
+- `mcp__auggie_mcp__codebase_retrieval(...)` -> HTTP 429; continued with direct inspection.
+- `rg -n "project_detail_invalid|projects_seen|project_count|one_time|one-time|ONE_TIME|record_discovery|keyword_finished|keyword_no_results" coding-logs docs tests apps packages .data/artifacts -g '*.md' -g '*.py' -g '*.log' -g '*.json'`
+- `psql ... select ... from crawl_runs where tenant_id='db354496-da2d-4c58-a95b-f75e7055704a' order by created_at desc limit 20`
+- `psql ... select ... from discovery_jobs where tenant_id='db354496-da2d-4c58-a95b-f75e7055704a' order by created_at desc limit 30`
+- `psql ... select ... from projects where tenant_id='db354496-da2d-4c58-a95b-f75e7055704a'`
+- `psql ... select ... from crawl_tasks where run_id in (...)`
+- `tail -n 80` over the target tenant worker logs under `.data/artifacts` and `apps/api/.data/artifacts`
+- Targeted `sed -n` reads of `apps/worker/src/egp_worker/browser_discovery.py`, `apps/worker/src/egp_worker/workflows/discover.py`, `apps/api/src/egp_api/services/discovery_worker_dispatcher.py`, `apps/worker/src/egp_worker/project_event_sink.py`, `packages/db/src/egp_db/repositories/project_persistence.py`, and `apps/web/src/lib/run-progress.ts`.
+- `git fetch --all --prune`
+- `git status --short --branch && git remote -v && git branch -vv --all`
+- `git merge-base --is-ancestor d88eb2a8 origin/main`
+- `git show --patch --stat d88eb2a8 -- apps/worker/src/egp_worker/browser_discovery.py tests/phase1/test_worker_browser_discovery.py`
+- `git for-each-ref ... | git grep -n 'unstable_no_results' ...`
+- `git for-each-ref ... | git grep -n 'return "rows"\\|return "no_results"\\|return "unstable_no_results"' ...`
+
+### Wiring Verification Evidence
+- Dispatch path: `DiscoveryDispatchProcessor.process_job()` -> `SubprocessDiscoveryDispatcher.dispatch()` -> worker subprocess `egp_worker.main`.
+- Worker path: `run_worker_job(command="discover")` -> `run_discover_workflow(live=True)` -> `crawl_live_discovery()` -> `_collect_keyword_projects()`.
+- Persistence path: `_persist_discovered_project()` -> `ProjectEventSink.record_discovery()` -> `ProjectIngestService.ingest_discovered_project()` -> `SqlProjectRepository.upsert_project()`.
+- In the May 21 runs, persistence was never reached for new payloads because `crawl_live_discovery()` returned no valid project payloads.
+
+### Follow-ups / Known Gaps
+- Reapply/finish the missing no-results stabilization work from the May 8 coding log.
+- Treat all-invalid eligible rows as a crawler anomaly, not a clean successful zero-result run.
+- Add invalid-detail reason logging and tests for denial/search-page/stale-navigation cases.

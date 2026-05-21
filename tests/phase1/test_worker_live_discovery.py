@@ -612,6 +612,126 @@ def test_run_discover_workflow_persists_live_progress(monkeypatch) -> None:
     }
 
 
+def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        kwargs["progress_callback"](
+            {
+                "stage": "keyword_no_results",
+                "keyword": "แพลตฟอร์ม",
+                "keyword_index": 1,
+                "keyword_count": 1,
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_error_count == 1
+    assert run_repository.finished_summary == {
+        "projects_seen": 0,
+        "live_progress": {
+            "stage": "keyword_no_results",
+            "keyword": "แพลตฟอร์ม",
+            "keyword_index": 1,
+            "keyword_count": 1,
+            "updated_at": run_repository.finished_summary["live_progress"]["updated_at"],
+        },
+        "live_crawl_anomaly_count": 1,
+        "live_crawl_latest_anomaly": {
+            "stage": "keyword_no_results",
+            "keyword": "แพลตฟอร์ม",
+            "keyword_index": 1,
+            "keyword_count": 1,
+        },
+        "error": "live crawl anomaly: keyword_no_results",
+    }
+    assert sink.discovery_events == []
+
+
+def test_run_discover_workflow_marks_invalid_live_detail_as_failed(
+    monkeypatch,
+) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(
+            {
+                "stage": "page_scan_finished",
+                "keyword": "แพลตฟอร์ม",
+                "page_num": 1,
+                "row_count": 1,
+                "eligible_count": 1,
+            }
+        )
+        progress_callback(
+            {
+                "stage": "project_detail_invalid",
+                "keyword": "แพลตฟอร์ม",
+                "project_name": "",
+                "organization_name": "",
+                "project_number": "",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_error_count == 1
+    assert run_repository.finished_summary == {
+        "projects_seen": 0,
+        "live_progress": {
+            "stage": "project_detail_invalid",
+            "keyword": "แพลตฟอร์ม",
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "updated_at": run_repository.finished_summary["live_progress"]["updated_at"],
+        },
+        "live_crawl_anomaly_count": 1,
+        "live_crawl_latest_anomaly": {
+            "stage": "project_detail_invalid",
+            "keyword": "แพลตฟอร์ม",
+            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+        },
+        "error": "live crawl anomaly: project_detail_invalid",
+    }
+    assert sink.discovery_events == []
+
+
 def test_run_discover_workflow_marks_run_started_before_live_discovery_begins() -> None:
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
