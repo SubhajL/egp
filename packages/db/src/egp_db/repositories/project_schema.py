@@ -121,6 +121,12 @@ PROJECT_STATUS_EVENTS_TABLE = Table(
     Column("run_id", UUID_SQL_TYPE, nullable=True),
     Column("raw_snapshot", JSON, nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint(
+        "project_id",
+        "normalized_status",
+        "observed_at",
+        name="project_status_events_project_status_observed_uq",
+    ),
 )
 
 Index(

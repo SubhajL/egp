@@ -78,26 +78,22 @@ class ProjectAliasMixin:
         created_at: datetime,
     ) -> None:
         for alias_type, alias_value in aliases:
-            existing = connection.execute(
-                select(PROJECT_ALIASES_TABLE.c.id).where(
-                    and_(
-                        PROJECT_ALIASES_TABLE.c.project_id == project_id,
-                        PROJECT_ALIASES_TABLE.c.alias_type == alias_type,
-                        PROJECT_ALIASES_TABLE.c.alias_value == alias_value,
-                    )
-                )
-            ).first()
-            if existing is not None:
-                continue
-            connection.execute(
-                insert(PROJECT_ALIASES_TABLE).values(
-                    id=str(uuid4()),
-                    project_id=project_id,
-                    alias_type=alias_type,
-                    alias_value=alias_value,
-                    created_at=created_at,
-                )
+            statement = _dialect_insert(PROJECT_ALIASES_TABLE, connection).values(
+                id=str(uuid4()),
+                project_id=project_id,
+                alias_type=alias_type,
+                alias_value=alias_value,
+                created_at=created_at,
             )
+            if hasattr(statement, "on_conflict_do_nothing"):
+                statement = statement.on_conflict_do_nothing(
+                    index_elements=[
+                        PROJECT_ALIASES_TABLE.c.project_id,
+                        PROJECT_ALIASES_TABLE.c.alias_type,
+                        PROJECT_ALIASES_TABLE.c.alias_value,
+                    ]
+                )
+            connection.execute(statement)
 
     def _insert_status_event(
         self,
@@ -136,15 +132,34 @@ class ProjectAliasMixin:
             )
             if latest_signature == next_signature:
                 return
-        connection.execute(
-            insert(PROJECT_STATUS_EVENTS_TABLE).values(
-                id=str(uuid4()),
-                project_id=project_id,
-                observed_status_text=observed_status_text,
-                normalized_status=normalized_status,
-                observed_at=observed_at,
-                run_id=run_id,
-                raw_snapshot=raw_snapshot,
-                created_at=observed_at,
-            )
+        statement = _dialect_insert(PROJECT_STATUS_EVENTS_TABLE, connection).values(
+            id=str(uuid4()),
+            project_id=project_id,
+            observed_status_text=observed_status_text,
+            normalized_status=normalized_status,
+            observed_at=observed_at,
+            run_id=run_id,
+            raw_snapshot=raw_snapshot,
+            created_at=observed_at,
         )
+        if hasattr(statement, "on_conflict_do_nothing"):
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[
+                    PROJECT_STATUS_EVENTS_TABLE.c.project_id,
+                    PROJECT_STATUS_EVENTS_TABLE.c.normalized_status,
+                    PROJECT_STATUS_EVENTS_TABLE.c.observed_at,
+                ]
+            )
+        connection.execute(statement)
+
+
+def _dialect_insert(table, connection):
+    if connection.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(table)
+    if connection.dialect.name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        return sqlite_insert(table)
+    return insert(table)
