@@ -85,5 +85,5 @@ def test_create_app_embedded_background_mode_preserves_database_defaults(
     assert app.state.background_runtime_mode == "embedded"
     assert app.state.webhook_delivery_processor_enabled is True
     assert app.state.discovery_dispatch_processor_enabled is True
-    assert app.state.discovery_dispatch_route_kick_enabled is False
+    assert app.state.discovery_dispatch_route_kick_enabled is True
     assert app.state.discovery_dispatch_processor.worker_count == 4
