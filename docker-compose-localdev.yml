@@ -59,6 +59,9 @@ services:
       EGP_WEB_BASE_URL: http://127.0.0.1:${EGP_WEB_PORT:-3002}
       EGP_INTERNAL_WORKER_TOKEN: ${EGP_INTERNAL_WORKER_TOKEN:-dev-internal-worker-token}
       EGP_BACKGROUND_RUNTIME_MODE: ${EGP_BACKGROUND_RUNTIME_MODE:-external}
+      EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
+      EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
+      EGP_BROWSER_PROFILE_ROOT: ${EGP_BROWSER_PROFILE_ROOT:-~/.egp/profiles}
     ports:
       - "${EGP_API_PORT:-8010}:8000"
     volumes:
@@ -103,6 +106,9 @@ services:
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: local
       EGP_DISCOVERY_WORKER_COUNT: ${EGP_DISCOVERY_WORKER_COUNT:-1}
+      EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
+      EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
+      EGP_BROWSER_PROFILE_ROOT: ${EGP_BROWSER_PROFILE_ROOT:-~/.egp/profiles}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:

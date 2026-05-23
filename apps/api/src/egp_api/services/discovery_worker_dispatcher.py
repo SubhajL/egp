@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import signal
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from uuid import uuid4
 
+from egp_api.config import (
+    get_browser_cdp_port_base,
+    get_browser_cdp_port_range,
+    get_browser_profile_root,
+)
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
     NonRetriableDiscoveryDispatchError,
@@ -22,14 +29,90 @@ DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
 _logger = logging.getLogger("egp_api.main")
 
 
+def _browser_cdp_port_for_run_id(
+    run_id: str,
+    *,
+    base: int,
+    port_range: int,
+) -> int:
+    if port_range < 1:
+        raise ValueError("port_range must be positive")
+    digest = hashlib.sha256(str(run_id).encode("utf-8")).digest()
+    return int(base) + (int.from_bytes(digest[:8], "big") % int(port_range))
+
+
+def _browser_profile_dir_for_run_id(
+    run_id: str,
+    *,
+    profile_root: Path,
+) -> Path:
+    resolved_root = profile_root.expanduser().resolve()
+    profile_dir = (resolved_root / str(run_id)).resolve()
+    try:
+        profile_dir.relative_to(resolved_root)
+    except ValueError as exc:
+        raise RuntimeError("browser profile dir must stay under EGP_BROWSER_PROFILE_ROOT") from exc
+    return profile_dir
+
+
+def _cleanup_browser_profile_dir(
+    profile_dir: Path | None,
+    *,
+    profile_root: Path,
+) -> None:
+    if profile_dir is None:
+        return
+    resolved_root = profile_root.expanduser().resolve()
+    try:
+        resolved_profile_dir = profile_dir.expanduser().resolve()
+        resolved_profile_dir.relative_to(resolved_root)
+    except Exception:
+        _logger.warning(
+            "Refusing to remove browser profile dir outside configured root (profile_dir=%s root=%s)",
+            profile_dir,
+            resolved_root,
+        )
+        return
+    if resolved_profile_dir == resolved_root:
+        _logger.warning("Refusing to remove browser profile root itself (%s)", resolved_root)
+        return
+    if not resolved_profile_dir.exists():
+        return
+    try:
+        shutil.rmtree(resolved_profile_dir)
+    except Exception:
+        _logger.warning(
+            "Failed to remove discovery worker browser profile dir (profile_dir=%s)",
+            resolved_profile_dir,
+            exc_info=True,
+        )
+
+
 def _resolve_browser_settings_payload(
     *,
     profile_repository,
     tenant_id: str,
     profile_id: str,
-) -> dict[str, object] | None:
+    run_id: str,
+    browser_cdp_port_base: int,
+    browser_cdp_port_range: int,
+    browser_profile_root: Path,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "browser_cdp_port": _browser_cdp_port_for_run_id(
+            run_id,
+            base=browser_cdp_port_base,
+            port_range=browser_cdp_port_range,
+        ),
+        "browser_profile_dir": str(
+            _browser_profile_dir_for_run_id(
+                run_id,
+                profile_root=browser_profile_root,
+            )
+        ),
+    }
     if profile_repository is None:
-        return None
+        return payload
     try:
         detail = profile_repository.get_profile_detail(
             tenant_id=tenant_id,
@@ -42,12 +125,12 @@ def _resolve_browser_settings_payload(
             profile_id,
             exc_info=True,
         )
-        return None
+        return payload
     if detail is None:
-        return None
+        return payload
     max_pages_per_keyword = getattr(detail.profile, "max_pages_per_keyword", None)
     if max_pages_per_keyword is None:
-        return None
+        return payload
     try:
         normalized_max_pages = max(1, int(max_pages_per_keyword))
     except (TypeError, ValueError):
@@ -57,8 +140,9 @@ def _resolve_browser_settings_payload(
             profile_id,
             max_pages_per_keyword,
         )
-        return None
-    return {"max_pages_per_keyword": normalized_max_pages}
+        return payload
+    payload["max_pages_per_keyword"] = normalized_max_pages
+    return payload
 
 
 def _stderr_preview(stderr: bytes | str | None, *, limit: int = 500) -> str | None:
@@ -127,12 +211,22 @@ class SubprocessDiscoveryDispatcher:
         run_repository=None,
         profile_repository=None,
         timeout_seconds: float = DISCOVER_WORKER_TIMEOUT_SECONDS,
+        browser_cdp_port_base: int | str | None = None,
+        browser_cdp_port_range: int | str | None = None,
+        browser_profile_root: Path | str | None = None,
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
         self._run_repository = run_repository or _NoopRunRepository()
         self._profile_repository = profile_repository
         self._timeout_seconds = timeout_seconds
+        self._browser_cdp_port_base = get_browser_cdp_port_base(browser_cdp_port_base)
+        self._browser_cdp_port_range = get_browser_cdp_port_range(browser_cdp_port_range)
+        if self._browser_cdp_port_base + self._browser_cdp_port_range - 1 > 65_535:
+            raise RuntimeError(
+                "EGP_BROWSER_CDP_PORT_BASE + EGP_BROWSER_CDP_PORT_RANGE must not exceed 65535"
+            )
+        self._browser_profile_root = get_browser_profile_root(browser_profile_root)
 
     def __call__(
         self,
@@ -157,6 +251,14 @@ class SubprocessDiscoveryDispatcher:
             profile_repository=self._profile_repository,
             tenant_id=request.tenant_id,
             profile_id=request.profile_id,
+            run_id=run_id,
+            browser_cdp_port_base=self._browser_cdp_port_base,
+            browser_cdp_port_range=self._browser_cdp_port_range,
+            browser_profile_root=self._browser_profile_root,
+        )
+        browser_profile_dir = _browser_profile_dir_for_run_id(
+            run_id,
+            profile_root=self._browser_profile_root,
         )
         self._run_repository.create_run(
             tenant_id=request.tenant_id,
@@ -192,7 +294,7 @@ class SubprocessDiscoveryDispatcher:
                 "trigger_type": "manual",
                 "live": True,
                 "live_include_documents": True,
-                **({"browser_settings": browser_settings} if browser_settings is not None else {}),
+                "browser_settings": browser_settings,
             },
             ensure_ascii=False,
         ).encode()
@@ -282,6 +384,10 @@ class SubprocessDiscoveryDispatcher:
         finally:
             if log_handle is not None:
                 log_handle.close()
+            _cleanup_browser_profile_dir(
+                browser_profile_dir,
+                profile_root=self._browser_profile_root,
+            )
 
     def _safe_update_run_summary(
         self,

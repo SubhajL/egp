@@ -7,9 +7,12 @@ This is the **landing page** for production deployment guidance. For end-to-end 
 | Env var | Required value | Why |
 |---|---|---|
 | `EGP_BACKGROUND_RUNTIME_MODE` | `external` | Run the discovery dispatch loop as a standalone process so a 3-hour `proc.communicate()` cannot freeze the API event loop. |
-| `EGP_DISCOVERY_WORKER_COUNT` | `1` | Per-spawn browser isolation is not yet implemented. See "Why worker_count must stay at 1" below. |
+| `EGP_DISCOVERY_WORKER_COUNT` | `1` | Keep single-worker mode until PR-03 is observed cleanly and host-level rate limiting ships. See "When worker_count can increase" below. |
+| `EGP_BROWSER_CDP_PORT_BASE` | `9222` | First Chrome remote-debugging port available for discovery workers. |
+| `EGP_BROWSER_CDP_PORT_RANGE` | `200` | Number of deterministic per-run CDP ports reserved on each host. |
+| `EGP_BROWSER_PROFILE_ROOT` | `~/.egp/profiles` | Root for per-run Chrome user-data directories; keep this outside synced folders. |
 
-Both compose files in this repo (`docker-compose.yml`, `docker-compose-localdev.yml`) default to these values. Do not override them in production until the prerequisites in [Why worker_count must stay at 1](#why-worker_count-must-stay-at-1) are met.
+Both compose files in this repo (`docker-compose.yml`, `docker-compose-localdev.yml`) default to the safe worker-count value. The browser isolation env vars have code defaults, but production should set them explicitly so operators know which host ports and profile root are reserved. Do not raise `EGP_DISCOVERY_WORKER_COUNT` in production until the prerequisites in [When worker_count can increase](#when-worker_count-can-increase) are met.
 
 ## Process topology
 
@@ -21,20 +24,27 @@ The production compose stack runs the discovery dispatcher as a separate service
 
 This is implemented as the `api`, `discovery-executor`, and `webhook-executor` services in [`docker-compose.yml`](../docker-compose.yml).
 
-## Why `worker_count` must stay at 1
+## Browser isolation
 
-`apps/worker/src/egp_worker/browser_discovery.py` currently hardcodes CDP port `9222` and Chrome user-data-dir `~/download/TOR/.browser_profile`. The API dispatcher at `apps/api/src/egp_api/services/discovery_worker_dispatcher.py` does not override either when spawning workers. With `EGP_DISCOVERY_WORKER_COUNT > 1` on a single host:
+Each discovery worker subprocess receives a deterministic browser configuration derived from its run ID:
+
+- `browser_cdp_port = EGP_BROWSER_CDP_PORT_BASE + sha256(run_id) % EGP_BROWSER_CDP_PORT_RANGE`
+- `browser_profile_dir = EGP_BROWSER_PROFILE_ROOT / run_id`
+
+The dispatcher removes the per-run profile directory after the worker exits. Cleanup refuses to delete paths outside `EGP_BROWSER_PROFILE_ROOT`, and cleanup failures are logged without changing the worker result.
+
+## When `worker_count` can increase
+
+Before per-run browser isolation shipped, `apps/worker/src/egp_worker/browser_discovery.py` used the default CDP port `9222` and Chrome user-data-dir `~/download/TOR/.browser_profile`. With `EGP_DISCOVERY_WORKER_COUNT > 1` on a single host and shared browser settings:
 
 1. Worker A launches Chrome on port 9222 with the shared profile dir.
 2. Worker B launches Chrome with the same `--user-data-dir`; Chrome's profile singleton lock forwards Worker B's launch to Worker A's running process, and Worker B's `--remote-debugging-port=9222` is ignored.
 3. Worker B's Playwright `connect_over_cdp("http://127.0.0.1:9222")` connects to **Worker A's browser**.
 4. Two crawl jobs silently drive one browser, causing wrong-tenant attribution and mixed downloads.
 
-Until per-worker CDP port + per-spawn profile dir are plumbed through the dispatcher payload (rollout-plan Item 2), the only safe value is `EGP_DISCOVERY_WORKER_COUNT=1`.
+PR-03 removes that specific collision by assigning per-run ports and profile dirs. Keep `EGP_DISCOVERY_WORKER_COUNT=1` for the first PR-03 observation window, then pilot `2` on one host only after confirming no orphan Chrome PIDs or profile-root growth.
 
-## When the safe operating point can be relaxed
-
-Raise `EGP_DISCOVERY_WORKER_COUNT` above 1 **only after all three** of these have shipped and been observed in production for 48h+:
+Raise `EGP_DISCOVERY_WORKER_COUNT` above 1 broadly **only after all three** of these have shipped and been observed in production for 48h+:
 
 1. Per-worker browser isolation (unique CDP port + unique Chrome user-data-dir per spawn).
 2. Host-level rate limiter against `gprocurement.go.th` with exponential backoff + circuit breaker.

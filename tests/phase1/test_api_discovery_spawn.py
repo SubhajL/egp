@@ -220,7 +220,9 @@ def test_discover_spawner_forwards_profile_max_pages_to_worker_payload(
 
     payload = json.loads((process.payload or b"{}").decode("utf-8"))
 
-    assert payload["browser_settings"] == {"max_pages_per_keyword": 37}
+    assert payload["browser_settings"]["max_pages_per_keyword"] == 37
+    assert isinstance(payload["browser_settings"]["browser_cdp_port"], int)
+    assert payload["browser_settings"]["browser_profile_dir"]
 
 
 def test_discover_spawner_persists_absolute_worker_log_path_for_relative_artifact_root(
