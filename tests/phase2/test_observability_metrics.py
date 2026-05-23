@@ -146,6 +146,24 @@ def test_document_upsert_conflict_metric_records_resolved_outcome() -> None:
     )
 
 
+def test_egp_request_and_rate_limiter_metric_helpers_record_outcomes() -> None:
+    from egp_observability.metrics import (
+        observe_rate_limiter_wait,
+        record_egp_request,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_egp_request(outcome="429")
+    observe_rate_limiter_wait(duration_seconds=0.25)
+
+    metrics_text = _metric_output()
+    assert 'egp_egp_request_total{outcome="429"} 1.0' in metrics_text
+    assert "egp_rate_limiter_wait_seconds_count 1.0" in metrics_text
+    assert "egp_rate_limiter_wait_seconds_sum 0.25" in metrics_text
+
+
 def test_grafana_dashboard_json_validates(repo_root: Path) -> None:
     dashboard_path = repo_root / "infrastructure" / "grafana" / "dashboard.json"
 

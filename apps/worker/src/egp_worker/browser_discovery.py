@@ -15,6 +15,11 @@ from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
+from egp_crawler_core.rate_limiter import (
+    CircuitOpenError,
+    exponential_backoff_delay,
+    get_default_rate_limiter,
+)
 from egp_document_classifier import derive_artifact_bucket
 
 try:
@@ -491,10 +496,10 @@ def _collect_keyword_projects(
             extra={"page_num": page_num, "next_page_num": page_num + 1},
         )
         try:
-            page.evaluate("(el) => el.click()", next_btn)
+            _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_btn))
         except Exception:
             try:
-                next_btn.click(timeout=10_000)
+                _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
             except Exception:
                 break
         _logged_sleep(3)
@@ -607,9 +612,9 @@ def restore_results_page(
         if not (next_btn and next_btn.is_visible()):
             break
         try:
-            page.evaluate("(el) => el.click()", next_btn)
+            _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_btn))
         except Exception:
-            next_btn.click(timeout=10_000)
+            _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
         _logged_sleep(3)
         _raise_on_site_error_toast(page, action=f"restore page {current_page + 1}")
         if not wait_for_results_page_change(
@@ -1244,6 +1249,57 @@ def wait_for_local_tcp_listen(host: str, port: int, timeout_seconds: float) -> b
         time.sleep(0.15)
 
 
+def _rate_limited_page_goto(page, url: str, *, wait_until: str, timeout: int):
+    return _run_egp_limited_action(lambda: page.goto(url, wait_until=wait_until, timeout=timeout))
+
+
+def _run_egp_limited_action(action):
+    limiter = get_default_rate_limiter()
+    try:
+        waited_seconds = limiter.acquire()
+    except CircuitOpenError:
+        _record_egp_request_metric("circuit_open")
+        raise
+    _observe_rate_limiter_wait_metric(waited_seconds)
+    try:
+        result = action()
+    except Exception as exc:
+        outcome = _classify_egp_exception(exc)
+        limiter.record_outcome(outcome)
+        _record_egp_request_metric(outcome)
+        raise
+    limiter.record_outcome("success")
+    _record_egp_request_metric("success")
+    return result
+
+
+def _classify_egp_exception(exc: Exception) -> str:
+    if isinstance(exc, CircuitOpenError):
+        return "circuit_open"
+    message = str(exc).casefold()
+    if "429" in message or "too many requests" in message:
+        return "429"
+    return "error"
+
+
+def _record_egp_request_metric(outcome: str) -> None:
+    try:
+        from egp_observability import record_egp_request
+
+        record_egp_request(outcome=outcome)
+    except Exception:
+        return
+
+
+def _observe_rate_limiter_wait_metric(duration_seconds: float) -> None:
+    try:
+        from egp_observability import observe_rate_limiter_wait
+
+        observe_rate_limiter_wait(duration_seconds=duration_seconds)
+    except Exception:
+        return
+
+
 def _goto_with_recovery(
     page,
     url: str,
@@ -1257,12 +1313,23 @@ def _goto_with_recovery(
         else max(0, int(retries_remaining))
     )
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
+        _rate_limited_page_goto(
+            page,
+            url,
+            wait_until="domcontentloaded",
+            timeout=settings.nav_timeout_ms,
+        )
         return
     except Exception as exc:
         if "ERR_ABORTED" not in str(exc) or retry_budget <= 0:
             raise
-        _logged_sleep(1)
+        _logged_sleep(
+            exponential_backoff_delay(
+                attempt=settings.search_page_recovery_retries - retry_budget,
+                base_seconds=1.0,
+                max_seconds=5.0,
+            )
+        )
         _goto_with_recovery(
             page,
             url,
@@ -1321,13 +1388,26 @@ def wait_for_cloudflare(page, timeout_ms: int, reload_retries: int = 1) -> bool:
         _logged_sleep(2)
     if reload_retries > 0:
         try:
-            page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+            _run_egp_limited_action(
+                lambda: page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
+            )
         except Exception:
             try:
-                page.goto(page.url, wait_until="domcontentloaded", timeout=timeout_ms)
+                _rate_limited_page_goto(
+                    page,
+                    page.url,
+                    wait_until="domcontentloaded",
+                    timeout=timeout_ms,
+                )
             except Exception:
                 return False
-        _logged_sleep(3)
+        _logged_sleep(
+            exponential_backoff_delay(
+                attempt=max(0, 1 - reload_retries),
+                base_seconds=3.0,
+                max_seconds=10.0,
+            )
+        )
         return wait_for_cloudflare(page, timeout_ms, reload_retries=reload_retries - 1)
     return False
 
@@ -1481,23 +1561,25 @@ def _retry_search_from_clean_page(
 def click_search_button(page, search_btn=None, timeout_ms: int | None = None) -> None:
     """Click the primary search button with a DOM-query fallback for SPA rerenders."""
     try:
-        clicked = page.evaluate(
-            """() => {
-                const buttons = Array.from(document.querySelectorAll('button'));
-                for (const btn of buttons) {
-                    const txt = (btn.innerText || '').trim();
-                    if (
-                        txt.includes('ค้นหา') &&
-                        !txt.includes('ค้นหาขั้นสูง') &&
-                        btn.offsetParent !== null &&
-                        !btn.disabled
-                    ) {
-                        btn.click();
-                        return true;
+        clicked = _run_egp_limited_action(
+            lambda: page.evaluate(
+                """() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    for (const btn of buttons) {
+                        const txt = (btn.innerText || '').trim();
+                        if (
+                            txt.includes('ค้นหา') &&
+                            !txt.includes('ค้นหาขั้นสูง') &&
+                            btn.offsetParent !== null &&
+                            !btn.disabled
+                        ) {
+                            btn.click();
+                            return true;
+                        }
                     }
-                }
-                return false;
-            }"""
+                    return false;
+                }"""
+            )
         )
         if clicked:
             return
@@ -1510,11 +1592,11 @@ def click_search_button(page, search_btn=None, timeout_ms: int | None = None) ->
     try:
         if search_btn is None:
             search_btn = page.wait_for_selector(selector, timeout=effective_timeout)
-        search_btn.click()
+        _run_egp_limited_action(lambda: search_btn.click())
         return
     except Exception:
         fallback_btn = page.wait_for_selector(selector, timeout=effective_timeout)
-        page.evaluate("(el) => el.click()", fallback_btn)
+        _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", fallback_btn))
 
 
 def is_no_results_page(page) -> bool:
@@ -1779,7 +1861,12 @@ def clear_search(page, settings: BrowserDiscoverySettings) -> None:
         clear_btn.click()
         _logged_sleep(1)
     except PlaywrightTimeout:
-        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
+        _rate_limited_page_goto(
+            page,
+            SEARCH_URL,
+            wait_until="domcontentloaded",
+            timeout=settings.nav_timeout_ms,
+        )
         _logged_sleep(3)
         wait_for_cloudflare(page, settings.cloudflare_timeout_ms)
 
@@ -1828,15 +1915,15 @@ def _open_project_from_results_cell(page, cell) -> bool:
         for click_mode in ("native", "dom"):
             try:
                 if click_mode == "native":
-                    target.click()
+                    _run_egp_limited_action(lambda: target.click())
                 else:
-                    page.evaluate("(el) => el.click()", target)
+                    _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", target))
             except Exception:
                 continue
             if _wait_for_project_detail_navigation(page, url_before=url_before):
                 return True
     try:
-        cell.click()
+        _run_egp_limited_action(lambda: cell.click())
     except Exception:
         return False
     return _wait_for_project_detail_navigation(page, url_before=url_before)

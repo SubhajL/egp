@@ -8,7 +8,9 @@ from .metrics import (
     instrument_fastapi_app,
     metric_names_for_validation,
     observe_api_request,
+    observe_rate_limiter_wait,
     record_document_upsert_conflict,
+    record_egp_request,
     record_worker_job,
     render_prometheus_metrics,
 )
@@ -21,7 +23,9 @@ __all__ = [
     "instrument_fastapi_app",
     "metric_names_for_validation",
     "observe_api_request",
+    "observe_rate_limiter_wait",
     "record_document_upsert_conflict",
+    "record_egp_request",
     "record_worker_job",
     "render_prometheus_metrics",
 ]
