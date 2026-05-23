@@ -41,6 +41,58 @@ def get_discovery_worker_count(override: int | str | None = None) -> int:
     return worker_count
 
 
+def _get_positive_int_env(
+    *,
+    name: str,
+    default: int,
+    override: int | str | None = None,
+) -> int:
+    if override is None:
+        raw: int | str = os.getenv(name, str(default))
+    else:
+        raw = override
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be a positive integer") from exc
+    if value < 1:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+def get_browser_cdp_port_base(override: int | str | None = None) -> int:
+    """Return the first Chrome CDP port available for discovery workers."""
+
+    port_base = _get_positive_int_env(
+        name="EGP_BROWSER_CDP_PORT_BASE",
+        default=9222,
+        override=override,
+    )
+    if port_base > 65_535:
+        raise RuntimeError("EGP_BROWSER_CDP_PORT_BASE must be between 1 and 65535")
+    return port_base
+
+
+def get_browser_cdp_port_range(override: int | str | None = None) -> int:
+    """Return the number of CDP ports reserved for discovery workers."""
+
+    return _get_positive_int_env(
+        name="EGP_BROWSER_CDP_PORT_RANGE",
+        default=200,
+        override=override,
+    )
+
+
+def get_browser_profile_root(override: Path | str | None = None) -> Path:
+    """Return the root directory for per-run Chrome user-data directories."""
+
+    if override is not None:
+        raw = str(override).strip()
+    else:
+        raw = os.getenv("EGP_BROWSER_PROFILE_ROOT", "~/.egp/profiles").strip()
+    return Path(raw or "~/.egp/profiles").expanduser().resolve()
+
+
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:
         return override.expanduser().resolve()

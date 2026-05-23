@@ -45,6 +45,8 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         "browser_chrome_path": "chrome_path",
     }
     for payload_key, setting_key in flat_key_map.items():
+        if settings_payload.get(payload_key) is not None:
+            settings_payload[setting_key] = settings_payload[payload_key]
         if payload.get(payload_key) is not None:
             settings_payload[setting_key] = payload[payload_key]
     if not settings_payload:

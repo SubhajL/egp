@@ -1237,7 +1237,7 @@ def test_run_worker_job_forwards_browser_settings_to_discover_workflow(
             "keyword": "แพลตฟอร์ม",
             "live": True,
             "browser_settings": {
-                "cdp_port": 9333,
+                "browser_cdp_port": 9333,
                 "browser_profile_dir": str(tmp_path / "browser-profile"),
             },
         }

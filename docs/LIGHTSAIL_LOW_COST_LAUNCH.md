@@ -204,6 +204,10 @@ EGP_WEB_BASE_URL=https://app.yourdomain.com
 NEXT_PUBLIC_EGP_API_BASE_URL=https://api.yourdomain.com
 EGP_ARTIFACT_ROOT=/srv/egp/artifacts
 EGP_BACKGROUND_RUNTIME_MODE=external
+EGP_DISCOVERY_WORKER_COUNT=1
+EGP_BROWSER_CDP_PORT_BASE=9222
+EGP_BROWSER_CDP_PORT_RANGE=200
+EGP_BROWSER_PROFILE_ROOT=/srv/egp/browser-profiles
 ```
 
 ### Notes
