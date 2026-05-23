@@ -6,10 +6,14 @@ import logging
 import mimetypes
 
 from sqlalchemy import and_, desc, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
 from egp_db.artifact_store import ArtifactStore
 from egp_db.db_utils import normalize_uuid_string
-from egp_db.tenant_storage_resolver import ResolvedDocumentWritePlan
+from egp_db.tenant_storage_resolver import (
+    ResolvedDocumentWritePlan,
+    encode_provider_storage_key,
+)
 from egp_document_classifier.classifier import derive_artifact_bucket
 from egp_document_classifier.diff_engine import ComparisonScope
 from egp_shared_types.enums import ArtifactBucket, DocumentPhase, DocumentType
@@ -59,6 +63,96 @@ class DocumentPersistenceMixin:
             .first()
         )
         return _document_from_mapping(row) if row is not None else None
+
+    def _insert_document_metadata(
+        self,
+        connection,
+        *,
+        tenant_id: str,
+        stored_document: DocumentRecord,
+    ) -> tuple[DocumentRecord, bool]:
+        statement = _dialect_insert(DOCUMENTS_TABLE, connection).values(
+            id=stored_document.id,
+            tenant_id=tenant_id,
+            project_id=stored_document.project_id,
+            file_name=stored_document.file_name,
+            sha256=stored_document.sha256,
+            storage_key=stored_document.storage_key,
+            managed_backup_storage_key=stored_document.managed_backup_storage_key,
+            document_type=stored_document.document_type.value,
+            document_phase=stored_document.document_phase.value,
+            source_label=stored_document.source_label,
+            source_status_text=stored_document.source_status_text,
+            size_bytes=stored_document.size_bytes,
+            is_current=stored_document.is_current,
+            supersedes_document_id=stored_document.supersedes_document_id,
+            created_at=_to_db_timestamp(stored_document.created_at),
+        )
+        if hasattr(statement, "on_conflict_do_nothing"):
+            statement = statement.on_conflict_do_nothing(
+                index_elements=[
+                    DOCUMENTS_TABLE.c.tenant_id,
+                    DOCUMENTS_TABLE.c.project_id,
+                    DOCUMENTS_TABLE.c.sha256,
+                    DOCUMENTS_TABLE.c.document_type,
+                    DOCUMENTS_TABLE.c.document_phase,
+                ]
+            )
+            connection.execute(statement)
+        else:
+            try:
+                with connection.begin_nested():
+                    connection.execute(statement)
+            except IntegrityError:
+                pass
+
+        row = (
+            connection.execute(
+                select(DOCUMENTS_TABLE)
+                .where(
+                    and_(
+                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                        DOCUMENTS_TABLE.c.project_id == stored_document.project_id,
+                        DOCUMENTS_TABLE.c.sha256 == stored_document.sha256,
+                        DOCUMENTS_TABLE.c.document_type
+                        == stored_document.document_type.value,
+                        DOCUMENTS_TABLE.c.document_phase
+                        == stored_document.document_phase.value,
+                    )
+                )
+                .limit(1)
+            )
+            .mappings()
+            .one()
+        )
+        persisted_document = _document_from_mapping(row)
+        return (persisted_document, persisted_document.id == stored_document.id)
+
+    def _cleanup_unreferenced_blob_writes(
+        self,
+        *,
+        cleanup_targets: list[tuple[str, ArtifactStore, str]],
+        persisted_document: DocumentRecord,
+    ) -> int:
+        referenced_storage_keys = {persisted_document.storage_key}
+        if persisted_document.managed_backup_storage_key is not None:
+            referenced_storage_keys.add(persisted_document.managed_backup_storage_key)
+
+        cleanup_count = 0
+        for provider, cleanup_artifact_store, cleanup_storage_key in reversed(
+            cleanup_targets
+        ):
+            encoded_cleanup_storage_key = encode_provider_storage_key(
+                provider, cleanup_storage_key
+            )
+            if (
+                cleanup_storage_key in referenced_storage_keys
+                or encoded_cleanup_storage_key in referenced_storage_keys
+            ):
+                continue
+            cleanup_artifact_store.delete(cleanup_storage_key)
+            cleanup_count += 1
+        return cleanup_count
 
     def store_document(
         self,
@@ -267,25 +361,37 @@ class DocumentPersistenceMixin:
                         .values(is_current=False)
                     )
 
-                connection.execute(
-                    insert(DOCUMENTS_TABLE).values(
-                        id=stored_document.id,
-                        tenant_id=tenant_id,
-                        project_id=stored_document.project_id,
-                        file_name=stored_document.file_name,
-                        sha256=stored_document.sha256,
-                        storage_key=stored_document.storage_key,
-                        managed_backup_storage_key=stored_document.managed_backup_storage_key,
-                        document_type=stored_document.document_type.value,
-                        document_phase=stored_document.document_phase.value,
-                        source_label=stored_document.source_label,
-                        source_status_text=stored_document.source_status_text,
-                        size_bytes=stored_document.size_bytes,
-                        is_current=stored_document.is_current,
-                        supersedes_document_id=stored_document.supersedes_document_id,
-                        created_at=_to_db_timestamp(stored_document.created_at),
-                    )
+                persisted_document, created = self._insert_document_metadata(
+                    connection,
+                    tenant_id=tenant_id,
+                    stored_document=stored_document,
                 )
+                if not created:
+                    cleanup_count = self._cleanup_unreferenced_blob_writes(
+                        cleanup_targets=cleanup_targets,
+                        persisted_document=persisted_document,
+                    )
+                    _record_document_upsert_conflict("resolved")
+                    logger.info(
+                        "Document upsert conflict resolved for %s",
+                        file_name,
+                        extra={
+                            "egp_event": "document_store_upsert_conflict_resolved",
+                            "tenant_id": tenant_id,
+                            "project_id": project_id,
+                            "file_name": file_name,
+                            "existing_document_id": persisted_document.id,
+                            "document_sha256": persisted_document.sha256,
+                            "document_type": persisted_document.document_type.value,
+                            "document_phase": persisted_document.document_phase.value,
+                            "cleanup_count": cleanup_count,
+                        },
+                    )
+                    return StoreDocumentResult(
+                        created=False,
+                        document=persisted_document,
+                        diff_records=[],
+                    )
 
                 new_diff_records: list[DocumentDiffRecord] = []
                 if comparison_target is not None and comparison_scope is not None:
@@ -416,3 +522,23 @@ class DocumentPersistenceMixin:
                 .first()
             )
         return _document_from_mapping(row) if row is not None else None
+
+
+def _dialect_insert(table, connection):
+    if connection.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(table)
+    if connection.dialect.name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        return sqlite_insert(table)
+    return insert(table)
+
+
+def _record_document_upsert_conflict(outcome: str) -> None:
+    try:
+        from egp_observability.metrics import record_document_upsert_conflict
+    except ImportError:
+        return
+    record_document_upsert_conflict(outcome=outcome)
