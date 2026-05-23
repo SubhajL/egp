@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -29,6 +30,28 @@ class PendingDiscoveryProcessor(Protocol):
 
 class MissingWorkerReconciler(Protocol):
     def reconcile_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]: ...
+
+
+class DiscoveryDispatchWakeSignal:
+    """Thread-safe signal for waking the async discovery dispatch loop."""
+
+    def __init__(
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+        event: asyncio.Event | None = None,
+    ) -> None:
+        self._loop = loop or asyncio.get_running_loop()
+        self._event = event or asyncio.Event()
+
+    def wake(self) -> None:
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    async def wait(self) -> None:
+        await self._event.wait()
+
+    def clear(self) -> None:
+        self._event.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,13 +162,15 @@ async def run_discovery_dispatch_loop(
     run_service: MissingWorkerReconciler | None = None,
     owner_pid: int | None = None,
     logger: logging.Logger | None = None,
+    wake_signal: DiscoveryDispatchWakeSignal | None = None,
 ) -> None:
     """Process queued discovery dispatch jobs until `stop_event` is set."""
 
     resolved_logger = logger or globals()["logger"]
     while not stop_event.is_set():
         try:
-            run_discovery_dispatch_once(
+            await asyncio.to_thread(
+                run_discovery_dispatch_once,
                 processor=processor,
                 run_service=run_service,
                 owner_pid=owner_pid,
@@ -156,13 +181,43 @@ async def run_discovery_dispatch_loop(
                 "Failed to process pending discovery dispatch jobs",
                 exc_info=True,
             )
+        await _wait_for_next_dispatch(
+            stop_event=stop_event,
+            wake_signal=wake_signal,
+            timeout_seconds=max(0.05, float(poll_interval_seconds)),
+        )
+
+
+async def _wait_for_next_dispatch(
+    *,
+    stop_event: asyncio.Event,
+    wake_signal: DiscoveryDispatchWakeSignal | None,
+    timeout_seconds: float,
+) -> None:
+    if wake_signal is None:
         try:
-            await asyncio.wait_for(
-                stop_event.wait(),
-                timeout=max(0.05, float(poll_interval_seconds)),
-            )
+            await asyncio.wait_for(stop_event.wait(), timeout=timeout_seconds)
         except TimeoutError:
-            continue
+            return
+        return
+
+    pending: set[asyncio.Task[bool | None]] = set()
+    stop_task = asyncio.create_task(stop_event.wait())
+    wake_task = asyncio.create_task(wake_signal.wait())
+    try:
+        done, pending = await asyncio.wait(
+            {stop_task, wake_task},
+            timeout=timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if wake_task in done:
+            wake_signal.clear()
+    finally:
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def _reconcile_if_configured(

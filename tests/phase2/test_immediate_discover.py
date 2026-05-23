@@ -1,9 +1,8 @@
-"""Tests for immediate discover trigger after profile creation.
+"""Tests for discovery job queueing after profile creation.
 
 When a user creates a keyword profile via POST /v1/rules/profiles, the API
-should schedule background discover jobs — one per keyword — using the
-discover_spawner callable on app.state.  In production this spawns a worker
-subprocess; in tests we inject a simple recorder.
+queues discovery jobs. Dispatch is owned by the discovery dispatcher loop or an
+external executor, not by route-level background work.
 """
 
 from __future__ import annotations
@@ -35,6 +34,19 @@ TENANT_ID = "11111111-1111-1111-1111-111111111111"
 # ---------------------------------------------------------------------------
 
 
+class RecordingWakeSignal:
+    def __init__(self) -> None:
+        self.wake_count = 0
+
+    def wake(self) -> None:
+        self.wake_count += 1
+
+
+class FailingDiscoveryProcessor:
+    def process_pending(self, *, limit: int | None = None) -> int:
+        raise AssertionError("route handlers must not execute discovery dispatch")
+
+
 def _make_app_with_recorder(tmp_path, *, spawner=None):
     """Create a test app with an injected discover_spawner recorder."""
     database_url = f"sqlite+pysqlite:///{tmp_path / 'discover-trigger.sqlite3'}"
@@ -53,8 +65,8 @@ def _make_app_with_recorder(tmp_path, *, spawner=None):
 # ---------------------------------------------------------------------------
 
 
-def test_profile_creation_triggers_discover_per_keyword(tmp_path):
-    """POST /v1/rules/profiles should dispatch one queued job per keyword."""
+def test_profile_creation_queues_discover_per_keyword(tmp_path):
+    """POST /v1/rules/profiles should queue one discovery job per keyword."""
     spawned: list[dict] = []
 
     def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
@@ -92,12 +104,8 @@ def test_profile_creation_triggers_discover_per_keyword(tmp_path):
     body = response.json()
     profile_id = body["id"]
 
-    assert len(spawned) == 2
-    assert spawned[0]["tenant_id"] == TENANT_ID
-    assert spawned[0]["profile_id"] == profile_id
-    assert spawned[0]["profile_type"] == "custom"
-    assert spawned[0]["keyword"] == "analytics"
-    assert spawned[1]["keyword"] == "cloud procurement"
+    assert profile_id
+    assert spawned == []
 
     with client.app.state.db_engine.connect() as connection:
         count = connection.execute(
@@ -106,13 +114,17 @@ def test_profile_creation_triggers_discover_per_keyword(tmp_path):
     assert count == 2
 
 
-def test_profile_creation_uses_overridden_spawner_for_queue_dispatch(tmp_path):
+def test_profile_creation_writes_wake_signal_without_inline_dispatch(tmp_path):
     dispatched: list[str] = []
 
     def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
         dispatched.append(keyword)
 
     client = TestClient(_make_app_with_recorder(tmp_path, spawner=record_spawn))
+    wake_signal = RecordingWakeSignal()
+    client.app.state.discovery_dispatch_route_kick_enabled = True
+    client.app.state.discovery_dispatch_wake_signal = wake_signal
+    client.app.state.discovery_dispatch_processor = FailingDiscoveryProcessor()
     today = date.today()
     _seed_subscription(
         client,
@@ -134,7 +146,8 @@ def test_profile_creation_uses_overridden_spawner_for_queue_dispatch(tmp_path):
     )
 
     assert response.status_code == 201
-    assert dispatched == ["analytics"]
+    assert dispatched == []
+    assert wake_signal.wake_count == 1
 
 
 def test_profile_creation_succeeds_when_spawner_is_none(tmp_path):
@@ -170,7 +183,7 @@ def test_profile_creation_succeeds_when_spawner_is_none(tmp_path):
     assert response.json()["keywords"] == ["testing"]
 
 
-def test_profile_creation_persists_jobs_and_background_processor_dispatches_them(
+def test_profile_creation_persists_jobs_for_dispatcher_without_route_processing(
     tmp_path,
 ):
     dispatched: list[str] = []
@@ -200,7 +213,7 @@ def test_profile_creation_persists_jobs_and_background_processor_dispatches_them
     )
 
     assert response.status_code == 201
-    assert dispatched == ["analytics", "cloud procurement"]
+    assert dispatched == []
 
     with client.app.state.db_engine.connect() as connection:
         rows = (
@@ -213,11 +226,11 @@ def test_profile_creation_persists_jobs_and_background_processor_dispatches_them
             .all()
         )
     assert rows == [
-        {"keyword": "analytics", "job_status": "dispatched", "attempt_count": 1},
+        {"keyword": "analytics", "job_status": "pending", "attempt_count": 0},
         {
             "keyword": "cloud procurement",
-            "job_status": "dispatched",
-            "attempt_count": 1,
+            "job_status": "pending",
+            "attempt_count": 0,
         },
     ]
 
@@ -350,7 +363,9 @@ def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispat
     assert count == 0
 
 
-def test_active_free_trial_profile_creation_still_enqueues_and_dispatches(tmp_path):
+def test_active_free_trial_profile_creation_still_enqueues_without_inline_dispatch(
+    tmp_path,
+):
     spawned: list[str] = []
 
     def record_spawn(*, tenant_id, profile_id, profile_type, keyword):
@@ -378,7 +393,7 @@ def test_active_free_trial_profile_creation_still_enqueues_and_dispatches(tmp_pa
     )
 
     assert response.status_code == 201
-    assert spawned == ["analytics"]
+    assert spawned == []
 
     with client.app.state.db_engine.connect() as connection:
         count = connection.execute(
@@ -566,7 +581,7 @@ def test_make_discover_spawner_enables_live_document_collection_in_worker_payloa
     assert payload["live_include_documents"] is True
 
 
-def test_discovery_dispatch_runtime_uses_single_dispatch_path_per_database_backend():
+def test_discovery_dispatch_runtime_wakes_embedded_loop_only():
     sqlite_url = "sqlite+pysqlite:///test.sqlite3"
     postgres_url = "postgresql://egp:egp_dev@localhost:5432/egp"
 
@@ -582,7 +597,7 @@ def test_discovery_dispatch_runtime_uses_single_dispatch_path_per_database_backe
             sqlite_url,
             background_runtime_mode="embedded",
         )
-        is True
+        is False
     )
 
     assert (
@@ -597,7 +612,7 @@ def test_discovery_dispatch_runtime_uses_single_dispatch_path_per_database_backe
             postgres_url,
             background_runtime_mode="embedded",
         )
-        is False
+        is True
     )
     assert (
         _discovery_dispatch_loop_enabled_for_database_url(

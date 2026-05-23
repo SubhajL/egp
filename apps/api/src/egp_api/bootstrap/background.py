@@ -10,7 +10,10 @@ import logging
 from fastapi import FastAPI
 
 from egp_api.config import BackgroundRuntimeMode
-from egp_api.executors.discovery_dispatch import run_discovery_dispatch_loop
+from egp_api.executors.discovery_dispatch import (
+    DiscoveryDispatchWakeSignal,
+    run_discovery_dispatch_loop,
+)
 from egp_api.executors.webhook_delivery import run_webhook_delivery_loop
 from egp_db.db_utils import is_sqlite_url
 
@@ -32,7 +35,7 @@ def discovery_dispatch_route_kick_enabled(
 ) -> bool:
     if background_runtime_mode == "external":
         return False
-    return not discovery_dispatch_loop_enabled_for_database_url(
+    return discovery_dispatch_loop_enabled_for_database_url(
         database_url,
         background_runtime_mode=background_runtime_mode,
     )
@@ -45,6 +48,7 @@ def build_lifespan(*, logger: logging.Logger):
         poller_stop_event = None
         discovery_task = None
         discovery_stop_event = None
+        discovery_wake_signal = None
         processor = getattr(app.state, "webhook_delivery_processor", None)
         discovery_processor = getattr(app.state, "discovery_dispatch_processor", None)
         if processor is not None and getattr(
@@ -62,6 +66,8 @@ def build_lifespan(*, logger: logging.Logger):
             app.state, "discovery_dispatch_processor_enabled", False
         ):
             discovery_stop_event = asyncio.Event()
+            discovery_wake_signal = DiscoveryDispatchWakeSignal()
+            app.state.discovery_dispatch_wake_signal = discovery_wake_signal
             discovery_task = asyncio.create_task(
                 run_discovery_dispatch_loop(
                     processor=discovery_processor,
@@ -70,6 +76,7 @@ def build_lifespan(*, logger: logging.Logger):
                     stop_event=discovery_stop_event,
                     poll_interval_seconds=1.0,
                     logger=logger,
+                    wake_signal=discovery_wake_signal,
                 )
             )
         try:
@@ -83,9 +90,11 @@ def build_lifespan(*, logger: logging.Logger):
                     await poller_task
             if discovery_stop_event is not None:
                 discovery_stop_event.set()
+            if discovery_wake_signal is not None:
+                discovery_wake_signal.wake()
             if discovery_task is not None:
-                discovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await discovery_task
+            app.state.discovery_dispatch_wake_signal = None
 
     return lifespan

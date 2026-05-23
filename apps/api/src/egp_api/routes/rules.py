@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import asdict
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -135,6 +135,30 @@ def _service_from_request(request: Request) -> RulesService:
     return request.app.state.rules_service
 
 
+def _wake_discovery_dispatch(
+    request: Request,
+    *,
+    pending_job_count: int,
+) -> None:
+    if pending_job_count <= 0:
+        return
+    route_kick_enabled = bool(
+        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", False)
+    )
+    if not route_kick_enabled:
+        return
+    wake_signal = getattr(request.app.state, "discovery_dispatch_wake_signal", None)
+    if wake_signal is None:
+        logger.debug("Discovery dispatch route kick requested with no wake signal")
+        return
+    try:
+        wake_signal.wake()
+    except Exception:
+        logger.warning("Failed to wake discovery dispatch loop", exc_info=True)
+        return
+    logger.info("Woke discovery dispatcher for %d queued job(s)", pending_job_count)
+
+
 def _serialize_rules(snapshot: RulesSnapshot) -> RulesResponse:
     return RulesResponse(
         profiles=[RuleProfileResponse(**asdict(profile)) for profile in snapshot.profiles],
@@ -158,7 +182,6 @@ def create_rule_profile(
     payload: CreateRuleProfileRequest,
     request: Request,
     response: Response,
-    background_tasks: BackgroundTasks,
 ) -> RuleProfileResponse:
     require_admin_role(request)
     service = _service_from_request(request)
@@ -181,18 +204,7 @@ def create_rule_profile(
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
-    # Best-effort: spawn a discover worker for each new keyword.
-    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
-    route_kick_enabled = bool(
-        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
-    )
-    if processor is not None and route_kick_enabled and profile.keywords:
-        logger.info(
-            "Scheduled %d immediate discover jobs for profile %s",
-            len(profile.keywords),
-            profile.id,
-        )
-        background_tasks.add_task(processor.process_pending)
+    _wake_discovery_dispatch(request, pending_job_count=len(profile.keywords))
 
     response.status_code = status.HTTP_201_CREATED
     return RuleProfileResponse(**asdict(profile))
@@ -203,7 +215,6 @@ def update_rule_profile(
     profile_id: str,
     payload: UpdateRuleProfileRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> RuleProfileResponse:
     require_admin_role(request)
     service = _service_from_request(request)
@@ -228,12 +239,8 @@ def update_rule_profile(
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
-    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
-    route_kick_enabled = bool(
-        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
-    )
-    if processor is not None and route_kick_enabled and profile.is_active and profile.keywords:
-        background_tasks.add_task(processor.process_pending)
+    if profile.is_active:
+        _wake_discovery_dispatch(request, pending_job_count=len(profile.keywords))
 
     return RuleProfileResponse(**asdict(profile))
 
@@ -243,7 +250,6 @@ def recrawl_active_keywords(
     payload: ManualRecrawlRequest,
     request: Request,
     response: Response,
-    background_tasks: BackgroundTasks,
 ) -> ManualRecrawlResponse:
     require_admin_role(request)
     service = _service_from_request(request)
@@ -257,12 +263,7 @@ def recrawl_active_keywords(
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
-    processor = getattr(request.app.state, "discovery_dispatch_processor", None)
-    route_kick_enabled = bool(
-        getattr(request.app.state, "discovery_dispatch_route_kick_enabled", True)
-    )
-    if processor is not None and route_kick_enabled and queued.queued_job_count > 0:
-        background_tasks.add_task(processor.process_pending)
+    _wake_discovery_dispatch(request, pending_job_count=queued.queued_job_count)
 
     response.status_code = status.HTTP_202_ACCEPTED
     return ManualRecrawlResponse(**asdict(queued))
