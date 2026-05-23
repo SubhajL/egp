@@ -268,6 +268,15 @@ def record_worker_job(
     metrics.worker_job_duration.labels(**labels).observe(max(0.0, duration_seconds))
 
 
+def record_document_upsert_conflict(*, outcome: str) -> None:
+    """Record one document upsert conflict with a low-cardinality outcome label."""
+
+    metrics = initialize_metrics()
+    metrics.document_upsert_conflicts.labels(
+        outcome=_normalize_label(outcome or "unknown")
+    ).inc()
+
+
 def instrument_fastapi_app(app: "FastAPI") -> None:
     """Register Prometheus middleware and the `/metrics` scrape endpoint."""
 

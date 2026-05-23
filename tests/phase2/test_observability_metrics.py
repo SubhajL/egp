@@ -130,6 +130,22 @@ def test_worker_main_records_failed_command_metrics() -> None:
     )
 
 
+def test_document_upsert_conflict_metric_records_resolved_outcome() -> None:
+    from egp_observability.metrics import (
+        record_document_upsert_conflict,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_document_upsert_conflict(outcome="resolved")
+
+    assert (
+        'egp_document_upsert_conflicts_total{outcome="resolved"} 1.0'
+        in _metric_output()
+    )
+
+
 def test_grafana_dashboard_json_validates(repo_root: Path) -> None:
     dashboard_path = repo_root / "infrastructure" / "grafana" / "dashboard.json"
 
