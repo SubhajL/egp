@@ -268,6 +268,22 @@ def record_worker_job(
     metrics.worker_job_duration.labels(**labels).observe(max(0.0, duration_seconds))
 
 
+def record_egp_request(*, outcome: str) -> None:
+    """Record one outbound e-GP interaction with a low-cardinality outcome."""
+
+    metrics = initialize_metrics()
+    metrics.egp_request_total.labels(
+        outcome=_normalize_label(outcome or "unknown")
+    ).inc()
+
+
+def observe_rate_limiter_wait(*, duration_seconds: float) -> None:
+    """Record seconds spent waiting for the host-level e-GP rate limiter."""
+
+    metrics = initialize_metrics()
+    metrics.rate_limiter_wait_seconds.observe(max(0.0, duration_seconds))
+
+
 def record_document_upsert_conflict(*, outcome: str) -> None:
     """Record one document upsert conflict with a low-cardinality outcome label."""
 

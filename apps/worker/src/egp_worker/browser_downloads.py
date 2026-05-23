@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
+from egp_crawler_core.rate_limiter import (
+    CircuitOpenError,
+    exponential_backoff_delay,
+    get_default_rate_limiter,
+)
 from egp_document_classifier import classify_document
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
@@ -82,6 +87,91 @@ def _trace_document_progress(stage: str, **fields: object) -> None:
         if rendered:
             parts.append(f"{key}={rendered}")
     print(f"DOCUMENT_PROGRESS {' | '.join(parts)}", flush=True)
+
+
+def _rate_limited_page_goto(page, url: str, *, wait_until: str, timeout: int):
+    return _run_egp_limited_action(lambda: page.goto(url, wait_until=wait_until, timeout=timeout))
+
+
+def _rate_limited_request_get(page, url: str, *, timeout: int):
+    limiter = get_default_rate_limiter()
+    try:
+        waited_seconds = limiter.acquire()
+    except CircuitOpenError:
+        _record_egp_request_metric("circuit_open")
+        raise
+    _observe_rate_limiter_wait_metric(waited_seconds)
+    try:
+        response = page.request.get(url, timeout=timeout)
+    except Exception as exc:
+        outcome = _classify_egp_exception(exc)
+        limiter.record_outcome(outcome)
+        _record_egp_request_metric(outcome)
+        raise
+    outcome = _classify_egp_response(response)
+    limiter.record_outcome(outcome)
+    _record_egp_request_metric(outcome)
+    return response
+
+
+def _run_egp_limited_action(action):
+    limiter = get_default_rate_limiter()
+    try:
+        waited_seconds = limiter.acquire()
+    except CircuitOpenError:
+        _record_egp_request_metric("circuit_open")
+        raise
+    _observe_rate_limiter_wait_metric(waited_seconds)
+    try:
+        result = action()
+    except Exception as exc:
+        outcome = _classify_egp_exception(exc)
+        limiter.record_outcome(outcome)
+        _record_egp_request_metric(outcome)
+        raise
+    limiter.record_outcome("success")
+    _record_egp_request_metric("success")
+    return result
+
+
+def _classify_egp_response(response) -> str:
+    status = getattr(response, "status", None)
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        status_code = 0
+    if status_code == 429:
+        return "429"
+    if bool(getattr(response, "ok", False)):
+        return "success"
+    return "error"
+
+
+def _classify_egp_exception(exc: Exception) -> str:
+    if isinstance(exc, CircuitOpenError):
+        return "circuit_open"
+    message = str(exc).casefold()
+    if "429" in message or "too many requests" in message:
+        return "429"
+    return "error"
+
+
+def _record_egp_request_metric(outcome: str) -> None:
+    try:
+        from egp_observability import record_egp_request
+
+        record_egp_request(outcome=outcome)
+    except Exception:
+        return
+
+
+def _observe_rate_limiter_wait_metric(duration_seconds: float) -> None:
+    try:
+        from egp_observability import observe_rate_limiter_wait
+
+        observe_rate_limiter_wait(duration_seconds=duration_seconds)
+    except Exception:
+        return
 
 
 def collect_downloaded_documents(
@@ -572,9 +662,9 @@ def _handle_direct_or_page_download(
         try:
             _trace_document_progress("modal_click_start", source_label=doc_name, mode="native")
             try:
-                btn.click(timeout=5_000)
+                _run_egp_limited_action(lambda: btn.click(timeout=5_000))
             except TypeError:
-                btn.click()
+                _run_egp_limited_action(lambda: btn.click())
         except Exception:
             return None
         _trace_document_progress("modal_click_finished", source_label=doc_name)
@@ -691,7 +781,7 @@ def _handle_direct_or_page_download(
 
         def _click_and_wait_download():
             with page.expect_download(timeout=DOWNLOAD_EVENT_TIMEOUT) as download_info:
-                page.evaluate("(el) => el.click()", btn)
+                _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", btn))
             return download_info.value
 
         download = run_with_toast_recovery(
@@ -766,7 +856,12 @@ def _handle_direct_or_page_download(
     if inferred and is_allowed_download_url(inferred):
         new_page = page.context.new_page()
         try:
-            new_page.goto(inferred, wait_until="domcontentloaded", timeout=DOWNLOAD_TIMEOUT)
+            _rate_limited_page_goto(
+                new_page,
+                inferred,
+                wait_until="domcontentloaded",
+                timeout=DOWNLOAD_TIMEOUT,
+            )
             _trace_document_progress("inferred_viewer_url", source_label=doc_name, url=inferred)
             return _save_from_new_tab(
                 new_page,
@@ -965,7 +1060,7 @@ def _handle_subpage_download(
     document_context: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     clear_site_error_toast(page)
-    page.evaluate("(el) => el.click()", btn)
+    _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", btn))
     _sleep(1)
     return _download_documents_from_current_view(
         page,
@@ -1100,7 +1195,9 @@ def _download_documents_from_current_view(
 
             def _click_and_wait_subpage_download():
                 with page.expect_download(timeout=DOWNLOAD_EVENT_TIMEOUT) as download_info:
-                    page.evaluate("(el) => el.click()", download_button)
+                    _run_egp_limited_action(
+                        lambda: page.evaluate("(el) => el.click()", download_button)
+                    )
                 return download_info.value
 
             download = run_with_toast_recovery(
@@ -1180,9 +1277,11 @@ def _handle_modal_download_action(
     for click_mode in ("native", "dom", "native"):
         try:
             if click_mode == "native":
-                download_button.click()
+                _run_egp_limited_action(lambda: download_button.click())
             else:
-                page.evaluate("(el) => el.click()", download_button)
+                _run_egp_limited_action(
+                    lambda: page.evaluate("(el) => el.click()", download_button)
+                )
         except Exception:
             continue
         follow_up = _capture_followup_after_click(
@@ -1479,7 +1578,7 @@ def _click_and_capture_immediate_download_or_missing_modal(
 
     listener_registered = _register_download_listener(page, _record_download)
     try:
-        click_action()
+        _run_egp_limited_action(click_action)
         deadline = time.monotonic() + max(0.1, timeout_s)
         while time.monotonic() < deadline:
             if downloads:
@@ -1574,7 +1673,12 @@ def _ensure_project_detail_page(page, *, detail_url: str) -> None:
         if _is_project_detail_page(page, detail_url=detail_url):
             return
     try:
-        page.goto(detail_url, wait_until="domcontentloaded", timeout=DOWNLOAD_TIMEOUT)
+        _rate_limited_page_goto(
+            page,
+            detail_url,
+            wait_until="domcontentloaded",
+            timeout=DOWNLOAD_TIMEOUT,
+        )
     except Exception:
         return
     _sleep(1)
@@ -1765,7 +1869,13 @@ def run_with_toast_recovery(
                 raise KnownMissingFileModal from None
             if attempt < retries:
                 if had_toast:
-                    _sleep(0.8)
+                    _sleep(
+                        exponential_backoff_delay(
+                            attempt=attempt,
+                            base_seconds=0.8,
+                            max_seconds=5.0,
+                        )
+                    )
                 continue
             raise
 
@@ -2000,7 +2110,7 @@ def _save_via_request(
     )
     if not url or not is_allowed_download_url(url):
         return None
-    response = page.request.get(url, timeout=SUBPAGE_DOWNLOAD_TIMEOUT)
+    response = _rate_limited_request_get(page, url, timeout=SUBPAGE_DOWNLOAD_TIMEOUT)
     if not response.ok:
         return None
     data = response.body()
