@@ -116,6 +116,7 @@ def _register_auth_middleware(
             request.url.path
             in {
                 "/health",
+                "/metrics",
                 "/openapi.json",
                 "/docs",
                 "/docs/oauth2-redirect",
