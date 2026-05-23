@@ -1,0 +1,64 @@
+{
+  "groups": [
+    {
+      "name": "egp-observability",
+      "rules": [
+        {
+          "alert": "EGPMetricsScrapeFailures",
+          "expr": "up{job=\"egp-api\"} == 0 or absent(egp_api_http_requests_total)",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "e-GP API metrics scrape is failing"
+          }
+        },
+        {
+          "alert": "EGPApiP99LatencyRegression",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(egp_api_http_request_duration_seconds_bucket[5m]))) > 2",
+          "for": "10m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "e-GP API p99 latency is elevated"
+          }
+        },
+        {
+          "alert": "EGPWorkerJobErrors",
+          "expr": "sum(rate(egp_worker_jobs_total{outcome!=\"success\"}[5m])) > 0",
+          "for": "10m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "e-GP worker jobs are failing"
+          }
+        },
+        {
+          "alert": "EGPWorkerSubprocessCountHigh",
+          "expr": "egp_worker_subprocess_count > 1",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "Discovery subprocess count exceeds PR-00 safe operating point"
+          }
+        },
+        {
+          "alert": "EGPEGP429Responses",
+          "expr": "sum(rate(egp_egp_request_total{outcome=\"429\"}[5m])) > 0",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "e-GP is returning 429 responses"
+          }
+        }
+      ]
+    }
+  ]
+}

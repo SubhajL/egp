@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+
+from egp_observability.metrics import record_worker_job
 
 from .browser_discovery import BrowserDiscoverySettings
 from .scheduler import run_scheduled_discovery
@@ -210,12 +213,24 @@ def main(stdin_text: str | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
     raw_input = stdin_text if stdin_text is not None else sys.stdin.read()
     payload = json.loads(raw_input) if raw_input.strip() else {"command": "noop"}
+    command = str(payload.get("command") or "noop").strip() or "noop"
+    started_at = time.perf_counter()
     if payload.get("command") == "noop":
+        record_worker_job(
+            command=command,
+            outcome="success",
+            duration_seconds=time.perf_counter() - started_at,
+        )
         print(json.dumps({"service": "worker", "status": "idle"}, sort_keys=True))
         return
     try:
         result = run_worker_job(payload)
     except PermissionError as exc:
+        record_worker_job(
+            command=command,
+            outcome="entitlement_denied",
+            duration_seconds=time.perf_counter() - started_at,
+        )
         print(
             json.dumps(
                 {"error_type": "entitlement_denied", "detail": str(exc)},
@@ -225,6 +240,18 @@ def main(stdin_text: str | None = None) -> None:
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
+    except Exception:
+        record_worker_job(
+            command=command,
+            outcome="error",
+            duration_seconds=time.perf_counter() - started_at,
+        )
+        raise
+    record_worker_job(
+        command=command,
+        outcome="success",
+        duration_seconds=time.perf_counter() - started_at,
+    )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 

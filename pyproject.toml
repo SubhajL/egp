@@ -13,14 +13,20 @@ dependencies = [
     "boto3>=1.35",
     "supabase>=2.28",
     "cryptography>=43",
+    "prometheus-client>=0.20",
 ]
 
 [tool.setuptools]
 include-package-data = false
+py-modules = ["egp_metrics"]
+
+[tool.setuptools.package-dir]
+"" = "packages/observability/src"
 
 [tool.setuptools.packages.find]
 where = [
     "apps/api/src",
+    "packages/observability/src",
     "packages/shared-types/src",
     "packages/crawler-core/src",
     "packages/domain/src",
@@ -32,6 +38,8 @@ where = [
 include = [
     "egp_api",
     "egp_api.*",
+    "egp_observability",
+    "egp_observability.*",
     "egp_shared_types",
     "egp_shared_types.*",
     "egp_crawler_core",

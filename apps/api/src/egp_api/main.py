@@ -7,6 +7,8 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from egp_observability.metrics import instrument_fastapi_app
+
 from egp_api.bootstrap.background import (
     build_lifespan,
     discovery_dispatch_loop_enabled_for_database_url as _discovery_dispatch_loop_enabled_for_database_url,
@@ -158,4 +160,5 @@ def create_app(
         resolved_web_allowed_origins=resolved_web_allowed_origins,
         resolved_web_allow_origin_regex=resolved_web_allow_origin_regex,
     )
+    instrument_fastapi_app(app)
     return app

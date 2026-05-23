@@ -15,7 +15,7 @@ COPY packages/ packages/
 
 RUN pip install --no-cache-dir -e . && \
     pip install --no-cache-dir playwright psycopg[binary] httpx \
-    sqlalchemy boto3 supabase openpyxl
+    sqlalchemy boto3 supabase openpyxl prometheus-client
 
 RUN playwright install chromium --with-deps
 
