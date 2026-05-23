@@ -102,7 +102,7 @@ services:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:-egp_dev}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: local
-      EGP_DISCOVERY_WORKER_COUNT: ${EGP_DISCOVERY_WORKER_COUNT:-2}
+      EGP_DISCOVERY_WORKER_COUNT: ${EGP_DISCOVERY_WORKER_COUNT:-1}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:
