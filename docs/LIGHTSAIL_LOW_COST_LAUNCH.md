@@ -36,20 +36,25 @@ That makes a small always-on VM a better fit than a cold-start-heavy serverless 
 
 ### Recommended low-cost stack
 
-- **Frontend**: Vercel Hobby
-- **Backend API**: one AWS Lightsail Linux instance
+- **Frontend**: Vercel Hobby (free) — keeps marketing/traffic spikes off the VM
+- **Backend API**: one AWS Lightsail Linux instance in Singapore
 - **Database**: PostgreSQL on the same instance initially
 - **Reverse proxy / TLS**: Caddy
-- **DNS**: Cloudflare DNS (or Route 53 if you already use AWS DNS)
+- **DNS**: Cloudflare DNS (or Route 53 if you already use AWS DNS) — keep `api.*` as DNS-only (proxy OFF) so OPN webhooks reach you directly
 - **OPN webhook endpoint**: served by the main FastAPI app on the same instance
 - **Background executors**: Compose services on the same instance
 - **Scheduled discovery**: cron or systemd timer on the same instance if needed
 
+### Why Vercel for the frontend (not the in-Compose `web` service)
+
+The production Compose file ships a `web` Next.js service for single-host *convenience*, but the production target is **Vercel**. A marketing push hits page views, not crawls — Vercel's free tier absorbs viral spikes without touching your VM. The in-Compose `web` is only suitable when you have not yet wired up Vercel.
+
 ### Recommended starting size
 
-- **Preferred**: Lightsail **$7/month** Linux instance
-- **Minimum experimental**: Lightsail **$5/month** Linux instance
-- if crawling bursts are heavier than expected, move to the next size up before touching architecture
+- **Preferred**: Lightsail **$24/month** Linux instance (4 GB RAM, 2 vCPU, 80 GB SSD, 4 TB transfer)
+- **Region**: `ap-southeast-1` (Singapore) — closest to Thai customers and to gprocurement.go.th (~30–45 ms RTT)
+- **Why $24 and not the cheaper bundles**: this repo's API and worker images both bake Chromium via `playwright install chromium --with-deps` (see `apps/api/Dockerfile:23`, `apps/worker/Dockerfile:21`). A single Chromium process with a populated profile is ~500 MB RSS, and the rest of the stack (Postgres + API + executors + Caddy + optional in-Compose Next.js) lands around 1.5 GB. The $5 bundle (512 MB) OOM-kills on the first crawl, and the $7 bundle (1 GB) swap-thrashes. Do not start below $24 unless you are willing to operate without crawling.
+- if crawling bursts at `EGP_DISCOVERY_WORKER_COUNT=1` already pressure the box, move to the next size up before raising the worker count further
 
 ---
 
@@ -112,20 +117,20 @@ If you prefer a Lambda-only public webhook URL later, follow [`docs/AWS_LAMBDA_O
 
 ## 1. Create the Lightsail instance
 
-Create one Linux instance in the region closest to your users.
+Create one Linux instance in the **ap-southeast-1 (Singapore)** region.
 
 Suggested image:
 
-- Ubuntu LTS
+- Ubuntu 22.04 or 24.04 LTS
 
 Suggested bundle:
 
-- start with **$7/month** if possible
-- use **$5/month** only if budget is extremely tight and traffic/crawl volume is low
+- **$24/month** (4 GB RAM, 2 vCPU, 80 GB SSD, 4 TB transfer) — this is the floor for the current Chromium-bearing image. Smaller bundles will OOM under crawl load.
 
 Also attach:
 
-- **static IP**
+- **static IP** (free while attached)
+- **automatic snapshots** (~$0.05 / GB / month)
 
 ---
 
@@ -212,9 +217,20 @@ EGP_BROWSER_PROFILE_ROOT=/srv/egp/browser-profiles
 
 ### Notes
 
-- Use **test** OPN keys first until the full payment flow is proven.
+- Use **test** OPN keys first until live KYC clears on the OPN dashboard.
 - If using SMTP / Resend / storage provider credentials, add them here too.
 - Keep this file out of Git.
+
+### Generating strong secrets
+
+```bash
+openssl rand -hex 32   # EGP_JWT_SECRET
+openssl rand -hex 32   # EGP_PAYMENT_CALLBACK_SECRET
+openssl rand -hex 32   # EGP_INTERNAL_WORKER_TOKEN
+openssl rand -hex 24   # EGP_POSTGRES_PASSWORD
+```
+
+Each secret should be unique per environment. Never reuse dev secrets in production.
 
 ---
 
@@ -356,6 +372,49 @@ For detailed OPN/Lambda-specific notes, see [`docs/AWS_LAMBDA_OPN_WEBHOOK.md`](A
 
 ---
 
+## Pre-ramp operational validation
+
+After Compose is up and HTTPS is live, validate the post-PR-08 safe operating point before exposing the URL publicly:
+
+```bash
+# Point at your running API; needs DATABASE_URL and EGP_BROWSER_PROFILE_ROOT to match prod env
+API_URL=https://api.yourdomain.com \
+DATABASE_URL=postgresql://egp:...@127.0.0.1:5432/egp \
+EGP_BROWSER_PROFILE_ROOT=/srv/egp/browser-profiles \
+EGP_DISCOVERY_WORKER_COUNT=1 \
+  ./scripts/check_launch_gates.sh
+```
+
+Expect **PASS** for /metrics reachable, Chrome PID cap, project/document upsert outcomes, and 429-rate gate. **SKIP** is acceptable for the rate-limiter-engaging and cross-tenant DB gates until you have driven at least one real crawl.
+
+Before any ramp of `EGP_DISCOVERY_WORKER_COUNT` past 1, also run the Mode C dry run against a local stub:
+
+```bash
+python scripts/mode_c/egp_stub_server.py &           # terminal A
+python scripts/mode_c/mode_c_full_run.py             # terminal B
+python scripts/mode_c/circuit_open_smoke.py          # one-shot sanity
+```
+
+These exercise the production rate-limiter under sustained synthetic load without touching the real e-GP and prove the gates would be green at higher worker counts.
+
+## Payment provider (OPN) cost and timeline
+
+The Lightsail instance is the only fixed monthly cost. OPN/Omise charges per-transaction only and has no monthly fee, but two things deserve planning:
+
+| Item | Detail |
+|---|---|
+| Account / monthly fee | ฿0 |
+| PromptPay QR fee | 1.5% + ฿1.50 per transaction |
+| Domestic credit/debit card | 3.65% + ฿10 per transaction |
+| International cards | 4.65% + ฿10 per transaction |
+| Settlement to Thai bank | T+1 to T+2 |
+| **Live KYC timeline** | **5–10 business days** — start this concurrently with infrastructure provisioning |
+| KYC documents | DBD certificate, director ID + selfie, bank statement, sample invoice |
+
+Run with OPN **test** keys until live KYC clears, then swap `EGP_OPN_SECRET_KEY` / `EGP_OPN_PUBLIC_KEY` / `EGP_OPN_WEBHOOK_SECRET` to the live values. No code change is required.
+
+**Effective revenue erosion** is ~1.6% (PromptPay-heavy mix) to ~4% (card-heavy mix). Plan pricing accordingly.
+
 ## How crawling runs on this setup
 
 ## Immediate / product-triggered crawl
@@ -423,12 +482,23 @@ This setup is intentionally cheap, so be explicit about tradeoffs.
 
 When traction is proven, migrate in this order:
 
-1. move Postgres off-box (Supabase or RDS)
-2. split browser worker onto separate compute
-3. optionally move OPN webhook ingress to Lambda using [`docs/AWS_LAMBDA_OPN_WEBHOOK.md`](AWS_LAMBDA_OPN_WEBHOOK.md)
-4. later move API to ECS/Fargate if needed
+1. **Off-box Postgres backups first** (Cloudflare R2 / Supabase Storage / S3) — single-VM Postgres with no off-box backup is one disk failure away from total data loss
+2. **Raise `EGP_DISCOVERY_WORKER_COUNT`** from 1 → 2 → 4 once `scripts/check_launch_gates.sh` is consistently green and Mode C dry runs validate the new count
+3. Move Postgres off-box (Supabase or RDS) when single-tenant query load begins to compete with API responsiveness
+4. Split browser worker onto separate compute (Hetzner Singapore or a second Lightsail box) when crawl bursts at worker_count=4 start starving the API
+5. Optionally move OPN webhook ingress to Lambda using [`docs/AWS_LAMBDA_OPN_WEBHOOK.md`](AWS_LAMBDA_OPN_WEBHOOK.md) if you want the payment-critical path isolated from the rest of the API surface
+6. Later move API to ECS/Fargate if needed
 
 That path keeps the initial launch cheap without locking you into the single-VM architecture forever.
+
+### When to consider leaving Lightsail entirely
+
+If your monthly bill on Lightsail exceeds **~$60** (two $24 instances + automatic snapshots + extra storage), it is usually cheaper at that point to:
+
+- **Hetzner Cloud Singapore CPX31**: ~$14–16/month for 4 GB / 4 vCPU / 160 GB NVMe / 20 TB transfer — same Singapore region, ~40% cheaper at higher specs, EUR billing
+- **Bangkok-local IDC** (True IDC, INET, NTT): ~$42–84/month at similar specs, but ~5 ms RTT to gprocurement.go.th (vs. ~30–45 ms from Singapore) — worth it only when crawler latency becomes a real bottleneck
+
+Both migrations are a one-day job: `pg_dump`, `git pull`, `docker compose up`, repoint DNS. The Compose file is the only deployment unit, so there is no vendor lock-in cost being captured.
 
 ---
 
