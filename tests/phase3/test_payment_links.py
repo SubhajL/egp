@@ -620,7 +620,7 @@ def test_opn_webhook_settles_upgrade_record_and_supersedes_trial(tmp_path) -> No
     settled = response.json()
     assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
     assert settled["subscription"]["plan_code"] == "monthly_membership"
-    assert settled["subscription"]["keyword_limit"] == 5
+    assert settled["subscription"]["keyword_limit"] is None
 
     listed = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID})
     assert listed.status_code == 200

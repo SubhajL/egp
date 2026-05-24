@@ -333,6 +333,7 @@ def test_projects_and_runs_endpoints_accept_limit_and_offset(tmp_path) -> None:
         )
     )
     _seed_active_subscription(client)
+    _seed_active_profile_keyword(client, keyword="โรงพยาบาล")
     repository = client.app.state.project_repository
 
     for project_number in ("EGP-2026-1101", "EGP-2026-1102"):
@@ -399,6 +400,7 @@ def test_finish_run_failed_emits_run_failed_notification(tmp_path) -> None:
         role="owner",
     )
     _seed_active_subscription(client)
+    _seed_active_profile_keyword(client, keyword="โรงพยาบาล")
 
     created = client.post(
         "/v1/runs", json={"tenant_id": TENANT_ID, "trigger_type": "manual"}
