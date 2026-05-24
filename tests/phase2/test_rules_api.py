@@ -215,6 +215,41 @@ def _seed_active_subscription(
         )
 
 
+def _seed_tenant_entitlements(
+    client: TestClient,
+    *,
+    max_concurrent_runs: int = 1,
+    max_queued_keywords: int = 20,
+) -> None:
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenant_entitlements (
+                    tenant_id,
+                    max_concurrent_runs,
+                    max_queued_keywords,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :tenant_id,
+                    :max_concurrent_runs,
+                    :max_queued_keywords,
+                    :created_at,
+                    :updated_at
+                )
+                """
+            ),
+            {
+                "tenant_id": TENANT_ID,
+                "max_concurrent_runs": max_concurrent_runs,
+                "max_queued_keywords": max_queued_keywords,
+                "created_at": "2026-04-04T00:00:00+00:00",
+                "updated_at": "2026-04-04T00:00:00+00:00",
+            },
+        )
+
+
 def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings(
     tmp_path,
 ) -> None:
@@ -905,6 +940,114 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
             "job_status": "pending",
         }
     ]
+
+
+def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-admission.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        name="Admission Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+
+    first = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+    assert first.status_code == 202
+
+    job = client.app.state.discovery_job_repository.list_discovery_jobs(
+        tenant_id=TENANT_ID
+    )[0]
+    client.app.state.discovery_job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=job.id,
+        job_status="dispatched",
+        processing_started_at=None,
+        dispatched=True,
+    )
+    running_run = client.app.state.run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+    )
+    client.app.state.run_repository.mark_run_started(running_run.id)
+
+    second = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert second.status_code == 429
+    assert second.json() == {
+        "detail": "queued — previous run still in progress",
+        "code": "run_admission_queued",
+        "status": "queued",
+        "inflight_run_count": 1,
+        "max_concurrent_runs": 1,
+        "queued_keyword_count": 1,
+        "max_queued_keywords": 20,
+    }
+
+    client.app.state.run_repository.mark_run_finished(
+        running_run.id,
+        status="succeeded",
+    )
+    third = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert third.status_code == 202
+    assert third.json() == {
+        "queued_job_count": 1,
+        "queued_keywords": ["แพลตฟอร์ม"],
+    }
+
+
+def test_manual_recrawl_denies_before_outbox_insert_when_keyword_queue_cap_exceeded(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-cap.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_tenant_entitlements(client, max_queued_keywords=1)
+    _seed_profile(
+        client,
+        profile_id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+        name="Queue Cap",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("analytics", 1), ("platform", 2)],
+    )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "detail": "queued keyword limit exceeded",
+        "code": "queued_keyword_limit_exceeded",
+        "status": "queued",
+        "inflight_run_count": 0,
+        "max_concurrent_runs": 1,
+        "queued_keyword_count": 2,
+        "max_queued_keywords": 1,
+    }
+    with client.app.state.db_engine.connect() as connection:
+        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+    assert count == 0
 
 
 def test_profile_creation_with_blank_name_returns_structured_validation_code(

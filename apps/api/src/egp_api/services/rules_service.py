@@ -335,6 +335,15 @@ class RulesService:
         if not active_jobs:
             raise ValueError("at least one active keyword is required")
 
+        if self._entitlement_service is not None:
+            requested_keyword_count = len(
+                {normalized_keyword.casefold() for _, _, normalized_keyword in active_jobs}
+            )
+            self._entitlement_service.check_runs_admission(
+                tenant_id=tenant_id,
+                requested_keyword_count=requested_keyword_count,
+            )
+
         for profile_id, profile_type, normalized_keyword in active_jobs:
             enqueue_result = self._discovery_job_repository.create_pending_discovery_job_if_absent(
                 tenant_id=tenant_id,

@@ -3767,6 +3767,49 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "ManualRecrawlQueuedResponse": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "inflight_run_count": {
+            "title": "Inflight Run Count",
+            "type": "integer"
+          },
+          "max_concurrent_runs": {
+            "title": "Max Concurrent Runs",
+            "type": "integer"
+          },
+          "max_queued_keywords": {
+            "title": "Max Queued Keywords",
+            "type": "integer"
+          },
+          "queued_keyword_count": {
+            "title": "Queued Keyword Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "code",
+          "status",
+          "inflight_run_count",
+          "max_concurrent_runs",
+          "queued_keyword_count",
+          "max_queued_keywords"
+        ],
+        "title": "ManualRecrawlQueuedResponse",
+        "type": "object"
+      },
       "ManualRecrawlRequest": {
         "properties": {
           "tenant_id": {
@@ -9690,6 +9733,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualRecrawlQueuedResponse"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           }
         },
         "summary": "Recrawl Active Keywords",

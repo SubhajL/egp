@@ -53,6 +53,7 @@ from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
 from egp_db.repositories.run_repo import create_run_repository
 from egp_db.repositories.support_repo import create_support_repository
+from egp_db.repositories.tenant_entitlement_repo import create_tenant_entitlement_repository
 from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
 
 
@@ -84,6 +85,7 @@ class RepositoryBundle:
     run_repository: object
     notification_repository: object
     discovery_job_repository: object
+    tenant_entitlement_repository: object
     support_repository: object
 
 
@@ -235,6 +237,10 @@ def build_repository_bundle(
             engine=shared_engine,
         ),
         discovery_job_repository=create_discovery_job_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+        ),
+        tenant_entitlement_repository=create_tenant_entitlement_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
         ),

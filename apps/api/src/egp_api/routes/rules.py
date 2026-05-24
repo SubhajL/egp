@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
-from egp_api.services.entitlement_service import EntitlementError
+from egp_api.services.entitlement_service import EntitlementError, RunAdmissionError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
 
 logger = logging.getLogger(__name__)
@@ -131,6 +131,16 @@ class ManualRecrawlResponse(BaseModel):
     queued_keywords: list[str]
 
 
+class ManualRecrawlQueuedResponse(BaseModel):
+    detail: str
+    code: str
+    status: str
+    inflight_run_count: int
+    max_concurrent_runs: int
+    queued_keyword_count: int
+    max_queued_keywords: int
+
+
 def _service_from_request(request: Request) -> RulesService:
     return request.app.state.rules_service
 
@@ -166,6 +176,22 @@ def _serialize_rules(snapshot: RulesSnapshot) -> RulesResponse:
         closure_rules=ClosureRulesResponse(**asdict(snapshot.closure_rules)),
         notification_rules=NotificationRulesResponse(**asdict(snapshot.notification_rules)),
         schedule_rules=ScheduleRulesResponse(**asdict(snapshot.schedule_rules)),
+    )
+
+
+def _run_admission_error(exc: RunAdmissionError) -> JSONResponse:
+    snapshot = exc.snapshot
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "detail": snapshot.detail,
+            "code": snapshot.code,
+            "status": snapshot.status,
+            "inflight_run_count": snapshot.inflight_run_count,
+            "max_concurrent_runs": snapshot.max_concurrent_runs,
+            "queued_keyword_count": snapshot.queued_keyword_count,
+            "max_queued_keywords": snapshot.max_queued_keywords,
+        },
     )
 
 
@@ -245,7 +271,11 @@ def update_rule_profile(
     return RuleProfileResponse(**asdict(profile))
 
 
-@router.post("/recrawl", response_model=ManualRecrawlResponse)
+@router.post(
+    "/recrawl",
+    response_model=ManualRecrawlResponse,
+    responses={429: {"model": ManualRecrawlQueuedResponse}},
+)
 def recrawl_active_keywords(
     payload: ManualRecrawlRequest,
     request: Request,
@@ -256,6 +286,8 @@ def recrawl_active_keywords(
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     try:
         queued = service.queue_active_discovery_jobs(tenant_id=resolved_tenant_id)
+    except RunAdmissionError as exc:
+        return _run_admission_error(exc)
     except EntitlementError as exc:
         detail = str(exc)
         return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))

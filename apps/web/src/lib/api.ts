@@ -258,6 +258,7 @@ const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
   mfa_code_required: "บัญชีนี้เปิดใช้ MFA กรุณากรอกรหัส 6 หลักจากแอปยืนยันตัวตน",
   profile_name_required: "กรุณาระบุชื่อโปรไฟล์",
   registration_required: "ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน",
+  run_admission_queued: "รอคิว: งานก่อนหน้ายังทำงานอยู่",
   unsupported_profile_type: "ประเภทโปรไฟล์ไม่รองรับ",
   validation_company_name_required: "กรุณาระบุชื่อบริษัท / องค์กร",
   validation_email_required: "กรุณาระบุอีเมล",
@@ -344,6 +345,8 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "active keyword configuration exceeds plan limit", thai: "จำนวนคำค้นเกินสิทธิ์ของแพ็กเกจปัจจุบัน" },
   { pattern: "active subscription required", thai: "ต้องมีแพ็กเกจที่เปิดใช้งานอยู่จึงจะใช้ฟีเจอร์นี้ได้" },
   { pattern: "discover keyword is not entitled", thai: "แพ็กเกจปัจจุบันไม่รองรับคำค้นแบบ discover" },
+  { pattern: "queued — previous run still in progress", thai: "รอคิว: งานก่อนหน้ายังทำงานอยู่" },
+  { pattern: "queued keyword limit exceeded", thai: "จำนวนคำค้นที่รอคิวเกินสิทธิ์ขององค์กร" },
 
   // Generic API errors
   { pattern: "api request failed", thai: "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
