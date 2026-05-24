@@ -51,10 +51,48 @@ The production Compose file ships a `web` Next.js service for single-host *conve
 
 ### Recommended starting size
 
-- **Preferred**: Lightsail **$24/month** Linux instance (4 GB RAM, 2 vCPU, 80 GB SSD, 4 TB transfer)
-- **Region**: `ap-southeast-1` (Singapore) — closest to Thai customers and to gprocurement.go.th (~30–45 ms RTT)
-- **Why $24 and not the cheaper bundles**: this repo's API and worker images both bake Chromium via `playwright install chromium --with-deps` (see `apps/api/Dockerfile:23`, `apps/worker/Dockerfile:21`). A single Chromium process with a populated profile is ~500 MB RSS, and the rest of the stack (Postgres + API + executors + Caddy + optional in-Compose Next.js) lands around 1.5 GB. The $5 bundle (512 MB) OOM-kills on the first crawl, and the $7 bundle (1 GB) swap-thrashes. Do not start below $24 unless you are willing to operate without crawling.
-- if crawling bursts at `EGP_DISCOVERY_WORKER_COUNT=1` already pressure the box, move to the next size up before raising the worker count further
+Lightsail Linux bundles (always verify current pricing at <https://aws.amazon.com/lightsail/pricing/> — AWS adjusts these):
+
+| USD/mo | RAM | vCPU | SSD | Transfer | Fits this app? |
+|---|---|---|---|---|---|
+| $3.50 | 512 MB | 2 | 20 GB | 1 TB | ❌ OOMs on first crawl |
+| $5 | 1 GB | 2 | 40 GB | 2 TB | ❌ Swap-thrashes |
+| $7 | 2 GB | 2 | 60 GB | 3 TB | ⚠️ Tight at `worker_count=1` |
+| **$12** | **4 GB** | **2** | **80 GB** | **4 TB** | ✅ **Cheapest viable** |
+| **$24** | **8 GB** | **2** | **160 GB** | **5 TB** | ✅ **Headroom through `worker_count=4`** |
+| $44 | 16 GB | 4 | 320 GB | 6 TB | Overkill for launch |
+
+**Pick one of two**:
+
+- **Cheapest viable launch**: **$12/month (4 GB / 2 vCPU)** — runs the stack at `EGP_DISCOVERY_WORKER_COUNT=1`. You will need to resize before ramping past 1 worker.
+- **Recommended for ramp**: **$24/month (8 GB / 2 vCPU)** — buys you headroom through `worker_count=2 → 4` without a forced live migration. The extra ~฿420/month is cheap insurance against a viral marketing moment hitting an under-sized box.
+
+**Region**: `ap-southeast-1` (Singapore) — closest to Thai customers and to gprocurement.go.th (~30–45 ms RTT).
+
+**Why not the $3.50 / $5 / $7 bundles**: this repo's API and worker images both bake Chromium via `playwright install chromium --with-deps` (see `apps/api/Dockerfile:23`, `apps/worker/Dockerfile:21`). A single Chromium process with a populated profile is ~500 MB RSS, and the rest of the stack (Postgres + API + executors + Caddy + optional in-Compose Next.js) lands around 1.5 GB. The $5 bundle (512 MB) OOM-kills on the first crawl and the $7 bundle (1 GB / 2 GB depending on AWS's current tiering) swap-thrashes.
+
+If crawling bursts at `EGP_DISCOVERY_WORKER_COUNT=1` already pressure the box, move to the next size up before raising the worker count further.
+
+### Cost in Thai Baht (for operators billing from Thailand)
+
+Lightsail is billed **in USD globally** — Singapore region uses the same USD prices as US regions. Your Thai card issuer does the FX conversion.
+
+Three layers of cost to budget for:
+
+1. **Base USD**: bundle price (e.g., $12 or $24).
+2. **Thai bank FX markup**: typically 1.0–2.5% on top of spot rate. Effective rate ~฿35.5 to ฿36.5 per USD (varies; check your card's terms).
+3. **Thai VAT 7%**: only applies once your AWS account has a Thai tax ID attached (typically after registering a บริษัท จำกัด with the Revenue Department). Pre-registration, no VAT line on the AWS invoice. Once you cross ฿1.8M revenue and must file VAT returns, the 7% becomes input VAT you can claim back.
+
+Approximate monthly cost at the time of writing:
+
+| Bundle | USD | THB (no VAT, 1.5% FX markup) | THB (with 7% VAT) |
+|---|---|---|---|
+| $12 (4 GB) | $12 | **~฿426** | ~฿456 |
+| $24 (8 GB) | $24 | **~฿853** | ~฿912 |
+
+Add ~฿36/month amortised for a `.com` domain (~$12/year) and ~฿3/month for Cloudflare R2 backup storage. **Total fixed monthly floor**: approximately **฿470 (cheapest) or ฿890 (recommended)** before any per-transaction OPN/Stripe fees.
+
+Annual fixed cost: **~฿5,600** (4 GB tier) or **~฿10,700** (8 GB tier).
 
 ---
 
@@ -123,9 +161,12 @@ Suggested image:
 
 - Ubuntu 22.04 or 24.04 LTS
 
-Suggested bundle:
+Suggested bundle (see the table under "Recommended starting size" for the full comparison):
 
-- **$24/month** (4 GB RAM, 2 vCPU, 80 GB SSD, 4 TB transfer) — this is the floor for the current Chromium-bearing image. Smaller bundles will OOM under crawl load.
+- **$12/month** (4 GB RAM, 2 vCPU, 80 GB SSD, 4 TB transfer) — cheapest viable, requires resize before `worker_count > 1`.
+- **$24/month** (8 GB RAM, 2 vCPU, 160 GB SSD, 5 TB transfer) — recommended; covers ramp through `worker_count=4` without re-sizing.
+
+Anything below the 4 GB tier will OOM under crawl load because of the bundled Chromium. Verify current bundle pricing at <https://aws.amazon.com/lightsail/pricing/> before purchasing — AWS adjusts these.
 
 Also attach:
 
