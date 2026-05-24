@@ -278,6 +278,22 @@ class SqlDiscoveryJobRepository:
             )
         return [_job_from_mapping(row) for row in rows]
 
+    def count_pending_discovery_jobs(self, *, tenant_id: str) -> int:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            return int(
+                connection.execute(
+                    select(func.count())
+                    .select_from(DISCOVERY_JOBS_TABLE)
+                    .where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                        )
+                    )
+                ).scalar_one()
+            )
+
     def claim_pending_discovery_jobs(
         self,
         *,

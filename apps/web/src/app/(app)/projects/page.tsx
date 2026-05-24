@@ -16,6 +16,7 @@ import {
 } from "@/lib/run-progress";
 import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
 import {
+  ApiError,
   createRuleProfile,
   fetchProjectExport,
   localizeApiError,
@@ -238,6 +239,7 @@ export default function ProjectsPage() {
   const [isRecrawling, setIsRecrawling] = useState(false);
   const [recrawlError, setRecrawlError] = useState<string | null>(null);
   const [recrawlNotice, setRecrawlNotice] = useState<string | null>(null);
+  const [recrawlQueuedNotice, setRecrawlQueuedNotice] = useState<string | null>(null);
   const [isKeywordPromptOpen, setIsKeywordPromptOpen] = useState(false);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [isSavingKeyword, setIsSavingKeyword] = useState(false);
@@ -322,6 +324,7 @@ export default function ProjectsPage() {
     activeRuns.length > 0 ||
     manualRecrawlTracking !== null ||
     latestCompletedRunCard !== null ||
+    recrawlQueuedNotice !== null ||
     (recrawlNotice !== null && isRunsError);
   const tabs = [
     { key: "all" as const, label: "ทั้งหมด" },
@@ -438,6 +441,7 @@ export default function ProjectsPage() {
     setIsRecrawling(true);
     setRecrawlError(null);
     setRecrawlNotice(null);
+    setRecrawlQueuedNotice(null);
     setManualRecrawlTracking(null);
     try {
       const result = await triggerManualRecrawl();
@@ -459,6 +463,18 @@ export default function ProjectsPage() {
       ]);
       await refetchRuns();
     } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.status === 429 &&
+        (error.code === "run_admission_queued" ||
+          error.code === "queued_keyword_limit_exceeded")
+      ) {
+        setRecrawlQueuedNotice(
+          localizeApiError(error, "รอคิว: ยังไม่สามารถเริ่ม crawl ใหม่ได้"),
+        );
+        await refetchRuns();
+        return;
+      }
       setRecrawlError(
         localizeApiError(error, "ยังไม่สามารถเริ่ม crawl ใหม่ได้"),
       );
@@ -486,6 +502,7 @@ export default function ProjectsPage() {
       setIsKeywordPromptOpen(false);
       setKeywordDraft("");
       setRecrawlError(null);
+      setRecrawlQueuedNotice(null);
       setRecrawlNotice("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที");
       setManualRecrawlTracking({
         queuedJobCount: 1,
@@ -544,6 +561,13 @@ export default function ProjectsPage() {
       {recrawlNotice ? (
         <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           {recrawlNotice}
+        </div>
+      ) : null}
+
+      {recrawlQueuedNotice ? (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+          <StatusBadge state="queued" variant="run" />
+          <span>{recrawlQueuedNotice}</span>
         </div>
       ) : null}
 

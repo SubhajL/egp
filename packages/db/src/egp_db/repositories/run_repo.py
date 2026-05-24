@@ -772,6 +772,27 @@ class SqlRunRepository:
             offset=normalized_offset,
         )
 
+    def count_active_runs(self, *, tenant_id: str) -> int:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        with self._engine.connect() as connection:
+            return int(
+                connection.execute(
+                    select(func.count())
+                    .select_from(CRAWL_RUNS_TABLE)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.status.in_(
+                                [
+                                    CrawlRunStatus.QUEUED.value,
+                                    CrawlRunStatus.RUNNING.value,
+                                ]
+                            ),
+                        )
+                    )
+                ).scalar_one()
+            )
+
     def find_run_by_id(self, run_id: str) -> CrawlRunRecord | None:
         normalized_run_id = normalize_uuid_string(run_id)
         with self._engine.connect() as connection:

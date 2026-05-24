@@ -11,11 +11,19 @@ from egp_crawler_core.discovery_authorization import (
     require_discovery_authorization,
     resolve_effective_discovery_entitlement,
 )
+from egp_db.repositories.tenant_entitlement_repo import (
+    DEFAULT_MAX_CONCURRENT_RUNS,
+    DEFAULT_MAX_QUEUED_KEYWORDS,
+    TenantRunAdmissionCaps,
+)
 from egp_shared_types.billing_plans import get_billing_plan_definition
 
 if TYPE_CHECKING:
     from egp_db.repositories.billing_repo import SqlBillingRepository
+    from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
     from egp_db.repositories.profile_repo import SqlProfileRepository
+    from egp_db.repositories.run_repo import SqlRunRepository
+    from egp_db.repositories.tenant_entitlement_repo import SqlTenantEntitlementRepository
     from egp_notifications.dispatcher import NotificationDispatcher
     from egp_notifications.service import Notification
 
@@ -27,6 +35,14 @@ CapabilityKey = Literal["exports", "document_downloads", "notifications"]
 
 class EntitlementError(PermissionError):
     """Raised when a tenant attempts an action without entitlement."""
+
+
+class RunAdmissionError(PermissionError):
+    """Raised when tenant run admission caps deny a new run request."""
+
+    def __init__(self, snapshot: "RunAdmissionSnapshot") -> None:
+        super().__init__(snapshot.detail)
+        self.snapshot = snapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +61,18 @@ class TenantEntitlementSnapshot:
     document_download_allowed: bool
     notifications_allowed: bool
     source: str = ENTITLEMENT_SOURCE
+
+
+@dataclass(frozen=True, slots=True)
+class RunAdmissionSnapshot:
+    allowed: bool
+    detail: str
+    code: str
+    status: str
+    inflight_run_count: int
+    max_concurrent_runs: int
+    queued_keyword_count: int
+    max_queued_keywords: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +103,16 @@ class TenantEntitlementService:
         self,
         billing_repository: SqlBillingRepository,
         profile_repository: SqlProfileRepository,
+        *,
+        run_repository: SqlRunRepository | None = None,
+        discovery_job_repository: SqlDiscoveryJobRepository | None = None,
+        tenant_entitlement_repository: SqlTenantEntitlementRepository | None = None,
     ) -> None:
         self._billing_repository = billing_repository
         self._profile_repository = profile_repository
+        self._run_repository = run_repository
+        self._discovery_job_repository = discovery_job_repository
+        self._tenant_entitlement_repository = tenant_entitlement_repository
 
     def get_snapshot(self, *, tenant_id: str) -> TenantEntitlementSnapshot:
         subscriptions = self._billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
@@ -186,12 +221,75 @@ class TenantEntitlementService:
             raise EntitlementError(str(exc)) from exc
         return snapshot
 
+    def check_runs_admission(
+        self,
+        *,
+        tenant_id: str,
+        requested_keyword_count: int,
+    ) -> RunAdmissionSnapshot:
+        caps = self._get_run_admission_caps(tenant_id=tenant_id)
+        inflight_run_count = (
+            self._run_repository.count_active_runs(tenant_id=tenant_id)
+            if self._run_repository is not None
+            else caps.max_concurrent_runs
+        )
+        queued_discovery_jobs = (
+            self._discovery_job_repository.count_pending_discovery_jobs(tenant_id=tenant_id)
+            if self._discovery_job_repository is not None
+            else 0
+        )
+        queued_keyword_count = queued_discovery_jobs + max(0, int(requested_keyword_count))
+        if inflight_run_count >= caps.max_concurrent_runs:
+            snapshot = RunAdmissionSnapshot(
+                allowed=False,
+                detail="queued — previous run still in progress",
+                code="run_admission_queued",
+                status="queued",
+                inflight_run_count=inflight_run_count,
+                max_concurrent_runs=caps.max_concurrent_runs,
+                queued_keyword_count=queued_keyword_count,
+                max_queued_keywords=caps.max_queued_keywords,
+            )
+            raise RunAdmissionError(snapshot)
+        if queued_keyword_count > caps.max_queued_keywords:
+            snapshot = RunAdmissionSnapshot(
+                allowed=False,
+                detail="queued keyword limit exceeded",
+                code="queued_keyword_limit_exceeded",
+                status="queued",
+                inflight_run_count=inflight_run_count,
+                max_concurrent_runs=caps.max_concurrent_runs,
+                queued_keyword_count=queued_keyword_count,
+                max_queued_keywords=caps.max_queued_keywords,
+            )
+            raise RunAdmissionError(snapshot)
+        return RunAdmissionSnapshot(
+            allowed=True,
+            detail="admitted",
+            code="run_admission_allowed",
+            status="admitted",
+            inflight_run_count=inflight_run_count,
+            max_concurrent_runs=caps.max_concurrent_runs,
+            queued_keyword_count=queued_keyword_count,
+            max_queued_keywords=caps.max_queued_keywords,
+        )
+
     def notifications_allowed(self, *, tenant_id: str) -> bool:
         try:
             self.require_capability(tenant_id=tenant_id, capability="notifications")
         except EntitlementError:
             return False
         return True
+
+    def _get_run_admission_caps(self, *, tenant_id: str) -> TenantRunAdmissionCaps:
+        if self._tenant_entitlement_repository is None:
+            return TenantRunAdmissionCaps(
+                max_concurrent_runs=DEFAULT_MAX_CONCURRENT_RUNS,
+                max_queued_keywords=DEFAULT_MAX_QUEUED_KEYWORDS,
+            )
+        return self._tenant_entitlement_repository.get_run_admission_caps(
+            tenant_id=tenant_id
+        )
 
 
 class EntitlementAwareNotificationDispatcher:

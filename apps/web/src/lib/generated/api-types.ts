@@ -2339,6 +2339,23 @@ export interface components {
             /** Tenant Slug */
             tenant_slug?: string | null;
         };
+        /** ManualRecrawlQueuedResponse */
+        ManualRecrawlQueuedResponse: {
+            /** Code */
+            code: string;
+            /** Detail */
+            detail: string;
+            /** Inflight Run Count */
+            inflight_run_count: number;
+            /** Max Concurrent Runs */
+            max_concurrent_runs: number;
+            /** Max Queued Keywords */
+            max_queued_keywords: number;
+            /** Queued Keyword Count */
+            queued_keyword_count: number;
+            /** Status */
+            status: string;
+        };
         /** ManualRecrawlRequest */
         ManualRecrawlRequest: {
             /** Tenant Id */
@@ -5129,6 +5146,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualRecrawlQueuedResponse"];
                 };
             };
         };

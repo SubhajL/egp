@@ -82,6 +82,9 @@ def configure_services(
     entitlement_service = TenantEntitlementService(
         bundle.billing_repository,
         bundle.profile_repository,
+        run_repository=bundle.run_repository,
+        discovery_job_repository=bundle.discovery_job_repository,
+        tenant_entitlement_repository=bundle.tenant_entitlement_repository,
     )
     resolved_web_base_url = get_web_base_url(None, allowed_origins=resolved_web_allowed_origins)
     resolved_payment_provider = payment_provider or build_payment_provider(
