@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Table,
     and_,
+    func,
     insert,
     or_,
     select,
@@ -300,15 +301,40 @@ class SqlDiscoveryJobRepository:
             pending_conditions.append(
                 DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
             )
+        claimable_conditions = [
+            *pending_conditions,
+            or_(
+                DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
+                DISCOVERY_JOBS_TABLE.c.processing_started_at <= stale_started_at,
+            ),
+        ]
+        tenant_rank = (
+            func.row_number()
+            .over(
+                partition_by=DISCOVERY_JOBS_TABLE.c.tenant_id,
+                order_by=(
+                    DISCOVERY_JOBS_TABLE.c.next_attempt_at,
+                    DISCOVERY_JOBS_TABLE.c.created_at,
+                    DISCOVERY_JOBS_TABLE.c.id,
+                ),
+            )
+            .label("tenant_claim_rank")
+        )
+        ranked_jobs = (
+            select(DISCOVERY_JOBS_TABLE, tenant_rank)
+            .where(and_(*claimable_conditions))
+            .subquery()
+        )
         claimed_ids: list[str] = []
         with self._engine.begin() as connection:
             rows = (
                 connection.execute(
-                    select(DISCOVERY_JOBS_TABLE)
-                    .where(and_(*pending_conditions))
+                    select(ranked_jobs)
                     .order_by(
-                        DISCOVERY_JOBS_TABLE.c.next_attempt_at,
-                        DISCOVERY_JOBS_TABLE.c.created_at,
+                        ranked_jobs.c.tenant_claim_rank,
+                        ranked_jobs.c.next_attempt_at,
+                        ranked_jobs.c.created_at,
+                        ranked_jobs.c.id,
                     )
                     .limit(normalized_limit)
                 )
