@@ -228,13 +228,25 @@ The checked-in production Compose stack already expects Caddy config at:
 
 ## 5. Prepare environment variables
 
-Create a production env file outside Git, for example:
+> **Source of truth**: the authoritative production env template is
+> [`deploy/.env.production.example`](../deploy/.env.production.example). Copy
+> it to your live env file and fill in the `CHANGE_ME_*` placeholders. The
+> drift test `tests/operations/test_env_template.py` keeps the template in
+> sync with code — any new `EGP_*` env var added in a future PR will fail
+> CI unless it's also added to the template.
+>
+> **Secret rotation**: see [`docs/SECRET_ROTATION.md`](./SECRET_ROTATION.md)
+> for per-secret Generate / Roll / Restart / Verify procedures.
 
 ```bash
-nano .deploy/egp.env
+# Copy the template, fill in the CHANGE_ME_* placeholders
+sudo install -m 0600 deploy/.env.production.example /etc/egp/egp.env
+sudo chown egp:egp /etc/egp/egp.env
+sudo nano /etc/egp/egp.env
 ```
 
-Suggested minimum variables:
+The legacy minimum-set below is preserved for reference but the full
+template above is the canonical setup:
 
 ```env
 DATABASE_URL=postgresql+psycopg://egp:strong_password@127.0.0.1:5432/egp
@@ -320,7 +332,7 @@ The API image already contains the repo’s Python package layout and browser-re
 A typical launch command on the VM will look like:
 
 ```bash
-docker compose --env-file .deploy/egp.env up -d --build
+docker compose --env-file /etc/egp/egp.env up -d --build
 ```
 
 ### Important runtime behavior from the codebase
@@ -341,14 +353,14 @@ If you need to simplify the runtime during an incident:
 1. stop the executor services:
 
 ```bash
-docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor
+docker compose --env-file /etc/egp/egp.env stop webhook-executor discovery-executor
 ```
 
-2. set `EGP_BACKGROUND_RUNTIME_MODE=embedded` in `.deploy/egp.env`
+2. set `EGP_BACKGROUND_RUNTIME_MODE=embedded` in `/etc/egp/egp.env`
 3. restart the API:
 
 ```bash
-docker compose --env-file .deploy/egp.env up -d api
+docker compose --env-file /etc/egp/egp.env up -d api
 ```
 
 In embedded mode the API resumes the legacy in-process background behavior. Do not leave external executors running while the API is in embedded mode.
