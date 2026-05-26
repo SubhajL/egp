@@ -126,6 +126,11 @@ services:
       - egp_api.executors.discovery_dispatch
 
   web:
+    # Frontend service for single-host launches only.
+    # Production deploys use Vercel — see docs/VERCEL_DEPLOYMENT.md.
+    # `docker compose up -d` keeps this service down; pass
+    # `--profile single-host` to include it.
+    profiles: ["single-host"]
     build:
       context: ./apps/web
       dockerfile: Dockerfile
@@ -162,8 +167,6 @@ services:
       - caddy_config:/config
     depends_on:
       api:
-        condition: service_healthy
-      web:
         condition: service_healthy
 
 volumes:

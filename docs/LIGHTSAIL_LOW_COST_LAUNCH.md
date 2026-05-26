@@ -47,6 +47,12 @@ That makes a small always-on VM a better fit than a cold-start-heavy serverless 
 
 ### Why Vercel for the frontend (not the in-Compose `web` service)
 
+> **Deployment guide**: full Vercel setup procedure is in
+> [`docs/VERCEL_DEPLOYMENT.md`](./VERCEL_DEPLOYMENT.md) (PR-D).
+> Default `docker compose up -d` excludes the `web` service — pass
+> `--profile single-host` to include it for single-host launches.
+
+
 The production Compose file ships a `web` Next.js service for single-host *convenience*, but the production target is **Vercel**. A marketing push hits page views, not crawls — Vercel's free tier absorbs viral spikes without touching your VM. The in-Compose `web` is only suitable when you have not yet wired up Vercel.
 
 ### Recommended starting size
