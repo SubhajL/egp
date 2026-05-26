@@ -39,6 +39,10 @@ def postgres_binaries_available() -> bool:
     return all(_find_binary(name) is not None for name in ("initdb", "pg_ctl", "psql"))
 
 
+def postgres_backup_binaries_available() -> bool:
+    return all(_find_binary(name) is not None for name in ("pg_dump", "pg_restore"))
+
+
 def _find_free_port() -> int:
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -381,6 +385,21 @@ class TempPostgresCluster:
             with connection.cursor() as cursor:
                 cursor.execute(f'CREATE DATABASE "{database_name}"')
 
+    def drop_database(self, database_name: str) -> None:
+        """Drop ``database_name``, forcibly disconnecting open sessions."""
+        with connect(self.postgres_url) as connection:
+            connection.autocommit = True
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE datname = %s AND pid <> pg_backend_pid()
+                    """,
+                    (database_name,),
+                )
+                cursor.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+
     def apply_sql(self, sql_path: Path, *, database_name: str) -> None:
         subprocess.run(
             [
@@ -657,4 +676,96 @@ def run_phase1_postgres_project_run_smoke(
             else 0,
             "run_status": finished.status.value,
             "task_count": len(run_detail.tasks) if run_detail is not None else 0,
+        }
+
+
+def run_pg_backup_restore_smoke(
+    *,
+    repo_root: Path,
+    backup_root: Path,
+) -> dict[str, object]:
+    """Round-trip a Postgres dump through pg_backup/pg_restore primitives.
+
+    Seeds a single tenant row, dumps the database with ``pg_dump -Fc -Z0``,
+    gzips and sha256-sidecars the archive, drops/recreates the target,
+    restores via ``pg_restore``, and re-reads the tenant count.
+    """
+    import gzip
+    import hashlib
+
+    from egp_db.backup_files import (
+        build_backup_name,
+        sha256_file,
+        verify_sha256_sidecar,
+        write_sha256_sidecar,
+    )
+
+    repo_root = Path(repo_root)
+    backup_root = Path(backup_root)
+    backup_root.mkdir(parents=True, exist_ok=True)
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    database_name = "egp_backup_smoke"
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database(database_name)
+        database_url = cluster.database_url(database_name)
+        apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (name, slug, plan_code)
+                    VALUES (%s, %s, %s)
+                    """,
+                    ("Backup Smoke Tenant", "backup-smoke-tenant", "dev"),
+                )
+                cursor.execute("SELECT COUNT(*) FROM tenants")
+                seeded_count = int(cursor.fetchone()[0])
+            connection.commit()
+
+        archive_name = build_backup_name(
+            created_at=datetime.now(UTC), git_sha="abc1234"
+        )
+        archive_path = backup_root / archive_name
+        raw = subprocess.run(
+            ["pg_dump", "-Fc", "-Z0", database_url],
+            check=True,
+            capture_output=True,
+        )
+        with gzip.open(archive_path, "wb") as gz:
+            gz.write(raw.stdout)
+        digest = sha256_file(archive_path)
+        sidecar_path = write_sha256_sidecar(archive_path, digest=digest)
+        verify_sha256_sidecar(archive_path, sidecar_path)
+
+        # Drop and recreate, then restore from the archive
+        cluster.drop_database(database_name)
+        cluster.create_database(database_name)
+        restored_url = cluster.database_url(database_name)
+
+        with gzip.open(archive_path, "rb") as gz:
+            payload = gz.read()
+        subprocess.run(
+            ["pg_restore", "--no-owner", "--no-acl", "-d", restored_url],
+            input=payload,
+            check=True,
+            capture_output=True,
+        )
+
+        with connect(restored_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM tenants")
+                restored_count = int(cursor.fetchone()[0])
+
+        # Sanity check digest of the raw bytes too
+        archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+        return {
+            "seeded_tenant_count": seeded_count,
+            "restored_tenant_count": restored_count,
+            "sha256_verified": digest == archive_digest,
+            "archive_path": str(archive_path),
+            "sidecar_path": str(sidecar_path),
+            "database_url": restored_url,
         }
