@@ -332,6 +332,12 @@ The authoritative production env template is **`deploy/.env.production.example`*
 lists every variable the codebase reads, grouped by Required / Recommended / Optional.
 A drift test under `tests/operations/test_env_template.py` keeps it in sync with code.
 
+Production frontend (`apps/web`) deploys to **Vercel Hobby** — `NEXT_PUBLIC_*`
+vars live in the Vercel project UI, not in the runtime env file. See
+[`docs/VERCEL_DEPLOYMENT.md`](docs/VERCEL_DEPLOYMENT.md). The values in
+`deploy/.env.production.example` for those vars are only used by the
+opt-in single-host Compose profile.
+
 Secret rotation procedure: **`docs/SECRET_ROTATION.md`** (per-secret runbook with
 Generate / Roll / Restart / Verify / Window / Frequency for each high-risk credential).
 
