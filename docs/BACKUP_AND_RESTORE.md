@@ -62,8 +62,15 @@ project's S3-compatible endpoint, region, and the storage access keys.
 
 ### 2.3 Environment variables
 
-Put these in `/etc/egp/backup.env` (mode `0600`, owned by the backup user)
-or your secret manager of choice. **Never** commit this file.
+The authoritative production env template lives at
+[`deploy/.env.production.example`](../deploy/.env.production.example) and
+covers every variable below. For a host that runs **only** backup timers
+(no API or workers), you can put a scoped subset in `/etc/egp/backup.env`
+(mode `0600`, owned by the backup user) — the variables below are exactly
+that subset. For a single-host deploy, prefer the full `/etc/egp/egp.env`.
+
+**Never** commit either file. Rotation procedure for the R2 secret:
+see [`docs/SECRET_ROTATION.md`](./SECRET_ROTATION.md) §6.
 
 ```bash
 # Postgres backup target

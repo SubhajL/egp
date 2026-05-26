@@ -318,6 +318,15 @@ Closure reasons: `winner_announced`, `contract_signed`, `consulting_timeout_30d`
 
 ## Environment Variables
 
+The authoritative production env template is **`deploy/.env.production.example`** — it
+lists every variable the codebase reads, grouped by Required / Recommended / Optional.
+A drift test under `tests/operations/test_env_template.py` keeps it in sync with code.
+
+Secret rotation procedure: **`docs/SECRET_ROTATION.md`** (per-secret runbook with
+Generate / Roll / Restart / Verify / Window / Frequency for each high-risk credential).
+
+The legacy quick-reference below remains useful for local dev defaults.
+
 ### API Service
 
 ```
