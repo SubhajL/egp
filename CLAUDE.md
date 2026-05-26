@@ -58,6 +58,16 @@ docker compose up -d postgres
 # Apply database migrations
 ./.venv/bin/python -m egp_db.migration_runner --database-url "$DATABASE_URL" --migrations-dir packages/db/src/migrations
 
+# Bootstrap the first tenant + admin user (one-shot, idempotent)
+# Production runbook: docs/LIGHTSAIL_LOW_COST_LAUNCH.md §11
+# Prefer --password-stdin over the env-var path (env vars are visible
+# to other processes via /proc/<pid>/environ on Linux).
+echo "strong-passphrase-here" | ./.venv/bin/python scripts/seed_first_admin.py \
+    --tenant-name "Your Company" --tenant-slug your-company \
+    --admin-email admin@example.com --admin-full-name "Admin" \
+    --database-url "$DATABASE_URL" \
+    --password-stdin
+
 # Dockerless document-persistence smoke (uses local PostgreSQL binaries)
 ./.venv/bin/python scripts/run_phase1_postgres_smoke.py
 

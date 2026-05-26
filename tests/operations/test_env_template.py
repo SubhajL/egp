@@ -75,6 +75,10 @@ SOURCE_ONLY_VARS: frozenset[str] = frozenset(
         "EGP_LOCAL_DEV_TENANT_SLUG",
         "EGP_DEV_USE_ENV_LOCAL_RUNTIME",
         "EGP_PYTHON_BIN",  # used only by scripts/pg_backup.sh as a venv override
+        # One-shot bootstrap secret consumed by scripts/seed_first_admin.py;
+        # the operator passes it once on the command line then never again,
+        # so it does NOT belong in the persistent production env file.
+        "EGP_FIRST_ADMIN_PASSWORD",
     }
 )
 
