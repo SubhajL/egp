@@ -409,7 +409,60 @@ Use the same database URL the API will use.
 
 ## 11. Seed or create the first admin/owner user
 
-Use the repo’s existing auth/bootstrap flows or admin APIs to ensure there is at least one owner/admin account before launch.
+After migrations have applied (step 10) and **before** the first end-user
+login, run `scripts/seed_first_admin.py` exactly once to bootstrap the
+tenant + owner account. The script is non-interactive and idempotent — a
+re-run against a tenant that already has an admin exits 0 with
+`status: already-seeded` and does not mutate state.
+
+**Recommended (most secure):** read the password from stdin so it never
+appears in process environment or shell history.
+
+```bash
+# Put the password in a root-only file first (mode 0600)
+sudo install -m 0600 /dev/null /etc/egp/first-admin-password
+sudo nano /etc/egp/first-admin-password   # type the password, save, exit
+
+# Then pipe via stdin
+sudo cat /etc/egp/first-admin-password | ./.venv/bin/python scripts/seed_first_admin.py \
+    --tenant-name "Your Company" \
+    --tenant-slug your-company \
+    --admin-email admin@yourdomain.com \
+    --admin-full-name "Admin User" \
+    --database-url "$DATABASE_URL" \
+    --password-stdin
+
+# Securely delete the password file after the script succeeds
+sudo shred -u /etc/egp/first-admin-password
+```
+
+> **Why not the env var path?** On Linux any process running as the same
+> user (or root) can read another process's environment via
+> `/proc/<pid>/environ`. The stdin path keeps the password off the process
+> environment AND off shell history (the file path is in history, but its
+> contents are not). The `EGP_FIRST_ADMIN_PASSWORD` env var path remains
+> available as an automation fallback (CI runners, ansible) where the
+> environment is already a trusted secret store.
+
+**Important — refused inputs:** The script rejects `--password ...` on the
+command line because argv leaks via `ps` and shell history. The script
+refuses to start if you pass that flag.
+
+**Output:** on success, the script prints a JSON record to stdout. Capture
+`tenant_id` and `user_id` if you need them later (e.g. for billing record
+setup):
+
+```json
+{"admin_count": 1, "admin_email": "admin@yourdomain.com",
+ "status": "created", "tenant_id": "...", "tenant_slug": "your-company",
+ "user_id": "..."}
+```
+
+**Rotation:** the admin's password is rotated via the regular auth UI
+(self-service "change password") or by direct DB `UPDATE`. The bootstrap
+script is one-shot only; running it again against the same tenant just
+prints `status: already-seeded` with `admin_email: null` (info-leak
+safety) and exits 0.
 
 ---
 
