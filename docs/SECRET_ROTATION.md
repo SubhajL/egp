@@ -134,6 +134,42 @@ cutover — there is no dual-secret support in the code today.
 
 ---
 
+## 5b. `EGP_STRIPE_SECRET_KEY` and `EGP_STRIPE_WEBHOOK_SECRET` — Stripe Payments
+
+Used by `StripeProvider` in `apps/api/src/egp_api/services/payment_provider.py`
+when `EGP_PAYMENT_PROVIDER=stripe`. Two keys rotated independently:
+
+- **`EGP_STRIPE_SECRET_KEY`** (`sk_live_*` or `sk_test_*`) is the API
+  Bearer token used for `POST /v1/payment_intents` and `POST /v1/payment_links`.
+- **`EGP_STRIPE_WEBHOOK_SECRET`** (`whsec_*`) is the HMAC-SHA256 key used
+  to verify the `Stripe-Signature` header on incoming webhooks.
+
+Rotation procedure:
+
+- **Generate (secret key)**: Stripe Dashboard → **Developers → API keys
+  → Roll** a restricted key with `read_write` on `PaymentIntents`,
+  `PaymentLinks`, `Charges`.
+- **Generate (webhook secret)**: Dashboard → **Developers → Webhooks**
+  → click your endpoint → **Roll secret**.
+- **Roll**: update `/etc/egp/egp.env` with the new value(s).
+- **Restart**: `sudo systemctl restart egp-api.service` (Stripe key
+  is only read at startup, like OPN).
+- **Verify**: send a sandboxed test PaymentIntent via the Stripe
+  Dashboard's **Webhooks → Send test webhook**; API responds 200 and
+  `payment_provider_events` records the event with `verified=true`.
+- **Window**: **zero overlap** at the API level (mirrors OPN; the
+  provider only reads the current env value). For the **webhook
+  secret** specifically, Stripe supports up to 2 active signing secrets
+  for ~24h after rotation — that gives a generous overlap window AT
+  STRIPE's side. For the API key, no overlap; plan a brief restart.
+- **Frequency**: quarterly, or immediately on leak.
+
+> Stripe API version is pinned in `StripeProvider._api_version`
+> (currently `2026-04-22.dahlia`). Bumping the version is a code
+> change, not a rotation.
+
+---
+
 ## 6. `EGP_BACKUP_R2_SECRET_ACCESS_KEY` — Cloudflare R2 backup credentials
 
 Used by `scripts/pg_backup.sh` and `scripts/artifact_backup.sh` to upload to
