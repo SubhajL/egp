@@ -1,0 +1,13 @@
+# Auto-provision the Prometheus datasource at Grafana startup.
+# Loaded from /etc/grafana/provisioning/datasources/ (bind-mounted).
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: egp-prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

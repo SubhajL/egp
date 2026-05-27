@@ -225,7 +225,39 @@ stored token.
 
 ---
 
-## 10. Operator-level credentials (not in env)
+## 10. `EGP_GRAFANA_ADMIN_PASSWORD` — Grafana admin login
+
+Used by the `docker-compose.monitoring.yml` overlay (PR-E) to set the
+initial Grafana admin password on first container start. Grafana stores
+the password hash in its own SQLite volume (`egp_grafana_data`); the
+env var is read by Grafana ONLY on first startup. Subsequent changes
+must go through the Grafana UI or `grafana cli admin reset-admin-password`.
+
+- **Generate**: `openssl rand -hex 24`
+- **Roll**: two-step (env var alone is insufficient because Grafana
+  persists the hash):
+  1. Update via Grafana CLI:
+     ```bash
+     docker compose -f docker-compose.yml -f docker-compose.monitoring.yml \
+         exec grafana grafana cli admin reset-admin-password '<new-password>'
+     ```
+  2. Update `EGP_GRAFANA_ADMIN_PASSWORD` in `/etc/egp/egp.env` so future
+     container recreates use the new value.
+- **Restart**: no restart needed for the password change itself; the
+  env-var update only affects fresh `docker volume rm egp_grafana_data`
+  recreations.
+- **Verify**: log into Grafana via the SSH tunnel
+  (`ssh -L 3001:127.0.0.1:3000 user@host` → `http://localhost:3001`)
+  with the new password.
+- **Window**: zero overlap; the CLI reset takes effect immediately.
+- **Frequency**: quarterly, or immediately if leaked.
+
+> The Grafana admin user has full read/write access to all dashboards
+> and data sources. Treat this password as a launch-critical secret.
+
+---
+
+## 11. Operator-level credentials (not in env)
 
 Some operator-facing credentials are NOT in `/etc/egp/egp.env` but should
 follow the same cadence:
@@ -240,7 +272,7 @@ follow the same cadence:
 
 ---
 
-## 11. Change-log template
+## 12. Change-log template
 
 Whenever you rotate a secret, append a line to the operator change log:
 
@@ -255,7 +287,7 @@ WHEN.
 
 ---
 
-## 12. Emergency rotation (leaked secret)
+## 13. Emergency rotation (leaked secret)
 
 If a secret is suspected leaked:
 

@@ -1,0 +1,135 @@
+{
+  "title": "e-GP Observability Baseline",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["egp", "observability", "baseline"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "API request rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (method, path, status_class) (rate(egp_api_http_requests_total[5m]))",
+          "legendFormat": "{{method}} {{path}} {{status_class}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "API p99 latency",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, path) (rate(egp_api_http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{path}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Worker jobs",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (command, outcome) (rate(egp_worker_jobs_total[5m]))",
+          "legendFormat": "{{command}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Worker job duration",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, command, outcome) (rate(egp_worker_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{command}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Discovery dispatch duration",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(egp_dispatch_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Worker subprocess count",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "egp_worker_subprocess_count",
+          "legendFormat": "subprocesses"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "e-GP request outcomes",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(egp_egp_request_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Rate limiter wait p99",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(egp_rate_limiter_wait_seconds_bucket[5m])))",
+          "legendFormat": "p99 wait"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Upsert conflicts",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(egp_project_upsert_conflicts_total[5m]))",
+          "legendFormat": "project {{outcome}}"
+        },
+        {
+          "expr": "sum by (outcome) (rate(egp_document_upsert_conflicts_total[5m]))",
+          "legendFormat": "document {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Discovery queue and inflight runs",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "egp_discovery_queue_depth",
+          "legendFormat": "queue depth"
+        },
+        {
+          "expr": "egp_discovery_inflight_runs",
+          "legendFormat": "inflight runs"
+        },
+        {
+          "expr": "sum by (outcome) (rate(egp_discovery_dispatch_total[5m]))",
+          "legendFormat": "dispatch {{outcome}}"
+        }
+      ]
+    }
+  ]
+}

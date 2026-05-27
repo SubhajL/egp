@@ -1,0 +1,28 @@
+# Prometheus scrape configuration for the e-GP Intelligence Platform.
+# Loaded by the docker-compose.monitoring.yml overlay.
+#
+# Scrape targets resolve via Compose service-name DNS (default bridge network):
+#   api:8000   — FastAPI /metrics endpoint
+#   localhost  — Prometheus self-scrape
+#
+# Worker scrape is intentionally NOT included in PR-E; workers update
+# in-process counters but do not yet expose an HTTP /metrics listener.
+# Track at docs/OBSERVABILITY.md "Follow-up: worker metrics".
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: egp_api
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - api:8000
+        labels:
+          service: api
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090

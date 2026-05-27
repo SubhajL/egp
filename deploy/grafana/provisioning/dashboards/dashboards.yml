@@ -1,0 +1,16 @@
+# Auto-load JSON dashboards from /var/lib/grafana/dashboards (bind-mounted).
+# Loaded from /etc/grafana/provisioning/dashboards/.
+
+apiVersion: 1
+
+providers:
+  - name: egp-dashboards
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
