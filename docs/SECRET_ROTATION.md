@@ -136,6 +136,11 @@ cutover — there is no dual-secret support in the code today.
 
 ## 5b. `EGP_STRIPE_SECRET_KEY` and `EGP_STRIPE_WEBHOOK_SECRET` — Stripe Payments
 
+> **Full deployment runbook**: [`docs/STRIPE_DEPLOYMENT.md`](./STRIPE_DEPLOYMENT.md)
+> — covers account setup (Stripe Thailand vs Atlas), webhook endpoint
+> configuration, test-mode → live cutover, and common gotchas.
+
+
 Used by `StripeProvider` in `apps/api/src/egp_api/services/payment_provider.py`
 when `EGP_PAYMENT_PROVIDER=stripe`. Two keys rotated independently:
 

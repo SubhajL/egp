@@ -136,6 +136,7 @@ def _register_auth_middleware(
                 and request.url.path.endswith("/callbacks")
             )
             or request.url.path == "/v1/billing/providers/opn/webhooks"
+            or request.url.path == "/v1/billing/providers/stripe/webhooks"
         ):
             request.state.auth_context = None
             return await call_next(request)

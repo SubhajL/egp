@@ -288,6 +288,7 @@ Closure reasons: `winner_announced`, `contract_signed`, `consulting_timeout_30d`
 - Confirm before: git force push, database drops, or object-storage bucket deletes
 - Signed object-storage URLs for document downloads (never expose raw storage paths)
 - Webhook signature verification for payment provider callbacks
+- Supported payment providers: OPN (Omise) and Stripe — operator-configurable via `EGP_PAYMENT_PROVIDER`. See [`docs/STRIPE_DEPLOYMENT.md`](docs/STRIPE_DEPLOYMENT.md) for Stripe setup.
 - Audit log for all admin actions and billing changes
 
 ### Crawler Security
