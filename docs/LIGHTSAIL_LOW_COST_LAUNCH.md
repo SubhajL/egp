@@ -259,10 +259,17 @@ DATABASE_URL=postgresql+psycopg://egp:strong_password@127.0.0.1:5432/egp
 EGP_AUTH_REQUIRED=true
 EGP_JWT_SECRET=replace_with_long_random_secret
 EGP_PAYMENT_CALLBACK_SECRET=replace_with_long_random_secret
+# --- Payment provider: pick ONE of (opn, stripe) ---
+# OPN (Omise) — default for Thai company deployments. Stripe is an
+# alternative; see docs/STRIPE_DEPLOYMENT.md for setup.
 EGP_OPN_SECRET_KEY=skey_live_or_test_xxxxx
 EGP_OPN_PUBLIC_KEY=pkey_live_or_test_xxxxx
 EGP_OPN_WEBHOOK_SECRET=base64_webhook_secret_from_opn_dashboard
 EGP_PAYMENT_PROVIDER=opn
+# For Stripe instead, set EGP_PAYMENT_PROVIDER=stripe and add:
+#   EGP_STRIPE_SECRET_KEY=sk_live_or_test_xxxxx
+#   EGP_STRIPE_WEBHOOK_SECRET=whsec_xxxxx
+#   EGP_STRIPE_PUBLISHABLE_KEY=pk_live_or_test_xxxxx
 EGP_WEB_ALLOWED_ORIGINS=https://app.yourdomain.com,https://www.yourdomain.com
 EGP_WEB_BASE_URL=https://app.yourdomain.com
 NEXT_PUBLIC_EGP_API_BASE_URL=https://api.yourdomain.com

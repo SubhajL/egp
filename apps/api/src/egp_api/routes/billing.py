@@ -695,6 +695,36 @@ async def handle_opn_provider_webhook(
     return _serialize_detail(detail)
 
 
+@router.post("/providers/stripe/webhooks", response_model=BillingRecordDetailResponse)
+async def handle_stripe_provider_webhook(
+    request: Request,
+) -> BillingRecordDetailResponse:
+    service = _service_from_request(request)
+    body_bytes = await request.body()
+    raw_body = body_bytes.decode("utf-8") if body_bytes else ""
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid json payload") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid json payload")
+    try:
+        detail = service.handle_provider_webhook(
+            provider=BillingPaymentProvider.STRIPE,
+            payload=payload,
+            headers={key.lower(): value for key, value in request.headers.items()},
+            raw_body=raw_body or None,
+            actor_subject="stripe-webhook",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="payment request not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _serialize_detail(detail)
+
+
 @router.post("/payments/{payment_id}/reconcile", response_model=BillingRecordDetailResponse)
 def reconcile_billing_payment(
     payment_id: str,

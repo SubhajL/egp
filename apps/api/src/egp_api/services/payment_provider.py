@@ -767,6 +767,12 @@ class StripeProvider:
             payment_url = (
                 qr_svg_url or f"{self._api_base_url}/payment_intents/{payment_intent.get('id')}"
             )
+            # Stripe doesn't return an expires_at on PaymentIntents the way
+            # OPN does on /sources; compute a request-driven default so the
+            # billing repository (which expects ISO 8601) doesn't reject it.
+            computed_expires_at = (
+                datetime.now(UTC) + timedelta(minutes=max(1, int(request.expires_in_minutes)))
+            ).isoformat()
             return CreatedPaymentRequest(
                 provider=BillingPaymentProvider.STRIPE,
                 payment_method=BillingPaymentMethod.PROMPTPAY_QR,
@@ -777,7 +783,7 @@ class StripeProvider:
                 qr_svg=render_promptpay_qr_svg(qr_payload) if qr_payload else "",
                 amount=request.amount,
                 currency=normalized_currency,
-                expires_at="",
+                expires_at=computed_expires_at,
             )
 
         if request.payment_method is BillingPaymentMethod.CARD:
@@ -801,6 +807,9 @@ class StripeProvider:
                 link_payload["after_completion[type]"] = "redirect"
                 link_payload["after_completion[redirect][url]"] = return_uri
             link = self._request(method="POST", path="/v1/payment_links", payload=link_payload)
+            computed_expires_at = (
+                datetime.now(UTC) + timedelta(minutes=max(1, int(request.expires_in_minutes)))
+            ).isoformat()
             return CreatedPaymentRequest(
                 provider=BillingPaymentProvider.STRIPE,
                 payment_method=BillingPaymentMethod.CARD,
@@ -811,7 +820,7 @@ class StripeProvider:
                 qr_svg="",
                 amount=request.amount,
                 currency=normalized_currency,
-                expires_at="",
+                expires_at=computed_expires_at,
             )
 
         raise ValueError("unsupported payment method for Stripe")
@@ -845,9 +854,7 @@ class StripeProvider:
         if event_type.startswith("checkout.session."):
             payment_link = str(obj.get("payment_link") or "").strip()
             if not payment_link:
-                raise ValueError(
-                    "checkout.session event missing payment_link reference"
-                )
+                raise ValueError("checkout.session event missing payment_link reference")
             provider_reference = payment_link
             reference_code: str | None = session_id
         else:

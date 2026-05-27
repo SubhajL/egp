@@ -315,6 +315,26 @@ class BillingService:
             headers=headers,
             raw_body=raw_body,
         )
+
+        # Validate the callback BEFORE any DB mutation. If amount/currency
+        # don't match, raise so nothing is persisted; the provider will retry
+        # and the same validation will fail again — no silent half-state.
+        # See QCHECK PR-G #1: previously the event row + status update landed
+        # BEFORE validation, so a retry hit the UNIQUE constraint and
+        # short-circuited without recording payment.
+        if callback.status is BillingPaymentRequestStatus.SETTLED and (
+            payment_request.status is not BillingPaymentRequestStatus.SETTLED
+        ):
+            if callback.currency != payment_request.currency:
+                raise ValueError("callback currency does not match payment request")
+            try:
+                callback_amount = Decimal(callback.amount)
+                request_amount = Decimal(payment_request.amount)
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError("invalid callback amount") from exc
+            if callback_amount != request_amount:
+                raise ValueError("callback amount does not match payment request")
+
         inserted = self._repository.record_provider_callback(
             tenant_id=payment_request_tenant_id,
             payment_request_id=payment_request.id,
@@ -345,15 +365,6 @@ class BillingService:
 
         if payment_request.status is BillingPaymentRequestStatus.SETTLED:
             return detail
-        if callback.currency != payment_request.currency:
-            raise ValueError("callback currency does not match payment request")
-        try:
-            callback_amount = Decimal(callback.amount)
-            request_amount = Decimal(payment_request.amount)
-        except (InvalidOperation, ValueError) as exc:
-            raise ValueError("invalid callback amount") from exc
-        if callback_amount != request_amount:
-            raise ValueError("callback amount does not match payment request")
 
         recorded_payment = self._repository.record_payment(
             tenant_id=payment_request_tenant_id,

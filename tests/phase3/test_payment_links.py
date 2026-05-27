@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import time
 from datetime import UTC, date, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from egp_api.services.payment_provider import (
     OpnProvider,
     ParsedPaymentCallback,
     ProviderPaymentRequest,
+    StripeProvider,
 )
 from egp_shared_types.enums import (
     BillingPaymentMethod,
@@ -190,7 +192,7 @@ def _create_payment_request(
             "expires_in_minutes": 30,
         },
     )
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     return response.json()
 
 
@@ -332,7 +334,10 @@ def test_create_payment_request_rejects_stale_unpaid_record(tmp_path) -> None:
     )
 
     assert payment_response.status_code == 400
-    assert payment_response.json()["detail"] == "stale unpaid billing record is not payable"
+    assert (
+        payment_response.json()["detail"]
+        == "stale unpaid billing record is not payable"
+    )
 
 
 def test_callback_settles_invoice_and_activates_subscription_once(tmp_path) -> None:
@@ -533,7 +538,9 @@ def test_opn_webhook_rejects_missing_signature(tmp_path) -> None:
     assert response.json()["detail"] == "invalid opn webhook signature"
 
 
-def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_path) -> None:
+def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(
+    tmp_path,
+) -> None:
     provider = StubOpnProvider()
     client = _create_client(tmp_path, payment_provider=provider)
     future_start = _utc_today() + timedelta(days=1)
@@ -570,7 +577,10 @@ def test_one_time_opn_promptpay_webhook_settles_and_activates_subscription(tmp_p
     settled = response.json()
     assert settled["record"]["id"] == created["record"]["id"]
     assert settled["record"]["status"] == "paid"
-    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
     assert settled["subscription"]["plan_code"] == "one_time_search_pack"
     assert settled["subscription"]["subscription_status"] == "pending_activation"
     assert settled["subscription"]["keyword_limit"] == 1
@@ -618,7 +628,10 @@ def test_opn_webhook_settles_upgrade_record_and_supersedes_trial(tmp_path) -> No
 
     assert response.status_code == 200
     settled = response.json()
-    assert settled["payment_requests"][0]["id"] == request_detail["payment_requests"][0]["id"]
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
     assert settled["subscription"]["plan_code"] == "monthly_membership"
     assert settled["subscription"]["keyword_limit"] is None
 
@@ -627,7 +640,8 @@ def test_opn_webhook_settles_upgrade_record_and_supersedes_trial(tmp_path) -> No
     trial_record = next(
         detail
         for detail in listed.json()["records"]
-        if detail["subscription"] is not None and detail["subscription"]["id"] == trial_subscription_id
+        if detail["subscription"] is not None
+        and detail["subscription"]["id"] == trial_subscription_id
     )
     assert trial_record["subscription"]["subscription_status"] == "cancelled"
 
@@ -722,7 +736,9 @@ def test_opn_charge_callback_accepts_omise_signature_headers() -> None:
     assert parsed.status is BillingPaymentRequestStatus.SETTLED
 
 
-def test_opn_promptpay_request_prefers_authorize_uri_and_sets_return_and_webhook_urls() -> None:
+def test_opn_promptpay_request_prefers_authorize_uri_and_sets_return_and_webhook_urls() -> (
+    None
+):
     provider = OpnProvider(
         secret_key="skey_test_example",
         base_url="https://api.egp.test",
@@ -775,7 +791,10 @@ def test_opn_promptpay_request_prefers_authorize_uri_and_sets_return_and_webhook
         )
     )
 
-    assert created.payment_url == "https://pay.omise.co/payments/pay2_test_promptpay_001/authorize"
+    assert (
+        created.payment_url
+        == "https://pay.omise.co/payments/pay2_test_promptpay_001/authorize"
+    )
     assert created.provider_reference == "chrg_test_promptpay_001"
     assert captured_requests == [
         (
@@ -800,7 +819,9 @@ def test_opn_promptpay_request_prefers_authorize_uri_and_sets_return_and_webhook
                     "record_number": "INV-123",
                 },
                 "return_uri": "https://app.egp.test/billing?record_id=record-123&payment_return=opn",
-                "webhook_endpoints": ["https://api.egp.test/v1/billing/providers/opn/webhooks"],
+                "webhook_endpoints": [
+                    "https://api.egp.test/v1/billing/providers/opn/webhooks"
+                ],
             },
         ),
     ]
@@ -814,7 +835,9 @@ def test_opn_request_encoding_flattens_nested_metadata() -> None:
                 "billing_record_id": "record-123",
                 "record_number": "INV-123",
             },
-            "webhook_endpoints": ["https://api.egp.test/v1/billing/providers/opn/webhooks"],
+            "webhook_endpoints": [
+                "https://api.egp.test/v1/billing/providers/opn/webhooks"
+            ],
         }
     )
 
@@ -822,5 +845,401 @@ def test_opn_request_encoding_flattens_nested_metadata() -> None:
         ("amount", "150000"),
         ("metadata[billing_record_id]", "record-123"),
         ("metadata[record_number]", "INV-123"),
-        ("webhook_endpoints[]", "https://api.egp.test/v1/billing/providers/opn/webhooks"),
+        (
+            "webhook_endpoints[]",
+            "https://api.egp.test/v1/billing/providers/opn/webhooks",
+        ),
     ]
+
+
+# ============================================================================
+# Stripe webhook route integration tests (PR-G)
+# ============================================================================
+#
+# These tests use the REAL `StripeProvider` with `_request` stubbed only for
+# payment-request creation, so webhook signature verification + parse_callback
+# remain real. The webhook endpoint at `/v1/billing/providers/stripe/webhooks`
+# must mirror OPN's behavior (raw body required, 400 on signature mismatch,
+# 404 on unknown payment reference) and bypass the auth middleware.
+
+STRIPE_SECRET_KEY = "sk_test_egp_pr_g_dont_use_in_prod"
+STRIPE_WEBHOOK_SECRET = "whsec_egp_pr_g_dont_use_in_prod"
+
+
+def _stripe_signature_header(secret: str, timestamp: int, raw_body: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp}.{raw_body}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"t={timestamp},v1={digest}"
+
+
+def _build_stripe_provider() -> StripeProvider:
+    """Build a real StripeProvider; tests stub `_request` per scenario."""
+    return StripeProvider(
+        secret_key=STRIPE_SECRET_KEY,
+        webhook_secret=STRIPE_WEBHOOK_SECRET,
+        base_url="https://api.egp.test",
+    )
+
+
+def _stub_promptpay_create(provider: StripeProvider) -> None:
+    """Stub Stripe API for PaymentIntent create — returns a real-shaped
+    response so create_payment_request returns successfully."""
+
+    def fake_request(*, method, path, payload=None):
+        assert method == "POST"
+        assert path == "/v1/payment_intents"
+        return {
+            "id": "pi_test_promptpay_g1",
+            "amount": payload["amount"] if payload else 2500,
+            "currency": "thb",
+            "status": "requires_action",
+            "next_action": {
+                "promptpay_display_qr_code": {
+                    "data": "0002010102121234",
+                    "image_url_svg": "https://files.stripe.com/qr.svg",
+                },
+            },
+        }
+
+    provider._request = fake_request  # type: ignore[method-assign]
+
+
+def _stub_card_create(provider: StripeProvider) -> None:
+    """Stub Stripe API for Payment Link create."""
+
+    def fake_request(*, method, path, payload=None):
+        assert method == "POST"
+        assert path == "/v1/payment_links"
+        return {
+            "id": "plink_test_card_g1",
+            "url": "https://buy.stripe.com/test_card_g1",
+            "active": True,
+        }
+
+    provider._request = fake_request  # type: ignore[method-assign]
+
+
+def test_stripe_webhook_settles_promptpay_request(tmp_path) -> None:
+    provider = _build_stripe_provider()
+    _stub_promptpay_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="promptpay_qr",
+    )
+
+    # Real webhook payload + real signature
+    raw_body = (
+        '{"id":"evt_test_g1","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    timestamp = int(time.time())
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp, raw_body
+            ),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    settled = response.json()
+    assert settled["record"]["status"] == "paid"
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
+
+
+def test_stripe_webhook_settles_card_payment_link_session(tmp_path) -> None:
+    """For checkout.session.* events, the route must locate the request by
+    `payment_link` (not session id) — PR-F's parse_callback fix.
+    """
+    provider = _build_stripe_provider()
+    _stub_card_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    request_detail = _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="card",
+    )
+
+    raw_body = (
+        '{"id":"evt_test_g2","type":"checkout.session.completed","created":1758696400,'
+        '"data":{"object":{"id":"cs_test_session_g1","payment_link":"plink_test_card_g1",'
+        '"amount_total":2500,"currency":"thb","payment_status":"paid","created":1758696400}}}'
+    )
+    timestamp = int(time.time())
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp, raw_body
+            ),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    settled = response.json()
+    assert settled["record"]["status"] == "paid"
+    assert (
+        settled["payment_requests"][0]["id"]
+        == request_detail["payment_requests"][0]["id"]
+    )
+
+
+def test_stripe_webhook_rejects_invalid_signature(tmp_path) -> None:
+    provider = _build_stripe_provider()
+    _stub_promptpay_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="promptpay_qr",
+    )
+
+    raw_body = (
+        '{"id":"evt_bad","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": "t=1,v1=deadbeef",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "signature" in response.json()["detail"].lower()
+
+
+def test_stripe_webhook_returns_404_for_unknown_payment_reference(tmp_path) -> None:
+    """Stripe stops retrying on 4xx; an unknown payment_intent id should
+    return 404 rather than 5xx (matches OPN behavior)."""
+    provider = _build_stripe_provider()
+    client = _create_client(tmp_path, payment_provider=provider)
+    # Note: no payment request created — webhook references something unknown
+
+    raw_body = (
+        '{"id":"evt_unknown","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_unknown_ref","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    timestamp = int(time.time())
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp, raw_body
+            ),
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_stripe_webhook_rejects_malformed_json(tmp_path) -> None:
+    provider = _build_stripe_provider()
+    client = _create_client(tmp_path, payment_provider=provider)
+
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content="not valid json {{{",
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid json payload"
+
+
+def test_stripe_webhook_endpoint_bypasses_auth_when_required(tmp_path) -> None:
+    """Even with auth_required=True, the Stripe webhook endpoint must
+    accept unauthenticated requests (Stripe doesn't send Authorization).
+    """
+    provider = _build_stripe_provider()
+    _stub_promptpay_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="promptpay_qr",
+    )
+    # Flip auth on AFTER seeding so the webhook test exercises the bypass
+    client.app.state.auth_required = True
+
+    raw_body = (
+        '{"id":"evt_auth_test","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    timestamp = int(time.time())
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=raw_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp, raw_body
+            ),
+            # No Authorization header — proves middleware bypass
+        },
+    )
+
+    # Auth bypass works → status is NOT 401/403; webhook either settles or
+    # returns a domain error (200 expected for happy path)
+    assert response.status_code == 200, (
+        f"middleware bypass broken: {response.status_code} {response.text}"
+    )
+
+
+def test_stripe_webhook_settles_idempotently_on_duplicate_event(tmp_path) -> None:
+    """Stripe retries webhooks on non-2xx delivery. If a duplicate event
+    arrives, the second call must still return 2xx (DB UNIQUE on
+    billing_provider_events(provider, provider_event_id) makes it
+    idempotent at the service layer)."""
+    provider = _build_stripe_provider()
+    _stub_promptpay_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="promptpay_qr",
+    )
+
+    raw_body = (
+        '{"id":"evt_dup_001","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    timestamp = int(time.time())
+    headers = {
+        "content-type": "application/json",
+        "stripe-signature": _stripe_signature_header(
+            STRIPE_WEBHOOK_SECRET, timestamp, raw_body
+        ),
+    }
+
+    first = client.post(
+        "/v1/billing/providers/stripe/webhooks", content=raw_body, headers=headers
+    )
+    second = client.post(
+        "/v1/billing/providers/stripe/webhooks", content=raw_body, headers=headers
+    )
+
+    assert first.status_code == 200
+    # Duplicate must not error; record stays paid
+    assert second.status_code == 200
+    assert second.json()["record"]["status"] == "paid"
+
+
+def test_stripe_webhook_amount_mismatch_fails_atomically_and_allows_retry(
+    tmp_path,
+) -> None:
+    """QCHECK PR-G #1 regression: a Stripe webhook with the wrong amount
+    must fail BEFORE any DB mutation. Without that ordering fix, the
+    first delivery would land the event row + mark the request settled,
+    then a Stripe retry would hit the UNIQUE constraint, short-circuit,
+    and return 200 without recording payment — silent corruption.
+
+    This test verifies the fix: mismatched amount returns 400 cleanly,
+    no mutation happens, AND a subsequent CORRECT webhook delivery (with
+    a fresh event_id, as Stripe would send after the operator fixes the
+    mismatch) settles the request properly.
+    """
+    provider = _build_stripe_provider()
+    _stub_promptpay_create(provider)
+    client = _create_client(tmp_path, payment_provider=provider)
+    created = _create_billing_record(client)
+    _create_payment_request(
+        client,
+        record_id=str(created["record"]["id"]),
+        provider="stripe",
+        payment_method="promptpay_qr",
+    )
+
+    # First delivery: amount is WRONG (Stripe sent 9900 satang = ฿99,
+    # not ฿25 like the request).
+    bad_body = (
+        '{"id":"evt_mismatch","type":"payment_intent.succeeded","created":1758696391,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":9900,"currency":"thb",'
+        '"status":"succeeded","created":1758696391}}}'
+    )
+    timestamp = int(time.time())
+    response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=bad_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp, bad_body
+            ),
+        },
+    )
+    assert response.status_code == 400
+    assert "amount" in response.json()["detail"].lower()
+
+    # The bad delivery MUST NOT have mutated state. Re-deliver the SAME
+    # bad event (same event_id) and verify it still returns 400 — proves
+    # the event row was never inserted (otherwise UNIQUE constraint
+    # would silently short-circuit with 200).
+    timestamp_retry = int(time.time())
+    retry_response = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=bad_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp_retry, bad_body
+            ),
+        },
+    )
+    assert retry_response.status_code == 400, (
+        f"retry of bad webhook must re-fail with 400; got "
+        f"{retry_response.status_code} {retry_response.text}. "
+        "If 200: validation runs AFTER mutation (QCHECK PR-G regression)."
+    )
+
+    # Now a CORRECT delivery (different event_id, right amount) succeeds.
+    good_body = (
+        '{"id":"evt_correct","type":"payment_intent.succeeded","created":1758696400,'
+        '"data":{"object":{"id":"pi_test_promptpay_g1","amount":2500,"currency":"thb",'
+        '"status":"succeeded","created":1758696400}}}'
+    )
+    timestamp2 = int(time.time())
+    response2 = client.post(
+        "/v1/billing/providers/stripe/webhooks",
+        content=good_body,
+        headers={
+            "content-type": "application/json",
+            "stripe-signature": _stripe_signature_header(
+                STRIPE_WEBHOOK_SECRET, timestamp2, good_body
+            ),
+        },
+    )
+    assert response2.status_code == 200, response2.text
+    assert response2.json()["record"]["status"] == "paid"
