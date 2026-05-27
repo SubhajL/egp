@@ -68,6 +68,11 @@ echo "strong-passphrase-here" | ./.venv/bin/python scripts/seed_first_admin.py \
     --database-url "$DATABASE_URL" \
     --password-stdin
 
+# Bring up the observability overlay (Prometheus + Grafana, opt-in)
+# Production runbook: docs/OBSERVABILITY.md
+EGP_GRAFANA_ADMIN_PASSWORD='strong-passphrase' docker compose \
+    -f docker-compose.yml -f docker-compose.monitoring.yml up -d prometheus grafana
+
 # Dockerless document-persistence smoke (uses local PostgreSQL binaries)
 ./.venv/bin/python scripts/run_phase1_postgres_smoke.py
 

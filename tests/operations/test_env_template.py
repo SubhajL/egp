@@ -53,6 +53,9 @@ TEMPLATE_ONLY_VARS: frozenset[str] = frozenset(
         # rclone artifact-mirror script reads these via bash `: ${VAR:?}`
         "EGP_ARTIFACT_BACKUP_SRC_REMOTE",
         "EGP_ARTIFACT_BACKUP_DEST_REMOTE",
+        # monitoring overlay (PR-E) — referenced via ${VAR:?} in
+        # docker-compose.monitoring.yml; not read by any Python runtime
+        "EGP_GRAFANA_ADMIN_PASSWORD",
         # docker-compose-only vars (referenced via ${VAR:?} in docker-compose.yml)
         "EGP_API_DOMAIN",
         "EGP_APP_DOMAIN",

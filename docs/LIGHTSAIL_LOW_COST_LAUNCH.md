@@ -472,7 +472,33 @@ safety) and exits 0.
 
 ---
 
-## 12. Configure OPN webhook
+## 12. Bring up the observability overlay (optional but recommended)
+
+After the base stack is healthy, add Prometheus + Grafana via the
+opt-in monitoring overlay. Both services bind to `127.0.0.1` only;
+operators access them via SSH tunnel.
+
+```bash
+# Add EGP_GRAFANA_ADMIN_PASSWORD to /etc/egp/egp.env
+echo "EGP_GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)" | sudo tee -a /etc/egp/egp.env
+
+# Bring up Prometheus + Grafana alongside the base stack
+docker compose --env-file /etc/egp/egp.env \
+    -f docker-compose.yml \
+    -f docker-compose.monitoring.yml \
+    up -d prometheus grafana
+```
+
+Reach Grafana from your laptop: `ssh -L 3001:127.0.0.1:3000 user@host`,
+then open `http://localhost:3001` (login `admin` / your password).
+
+Full runbook: [`docs/OBSERVABILITY.md`](./OBSERVABILITY.md). Resource
+budget on a 4 GB Lightsail is ~500 MB extra. Drop retention to 7d if
+needed; or use Grafana Cloud Free as an alternative (see runbook §4).
+
+---
+
+## 13. Configure OPN webhook
 
 After HTTPS is live, set the OPN webhook URL to:
 
