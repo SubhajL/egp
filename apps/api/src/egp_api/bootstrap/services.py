@@ -18,6 +18,9 @@ from egp_api.config import (
     get_opn_secret_key,
     get_opn_webhook_secret,
     get_smtp_config,
+    get_stripe_publishable_key,
+    get_stripe_secret_key,
+    get_stripe_webhook_secret,
     get_web_base_url,
 )
 from egp_api.services.admin_service import AdminService
@@ -59,6 +62,9 @@ def configure_services(
     opn_public_key: str | None,
     opn_secret_key: str | None,
     opn_webhook_secret: str | None,
+    stripe_secret_key: str | None,
+    stripe_webhook_secret: str | None,
+    stripe_publishable_key: str | None,
     payment_callback_secret: str | None,
     resolved_web_allowed_origins: list[str],
     discover_spawner_factory: Callable[..., Callable[..., None]],
@@ -94,6 +100,9 @@ def configure_services(
         opn_public_key=get_opn_public_key(opn_public_key),
         opn_secret_key=get_opn_secret_key(opn_secret_key),
         opn_webhook_secret=get_opn_webhook_secret(opn_webhook_secret),
+        stripe_secret_key=get_stripe_secret_key(stripe_secret_key),
+        stripe_webhook_secret=get_stripe_webhook_secret(stripe_webhook_secret),
+        stripe_publishable_key=get_stripe_publishable_key(stripe_publishable_key),
         web_base_url=resolved_web_base_url,
     )
     resolved_payment_callback_secret = get_payment_callback_secret(payment_callback_secret)

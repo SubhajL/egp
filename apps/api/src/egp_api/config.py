@@ -324,6 +324,30 @@ def get_opn_webhook_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_stripe_secret_key(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_STRIPE_SECRET_KEY", "").strip()
+    return raw or None
+
+
+def get_stripe_webhook_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_STRIPE_WEBHOOK_SECRET", "").strip()
+    return raw or None
+
+
+def get_stripe_publishable_key(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_STRIPE_PUBLISHABLE_KEY", "").strip()
+    return raw or None
+
+
 def get_session_cookie_name(override: str | None = None) -> str:
     if override is not None:
         normalized = override.strip()
