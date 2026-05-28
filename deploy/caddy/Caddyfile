@@ -1,9 +1,17 @@
+# Production / Vercel-mode Caddyfile.
+#
+# `api.egptracker.com` (and any single domain bound via EGP_API_DOMAIN)
+# terminates TLS here and reverse-proxies to the in-Compose `api` service.
+#
+# The frontend at EGP_APP_DOMAIN is served by Vercel; DNS points there, so
+# this Caddy never sees traffic for that host. Keeping an `{$EGP_APP_DOMAIN}`
+# block here would only burn Let's Encrypt rate limits on certs Caddy can
+# never use.
+#
+# For single-host mode (app.* + api.* on the same VM), see
+# Caddyfile.singlehost.example.
+
 {$EGP_API_DOMAIN} {
     encode gzip zstd
     reverse_proxy api:8000
-}
-
-{$EGP_APP_DOMAIN} {
-    encode gzip zstd
-    reverse_proxy web:3000
 }

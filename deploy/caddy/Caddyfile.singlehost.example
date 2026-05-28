@@ -1,0 +1,20 @@
+# Single-host mode Caddyfile (app.* + api.* on the same VM).
+#
+# Use this when `docker compose --profile single-host up -d` is in effect
+# and the in-Compose `web` service is running. Copy this file over
+# `Caddyfile` (or volume-mount it via a docker-compose.override.yml) before
+# starting the stack.
+#
+# In Vercel-mode (default), the `app.*` block is dead code AND Caddy keeps
+# retrying Let's Encrypt for a cert it can never use — so we ship Caddyfile
+# without it.
+
+{$EGP_API_DOMAIN} {
+    encode gzip zstd
+    reverse_proxy api:8000
+}
+
+{$EGP_APP_DOMAIN} {
+    encode gzip zstd
+    reverse_proxy web:3000
+}
