@@ -79,13 +79,16 @@ class BillingInvoiceMixin:
 
     def find_billing_records_by_number(
         self, *, record_number: str
-    ) -> list[tuple[str, str]]:
-        """Return ``(tenant_id, record_id)`` for every record bearing ``record_number``.
+    ) -> list[tuple[str, str, str]]:
+        """Return ``(tenant_id, record_id, status)`` for EVERY record bearing
+        ``record_number`` — status-agnostic and across all tenants.
 
         ``record_number`` is unique per ``(tenant_id, record_number)`` but NOT
-        globally, so a LINE slip referencing a number may resolve to more than
-        one tenant's record. Callers auto-match only when exactly one row is
-        returned and otherwise leave the slip for manual admin selection.
+        globally. The status-agnostic, all-tenant result is deliberate: it lets
+        callers enforce the cross-tenant uniqueness guard (auto-match only when
+        exactly one global row exists) BEFORE applying a payability check. If
+        non-payable rows were filtered here, a paid duplicate in another tenant
+        could collapse a genuinely ambiguous number into a false unique match.
         """
         normalized = str(record_number).strip()
         if not normalized:
@@ -96,12 +99,13 @@ class BillingInvoiceMixin:
                     select(
                         BILLING_RECORDS_TABLE.c.tenant_id,
                         BILLING_RECORDS_TABLE.c.id,
+                        BILLING_RECORDS_TABLE.c.status,
                     ).where(BILLING_RECORDS_TABLE.c.record_number == normalized)
                 )
                 .mappings()
                 .all()
             )
-        return [(str(row["tenant_id"]), str(row["id"])) for row in rows]
+        return [(str(row["tenant_id"]), str(row["id"]), str(row["status"])) for row in rows]
 
     def _require_record_for_tenant(
         self, *, tenant_id: str, record_id: str

@@ -198,6 +198,84 @@ def test_webhook_image_stores_and_matches_then_admin_verifies(harness) -> None:
     assert any(to == "Ucustomer" for to, _ in fake_messaging.pushed)
 
 
+def test_webhook_image_before_text_is_rematched_when_reference_arrives(harness) -> None:
+    client, fake_messaging, _, _ = harness
+    _create_record(client)
+
+    # Image arrives FIRST (no reference context yet) -> slip pending/unmatched.
+    img = _post_webhook(client, {"events": [_image_event("m-img-first")]})
+    assert img.json()["slips_created"] == 1
+    assert img.json()["slips_matched"] == 0
+    pending = client.get("/v1/billing/slips", params={"status": "pending"})
+    assert len(pending.json()["slips"]) == 1
+
+    # Reference text arrives AFTER -> the pending slip is rematched.
+    txt = _post_webhook(
+        client, {"events": [_text_event("Reference: INV-2026-0001", "m-txt-after")]}
+    )
+    assert txt.status_code == 200
+    matched = client.get("/v1/billing/slips", params={"status": "matched"})
+    slips = matched.json()["slips"]
+    assert len(slips) == 1
+    assert slips[0]["reference_code_match"] == "INV-2026-0001"
+    assert slips[0]["tenant_id"] == TENANT_ID
+
+
+def test_webhook_does_not_auto_match_paid_or_ambiguous_reference(harness) -> None:
+    client, _, _, _ = harness
+    billing = client.app.state.billing_repository
+
+    def _make(tenant_id: str, number: str) -> str:
+        detail = billing.create_billing_record(
+            tenant_id=tenant_id,
+            record_number=number,
+            plan_code="monthly_membership",
+            status="awaiting_payment",
+            billing_period_start="2026-05-01",
+            billing_period_end="2026-05-31",
+            amount_due="1500.00",
+            currency="THB",
+        )
+        return detail.record.id
+
+    # Lone record but already PAID -> must NOT auto-match (no dead-end at verify).
+    paid_id = _make(TENANT_ID, "INV-2026-0950")
+    payment = billing.record_payment(
+        tenant_id=TENANT_ID,
+        billing_record_id=paid_id,
+        payment_method="promptpay_qr",
+        amount="1500.00",
+        currency="THB",
+        received_at="2026-05-29T10:00:00+00:00",
+    )
+    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=payment.id, status="reconciled")
+
+    # Same number under two tenants, ONE already paid -> still ambiguous; the
+    # paid duplicate must NOT collapse this into a false unique match on the
+    # other tenant (the cross-tenant mis-credit guard).
+    dup_a = _make(TENANT_ID, "INV-2026-0960")
+    _make(OTHER_TENANT_ID, "INV-2026-0960")
+    dup_pay = billing.record_payment(
+        tenant_id=TENANT_ID,
+        billing_record_id=dup_a,
+        payment_method="promptpay_qr",
+        amount="1500.00",
+        currency="THB",
+        received_at="2026-05-29T10:00:00+00:00",
+    )
+    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=dup_pay.id, status="reconciled")
+
+    _post_webhook(client, {"events": [_text_event("INV-2026-0950", "t-paid", "Upaid")]})
+    _post_webhook(client, {"events": [_image_event("i-paid", "Upaid")]})
+    _post_webhook(client, {"events": [_text_event("INV-2026-0960", "t-amb", "Uamb")]})
+    _post_webhook(client, {"events": [_image_event("i-amb", "Uamb")]})
+
+    matched = client.get("/v1/billing/slips", params={"status": "matched"}).json()["slips"]
+    assert matched == []
+    pending = client.get("/v1/billing/slips", params={"status": "pending"}).json()["slips"]
+    assert len(pending) == 2
+
+
 def test_webhook_image_is_idempotent_by_message_id(harness) -> None:
     client, _, fake_store, _ = harness
     first = _post_webhook(client, {"events": [_image_event("dup-image")]})

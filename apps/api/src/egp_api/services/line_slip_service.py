@@ -26,6 +26,11 @@ from egp_api.services.line_integration import (
 
 logger = logging.getLogger(__name__)
 
+# Records in these states cannot be paid again, so a slip must not auto-match
+# them (it would dead-end at verify). Kept as strings to avoid importing the
+# enum into this hot path; mirrors BillingRecordStatus PAID/CANCELLED/REFUNDED.
+_NON_PAYABLE_RECORD_STATUSES = frozenset({"paid", "cancelled", "refunded"})
+
 _CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
@@ -97,11 +102,20 @@ class LineSlipService:
         )
 
     def _resolve_reference(self, reference_code: str) -> tuple[str | None, str | None]:
-        """Return ``(tenant_id, billing_record_id)`` only when exactly one match."""
+        """Return ``(tenant_id, billing_record_id)`` only for a safe auto-match.
+
+        Safe means: exactly ONE record bears this number across ALL tenants (the
+        cross-tenant uniqueness guard) AND that record is payable. A lone but
+        non-payable record returns None (the slip stays pending rather than
+        dead-ending at verify); an ambiguous number returns None too.
+        """
         matches = self._billing_repo.find_billing_records_by_number(record_number=reference_code)
-        if len(matches) == 1:
-            return matches[0]
-        return None, None
+        if len(matches) != 1:
+            return None, None
+        tenant_id, record_id, status = matches[0]
+        if status in _NON_PAYABLE_RECORD_STATUSES:
+            return None, None
+        return tenant_id, record_id
 
     def _handle_text(self, event: LineMessageEvent) -> None:
         reference = extract_reference_code(event.text)
@@ -117,6 +131,16 @@ class LineSlipService:
             billing_record_id=record_id,
             expires_at=expires_at,
         )
+        # Rematch any slip images this user sent BEFORE the reference text — they
+        # would otherwise be stranded in 'pending' forever.
+        if tenant_id and record_id:
+            for slip in self._line_repo.list_pending_slips_for_user(event.line_user_id):
+                self._line_repo.match_slip(
+                    slip_id=slip.id,
+                    tenant_id=tenant_id,
+                    billing_record_id=record_id,
+                    reference_code_match=reference,
+                )
 
     def _handle_image(self, event: LineMessageEvent) -> tuple[bool, bool]:
         if not event.message_id:
