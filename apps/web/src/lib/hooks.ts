@@ -7,6 +7,8 @@ import {
   fetchAdminSnapshot,
   fetchBillingPlans,
   fetchBillingRecords,
+  fetchPaymentConfig,
+  fetchPaymentSlips,
   fetchDashboardSummary,
   fetchProjectCrawlEvidence,
   fetchProjectDetail,
@@ -157,6 +159,22 @@ export function useBillingPlans() {
   return useQuery({
     queryKey: ["billing-plans"],
     queryFn: () => fetchBillingPlans(),
+  });
+}
+
+export function usePaymentConfig() {
+  return useQuery({
+    queryKey: ["payment-config"],
+    queryFn: () => fetchPaymentConfig(),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function usePaymentSlips(status?: string) {
+  return useQuery({
+    queryKey: ["payment-slips", status ?? "all"],
+    queryFn: () => fetchPaymentSlips(status),
+    refetchInterval: 15_000,
   });
 }
 

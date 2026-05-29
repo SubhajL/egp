@@ -1110,6 +1110,65 @@ export async function startFreeTrial(): Promise<BillingSubscription> {
   });
 }
 
+// --- Manual PromptPay + LINE slip verification -----------------------------
+// These endpoints are additive and not yet in the generated OpenAPI types, so
+// they use hand-written interfaces. Run `npm run generate:api-types` to fold
+// them into the generated schema.
+
+export interface PaymentConfig {
+  provider: string;
+  line_add_url: string | null;
+}
+
+export interface PaymentSlip {
+  id: string;
+  tenant_id: string | null;
+  billing_record_id: string | null;
+  payment_request_id: string | null;
+  line_user_id: string;
+  reference_code_match: string | null;
+  image_object_key: string | null;
+  verification_status: string;
+  verified_by_user_id: string | null;
+  verified_at: string | null;
+  verification_notes: string | null;
+  received_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaymentSlipList {
+  slips: PaymentSlip[];
+}
+
+export async function fetchPaymentConfig(): Promise<PaymentConfig> {
+  return apiFetch<PaymentConfig>(buildUrl("/v1/billing/payment-config", {}));
+}
+
+export async function fetchPaymentSlips(status?: string): Promise<PaymentSlipList> {
+  return apiFetch<PaymentSlipList>(
+    buildUrl("/v1/billing/slips", status ? { status } : {}),
+  );
+}
+
+export async function verifyPaymentSlip(slipId: string, note?: string): Promise<PaymentSlip> {
+  return apiJsonRequest<PaymentSlip>(
+    buildUrl(`/v1/billing/slips/${encodeURIComponent(slipId)}/verify`, {}),
+    { method: "POST", body: JSON.stringify({ note: note ?? null }) },
+  );
+}
+
+export async function rejectPaymentSlip(slipId: string, note?: string): Promise<PaymentSlip> {
+  return apiJsonRequest<PaymentSlip>(
+    buildUrl(`/v1/billing/slips/${encodeURIComponent(slipId)}/reject`, {}),
+    { method: "POST", body: JSON.stringify({ note: note ?? null }) },
+  );
+}
+
+export function paymentSlipImageUrl(slipId: string): string {
+  return buildUrl(`/v1/billing/slips/${encodeURIComponent(slipId)}/image`, {});
+}
+
 export async function createAdminUser(payload: CreateAdminUserInput): Promise<AdminUser> {
   const url = buildUrl("/v1/admin/users", {});
   return apiJsonRequest<AdminUser>(url, {

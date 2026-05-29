@@ -9,6 +9,11 @@ from fastapi import FastAPI
 from egp_api.bootstrap.repositories import RepositoryBundle
 from egp_api.config import (
     BackgroundRuntimeMode,
+    get_admin_console_base_url,
+    get_line_add_url,
+    get_line_admin_user_ids,
+    get_line_channel_access_token,
+    get_line_channel_secret,
     get_payment_base_url,
     get_payment_callback_secret,
     get_payment_provider,
@@ -35,6 +40,8 @@ from egp_api.services.entitlement_service import (
     TenantEntitlementService,
 )
 from egp_api.services.export_service import ExportService
+from egp_api.services.line_integration import HttpLineMessagingClient
+from egp_api.services.line_slip_service import LineSlipService
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
 from egp_domain.document_ingest import DocumentIngestService
 from egp_domain.project_ingest import ProjectIngestService
@@ -151,6 +158,25 @@ def configure_services(
     app.state.billing_service = BillingService(
         bundle.billing_repository,
         payment_provider=resolved_payment_provider,
+    )
+    resolved_line_channel_secret = get_line_channel_secret(None)
+    resolved_line_access_token = get_line_channel_access_token(None)
+    line_messaging_client = (
+        HttpLineMessagingClient(channel_access_token=resolved_line_access_token)
+        if resolved_line_access_token
+        else None
+    )
+    app.state.line_channel_secret = resolved_line_channel_secret
+    app.state.line_add_url = get_line_add_url(None)
+    app.state.payment_provider_name = get_payment_provider(None)
+    app.state.line_slip_service = LineSlipService(
+        line_repository=bundle.line_payment_repository,
+        billing_repository=bundle.billing_repository,
+        billing_service=app.state.billing_service,
+        artifact_store=bundle.managed_artifact_store,
+        messaging_client=line_messaging_client,
+        admin_user_ids=get_line_admin_user_ids(None),
+        admin_console_base_url=get_admin_console_base_url(None) or resolved_web_base_url,
     )
     app.state.entitlement_service = entitlement_service
     app.state.document_repository = bundle.document_repository

@@ -457,3 +457,68 @@ class BillingService:
             note=note,
             actor_subject=actor_subject,
         )
+
+    def verify_manual_payment(
+        self,
+        *,
+        tenant_id: str,
+        billing_record_id: str,
+        received_at: str,
+        payment_request_id: str | None = None,
+        note: str | None = None,
+        actor_subject: str | None = None,
+    ) -> BillingRecordDetail:
+        """Settle a manual PromptPay record after an admin verifies the LINE slip.
+
+        There is no provider webhook for ``promptpay_manual``; settlement is an
+        explicit human action. This records a reconciled ``promptpay_qr``
+        payment for the record's outstanding balance (which marks the record
+        PAID and activates the subscription), settling the linked manual
+        payment request for UI consistency when one is supplied.
+        """
+        detail = self._repository.require_billing_record_detail(
+            tenant_id=tenant_id,
+            record_id=billing_record_id,
+        )
+        if detail.record.status in {
+            BillingRecordStatus.PAID,
+            BillingRecordStatus.CANCELLED,
+            BillingRecordStatus.REFUNDED,
+        }:
+            raise ValueError("billing record is not payable")
+        outstanding = Decimal(detail.record.outstanding_balance)
+        if outstanding <= Decimal("0.00"):
+            raise ValueError("billing record has no outstanding balance")
+        reference = detail.record.record_number
+        if payment_request_id:
+            try:
+                self._repository.update_payment_request_status(
+                    tenant_id=tenant_id,
+                    payment_request_id=payment_request_id,
+                    status=BillingPaymentRequestStatus.SETTLED,
+                    settled_at=received_at,
+                    actor_subject=actor_subject,
+                    note=reference,
+                )
+            except (KeyError, PermissionError):
+                # The request may belong to another record or be missing; the
+                # payment recording below is the source of truth for activation.
+                pass
+        payment = self._repository.record_payment(
+            tenant_id=tenant_id,
+            billing_record_id=billing_record_id,
+            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            amount=f"{outstanding:.2f}",
+            currency=detail.record.currency,
+            reference_code=reference,
+            received_at=received_at,
+            note=note or reference,
+            actor_subject=actor_subject,
+        )
+        return self._repository.reconcile_payment(
+            tenant_id=tenant_id,
+            payment_id=payment.id,
+            status=BillingPaymentStatus.RECONCILED,
+            note=reference,
+            actor_subject=actor_subject,
+        )

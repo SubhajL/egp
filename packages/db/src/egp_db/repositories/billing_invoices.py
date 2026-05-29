@@ -77,6 +77,32 @@ class BillingInvoiceMixin:
             )
         return _billing_record_from_mapping(row) if row is not None else None
 
+    def find_billing_records_by_number(
+        self, *, record_number: str
+    ) -> list[tuple[str, str]]:
+        """Return ``(tenant_id, record_id)`` for every record bearing ``record_number``.
+
+        ``record_number`` is unique per ``(tenant_id, record_number)`` but NOT
+        globally, so a LINE slip referencing a number may resolve to more than
+        one tenant's record. Callers auto-match only when exactly one row is
+        returned and otherwise leave the slip for manual admin selection.
+        """
+        normalized = str(record_number).strip()
+        if not normalized:
+            return []
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(
+                        BILLING_RECORDS_TABLE.c.tenant_id,
+                        BILLING_RECORDS_TABLE.c.id,
+                    ).where(BILLING_RECORDS_TABLE.c.record_number == normalized)
+                )
+                .mappings()
+                .all()
+            )
+        return [(str(row["tenant_id"]), str(row["id"])) for row in rows]
+
     def _require_record_for_tenant(
         self, *, tenant_id: str, record_id: str
     ) -> _BillingRecordRow:

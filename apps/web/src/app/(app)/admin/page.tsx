@@ -10,6 +10,7 @@ import {
   HardDrive,
   LifeBuoy,
   Mail,
+  ReceiptText,
   ScrollText,
   Search,
   Users,
@@ -25,15 +26,25 @@ import {
   deleteWebhook,
   inviteAdminUser,
   localizeApiError,
+  paymentSlipImageUrl,
+  rejectPaymentSlip,
   updateAdminUser,
   updateAdminUserNotificationPreferences,
   updateTenantSettings,
+  verifyPaymentSlip,
   type AdminUser,
   type AuditLogEvent,
   type SupportTenant,
   type WebhookSubscription,
 } from "@/lib/api";
-import { useAdminSnapshot, useAuditLog, useSupportSummary, useSupportTenants, useWebhooks } from "@/lib/hooks";
+import {
+  useAdminSnapshot,
+  useAuditLog,
+  usePaymentSlips,
+  useSupportSummary,
+  useSupportTenants,
+  useWebhooks,
+} from "@/lib/hooks";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const TABS = [
@@ -42,6 +53,7 @@ const TABS = [
   { key: "notifications", label: "การแจ้งเตือน", icon: Mail },
   { key: "audit", label: "Audit Log", icon: ScrollText },
   { key: "webhooks", label: "Webhook", icon: Webhook },
+  { key: "slips", label: "สลิปการชำระเงิน", icon: ReceiptText },
   { key: "billing", label: "แผนและบิล", icon: CreditCard },
   { key: "settings", label: "ตั้งค่าองค์กร", icon: Building2 },
 ] as const;
@@ -325,6 +337,9 @@ export default function AdminPage() {
     "new_project",
   ]);
 
+  const { data: slipData, isLoading: slipsLoading } = usePaymentSlips();
+  const paymentSlips = slipData?.slips ?? [];
+
   const users = data?.users ?? [];
   const billingRecords = data?.billing.records ?? [];
   const webhooks = webhookData?.webhooks ?? [];
@@ -352,6 +367,38 @@ export default function AdminPage() {
   async function refreshSnapshot() {
     await queryClient.invalidateQueries({ queryKey: ["admin-snapshot"] });
     await queryClient.invalidateQueries({ queryKey: ["audit-log"] });
+  }
+
+  async function handleVerifySlip(slipId: string) {
+    setSubmitError(null);
+    setSubmitNotice(null);
+    setBusy(true);
+    try {
+      await verifyPaymentSlip(slipId);
+      setSubmitNotice("ยืนยันสลิปและเปิดใช้งานแพ็กเกจเรียบร้อยแล้ว");
+      await queryClient.invalidateQueries({ queryKey: ["payment-slips"] });
+      await queryClient.invalidateQueries({ queryKey: ["billing-records"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-snapshot"] });
+    } catch (error) {
+      setSubmitError(localizeApiError(error, "ไม่สามารถยืนยันสลิปได้"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRejectSlip(slipId: string) {
+    setSubmitError(null);
+    setSubmitNotice(null);
+    setBusy(true);
+    try {
+      await rejectPaymentSlip(slipId);
+      setSubmitNotice("ปฏิเสธสลิปเรียบร้อยแล้ว");
+      await queryClient.invalidateQueries({ queryKey: ["payment-slips"] });
+    } catch (error) {
+      setSubmitError(localizeApiError(error, "ไม่สามารถปฏิเสธสลิปได้"));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function refreshWebhooks() {
@@ -1110,6 +1157,101 @@ export default function AdminPage() {
               )}
             </div>
           </QueryState>
+        </div>
+      );
+    }
+
+    if (activeTab === "slips") {
+      const pendingSlips = paymentSlips.filter(
+        (slip) => slip.verification_status === "pending" || slip.verification_status === "matched",
+      );
+      return (
+        <div className="space-y-6">
+          <div className="rounded-2xl bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-soft)]">
+            <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+              สลิปการชำระเงินผ่าน LINE
+            </h3>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">
+              ลูกค้าโอนผ่าน PromptPay แล้วส่งสลิปทาง LINE ตรวจสอบสลิปกับยอดและกด “ยืนยัน”
+              เพื่อเปิดใช้งานแพ็กเกจ ระบบจะจับคู่บิลให้อัตโนมัติเมื่อพบรหัสอ้างอิง
+            </p>
+          </div>
+          {slipsLoading ? (
+            <p className="text-sm text-[var(--text-muted)]">กำลังโหลดสลิป…</p>
+          ) : pendingSlips.length === 0 ? (
+            <p className="rounded-2xl bg-[var(--bg-surface)] p-5 text-sm text-[var(--text-muted)] shadow-[var(--shadow-soft)]">
+              ไม่มีสลิปที่รอตรวจสอบ
+            </p>
+          ) : (
+            <div className="grid gap-4 lg:grid-cols-2">
+              {pendingSlips.map((slip) => (
+                <div
+                  key={slip.id}
+                  className="flex flex-col gap-3 rounded-2xl bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-soft)]"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                        Reference
+                      </p>
+                      <p className="font-mono text-sm font-bold text-[var(--text-primary)]">
+                        {slip.reference_code_match ?? "— ยังไม่จับคู่ —"}
+                      </p>
+                      <p className="mt-1 text-xs text-[var(--text-muted)]">
+                        LINE user: {slip.line_user_id}
+                      </p>
+                      <p className="text-xs text-[var(--text-muted)]">
+                        รับเมื่อ {formatThaiDate(slip.received_at)}
+                      </p>
+                    </div>
+                    <StatusBadge state={slip.verification_status} variant="billing" />
+                  </div>
+                  {slip.image_object_key ? (
+                    <a
+                      href={paymentSlipImageUrl(slip.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block overflow-hidden rounded-xl border border-[var(--border-default)]"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={paymentSlipImageUrl(slip.id)}
+                        alt={`สลิป ${slip.reference_code_match ?? slip.id}`}
+                        className="max-h-64 w-full object-contain"
+                      />
+                    </a>
+                  ) : (
+                    <p className="rounded-xl bg-[var(--bg-page)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                      ยังไม่มีรูปสลิป
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busy || !slip.billing_record_id}
+                      onClick={() => handleVerifySlip(slip.id)}
+                      className="flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                    >
+                      ยืนยันและเปิดใช้งาน
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleRejectSlip(slip.id)}
+                      className="rounded-xl border border-[var(--border-default)] px-4 py-2.5 text-sm font-semibold text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-surface-hover)] disabled:opacity-50"
+                    >
+                      ปฏิเสธ
+                    </button>
+                  </div>
+                  {!slip.billing_record_id ? (
+                    <p className="text-xs text-amber-600">
+                      ยังไม่พบรหัสอ้างอิงที่ตรงกับบิล — ขอให้ลูกค้าส่งรหัสอ้างอิงก่อนยืนยัน
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       );
     }

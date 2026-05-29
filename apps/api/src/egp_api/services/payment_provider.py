@@ -142,6 +142,67 @@ class MockPromptPayProvider:
         )
 
 
+class PromptpayManualProvider:
+    """Personal PromptPay QR provider — the ฿0-fee manual bootstrap path.
+
+    Generates a dynamic EMVCo PromptPay payload locally from the operator's
+    PERSONAL proxy id (phone / national id). There is no acquirer and no
+    network call; the customer scans the QR, pays from their banking app, and
+    sends the slip via LINE OA for a human to verify. ``parse_callback`` only
+    needs to echo an admin-synthesised settled payload so the existing
+    ``BillingService`` settle/activate path can be reused on manual verification.
+    """
+
+    def __init__(self, *, base_url: str, promptpay_proxy_id: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._promptpay_proxy_id = promptpay_proxy_id
+
+    def create_payment_request(self, *, request: ProviderPaymentRequest) -> CreatedPaymentRequest:
+        if request.provider is not BillingPaymentProvider.PROMPTPAY_MANUAL:
+            raise ValueError("requested payment provider is not configured")
+        if request.payment_method is not BillingPaymentMethod.PROMPTPAY_QR:
+            raise ValueError("manual PromptPay only supports promptpay_qr")
+        if request.currency != "THB":
+            raise ValueError("PromptPay only supports THB")
+        provider_reference = f"ppm_{uuid4().hex[:20]}"
+        qr_payload = build_promptpay_payload(
+            self._promptpay_proxy_id,
+            amount=request.amount,
+            reference=request.record_number,
+        )
+        expires_at = (
+            datetime.now(UTC) + timedelta(minutes=max(1, int(request.expires_in_minutes)))
+        ).isoformat()
+        return CreatedPaymentRequest(
+            provider=BillingPaymentProvider.PROMPTPAY_MANUAL,
+            payment_method=BillingPaymentMethod.PROMPTPAY_QR,
+            status=BillingPaymentRequestStatus.PENDING,
+            provider_reference=provider_reference,
+            # No hosted checkout — the customer pays in their banking app and
+            # forwards the slip via LINE. record_number is the human reference.
+            payment_url=f"{self._base_url}/billing?ref={parse.quote(request.record_number)}",
+            qr_payload=qr_payload,
+            qr_svg=render_promptpay_qr_svg(qr_payload),
+            amount=request.amount,
+            currency=request.currency,
+            expires_at=expires_at,
+        )
+
+    def parse_callback(
+        self,
+        *,
+        payload: dict[str, object],
+        headers: dict[str, str] | None = None,
+        raw_body: str | None = None,
+    ) -> ParsedPaymentCallback:
+        # Manual PromptPay has no acquirer and therefore no provider-pushed
+        # callback. Settlement is driven by an admin verifying the LINE slip
+        # (see BillingService.verify_manual_payment_request). Fail closed so a
+        # spoofed callback can never settle a manual request.
+        del headers, raw_body, payload
+        raise ValueError("promptpay_manual does not support provider callbacks")
+
+
 class OpnProvider:
     _api_base_url = "https://api.omise.co"
 
@@ -911,6 +972,10 @@ def build_payment_provider(
         if not promptpay_proxy_id:
             return None
         return MockPromptPayProvider(base_url=base_url, promptpay_proxy_id=promptpay_proxy_id)
+    if provider is BillingPaymentProvider.PROMPTPAY_MANUAL:
+        if not promptpay_proxy_id:
+            return None
+        return PromptpayManualProvider(base_url=base_url, promptpay_proxy_id=promptpay_proxy_id)
     if provider is BillingPaymentProvider.OPN:
         if not opn_secret_key:
             return None
