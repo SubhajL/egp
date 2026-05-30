@@ -276,6 +276,80 @@ class LinePaymentRepository:
             raise KeyError(slip_id)
         return updated
 
+    def claim_slip_for_verification(self, *, slip_id: str) -> bool:
+        """Atomically transition matched -> verifying; return True iff we won.
+
+        The conditional ``WHERE verification_status = 'matched'`` serializes
+        concurrent verify attempts: only one caller transitions the row, so only
+        that caller settles the billing record. ``verified_at`` is set as a lease
+        timestamp so a crash mid-settlement (slip left 'verifying') can be
+        recovered once the lease goes stale. A loser gets False. Settlement is
+        NOT marked 'verified' here — only after it succeeds (finalize).
+        """
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(PAYMENT_SLIPS_TABLE)
+                .where(
+                    PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id),
+                    PAYMENT_SLIPS_TABLE.c.verification_status == "matched",
+                )
+                .values(verification_status="verifying", verified_at=_now(), updated_at=_now())
+            )
+        return result.rowcount == 1
+
+    def finalize_verification(
+        self, *, slip_id: str, verified_by_user_id: str | None, notes: str | None
+    ) -> PaymentSlipRecord:
+        """Mark a claimed (verifying) slip as verified after settlement succeeds."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(PAYMENT_SLIPS_TABLE)
+                .where(PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id))
+                .values(
+                    verification_status="verified",
+                    verified_by_user_id=_opt_uuid(verified_by_user_id),
+                    verified_at=_now(),
+                    verification_notes=notes,
+                    updated_at=_now(),
+                )
+            )
+        updated = self._get_slip(slip_id)
+        if updated is None:
+            raise KeyError(slip_id)
+        return updated
+
+    def revert_stale_verifying_to_matched(self, *, slip_id: str, stale_before: datetime) -> bool:
+        """Atomically reclaim a STALE 'verifying' slip back to 'matched'.
+
+        Returns True iff this caller won the reclaim (conditional on the lease
+        ``verified_at`` being older than ``stale_before``). This serializes
+        concurrent recoveries of an abandoned claim: only one proceeds to
+        re-settle. A fresh/already-reclaimed slip yields False.
+        """
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(PAYMENT_SLIPS_TABLE)
+                .where(
+                    PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id),
+                    PAYMENT_SLIPS_TABLE.c.verification_status == "verifying",
+                    PAYMENT_SLIPS_TABLE.c.verified_at < stale_before,
+                )
+                .values(verification_status="matched", verified_at=None, updated_at=_now())
+            )
+        return result.rowcount == 1
+
+    def revert_claim_to_matched(self, *, slip_id: str) -> None:
+        """Undo a verification claim (verifying -> matched) if settlement failed."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                update(PAYMENT_SLIPS_TABLE)
+                .where(
+                    PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id),
+                    PAYMENT_SLIPS_TABLE.c.verification_status == "verifying",
+                )
+                .values(verification_status="matched", verified_at=None, updated_at=_now())
+            )
+
     def mark_verified(
         self, *, slip_id: str, verified_by_user_id: str | None, notes: str | None
     ) -> PaymentSlipRecord:

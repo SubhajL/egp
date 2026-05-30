@@ -15,6 +15,7 @@ from urllib import error, parse, request as urllib_request
 from uuid import uuid4
 
 from egp_api.services.promptpay import build_promptpay_payload, render_promptpay_qr_svg
+from egp_api.services.webhook_signatures import verify_hmac_sha256_base64
 from egp_shared_types.enums import (
     BillingPaymentMethod,
     BillingPaymentProvider,
@@ -246,16 +247,12 @@ class OpnProvider:
         normalized_headers = self._normalized_headers(headers)
 
         legacy_signature = str(normalized_headers.get("x-opn-signature") or "").strip()
-        if legacy_signature:
-            expected_legacy = base64.b64encode(
-                hmac.new(
-                    self._secret_key.encode("utf-8"),
-                    raw_body.encode("utf-8"),
-                    hashlib.sha256,
-                ).digest()
-            ).decode("ascii")
-            if hmac.compare_digest(legacy_signature, expected_legacy):
-                return
+        if legacy_signature and verify_hmac_sha256_base64(
+            secret=self._secret_key,
+            raw_body=raw_body.encode("utf-8"),
+            signature=legacy_signature,
+        ):
+            return
 
         omise_signature_header = str(
             normalized_headers.get("omise-signature")

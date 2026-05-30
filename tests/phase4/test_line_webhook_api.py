@@ -288,6 +288,115 @@ def test_webhook_image_is_idempotent_by_message_id(harness) -> None:
     assert len(fake_messaging.pushed) == 1
 
 
+def _match_one_slip(client) -> str:
+    _create_record(client)
+    _post_webhook(client, {"events": [_text_event("Reference: INV-2026-0001", "m-t")]})
+    _post_webhook(client, {"events": [_image_event("m-i")]})
+    return client.get("/v1/billing/slips", params={"status": "matched"}).json()["slips"][0]["id"]
+
+
+def test_verify_with_short_amount_does_not_fully_pay_or_activate(harness) -> None:
+    client, *_ = harness
+    slip_id = _match_one_slip(client)
+    before = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    outstanding = before["record"]["outstanding_balance"]
+    # Admin enters a value SMALLER than what's owed -> recorded as exactly that,
+    # not silently normalised to the full balance; record stays short of PAID and
+    # the subscription is not activated.
+    verify = client.post(f"/v1/billing/slips/{slip_id}/verify", json={"amount": "1.00"})
+    assert verify.status_code == 200, verify.text
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    assert outstanding != "1.00"  # sanity: the invoice owed more than 1.00
+    assert detail["record"]["status"] != "paid"
+    assert detail["subscription"] is None
+
+
+def test_verify_is_idempotent_no_double_payment(harness) -> None:
+    client, *_ = harness
+    slip_id = _match_one_slip(client)
+    first = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
+    assert first.status_code == 200
+    second = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
+    assert second.status_code == 200
+    assert second.json()["verification_status"] == "verified"
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    # Exactly one payment recorded despite two verify calls.
+    assert len(detail["payments"]) == 1
+    assert detail["record"]["status"] == "paid"
+
+
+def test_verify_recovers_stale_verifying_claim(harness) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    client, fake_messaging, fake_store, line_repo = harness
+    slip_id = _match_one_slip(client)
+    # Simulate a crashed verify: claim the slip (-> verifying) but never settle.
+    assert line_repo.claim_slip_for_verification(slip_id=slip_id) is True
+
+    # While the lease is FRESH, a verify treats it as in-flight and does NOT
+    # double-settle (returns the still-'verifying' slip).
+    inflight = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
+    assert inflight.status_code == 200
+    assert inflight.json()["verification_status"] == "verifying"
+
+    # Make the lease STALE by giving the service a clock 20 minutes ahead.
+    future = datetime.now(UTC) + timedelta(minutes=20)
+    client.app.state.line_slip_service = LineSlipService(
+        line_repository=line_repo,
+        billing_repository=client.app.state.billing_repository,
+        billing_service=client.app.state.billing_service,
+        artifact_store=fake_store,
+        messaging_client=fake_messaging,
+        now_fn=lambda: future,
+    )
+    recovered = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["verification_status"] == "verified"
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    assert detail["record"]["status"] == "paid"
+
+
+def test_verify_recovery_does_not_double_record_underpayment(harness) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    client, fake_messaging, fake_store, line_repo = harness
+    slip_id = _match_one_slip(client)
+    slip = line_repo.get_slip(slip_id)
+    billing = client.app.state.billing_repository
+
+    # Simulate a crashed verify that recorded a PARTIAL payment tagged with the
+    # slip marker, then died before finalize -> slip stuck in 'verifying' and the
+    # record left in payment_detected (NOT paid).
+    assert line_repo.claim_slip_for_verification(slip_id=slip_id) is True
+    pay = billing.record_payment(
+        tenant_id=TENANT_ID,
+        billing_record_id=slip.billing_record_id,
+        payment_method="promptpay_qr",
+        amount="1.00",
+        currency="THB",
+        received_at="2026-05-29T10:00:00+00:00",
+        note=f"manual [slip:{slip_id}]",
+    )
+    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=pay.id, status="reconciled")
+
+    # Stale-lease recovery must NOT record a second payment (slip-idempotent),
+    # even though the record is not 'paid'.
+    future = datetime.now(UTC) + timedelta(minutes=20)
+    client.app.state.line_slip_service = LineSlipService(
+        line_repository=line_repo,
+        billing_repository=client.app.state.billing_repository,
+        billing_service=client.app.state.billing_service,
+        artifact_store=fake_store,
+        messaging_client=fake_messaging,
+        now_fn=lambda: future,
+    )
+    recovered = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["verification_status"] == "verified"
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    assert len(detail["payments"]) == 1  # the crashed payment, not doubled
+
+
 def test_verify_unmatched_slip_returns_conflict(harness) -> None:
     client, _, _, _ = harness
     # Image with no prior reference text -> slip stays pending/unmatched.

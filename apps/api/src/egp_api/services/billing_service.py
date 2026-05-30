@@ -464,22 +464,55 @@ class BillingService:
         tenant_id: str,
         billing_record_id: str,
         received_at: str,
+        amount: str | None = None,
         payment_request_id: str | None = None,
         note: str | None = None,
         actor_subject: str | None = None,
+        idempotency_key: str | None = None,
     ) -> BillingRecordDetail:
         """Settle a manual PromptPay record after an admin verifies the LINE slip.
 
         There is no provider webhook for ``promptpay_manual``; settlement is an
-        explicit human action. This records a reconciled ``promptpay_qr``
-        payment for the record's outstanding balance (which marks the record
-        PAID and activates the subscription), settling the linked manual
-        payment request for UI consistency when one is supplied.
+        explicit human action. Records a reconciled ``promptpay_qr`` payment and
+        settles the linked manual payment request when supplied.
+
+        ``amount`` is the value the admin reads off the slip image. When given,
+        exactly that amount is recorded (so an under-payment leaves the record
+        short of PAID — and the subscription un-activated — rather than silently
+        normalising to the full balance). When omitted, the record's outstanding
+        balance is used.
+
+        ``idempotency_key`` (the slip id) makes settlement safe to retry: if a
+        payment carrying this key already exists for the record, no second
+        payment is recorded. This closes the crash-recovery window even for an
+        under-payment (which leaves the record in ``payment_detected``, not
+        ``paid``), where a status check alone would re-record.
         """
         detail = self._repository.require_billing_record_detail(
             tenant_id=tenant_id,
             record_id=billing_record_id,
         )
+        if idempotency_key:
+            marker = f"[slip:{idempotency_key}]"
+            for existing in detail.payments:
+                if existing.note and marker in existing.note:
+                    # This slip already produced a payment — never double-record.
+                    if existing.payment_status is BillingPaymentStatus.PENDING_RECONCILIATION:
+                        return self._repository.reconcile_payment(
+                            tenant_id=tenant_id,
+                            payment_id=existing.id,
+                            status=BillingPaymentStatus.RECONCILED,
+                            # note=None preserves the existing "[slip:...]" marker
+                            # so the idempotency scan keeps matching it.
+                            note=None,
+                            actor_subject=actor_subject,
+                        )
+                    refreshed = self._repository.get_billing_record_detail(
+                        tenant_id=tenant_id, record_id=billing_record_id
+                    )
+                    if refreshed is None:
+                        raise KeyError(billing_record_id)
+                    return refreshed
         if detail.record.status in {
             BillingRecordStatus.PAID,
             BillingRecordStatus.CANCELLED,
@@ -489,6 +522,15 @@ class BillingService:
         outstanding = Decimal(detail.record.outstanding_balance)
         if outstanding <= Decimal("0.00"):
             raise ValueError("billing record has no outstanding balance")
+        if amount is not None:
+            try:
+                recorded_amount = Decimal(str(amount))
+            except (InvalidOperation, ValueError) as exc:
+                raise ValueError("invalid payment amount") from exc
+            if recorded_amount <= Decimal("0.00"):
+                raise ValueError("invalid payment amount")
+        else:
+            recorded_amount = outstanding
         reference = detail.record.record_number
         if payment_request_id:
             try:
@@ -504,21 +546,26 @@ class BillingService:
                 # The request may belong to another record or be missing; the
                 # payment recording below is the source of truth for activation.
                 pass
+        recorded_note = note or reference
+        if idempotency_key:
+            recorded_note = f"{recorded_note} [slip:{idempotency_key}]"
         payment = self._repository.record_payment(
             tenant_id=tenant_id,
             billing_record_id=billing_record_id,
             payment_method=BillingPaymentMethod.PROMPTPAY_QR,
-            amount=f"{outstanding:.2f}",
+            amount=f"{recorded_amount:.2f}",
             currency=detail.record.currency,
             reference_code=reference,
             received_at=received_at,
-            note=note or reference,
+            note=recorded_note,
             actor_subject=actor_subject,
         )
         return self._repository.reconcile_payment(
             tenant_id=tenant_id,
             payment_id=payment.id,
             status=BillingPaymentStatus.RECONCILED,
-            note=reference,
+            # note=None preserves the recorded note (which carries the
+            # "[slip:...]" idempotency marker) so recovery can dedupe.
+            note=None,
             actor_subject=actor_subject,
         )

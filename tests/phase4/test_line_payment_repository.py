@@ -195,6 +195,38 @@ def test_find_billing_records_by_number_is_status_agnostic(billing) -> None:
     assert rows[0][2] == "paid"
 
 
+def test_claim_settle_finalize_lifecycle(repo) -> None:
+    slip, _ = repo.create_slip(
+        line_user_id="Uc", line_message_id="claim-1", received_at="2026-05-29T10:00:00+00:00"
+    )
+    repo.match_slip(
+        slip_id=slip.id,
+        tenant_id=TENANT_A,
+        billing_record_id="33333333-3333-3333-3333-333333333333",
+        reference_code_match="INV-X",
+    )
+    # First claim wins (matched -> verifying); a concurrent/repeat claim loses,
+    # so only one caller settles.
+    assert repo.claim_slip_for_verification(slip_id=slip.id) is True
+    assert repo.get_slip(slip.id).verification_status == "verifying"
+    assert repo.claim_slip_for_verification(slip_id=slip.id) is False
+
+    # A pending (unmatched) slip is not claimable.
+    other, _ = repo.create_slip(
+        line_user_id="Uc", line_message_id="claim-2", received_at="2026-05-29T10:00:00+00:00"
+    )
+    assert repo.claim_slip_for_verification(slip_id=other.id) is False
+
+    # Revert restores 'matched' so a failed settlement can be retried.
+    repo.revert_claim_to_matched(slip_id=slip.id)
+    assert repo.get_slip(slip.id).verification_status == "matched"
+
+    # Claim again, then finalize only after settlement -> verified.
+    assert repo.claim_slip_for_verification(slip_id=slip.id) is True
+    final = repo.finalize_verification(slip_id=slip.id, verified_by_user_id=None, notes="ok")
+    assert final.verification_status == "verified"
+
+
 def test_admin_subscribers_add_and_list(repo) -> None:
     repo.add_admin_subscriber(line_user_id="Uadmin", tenant_id=None, display_name="Owner")
     repo.add_admin_subscriber(line_user_id="Uadmin", tenant_id=None, display_name="Owner-dup")

@@ -53,6 +53,9 @@ class PaymentSlipListResponse(BaseModel):
 
 class SlipActionRequest(BaseModel):
     note: str | None = None
+    # The amount the admin reads off the slip image. When omitted, the record's
+    # full outstanding balance is settled.
+    amount: str | None = None
 
 
 class PaymentConfigResponse(BaseModel):
@@ -188,6 +191,7 @@ def verify_payment_slip(
             slip_id=slip_id,
             admin_user_id=_admin_user_id_from_request(request),
             note=payload.note,
+            amount=payload.amount,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="slip not found") from exc
