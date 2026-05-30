@@ -99,6 +99,13 @@ services:
       - python
       - -m
       - egp_api.executors.webhook_delivery
+    # Background worker (no HTTP server): the apps/api/Dockerfile HEALTHCHECK
+    # curls :8000/health, which never succeeds here and reports a permanent
+    # false 'unhealthy'. Disable it — the container running-state already
+    # reflects worker liveness (PID 1 is the worker; if it exits the container
+    # stops and is restarted by `restart: unless-stopped`).
+    healthcheck:
+      disable: true
 
   discovery-executor:
     build:
@@ -124,6 +131,11 @@ services:
       - python
       - -m
       - egp_api.executors.discovery_dispatch
+    # Background worker (no HTTP server): disable the inherited :8000/health
+    # probe (see webhook-executor above) — container running-state reflects
+    # worker liveness.
+    healthcheck:
+      disable: true
 
   web:
     # Frontend service for single-host launches only.
