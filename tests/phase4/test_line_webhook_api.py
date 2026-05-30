@@ -277,12 +277,15 @@ def test_webhook_does_not_auto_match_paid_or_ambiguous_reference(harness) -> Non
 
 
 def test_webhook_image_is_idempotent_by_message_id(harness) -> None:
-    client, _, fake_store, _ = harness
+    client, fake_messaging, fake_store, _ = harness
     first = _post_webhook(client, {"events": [_image_event("dup-image")]})
     second = _post_webhook(client, {"events": [_image_event("dup-image")]})
     assert first.json()["slips_created"] == 1
     assert second.json()["slips_created"] == 0
     assert len(fake_store.objects) == 1
+    # Retry-storm safety: a LINE redelivery of the same message must NOT
+    # re-download the image nor re-push the admin notification.
+    assert len(fake_messaging.pushed) == 1
 
 
 def test_verify_unmatched_slip_returns_conflict(harness) -> None:

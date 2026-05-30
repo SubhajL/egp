@@ -12,6 +12,7 @@ import json
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from egp_api.auth import request_has_support_role, require_admin_role
@@ -143,7 +144,14 @@ async def handle_line_webhook(request: Request) -> LineWebhookResponse:
         payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid json payload") from exc
-    summary = service.handle_webhook_events(parse_message_events(payload))
+    # The handler is async, but event processing makes BLOCKING calls (LINE
+    # image download via urllib, admin push messages, DB round trips). Run it in
+    # a worker thread so a slow LINE API can't freeze the event loop and stall
+    # every other API request. Slip creation is idempotent on line_message_id,
+    # so LINE redelivery is safe.
+    summary = await run_in_threadpool(
+        service.handle_webhook_events, parse_message_events(payload)
+    )
     return LineWebhookResponse(
         status="ok",
         text_events=summary.text_events,
