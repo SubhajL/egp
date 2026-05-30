@@ -151,6 +151,7 @@ class BillingSubscriptionStatus(StrEnum):
 
 class BillingPaymentProvider(StrEnum):
     MOCK_PROMPTPAY = "mock_promptpay"
+    PROMPTPAY_MANUAL = "promptpay_manual"
     OPN = "opn"
     STRIPE = "stripe"
 

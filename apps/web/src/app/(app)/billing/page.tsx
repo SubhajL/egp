@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, Landmark, ReceiptText } from "lucide-react";
+import { ArrowRightLeft, Landmark, MessageCircle, ReceiptText } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import QRCode from "qrcode";
 
@@ -23,7 +23,9 @@ import {
   type BillingRecordDetail,
   type BillingSubscription,
 } from "@/lib/api";
-import { useBillingPlans, useBillingRecords } from "@/lib/hooks";
+import { useBillingPlans, useBillingRecords, usePaymentConfig } from "@/lib/hooks";
+import { buildLinePaymentMessage, buildLinePaymentUrl } from "@/lib/line";
+import { supportsCardPayment } from "@/lib/payment";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const EMPTY_RECORDS: BillingRecordDetail[] = [];
@@ -458,6 +460,25 @@ export default function BillingPage() {
   const liveStatusPolling =
     !selectedRecord?.record.is_stale_unpaid && latestPaymentRequest?.status === "pending";
 
+  const { data: paymentConfig } = usePaymentConfig();
+  // Card rails only exist for OPN/Stripe; manual PromptPay (the focus) is QR-only,
+  // so the card option is hidden and create-request always routes through the
+  // server-configured provider.
+  const cardPaymentSupported = supportsCardPayment(paymentConfig?.provider);
+  const selectedPlanLabel = selectedRecord
+    ? billingPlans.find((plan) => plan.code === selectedRecord.record.plan_code)?.label
+    : undefined;
+  const lineSlipUrl = selectedRecord
+    ? buildLinePaymentUrl(
+        paymentConfig?.line_add_url ?? null,
+        buildLinePaymentMessage({
+          referenceCode: selectedRecord.record.record_number,
+          planLabel: selectedPlanLabel,
+          amount: selectedRecord.record.outstanding_balance,
+        }),
+      )
+    : null;
+
   useEffect(() => {
     let cancelled = false;
     const payload = latestRequestIsPromptPay ? latestPaymentRequest?.qr_payload : "";
@@ -499,9 +520,13 @@ export default function BillingPage() {
 
   async function createPromptPayRequestForRecord(recordId: string) {
     return createBillingPaymentRequest(recordId, {
-      provider: "opn",
+      // Use whichever provider the server is configured with (promptpay_manual
+      // for the ฿0-fee bootstrap, or opn/stripe once an acquirer is onboarded).
+      provider: paymentConfig?.provider ?? "opn",
       payment_method: "promptpay_qr",
-      expires_in_minutes: 30,
+      // Manual PromptPay slips can take a human a while to verify; give a longer
+      // window so the QR/reference stays valid.
+      expires_in_minutes: paymentConfig?.provider === "promptpay_manual" ? 1440 : 30,
     });
   }
 
@@ -598,8 +623,9 @@ export default function BillingPage() {
     setActionBusy(true);
     try {
       const detail = await createBillingPaymentRequest(selectedRecord.record.id, {
-        provider: "opn",
-        payment_method: paymentRequestMethod,
+        provider: paymentConfig?.provider ?? "opn",
+        // Force QR for providers without card rails (e.g. promptpay_manual).
+        payment_method: cardPaymentSupported ? paymentRequestMethod : "promptpay_qr",
       });
       await refreshBilling();
       setSelectedRecordId(detail.record.id);
@@ -1148,26 +1174,28 @@ export default function BillingPage() {
                     ) : null}
                     {canGeneratePaymentRequest ? (
                       <div className="flex items-center gap-2">
-                        <select
-                          value={paymentRequestMethod}
-                          onChange={(event) =>
-                            setPaymentRequestMethod(
-                              event.target.value === "card" ? "card" : "promptpay_qr",
-                            )
-                          }
-                          disabled={actionBusy}
-                          className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <option value="promptpay_qr">PromptPay QR</option>
-                          <option value="card">บัตรเครดิต/เดบิต</option>
-                        </select>
+                        {cardPaymentSupported ? (
+                          <select
+                            value={paymentRequestMethod}
+                            onChange={(event) =>
+                              setPaymentRequestMethod(
+                                event.target.value === "card" ? "card" : "promptpay_qr",
+                              )
+                            }
+                            disabled={actionBusy}
+                            className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <option value="promptpay_qr">PromptPay QR</option>
+                            <option value="card">บัตรเครดิต/เดบิต</option>
+                          </select>
+                        ) : null}
                         <button
                           type="button"
-                          disabled={actionBusy}
+                          disabled={actionBusy || !paymentConfig}
                           onClick={() => void handleCreatePaymentRequest()}
                           className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {paymentRequestMethod === "card"
+                          {cardPaymentSupported && paymentRequestMethod === "card"
                             ? "สร้างลิงก์ชำระด้วยบัตร"
                             : "สร้าง PromptPay QR"}
                         </button>
@@ -1290,12 +1318,34 @@ export default function BillingPage() {
                             </div>
                             <div>
                               <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                                PromptPay Payload
+                                รหัสอ้างอิง (Reference)
                               </p>
-                              <p className="mt-1 break-all rounded-xl bg-[var(--bg-surface)] px-3 py-2 font-mono text-xs text-[var(--text-secondary)]">
-                                {latestPaymentRequest.qr_payload}
+                              <p className="mt-1 rounded-xl bg-[var(--bg-surface)] px-3 py-2 font-mono text-base font-bold tracking-wide text-[var(--text-primary)]">
+                                {selectedRecord?.record.record_number}
+                              </p>
+                              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                                ใส่รหัสนี้ในหมายเหตุการโอน เพื่อให้เราจับคู่สลิปได้เร็วขึ้น
                               </p>
                             </div>
+                            {lineSlipUrl ? (
+                              <a
+                                href={lineSlipUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#06C755] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#05b34c]"
+                              >
+                                <MessageCircle className="size-4" />
+                                ชำระแล้ว — ส่งสลิปผ่าน LINE
+                              </a>
+                            ) : null}
+                            <details className="rounded-xl bg-[var(--bg-surface)] px-3 py-2">
+                              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                                PromptPay Payload
+                              </summary>
+                              <p className="mt-1 break-all font-mono text-xs text-[var(--text-secondary)]">
+                                {latestPaymentRequest.qr_payload}
+                              </p>
+                            </details>
                           </div>
                         </div>
                       ) : null}

@@ -17,6 +17,7 @@ from egp_api.routes.billing import router as billing_router
 from egp_api.routes.dashboard import router as dashboard_router
 from egp_api.routes.documents import router as documents_router
 from egp_api.routes.exports import router as exports_router
+from egp_api.routes.line_integration import router as line_integration_router
 from egp_api.routes.project_ingest import router as project_ingest_router
 from egp_api.routes.projects import router as projects_router
 from egp_api.routes.rules import router as rules_router
@@ -137,6 +138,9 @@ def _register_auth_middleware(
             )
             or request.url.path == "/v1/billing/providers/opn/webhooks"
             or request.url.path == "/v1/billing/providers/stripe/webhooks"
+            # LINE delivers webhooks unauthenticated; the route enforces the
+            # mandatory X-Line-Signature HMAC check instead of JWT auth.
+            or request.url.path == "/v1/integrations/line/webhook"
         ):
             request.state.auth_context = None
             return await call_next(request)
@@ -178,6 +182,7 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(dashboard_router)
     app.include_router(documents_router)
     app.include_router(exports_router)
+    app.include_router(line_integration_router)
     app.include_router(project_ingest_router)
     app.include_router(projects_router)
     app.include_router(rules_router)

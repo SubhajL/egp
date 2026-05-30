@@ -348,6 +348,41 @@ def get_stripe_publishable_key(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_line_channel_secret(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_LINE_CHANNEL_SECRET", "").strip()
+    return raw or None
+
+
+def get_line_channel_access_token(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+    return raw or None
+
+
+def get_line_admin_user_ids(override: str | None = None) -> tuple[str, ...]:
+    raw = override if override is not None else os.getenv("EGP_LINE_ADMIN_USER_IDS", "")
+    return tuple(part.strip() for part in str(raw).split(",") if part.strip())
+
+
+def get_line_add_url(override: str | None = None) -> str | None:
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_LINE_ADD_URL", "").strip()
+    return raw or None
+
+
+def get_admin_console_base_url(override: str | None = None) -> str:
+    if override is not None:
+        return override.strip().rstrip("/")
+    return os.getenv("EGP_ADMIN_CONSOLE_BASE_URL", "").strip().rstrip("/")
+
+
 def get_session_cookie_name(override: str | None = None) -> str:
     if override is not None:
         normalized = override.strip()

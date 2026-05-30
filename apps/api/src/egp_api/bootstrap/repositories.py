@@ -48,6 +48,7 @@ from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.document_repo import create_artifact_store, create_document_repository
+from egp_db.repositories.line_payment_repo import create_line_payment_repository
 from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
@@ -87,6 +88,8 @@ class RepositoryBundle:
     discovery_job_repository: object
     tenant_entitlement_repository: object
     support_repository: object
+    line_payment_repository: object
+    managed_artifact_store: object
 
 
 def build_repository_bundle(
@@ -248,4 +251,9 @@ def build_repository_bundle(
             database_url=resolved_database_url,
             engine=shared_engine,
         ),
+        line_payment_repository=create_line_payment_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+        ),
+        managed_artifact_store=managed_artifact_store,
     )
