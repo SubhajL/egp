@@ -23,16 +23,14 @@ describe("buildLinePaymentMessage", () => {
 });
 
 describe("buildLinePaymentUrl", () => {
-  it("appends an encoded text query to a bare base url", () => {
+  it("returns a /ti/p/ add-friend link UNCHANGED (it ignores ?text=, so we don't fake a prefill)", () => {
     const url = buildLinePaymentUrl("https://line.me/R/ti/p/@egptracker", "Reference: INV-1");
-    expect(url).toBe(
-      "https://line.me/R/ti/p/@egptracker?text=" + encodeURIComponent("Reference: INV-1"),
-    );
+    expect(url).toBe("https://line.me/R/ti/p/@egptracker");
   });
 
-  it("uses & when the base url already has a query string", () => {
-    const url = buildLinePaymentUrl("https://line.me/ti/p/@x?foo=1", "hi");
-    expect(url).toBe("https://line.me/ti/p/@x?foo=1&text=" + encodeURIComponent("hi"));
+  it("prefills an oaMessage-style url where ?text actually works", () => {
+    const url = buildLinePaymentUrl("https://line.me/R/oaMessage/@egptracker/", "hi");
+    expect(url).toBe("https://line.me/R/oaMessage/@egptracker/?" + encodeURIComponent("hi"));
   });
 
   it("returns null when no base url is configured", () => {

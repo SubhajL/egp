@@ -19,11 +19,16 @@ from urllib import parse, request as urllib_request
 LINE_CONTENT_URL = "https://api-data.line.me/v2/bot/message/{message_id}/content"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
-# e-GP billing record numbers look like INV-2026-0001. Match those first; fall
-# back to a labelled "Reference: <code>" capture for resilience.
-_REFERENCE_PATTERN = re.compile(r"\bINV-\d{4}-\d{3,}\b", re.IGNORECASE)
+# e-GP billing record numbers come in several shapes: INV-2026-0001 (manual),
+# UPG-{PLAN}-{YYYYMMDD} (upgrades — note PLAN can contain underscores), and
+# TRIAL-{hex}. Match those token shapes first; fall back to a labelled
+# "Reference: <code>" capture (underscore-aware) for any operator-custom format.
+_REFERENCE_PATTERN = re.compile(
+    r"\b(?:INV|UPG|TRIAL)-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*\b",
+    re.IGNORECASE,
+)
 _LABELLED_PATTERN = re.compile(
-    r"(?:reference|ref|อ้างอิง)\s*[:：]?\s*([A-Za-z0-9\-]{6,})",
+    r"(?:reference|ref|อ้างอิง)\s*[:：]?\s*([A-Za-z0-9_\-]{4,})",
     re.IGNORECASE,
 )
 

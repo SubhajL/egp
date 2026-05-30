@@ -290,6 +290,26 @@ class LinePaymentRepository:
             slip_id=slip_id, status="rejected", verified_by_user_id=verified_by_user_id, notes=notes
         )
 
+    def list_pending_slips_for_user(self, line_user_id: str) -> list[PaymentSlipRecord]:
+        """Pending (unmatched) slips from a LINE user, oldest first.
+
+        Used to rematch slips whose image arrived before the reference text.
+        """
+        with self._engine.begin() as connection:
+            rows = (
+                connection.execute(
+                    select(PAYMENT_SLIPS_TABLE)
+                    .where(
+                        PAYMENT_SLIPS_TABLE.c.line_user_id == str(line_user_id).strip(),
+                        PAYMENT_SLIPS_TABLE.c.verification_status == "pending",
+                    )
+                    .order_by(PAYMENT_SLIPS_TABLE.c.received_at)
+                )
+                .mappings()
+                .all()
+            )
+        return [_slip_from_mapping(row) for row in rows]
+
     def list_slips(
         self, *, status: str | None = None, tenant_id: str | None = None, limit: int = 100
     ) -> list[PaymentSlipRecord]:

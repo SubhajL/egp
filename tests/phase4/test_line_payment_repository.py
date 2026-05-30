@@ -160,15 +160,39 @@ def test_find_billing_records_by_number_unique_vs_ambiguous(billing) -> None:
     unique = billing.find_billing_records_by_number(record_number="INV-2026-0500")
     assert len(unique) == 1
     assert unique[0][0] == TENANT_A
+    assert unique[0][2] == "awaiting_payment"
 
     # Same number issued under two tenants -> ambiguous (leave for manual select).
     _make_record(billing, tenant_id=TENANT_A, record_number="INV-2026-0600")
     _make_record(billing, tenant_id=TENANT_B, record_number="INV-2026-0600")
     ambiguous = billing.find_billing_records_by_number(record_number="INV-2026-0600")
     assert len(ambiguous) == 2
-    assert {t for t, _ in ambiguous} == {TENANT_A, TENANT_B}
+    assert {row[0] for row in ambiguous} == {TENANT_A, TENANT_B}
 
     assert billing.find_billing_records_by_number(record_number="INV-NONE") == []
+
+
+def test_find_billing_records_by_number_is_status_agnostic(billing) -> None:
+    # The lookup itself returns ALL rows regardless of status (with the status),
+    # so the caller can enforce the cross-tenant uniqueness guard BEFORE applying
+    # payability. (A paid duplicate elsewhere must not collapse an ambiguous
+    # number into a false unique match.)
+    record_id = _make_record(billing, tenant_id=TENANT_A, record_number="INV-2026-0700")
+    payment = billing.record_payment(
+        tenant_id=TENANT_A,
+        billing_record_id=record_id,
+        payment_method="promptpay_qr",
+        amount="1500.00",
+        currency="THB",
+        received_at="2026-05-29T10:00:00+00:00",
+    )
+    billing.reconcile_payment(
+        tenant_id=TENANT_A, payment_id=payment.id, status="reconciled"
+    )
+    rows = billing.find_billing_records_by_number(record_number="INV-2026-0700")
+    assert len(rows) == 1
+    assert rows[0][0] == TENANT_A
+    assert rows[0][2] == "paid"
 
 
 def test_admin_subscribers_add_and_list(repo) -> None:

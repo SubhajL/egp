@@ -1324,7 +1324,8 @@ export default function BillingPage() {
                                 {selectedRecord?.record.record_number}
                               </p>
                               <p className="mt-1 text-xs text-[var(--text-muted)]">
-                                ใส่รหัสนี้ในหมายเหตุการโอน เพื่อให้เราจับคู่สลิปได้เร็วขึ้น
+                                ใส่รหัสนี้ในหมายเหตุการโอน และส่งรหัสนี้พร้อมรูปสลิปทาง LINE
+                                เพื่อให้เราจับคู่และยืนยันได้เร็วขึ้น
                               </p>
                             </div>
                             {lineSlipUrl ? (

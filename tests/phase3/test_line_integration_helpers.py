@@ -52,6 +52,23 @@ def test_extract_reference_labelled_fallback() -> None:
     assert extract_reference_code("Reference: ABC-99-XYZ") == "ABC-99-XYZ"
 
 
+def test_extract_reference_matches_upgrade_and_trial_formats() -> None:
+    # UPG-{PLAN}-{YYYYMMDD} record numbers contain underscores.
+    assert (
+        extract_reference_code("ขอชำระ UPG-MONTHLY_MEMBERSHIP-20260601 ครับ")
+        == "UPG-MONTHLY_MEMBERSHIP-20260601"
+    )
+    assert extract_reference_code("TRIAL-AB12CD34") == "TRIAL-AB12CD34"
+
+
+def test_extract_reference_labelled_keeps_underscores() -> None:
+    # The labelled fallback must not truncate at an underscore.
+    assert (
+        extract_reference_code("Reference: UPG-MONTHLY_MEMBERSHIP-20260601")
+        == "UPG-MONTHLY_MEMBERSHIP-20260601"
+    )
+
+
 def test_extract_reference_returns_none_when_absent() -> None:
     assert extract_reference_code("สวัสดีครับ") is None
     assert extract_reference_code(None) is None
