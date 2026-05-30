@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -45,6 +46,7 @@ import {
   useSupportTenants,
   useWebhooks,
 } from "@/lib/hooks";
+import { resolveTabKey } from "@/lib/tabs";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
 
 const TABS = [
@@ -317,7 +319,15 @@ export default function AdminPage() {
     isError: supportSummaryError,
     error: supportSummaryQueryError,
   } = useSupportSummary(activeTenantId ? { tenant_id: activeTenantId } : null);
-  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>("users");
+  const searchParams = useSearchParams();
+  // Honor the ?tab= deep link (e.g. the LINE admin push links to ?tab=slips).
+  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["key"]>(() =>
+    resolveTabKey(
+      searchParams.get("tab"),
+      TABS.map((tab) => tab.key),
+      "users",
+    ),
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitNotice, setSubmitNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

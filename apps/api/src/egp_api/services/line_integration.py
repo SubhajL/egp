@@ -7,14 +7,13 @@ an HTTP messaging client implemented over stdlib ``urllib`` — mirroring the
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import json
 import re
 from dataclasses import dataclass
 from typing import Protocol
 from urllib import parse, request as urllib_request
+
+from egp_api.services.webhook_signatures import verify_hmac_sha256_base64
 
 LINE_CONTENT_URL = "https://api-data.line.me/v2/bot/message/{message_id}/content"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
@@ -40,11 +39,9 @@ def verify_line_signature(
 
     Fails closed when the secret or signature header is missing.
     """
-    if not channel_secret or not signature_header:
-        return False
-    digest = hmac.new(channel_secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
-    expected = base64.b64encode(digest).decode("ascii")
-    return hmac.compare_digest(expected, signature_header.strip())
+    return verify_hmac_sha256_base64(
+        secret=channel_secret, raw_body=raw_body, signature=signature_header
+    )
 
 
 def extract_reference_code(text: str | None) -> str | None:

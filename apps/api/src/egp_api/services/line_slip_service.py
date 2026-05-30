@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # enum into this hot path; mirrors BillingRecordStatus PAID/CANCELLED/REFUNDED.
 _NON_PAYABLE_RECORD_STATUSES = frozenset({"paid", "cancelled", "refunded"})
 
+# A slip claimed for verification ('verifying') but not finalized within this
+# window is treated as abandoned (the claiming process died) and is recoverable.
+_VERIFYING_LEASE_SECONDS = 600
+
 _CONTENT_TYPE_EXTENSIONS = {
     "image/jpeg": "jpg",
     "image/jpg": "jpg",
@@ -252,16 +256,18 @@ class LineSlipService:
         return data, slip.image_content_type
 
     def verify_slip(
-        self, *, slip_id: str, admin_user_id: str | None, note: str | None = None
+        self,
+        *,
+        slip_id: str,
+        admin_user_id: str | None,
+        note: str | None = None,
+        amount: str | None = None,
     ) -> PaymentSlipRecord:
         slip = self._line_repo.get_slip(slip_id)
         if slip is None:
             raise KeyError(slip_id)
         if slip.verification_status == "verified":
-            # Idempotent: a re-click never settles a second payment. A truly
-            # concurrent double-verify is additionally guarded by
-            # verify_manual_payment raising once the record is PAID.
-            return slip
+            return slip  # idempotent re-click — already settled
         if slip.verification_status == "rejected":
             raise ValueError("slip was already rejected")
         if not slip.tenant_id or not slip.billing_record_id:
@@ -270,20 +276,80 @@ class LineSlipService:
             # Never activate a subscription without the actual slip evidence
             # stored (e.g. the LINE image download failed).
             raise ValueError("slip has no stored image evidence")
-        received_at = self._now_fn().isoformat()
-        self._billing_service.verify_manual_payment(
-            tenant_id=slip.tenant_id,
-            billing_record_id=slip.billing_record_id,
-            received_at=received_at,
-            payment_request_id=slip.payment_request_id,
-            note=note,
-            actor_subject=admin_user_id,
-        )
-        verified = self._line_repo.mark_verified(
-            slip_id=slip.id, verified_by_user_id=admin_user_id, notes=note
-        )
+        if slip.verification_status == "verifying":
+            if self._lease_is_fresh(slip.verified_at):
+                return slip  # another attempt is in flight — never double-settle
+            # Stale claim from a dead process. Atomically reclaim it (only one
+            # concurrent recovery wins) back to 'matched', then take the normal
+            # claim path below. Settlement is additionally slip-idempotent, so a
+            # payment from the crashed attempt is never duplicated.
+            stale_before = self._now_fn() - timedelta(seconds=_VERIFYING_LEASE_SECONDS)
+            if not self._line_repo.revert_stale_verifying_to_matched(
+                slip_id=slip.id, stale_before=stale_before
+            ):
+                return self._line_repo.get_slip(slip.id) or slip
+            slip = self._line_repo.get_slip(slip.id) or slip
+        # Atomically claim (matched -> verifying) BEFORE settling so two
+        # concurrent verifies can't both record a payment (#6). A loser returns
+        # the current row.
+        if not self._line_repo.claim_slip_for_verification(slip_id=slip.id):
+            return self._line_repo.get_slip(slip.id) or slip
+        self._settle_claimed_slip(slip, amount, admin_user_id, note)
+        verified = self._line_repo.get_slip(slip.id)
+        if verified is None:
+            raise KeyError(slip.id)
         self._push_customer(slip.line_user_id, "✅ ยืนยันการชำระเงินเรียบร้อยแล้ว ขอบคุณครับ")
         return verified
+
+    def _settle_claimed_slip(
+        self,
+        slip: PaymentSlipRecord,
+        amount: str | None,
+        admin_user_id: str | None,
+        note: str | None,
+    ) -> None:
+        """Settle the billing record for a slip we just claimed, then finalize.
+
+        On failure the claim is reverted (verifying -> matched) so the slip can
+        be retried; settlement is only marked 'verified' after it succeeds.
+        """
+        received_at = self._now_fn().isoformat()
+        try:
+            self._billing_service.verify_manual_payment(
+                tenant_id=slip.tenant_id,
+                billing_record_id=slip.billing_record_id,
+                received_at=received_at,
+                payment_request_id=slip.payment_request_id,
+                # The admin enters the amount read off the slip image; without it
+                # we fall back to the record's outstanding balance (#7). An
+                # under-payment leaves the record short of PAID (not activated).
+                amount=amount,
+                note=note,
+                actor_subject=admin_user_id,
+                idempotency_key=slip.id,
+            )
+        except Exception:
+            self._line_repo.revert_claim_to_matched(slip_id=slip.id)
+            raise
+        self._line_repo.finalize_verification(
+            slip_id=slip.id, verified_by_user_id=admin_user_id, notes=note
+        )
+
+    def _lease_is_fresh(self, verified_at: str | None) -> bool:
+        if not verified_at:
+            return False
+        try:
+            claimed = datetime.fromisoformat(verified_at)
+        except ValueError:
+            return False
+        # SQLite roundtrips timestamps as naive; normalise both sides to UTC so
+        # the comparison works on SQLite (tests) and Postgres (prod) alike.
+        if claimed.tzinfo is None:
+            claimed = claimed.replace(tzinfo=UTC)
+        now = self._now_fn()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+        return (now - claimed).total_seconds() < _VERIFYING_LEASE_SECONDS
 
     def reject_slip(
         self, *, slip_id: str, admin_user_id: str | None, note: str | None = None
