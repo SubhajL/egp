@@ -56,6 +56,15 @@ services:
       EGP_OPN_SECRET_KEY: ${EGP_OPN_SECRET_KEY:-}
       EGP_OPN_PUBLIC_KEY: ${EGP_OPN_PUBLIC_KEY:-}
       EGP_OPN_WEBHOOK_SECRET: ${EGP_OPN_WEBHOOK_SECRET:-}
+      # Manual PromptPay (promptpay_manual) + LINE OA slip verification. These
+      # must be declared here or the container never receives them (the compose
+      # --env-file flag only feeds interpolation, not the container environment).
+      EGP_PROMPTPAY_PROXY_ID: ${EGP_PROMPTPAY_PROXY_ID:-}
+      EGP_LINE_CHANNEL_SECRET: ${EGP_LINE_CHANNEL_SECRET:-}
+      EGP_LINE_CHANNEL_ACCESS_TOKEN: ${EGP_LINE_CHANNEL_ACCESS_TOKEN:-}
+      EGP_LINE_ADMIN_USER_IDS: ${EGP_LINE_ADMIN_USER_IDS:-}
+      EGP_LINE_ADD_URL: ${EGP_LINE_ADD_URL:-}
+      EGP_ADMIN_CONSOLE_BASE_URL: ${EGP_ADMIN_CONSOLE_BASE_URL:-}
       EGP_RESEND_API_KEY: ${EGP_RESEND_API_KEY:-}
       EGP_RESEND_FROM: ${EGP_RESEND_FROM:-}
       EGP_SMTP_HOST: ${EGP_SMTP_HOST:-}
