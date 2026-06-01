@@ -43,6 +43,8 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         "browser_max_pages_per_keyword": "max_pages_per_keyword",
         "browser_project_detail_timeout_s": "project_detail_timeout_s",
         "browser_chrome_path": "chrome_path",
+        "browser_proxy_server": "proxy_server",
+        "browser_use_xvfb": "use_xvfb",
     }
     for payload_key, setting_key in flat_key_map.items():
         if settings_payload.get(payload_key) is not None:
@@ -70,6 +72,15 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         updates["browser_profile_dir"] = Path(str(settings_payload["browser_profile_dir"]))
     if settings_payload.get("chrome_path") is not None:
         updates["chrome_path"] = str(settings_payload["chrome_path"])
+    if settings_payload.get("proxy_server") is not None:
+        proxy_value = str(settings_payload["proxy_server"]).strip()
+        updates["proxy_server"] = proxy_value or None
+    if settings_payload.get("use_xvfb") is not None:
+        raw_use_xvfb = settings_payload["use_xvfb"]
+        if isinstance(raw_use_xvfb, bool):
+            updates["use_xvfb"] = raw_use_xvfb
+        else:
+            updates["use_xvfb"] = str(raw_use_xvfb).strip().lower() in {"1", "true", "yes", "on"}
     return replace(BrowserDiscoverySettings(), **updates)
 
 

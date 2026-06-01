@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import signal
 import socket
@@ -41,6 +43,8 @@ from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
 from .browser_downloads import collect_downloaded_documents
 from .browser_site_state import clear_site_error_toast, has_site_error_toast
 from .profiles import resolve_profile_keywords
+
+_logger = logging.getLogger("egp_worker.browser_discovery")
 
 MAIN_PAGE_URL = "https://www.gprocurement.go.th/new_index.html"
 SEARCH_URL = "https://process5.gprocurement.go.th/egp-agpc01-web/announcement"
@@ -83,6 +87,8 @@ class BrowserDiscoverySettings:
     max_pages_per_keyword: int = 15
     project_detail_timeout_s: float = 240.0
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
+    proxy_server: str | None = None
+    use_xvfb: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1203,18 +1209,98 @@ def _detail_page_is_invalid(page, detail: dict[str, str]) -> bool:
     return False
 
 
+def _find_bundled_chromium() -> str | None:
+    """Locate the Playwright-bundled Chromium binary, if installed."""
+    cache = Path.home() / ".cache" / "ms-playwright"
+    if not cache.is_dir():
+        return None
+    patterns = (
+        "chromium-*/chrome-linux64/chrome",
+        "chromium-*/chrome-linux/chrome",
+        "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+    )
+    for pattern in patterns:
+        for candidate in sorted(cache.glob(pattern)):
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def resolve_chrome_binary(configured: str | None) -> str:
+    """Resolve the Chrome/Chromium binary to launch.
+
+    Priority: explicit EGP_BROWSER_CHROME_PATH env > the configured path if it
+    actually exists > the Playwright-bundled Chromium > the configured path
+    (so a clear "not found" error surfaces).
+    """
+    env_override = os.getenv("EGP_BROWSER_CHROME_PATH", "").strip()
+    if env_override:
+        return env_override
+    if configured and Path(configured).exists():
+        return configured
+    bundled = _find_bundled_chromium()
+    if bundled:
+        return bundled
+    return configured or ""
+
+
+def build_chrome_launch_command(
+    settings: BrowserDiscoverySettings,
+    chrome_path: str,
+) -> list[str]:
+    """Build the Chrome launch argv, with optional proxy and Xvfb wrapping.
+
+    Defaults reproduce the proven macOS-dev launch exactly. When ``use_xvfb`` is
+    set (Linux/server), Chrome runs headful inside a virtual display and gains
+    ``--no-sandbox`` (required when running as root in a container).
+    """
+    chrome_args = [
+        chrome_path,
+        f"--remote-debugging-port={settings.cdp_port}",
+        f"--user-data-dir={settings.browser_profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--window-size=1280,900",
+        "--disable-features=DownloadBubble",
+    ]
+    if settings.use_xvfb:
+        chrome_args.insert(1, "--no-sandbox")
+    if settings.proxy_server:
+        chrome_args.append(f"--proxy-server={settings.proxy_server}")
+    if settings.use_xvfb:
+        return ["xvfb-run", "-a", "-s", "-screen 0 1280x900x24", *chrome_args]
+    return chrome_args
+
+
+def redact_proxy_for_log(proxy: str | None) -> str | None:
+    """Mask any ``user:pass@`` credentials in a proxy URL before logging.
+
+    Handles both schemed (``http://user:pass@host``, ``socks5://...``) and
+    schemeless (``user:pass@host``) forms.
+    """
+    if not proxy:
+        return proxy
+    value = str(proxy)
+    if "@" not in value:
+        return value
+    match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*://)?(.*)$", value)
+    scheme = match.group(1) or ""
+    host = match.group(2).split("@", 1)[1]
+    return f"{scheme}***@{host}"
+
+
 def launch_real_chrome(settings: BrowserDiscoverySettings) -> subprocess.Popen:
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
+    chrome_path = resolve_chrome_binary(settings.chrome_path)
+    command = build_chrome_launch_command(settings, chrome_path)
+    if settings.proxy_server:
+        _logger.info(
+            "Launching Chrome via proxy %s (xvfb=%s)",
+            redact_proxy_for_log(settings.proxy_server),
+            settings.use_xvfb,
+        )
     proc = subprocess.Popen(
-        [
-            settings.chrome_path,
-            f"--remote-debugging-port={settings.cdp_port}",
-            f"--user-data-dir={settings.browser_profile_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--window-size=1280,900",
-            "--disable-features=DownloadBubble",
-        ],
+        command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

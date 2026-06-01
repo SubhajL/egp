@@ -93,6 +93,76 @@ def get_browser_profile_root(override: Path | str | None = None) -> Path:
     return Path(raw or "~/.egp/profiles").expanduser().resolve()
 
 
+BrowserProfileMode = Literal["per_run", "persistent"]
+
+
+def get_browser_profile_mode(override: str | None = None) -> BrowserProfileMode:
+    """Return the Chrome user-data-dir lifecycle mode.
+
+    ``per_run`` (default) is the existing behaviour: a fresh per-run profile that
+    is deleted afterwards. ``persistent`` reuses a single warmed profile dir and
+    never deletes it (needed to keep Cloudflare Turnstile clearance run-to-run).
+    """
+    if override is not None:
+        raw = override.strip().lower()
+    else:
+        raw = os.getenv("EGP_BROWSER_PROFILE_MODE", "per_run").strip().lower()
+    if not raw:
+        return "per_run"
+    if raw in {"per_run", "persistent"}:
+        return raw  # type: ignore[return-value]
+    raise RuntimeError("EGP_BROWSER_PROFILE_MODE must be one of: per_run, persistent")
+
+
+def get_browser_persistent_profile_dir(override: Path | str | None = None) -> Path | None:
+    """Return the warmed persistent Chrome profile dir (persistent mode only)."""
+    if override is not None:
+        raw = str(override).strip()
+    else:
+        raw = os.getenv("EGP_BROWSER_PERSISTENT_PROFILE_DIR", "").strip()
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def get_browser_chrome_path(override: str | None = None) -> str | None:
+    """Return an explicit Chrome/Chromium binary path for the worker, if set."""
+    if override is not None:
+        value = override.strip()
+        return value or None
+    raw = os.getenv("EGP_BROWSER_CHROME_PATH", "").strip()
+    return raw or None
+
+
+def get_browser_proxy_server(override: str | None = None) -> str | None:
+    """Return the residential proxy endpoint Chrome should route through, if set.
+
+    Only IP-allowlist proxies are supported: a value carrying ``user:pass@``
+    credentials is rejected, because Chrome's ``--proxy-server`` would expose
+    them in the process list (where redaction cannot reach).
+    """
+    if override is not None:
+        value = override.strip()
+    else:
+        value = os.getenv("EGP_BROWSER_PROXY_SERVER", "").strip()
+    if not value:
+        return None
+    if "@" in value:
+        raise RuntimeError(
+            "EGP_BROWSER_PROXY_SERVER must not contain credentials (user:pass@); "
+            "use a proxy that authenticates by IP allowlist"
+        )
+    return value
+
+
+def get_browser_use_xvfb(override: bool | None = None) -> bool:
+    """Return whether to launch headful Chrome inside a virtual display (Xvfb)."""
+    if override is not None:
+        return bool(override)
+    raw = os.getenv("EGP_BROWSER_USE_XVFB", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def get_artifact_root(override: Path | None = None) -> Path:
     if override is not None:
         return override.expanduser().resolve()
