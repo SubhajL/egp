@@ -40,6 +40,15 @@ COPY apps/worker/ apps/worker/
 
 RUN pip install --no-cache-dir -e .
 
+# Full Chromium runtime libraries (authoritative Playwright list — includes
+# libcups2 and friends the curated list above omits) plus a virtual display so
+# headful Chrome can clear Cloudflare Turnstile unattended, and Thai fonts so
+# e-GP pages render correctly for parsing.
+RUN apt-get update && \
+    python -m playwright install-deps chromium && \
+    apt-get install -y --no-install-recommends xvfb xauth fonts-thai-tlwg && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-m", "egp_worker.main"]

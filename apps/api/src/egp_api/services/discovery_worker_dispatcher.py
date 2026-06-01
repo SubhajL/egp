@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -16,7 +17,12 @@ from uuid import uuid4
 from egp_api.config import (
     get_browser_cdp_port_base,
     get_browser_cdp_port_range,
+    get_browser_chrome_path,
+    get_browser_persistent_profile_dir,
+    get_browser_profile_mode,
     get_browser_profile_root,
+    get_browser_proxy_server,
+    get_browser_use_xvfb,
 )
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
@@ -88,6 +94,76 @@ def _cleanup_browser_profile_dir(
         )
 
 
+_SYNC_FOLDER_MARKERS = (
+    "onedrive",
+    "icloud",
+    "dropbox",
+    "google drive",
+    "library/mobile documents",
+)
+
+
+def _validate_persistent_profile_dir(profile_dir: Path) -> None:
+    """Reject persistent profile dirs inside cloud-synced folders (corruption risk)."""
+    lowered = str(profile_dir).lower()
+    for marker in _SYNC_FOLDER_MARKERS:
+        if marker in lowered:
+            raise RuntimeError(
+                "EGP_BROWSER_PERSISTENT_PROFILE_DIR must not be inside a synced folder "
+                f"({marker!r}): {profile_dir}"
+            )
+
+
+def _acquire_profile_lock(profile_dir: Path):
+    """Take an exclusive, non-blocking flock so one warmed profile = one browser.
+
+    Returns the open lock-file handle (caller releases it). Raises
+    ``DiscoverySpawnError`` if the profile is already in use by another crawl.
+    """
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = profile_dir / ".egp-crawl.lock"
+    handle = lock_path.open("w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise DiscoverySpawnError(
+            f"persistent browser profile is locked by another crawl ({profile_dir})"
+        ) from exc
+    return handle
+
+
+def _release_profile_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    finally:
+        handle.close()
+
+
+def _kill_process_group(proc) -> None:
+    """SIGKILL the worker and its descendants (Chrome/Xvfb) as a group.
+
+    The worker is spawned with ``start_new_session=True`` so it leads its own
+    process group; killing the group (not just the worker PID) prevents an
+    orphaned Chrome from holding a persistent profile after the lock is released.
+    """
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, int):
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 def _resolve_browser_settings_payload(
     *,
     profile_repository,
@@ -96,7 +172,10 @@ def _resolve_browser_settings_payload(
     run_id: str,
     browser_cdp_port_base: int,
     browser_cdp_port_range: int,
-    browser_profile_root: Path,
+    browser_profile_dir: Path,
+    chrome_path: str | None = None,
+    proxy_server: str | None = None,
+    use_xvfb: bool = False,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "browser_cdp_port": _browser_cdp_port_for_run_id(
@@ -104,13 +183,14 @@ def _resolve_browser_settings_payload(
             base=browser_cdp_port_base,
             port_range=browser_cdp_port_range,
         ),
-        "browser_profile_dir": str(
-            _browser_profile_dir_for_run_id(
-                run_id,
-                profile_root=browser_profile_root,
-            )
-        ),
+        "browser_profile_dir": str(browser_profile_dir),
     }
+    if chrome_path:
+        payload["browser_chrome_path"] = chrome_path
+    if proxy_server:
+        payload["browser_proxy_server"] = proxy_server
+    if use_xvfb:
+        payload["browser_use_xvfb"] = True
     if profile_repository is None:
         return payload
     try:
@@ -214,6 +294,11 @@ class SubprocessDiscoveryDispatcher:
         browser_cdp_port_base: int | str | None = None,
         browser_cdp_port_range: int | str | None = None,
         browser_profile_root: Path | str | None = None,
+        browser_profile_mode: str | None = None,
+        browser_persistent_profile_dir: Path | str | None = None,
+        browser_chrome_path: str | None = None,
+        browser_proxy_server: str | None = None,
+        browser_use_xvfb: bool | None = None,
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
@@ -227,6 +312,20 @@ class SubprocessDiscoveryDispatcher:
                 "EGP_BROWSER_CDP_PORT_BASE + EGP_BROWSER_CDP_PORT_RANGE must not exceed 65535"
             )
         self._browser_profile_root = get_browser_profile_root(browser_profile_root)
+        self._browser_profile_mode = get_browser_profile_mode(browser_profile_mode)
+        self._browser_persistent_profile_dir = get_browser_persistent_profile_dir(
+            browser_persistent_profile_dir
+        )
+        self._browser_chrome_path = get_browser_chrome_path(browser_chrome_path)
+        self._browser_proxy_server = get_browser_proxy_server(browser_proxy_server)
+        self._browser_use_xvfb = get_browser_use_xvfb(browser_use_xvfb)
+        if self._browser_profile_mode == "persistent":
+            if self._browser_persistent_profile_dir is None:
+                raise RuntimeError(
+                    "EGP_BROWSER_PERSISTENT_PROFILE_DIR is required when "
+                    "EGP_BROWSER_PROFILE_MODE=persistent"
+                )
+            _validate_persistent_profile_dir(self._browser_persistent_profile_dir)
 
     def __call__(
         self,
@@ -245,8 +344,18 @@ class SubprocessDiscoveryDispatcher:
             )
         )
 
+    def _resolve_profile_dir_for_dispatch(self, run_id: str) -> tuple[Path, bool]:
+        """Return (profile_dir, cleanup_after) for the configured profile mode."""
+        if self._browser_profile_mode == "persistent":
+            # Validated non-None in __init__.
+            assert self._browser_persistent_profile_dir is not None
+            return self._browser_persistent_profile_dir, False
+        run_dir = _browser_profile_dir_for_run_id(run_id, profile_root=self._browser_profile_root)
+        return run_dir, True
+
     def dispatch(self, request: DiscoveryDispatchRequest) -> None:
         run_id = str(uuid4())
+        browser_profile_dir, cleanup_after = self._resolve_profile_dir_for_dispatch(run_id)
         browser_settings = _resolve_browser_settings_payload(
             profile_repository=self._profile_repository,
             tenant_id=request.tenant_id,
@@ -254,140 +363,149 @@ class SubprocessDiscoveryDispatcher:
             run_id=run_id,
             browser_cdp_port_base=self._browser_cdp_port_base,
             browser_cdp_port_range=self._browser_cdp_port_range,
-            browser_profile_root=self._browser_profile_root,
+            browser_profile_dir=browser_profile_dir,
+            chrome_path=self._browser_chrome_path,
+            proxy_server=self._browser_proxy_server,
+            use_xvfb=self._browser_use_xvfb,
         )
-        browser_profile_dir = _browser_profile_dir_for_run_id(
-            run_id,
-            profile_root=self._browser_profile_root,
+        profile_lock = (
+            _acquire_profile_lock(browser_profile_dir)
+            if self._browser_profile_mode == "persistent"
+            else None
         )
-        self._run_repository.create_run(
-            tenant_id=request.tenant_id,
-            profile_id=request.profile_id,
-            trigger_type="manual",
-            run_id=run_id,
-        )
-        log_path = (
-            self._artifact_root / "tenants" / request.tenant_id / "runs" / run_id / "worker.log"
-        ).resolve()
-        log_handle = None
-        if self._artifact_root is not None:
-            try:
-                log_path.parent.mkdir(parents=True, exist_ok=True)
-                log_handle = log_path.open("ab")
-            except Exception:
-                _logger.warning(
-                    "Failed to create discover worker log file (run_id=%s)",
-                    run_id,
-                    exc_info=True,
-                )
-                log_path = None
-        payload = json.dumps(
-            {
-                "command": "discover",
-                "database_url": self._database_url,
-                "artifact_root": str(self._artifact_root),
-                "tenant_id": request.tenant_id,
-                "run_id": run_id,
-                "profile_id": request.profile_id,
-                "keyword": request.keyword,
-                "profile": request.profile_type,
-                "trigger_type": "manual",
-                "live": True,
-                "live_include_documents": True,
-                "browser_settings": browser_settings,
-            },
-            ensure_ascii=False,
-        ).encode()
         try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "egp_worker.main"],
-                stdin=subprocess.PIPE,
-                stdout=log_handle or subprocess.DEVNULL,
-                stderr=log_handle or subprocess.PIPE,
-            )
-            self._safe_update_run_summary(
+            self._run_repository.create_run(
+                tenant_id=request.tenant_id,
+                profile_id=request.profile_id,
+                trigger_type="manual",
                 run_id=run_id,
-                summary_json={
-                    **({"worker_log_path": str(log_path)} if log_path is not None else {}),
-                    "worker_owner_pid": os.getpid(),
-                    **(
-                        {"worker_pid": proc.pid}
-                        if isinstance(getattr(proc, "pid", None), int)
-                        else {}
-                    ),
-                },
             )
-            _, stderr = proc.communicate(input=payload, timeout=self._timeout_seconds)
-            if log_handle is not None:
-                log_handle.flush()
-            stderr_text = (
-                self._read_log_tail(log_path) if log_path is not None else None
-            ) or stderr
-            if proc.returncode not in {0, None}:
+            log_path = (
+                self._artifact_root / "tenants" / request.tenant_id / "runs" / run_id / "worker.log"
+            ).resolve()
+            log_handle = None
+            if self._artifact_root is not None:
+                try:
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    log_handle = log_path.open("ab")
+                except Exception:
+                    _logger.warning(
+                        "Failed to create discover worker log file (run_id=%s)",
+                        run_id,
+                        exc_info=True,
+                    )
+                    log_path = None
+            payload = json.dumps(
+                {
+                    "command": "discover",
+                    "database_url": self._database_url,
+                    "artifact_root": str(self._artifact_root),
+                    "tenant_id": request.tenant_id,
+                    "run_id": run_id,
+                    "profile_id": request.profile_id,
+                    "keyword": request.keyword,
+                    "profile": request.profile_type,
+                    "trigger_type": "manual",
+                    "live": True,
+                    "live_include_documents": True,
+                    "browser_settings": browser_settings,
+                },
+                ensure_ascii=False,
+            ).encode()
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "egp_worker.main"],
+                    stdin=subprocess.PIPE,
+                    stdout=log_handle or subprocess.DEVNULL,
+                    stderr=log_handle or subprocess.PIPE,
+                    start_new_session=True,
+                )
+                self._safe_update_run_summary(
+                    run_id=run_id,
+                    summary_json={
+                        **({"worker_log_path": str(log_path)} if log_path is not None else {}),
+                        "worker_owner_pid": os.getpid(),
+                        **(
+                            {"worker_pid": proc.pid}
+                            if isinstance(getattr(proc, "pid", None), int)
+                            else {}
+                        ),
+                    },
+                )
+                _, stderr = proc.communicate(input=payload, timeout=self._timeout_seconds)
+                if log_handle is not None:
+                    log_handle.flush()
+                stderr_text = (
+                    self._read_log_tail(log_path) if log_path is not None else None
+                ) or stderr
+                if proc.returncode not in {0, None}:
+                    preview = _stderr_preview(stderr_text)
+                    _logger.warning(
+                        "Discover worker exited non-zero for keyword %r (tenant_id=%s profile_id=%s returncode=%s stderr=%r)",
+                        request.keyword,
+                        request.tenant_id,
+                        request.profile_id,
+                        proc.returncode,
+                        preview,
+                    )
+                    terminated = self._worker_termination_error(
+                        returncode=int(proc.returncode),
+                        run_id=run_id,
+                        keyword=request.keyword,
+                    )
+                    if terminated is not None:
+                        raise terminated
+                    non_retriable = _parse_non_retriable_error(stderr_text)
+                    if non_retriable is not None:
+                        raise non_retriable
+                    raise DiscoverySpawnError(
+                        f"discover worker exited non-zero for keyword {request.keyword!r}"
+                    )
+            except subprocess.TimeoutExpired as exc:
+                _kill_process_group(proc)
+                _, stderr = proc.communicate()
+                if log_handle is not None:
+                    log_handle.flush()
+                stderr_text = (self._read_log_tail(log_path) if log_path is not None else None) or (
+                    stderr or exc.stderr
+                )
                 preview = _stderr_preview(stderr_text)
+                error_message = f"discover worker timed out for keyword {request.keyword!r}"
                 _logger.warning(
-                    "Discover worker exited non-zero for keyword %r (tenant_id=%s profile_id=%s returncode=%s stderr=%r)",
+                    "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
                     request.keyword,
                     request.tenant_id,
                     request.profile_id,
-                    proc.returncode,
+                    exc.timeout,
                     preview,
                 )
-                terminated = self._worker_termination_error(
-                    returncode=int(proc.returncode),
+                self._mark_active_run_failed(
                     run_id=run_id,
-                    keyword=request.keyword,
+                    error=error_message,
+                    failure_reason="worker_timeout",
                 )
-                if terminated is not None:
-                    raise terminated
-                non_retriable = _parse_non_retriable_error(stderr_text)
-                if non_retriable is not None:
-                    raise non_retriable
-                raise DiscoverySpawnError(
-                    f"discover worker exited non-zero for keyword {request.keyword!r}"
+                raise DiscoverySpawnError(error_message) from exc
+            except DiscoverySpawnError:
+                raise
+            except Exception:
+                _logger.warning(
+                    "Failed to spawn discover for keyword %r (tenant_id=%s profile_id=%s)",
+                    request.keyword,
+                    request.tenant_id,
+                    request.profile_id,
+                    exc_info=True,
                 )
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            _, stderr = proc.communicate()
-            if log_handle is not None:
-                log_handle.flush()
-            stderr_text = (self._read_log_tail(log_path) if log_path is not None else None) or (
-                stderr or exc.stderr
-            )
-            preview = _stderr_preview(stderr_text)
-            error_message = f"discover worker timed out for keyword {request.keyword!r}"
-            _logger.warning(
-                "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
-                request.keyword,
-                request.tenant_id,
-                request.profile_id,
-                exc.timeout,
-                preview,
-            )
-            self._mark_active_run_failed(
-                run_id=run_id,
-                error=error_message,
-                failure_reason="worker_timeout",
-            )
-            raise DiscoverySpawnError(error_message) from exc
-        except DiscoverySpawnError:
-            raise
-        except Exception:
-            _logger.warning(
-                "Failed to spawn discover for keyword %r (tenant_id=%s profile_id=%s)",
-                request.keyword,
-                request.tenant_id,
-                request.profile_id,
-                exc_info=True,
-            )
-            raise
+                raise
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
         finally:
-            if log_handle is not None:
-                log_handle.close()
-            _cleanup_browser_profile_dir(
-                browser_profile_dir,
-                profile_root=self._browser_profile_root,
-            )
+            _release_profile_lock(profile_lock)
+            if cleanup_after:
+                _cleanup_browser_profile_dir(
+                    browser_profile_dir,
+                    profile_root=self._browser_profile_root,
+                )
 
     def _safe_update_run_summary(
         self,
