@@ -135,8 +135,19 @@ services:
       # when enabled). EMPTY by default = no proxy = current behavior. Set to
       # http://proxy-relay:8118 in /etc/egp/egp.env at the activation step.
       EGP_BROWSER_PROXY_SERVER: ${EGP_BROWSER_PROXY_SERVER:-}
+      # Persistent warmed-profile mode (PR 3) + search-step timeout knobs (PR 2a).
+      # All default to current behavior; set in /etc/egp/egp.env at activation.
+      EGP_BROWSER_PROFILE_MODE: ${EGP_BROWSER_PROFILE_MODE:-per_run}
+      EGP_BROWSER_PERSISTENT_PROFILE_DIR: ${EGP_BROWSER_PERSISTENT_PROFILE_DIR:-}
+      EGP_BROWSER_NAV_TIMEOUT_MS: ${EGP_BROWSER_NAV_TIMEOUT_MS:-60000}
+      EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS: ${EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS:-120000}
+      EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES: ${EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES:-1}
+      EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S: ${EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S:-240}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
+      # Warmed persistent Chrome profile (PR 3) — survives container recreation.
+      # Inert in per_run mode; used only when EGP_BROWSER_PROFILE_MODE=persistent.
+      - egp_browser_profile:/var/lib/egp/browser-profile
     depends_on:
       postgres:
         condition: service_healthy
@@ -212,5 +223,6 @@ services:
 volumes:
   egp_pgdata:
   egp_artifacts:
+  egp_browser_profile:
   caddy_data:
   caddy_config:

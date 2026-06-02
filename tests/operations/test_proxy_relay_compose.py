@@ -51,3 +51,37 @@ def test_discovery_executor_proxy_defaults_to_empty() -> None:
     assert env["EGP_BROWSER_PROXY_SERVER"] == "${EGP_BROWSER_PROXY_SERVER:-}", (
         "EGP_BROWSER_PROXY_SERVER must default to empty (no proxy = current behavior)"
     )
+
+
+def test_discovery_executor_persistent_profile_defaults_off() -> None:
+    env = _compose()["services"]["discovery-executor"]["environment"]
+    assert env["EGP_BROWSER_PROFILE_MODE"] == "${EGP_BROWSER_PROFILE_MODE:-per_run}", (
+        "profile mode must default to per_run (current behavior)"
+    )
+    assert env["EGP_BROWSER_PERSISTENT_PROFILE_DIR"] == "${EGP_BROWSER_PERSISTENT_PROFILE_DIR:-}", (
+        "persistent profile dir must default to empty"
+    )
+
+
+def test_discovery_executor_timeout_passthrough_defaults() -> None:
+    env = _compose()["services"]["discovery-executor"]["environment"]
+    assert env["EGP_BROWSER_NAV_TIMEOUT_MS"] == "${EGP_BROWSER_NAV_TIMEOUT_MS:-60000}"
+    assert env["EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS"] == "${EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS:-120000}"
+    assert (
+        env["EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES"]
+        == "${EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES:-1}"
+    )
+    assert (
+        env["EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S"]
+        == "${EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S:-240}"
+    )
+
+
+def test_persistent_profile_volume_is_mounted_and_declared() -> None:
+    compose = _compose()
+    mounts = compose["services"]["discovery-executor"]["volumes"]
+    assert any("egp_browser_profile:" in m for m in mounts), (
+        "discovery-executor must mount the egp_browser_profile volume so a warmed "
+        "profile survives container recreation"
+    )
+    assert "egp_browser_profile" in compose["volumes"], "volume must be declared at top level"
