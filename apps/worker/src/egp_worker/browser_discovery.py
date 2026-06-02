@@ -218,7 +218,7 @@ def crawl_live_discovery(
 
     progress_token = _LIVE_PROGRESS_CALLBACK.set(progress_callback)
     try:
-        chrome_proc = launch_real_chrome(resolved_settings)
+        chrome_proc = launch_real_chrome(resolved_settings, clear_singleton_locks=True)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, resolved_settings)
         _goto_with_recovery(page, MAIN_PAGE_URL, resolved_settings)
@@ -1335,8 +1335,46 @@ def redact_proxy_for_log(proxy: str | None) -> str | None:
     return f"{scheme}***@{host}"
 
 
-def launch_real_chrome(settings: BrowserDiscoverySettings) -> subprocess.Popen:
+_SINGLETON_LOCK_NAMES = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def clear_stale_singleton_locks(profile_dir: Path) -> list[str]:
+    """Remove Chrome's leftover ``Singleton*`` lock files from a reused profile.
+
+    Chrome killed under ``xvfb-run`` does not remove these (often dangling)
+    symlinks, and they make the NEXT launch fail ("CDP port not reachable").
+    Concurrent use of a single profile is prevented elsewhere (dispatcher
+    persistent-mode flock; per-run dirs are unique), so any leftover is stale.
+    Tolerant of a missing dir / missing files; returns the names removed.
+    """
+    removed: list[str] = []
+    for name in _SINGLETON_LOCK_NAMES:
+        path = profile_dir / name
+        try:
+            if path.is_symlink() or path.exists():
+                path.unlink()
+                removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
+def launch_real_chrome(
+    settings: BrowserDiscoverySettings, *, clear_singleton_locks: bool = False
+) -> subprocess.Popen:
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
+    # Only clear at workflow-entry launches (first discovery launch, warm-up,
+    # close-check) — a previous RUN's lock is always stale there. The in-run
+    # recovery relaunch keeps this off: a just-killed Chrome may not be reaped
+    # yet, so its lock is not necessarily stale.
+    if clear_singleton_locks:
+        cleared = clear_stale_singleton_locks(settings.browser_profile_dir)
+        if cleared:
+            _logger.info(
+                "Cleared stale Chrome singleton lock(s) %s in %s",
+                cleared,
+                settings.browser_profile_dir,
+            )
     chrome_path = resolve_chrome_binary(settings.chrome_path)
     command = build_chrome_launch_command(settings, chrome_path)
     if settings.proxy_server:

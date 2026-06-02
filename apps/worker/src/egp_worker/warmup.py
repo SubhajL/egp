@@ -82,7 +82,7 @@ def main() -> int:
         f"proxy={'set' if settings.proxy_server else 'none'} xvfb={settings.use_xvfb}",
         flush=True,
     )
-    proc = launch_real_chrome(settings)
+    proc = launch_real_chrome(settings, clear_singleton_locks=True)
     pw = None
     browser = None
     try:
