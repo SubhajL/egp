@@ -3343,7 +3343,7 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
     collect_calls: list[str] = []
 
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings: chrome
+        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.sync_playwright",

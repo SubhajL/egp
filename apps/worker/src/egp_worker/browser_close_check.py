@@ -52,7 +52,7 @@ def crawl_live_close_check(
     page = None
     observations: list[dict[str, object]] = []
     try:
-        chrome_proc = launch_real_chrome(resolved_settings)
+        chrome_proc = launch_real_chrome(resolved_settings, clear_singleton_locks=True)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, resolved_settings)
         page.goto(
