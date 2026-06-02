@@ -18,9 +18,13 @@ from egp_api.config import (
     get_browser_cdp_port_base,
     get_browser_cdp_port_range,
     get_browser_chrome_path,
+    get_browser_cloudflare_reload_retries,
+    get_browser_cloudflare_timeout_ms,
+    get_browser_nav_timeout_ms,
     get_browser_persistent_profile_dir,
     get_browser_profile_mode,
     get_browser_profile_root,
+    get_browser_project_detail_timeout_s,
     get_browser_proxy_server,
     get_browser_use_xvfb,
 )
@@ -176,6 +180,10 @@ def _resolve_browser_settings_payload(
     chrome_path: str | None = None,
     proxy_server: str | None = None,
     use_xvfb: bool = False,
+    nav_timeout_ms: int | None = None,
+    cloudflare_timeout_ms: int | None = None,
+    cloudflare_reload_retries: int | None = None,
+    project_detail_timeout_s: float | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "browser_cdp_port": _browser_cdp_port_for_run_id(
@@ -191,6 +199,14 @@ def _resolve_browser_settings_payload(
         payload["browser_proxy_server"] = proxy_server
     if use_xvfb:
         payload["browser_use_xvfb"] = True
+    if nav_timeout_ms is not None:
+        payload["browser_nav_timeout_ms"] = nav_timeout_ms
+    if cloudflare_timeout_ms is not None:
+        payload["browser_cloudflare_timeout_ms"] = cloudflare_timeout_ms
+    if cloudflare_reload_retries is not None:
+        payload["browser_cloudflare_reload_retries"] = cloudflare_reload_retries
+    if project_detail_timeout_s is not None:
+        payload["browser_project_detail_timeout_s"] = project_detail_timeout_s
     if profile_repository is None:
         return payload
     try:
@@ -299,6 +315,10 @@ class SubprocessDiscoveryDispatcher:
         browser_chrome_path: str | None = None,
         browser_proxy_server: str | None = None,
         browser_use_xvfb: bool | None = None,
+        browser_nav_timeout_ms: int | str | None = None,
+        browser_cloudflare_timeout_ms: int | str | None = None,
+        browser_cloudflare_reload_retries: int | str | None = None,
+        browser_project_detail_timeout_s: float | str | None = None,
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
@@ -319,6 +339,16 @@ class SubprocessDiscoveryDispatcher:
         self._browser_chrome_path = get_browser_chrome_path(browser_chrome_path)
         self._browser_proxy_server = get_browser_proxy_server(browser_proxy_server)
         self._browser_use_xvfb = get_browser_use_xvfb(browser_use_xvfb)
+        self._browser_nav_timeout_ms = get_browser_nav_timeout_ms(browser_nav_timeout_ms)
+        self._browser_cloudflare_timeout_ms = get_browser_cloudflare_timeout_ms(
+            browser_cloudflare_timeout_ms
+        )
+        self._browser_cloudflare_reload_retries = get_browser_cloudflare_reload_retries(
+            browser_cloudflare_reload_retries
+        )
+        self._browser_project_detail_timeout_s = get_browser_project_detail_timeout_s(
+            browser_project_detail_timeout_s
+        )
         if self._browser_profile_mode == "persistent":
             if self._browser_persistent_profile_dir is None:
                 raise RuntimeError(
@@ -367,6 +397,10 @@ class SubprocessDiscoveryDispatcher:
             chrome_path=self._browser_chrome_path,
             proxy_server=self._browser_proxy_server,
             use_xvfb=self._browser_use_xvfb,
+            nav_timeout_ms=self._browser_nav_timeout_ms,
+            cloudflare_timeout_ms=self._browser_cloudflare_timeout_ms,
+            cloudflare_reload_retries=self._browser_cloudflare_reload_retries,
+            project_detail_timeout_s=self._browser_project_detail_timeout_s,
         )
         profile_lock = (
             _acquire_profile_lock(browser_profile_dir)
