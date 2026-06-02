@@ -12,8 +12,12 @@ import pytest
 
 from egp_api.config import (
     get_browser_chrome_path,
+    get_browser_cloudflare_reload_retries,
+    get_browser_cloudflare_timeout_ms,
+    get_browser_nav_timeout_ms,
     get_browser_persistent_profile_dir,
     get_browser_profile_mode,
+    get_browser_project_detail_timeout_s,
     get_browser_proxy_server,
     get_browser_use_xvfb,
 )
@@ -85,3 +89,62 @@ def test_get_browser_persistent_profile_dir_from_env(
 ) -> None:
     monkeypatch.setenv("EGP_BROWSER_PERSISTENT_PROFILE_DIR", str(tmp_path / "warm"))
     assert get_browser_persistent_profile_dir() == (tmp_path / "warm").resolve()
+
+
+# --- PR 2a: search-step timeout knobs (defaults == current dataclass values) ---
+
+
+def test_get_browser_nav_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EGP_BROWSER_NAV_TIMEOUT_MS", raising=False)
+    assert get_browser_nav_timeout_ms() == 60_000
+
+
+def test_get_browser_nav_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EGP_BROWSER_NAV_TIMEOUT_MS", "120000")
+    assert get_browser_nav_timeout_ms() == 120_000
+
+
+def test_get_browser_nav_timeout_rejects_nonpositive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EGP_BROWSER_NAV_TIMEOUT_MS", "0")
+    with pytest.raises(RuntimeError):
+        get_browser_nav_timeout_ms()
+
+
+def test_get_browser_cloudflare_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS", raising=False)
+    assert get_browser_cloudflare_timeout_ms() == 120_000
+
+
+def test_get_browser_cloudflare_reload_retries_defaults_and_allows_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES", raising=False)
+    assert get_browser_cloudflare_reload_retries() == 1
+    monkeypatch.setenv("EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES", "0")
+    assert get_browser_cloudflare_reload_retries() == 0
+
+
+def test_get_browser_cloudflare_reload_retries_rejects_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES", "-1")
+    with pytest.raises(RuntimeError):
+        get_browser_cloudflare_reload_retries()
+
+
+def test_get_browser_project_detail_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S", raising=False)
+    assert get_browser_project_detail_timeout_s() == 240.0
+
+
+def test_get_browser_project_detail_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S", "360")
+    assert get_browser_project_detail_timeout_s() == 360.0
+
+
+def test_get_browser_project_detail_timeout_rejects_nonpositive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S", "0")
+    with pytest.raises(RuntimeError):
+        get_browser_project_detail_timeout_s()

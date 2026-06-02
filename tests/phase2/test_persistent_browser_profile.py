@@ -212,3 +212,25 @@ def test_timeout_kills_process_group_and_uses_new_session(
 
     assert captured["popen_kwargs"].get("start_new_session") is True
     assert captured["killpg"] and captured["killpg"][0][0] == 90909
+
+
+def test_dispatch_payload_includes_timeout_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured = _FakeProcess()
+    monkeypatch.setenv("EGP_BROWSER_PROFILE_ROOT", str(tmp_path / "profiles"))
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *a, **k: captured,
+    )
+    SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+    ).dispatch(_request())  # per_run default
+    bs = json.loads((captured.payload or b"{}").decode("utf-8"))["browser_settings"]
+    assert bs["browser_nav_timeout_ms"] == 60000
+    assert bs["browser_cloudflare_timeout_ms"] == 120000
+    assert bs["browser_cloudflare_reload_retries"] == 1
+    assert bs["browser_project_detail_timeout_s"] == 240.0
