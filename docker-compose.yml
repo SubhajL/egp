@@ -131,6 +131,10 @@ services:
       EGP_BROWSER_PROFILE_ROOT: ${EGP_BROWSER_PROFILE_ROOT:-~/.egp/profiles}
       # Headful Chrome under Xvfb (this is a Linux container with no display).
       EGP_BROWSER_USE_XVFB: ${EGP_BROWSER_USE_XVFB:-true}
+      # Outbound proxy for headful Chrome (creds-free; points at proxy-relay
+      # when enabled). EMPTY by default = no proxy = current behavior. Set to
+      # http://proxy-relay:8118 in /etc/egp/egp.env at the activation step.
+      EGP_BROWSER_PROXY_SERVER: ${EGP_BROWSER_PROXY_SERVER:-}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:
@@ -147,6 +151,19 @@ services:
     # worker liveness.
     healthcheck:
       disable: true
+
+  # Local creds-free auth-relay (gost) -> upstream residential proxy.
+  # OFF by default (profile "proxy"): a plain `docker compose up` never starts it.
+  # Enable only at the activation step, after setting EGP_PROXY_UPSTREAM_URL
+  # (http://USER:PASS@host:port) in /etc/egp/egp.env, via `--profile proxy up`.
+  # Chrome in discovery-executor then reaches it creds-free at proxy-relay:8118.
+  proxy-relay:
+    profiles: ["proxy"]
+    image: ginuerzh/gost
+    restart: unless-stopped
+    command:
+      - "-L=http://:8118"
+      - "-F=${EGP_PROXY_UPSTREAM_URL:-}"
 
   web:
     # Frontend service for single-host launches only.

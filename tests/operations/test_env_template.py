@@ -65,6 +65,9 @@ TEMPLATE_ONLY_VARS: frozenset[str] = frozenset(
         # Resend email provider (alternative to SMTP) — wired via compose only
         "EGP_RESEND_API_KEY",
         "EGP_RESEND_FROM",
+        # gost proxy-relay upstream URL — referenced only in docker-compose.yml
+        # (proxy-relay service command), not read by Python.
+        "EGP_PROXY_UPSTREAM_URL",
     }
 )
 
