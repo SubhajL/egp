@@ -1264,7 +1264,10 @@ def build_chrome_launch_command(
         "--disable-features=DownloadBubble",
     ]
     if settings.use_xvfb:
-        chrome_args.insert(1, "--no-sandbox")
+        # --no-sandbox: required when running as root in a container.
+        # --disable-dev-shm-usage: Chrome's default /dev/shm is 64MB in Docker,
+        # which crashes the renderer on heavy SPA pages; use /tmp instead.
+        chrome_args[1:1] = ["--no-sandbox", "--disable-dev-shm-usage"]
     if settings.proxy_server:
         chrome_args.append(f"--proxy-server={settings.proxy_server}")
     if settings.use_xvfb:
