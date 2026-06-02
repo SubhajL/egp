@@ -129,6 +129,8 @@ services:
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
       EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
       EGP_BROWSER_PROFILE_ROOT: ${EGP_BROWSER_PROFILE_ROOT:-~/.egp/profiles}
+      # Headful Chrome under Xvfb (this is a Linux container with no display).
+      EGP_BROWSER_USE_XVFB: ${EGP_BROWSER_USE_XVFB:-true}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:

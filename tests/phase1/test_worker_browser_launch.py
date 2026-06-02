@@ -66,6 +66,7 @@ def test_build_launch_command_default_matches_existing_args() -> None:
     assert "--user-data-dir=/p" in command
     assert not any(arg.startswith("--proxy-server") for arg in command)
     assert "--no-sandbox" not in command
+    assert "--disable-dev-shm-usage" not in command
     assert "xvfb-run" not in command
 
 
@@ -81,6 +82,7 @@ def test_build_launch_command_wraps_with_xvfb_and_adds_no_sandbox() -> None:
     assert command[:4] == ["xvfb-run", "-a", "-s", "-screen 0 1280x900x24"]
     assert "/bin/chrome" in command
     assert "--no-sandbox" in command
+    assert "--disable-dev-shm-usage" in command
 
 
 def test_redact_proxy_for_log_masks_credentials() -> None:
