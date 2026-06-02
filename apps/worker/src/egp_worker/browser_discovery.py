@@ -162,6 +162,40 @@ _LIVE_PROGRESS_CALLBACK: ContextVar[LiveProgressCallback | None] = ContextVar(
     default=None,
 )
 
+_NAV_DESTROYED_MARKERS = (
+    "execution context was destroyed",
+    "context was destroyed",
+    "because of a navigation",
+)
+
+
+def run_with_navigation_retry(operation, *, retries: int = 2, on_retry=None):
+    """Run ``operation`` and retry ONLY on Playwright's "execution context was
+    destroyed ... because of a navigation" race — common when a one-shot query
+    runs while the e-GP SPA re-navigates (frequent under slow residential-proxy
+    latency).
+
+    Additive by design: success on the first attempt returns immediately and
+    unchanged; a non-navigation error re-raises immediately; the navigation
+    error re-raises once ``retries`` is exhausted. ``on_retry`` (e.g. waiting
+    for the page to settle) runs between attempts and its own errors are
+    swallowed.
+    """
+    attempt = 0
+    while True:
+        try:
+            return operation()
+        except Exception as exc:
+            message = str(exc).lower()
+            if attempt >= retries or not any(m in message for m in _NAV_DESTROYED_MARKERS):
+                raise
+            attempt += 1
+            if on_retry is not None:
+                try:
+                    on_retry()
+                except Exception:
+                    pass
+
 
 def crawl_live_discovery(
     *,
@@ -291,7 +325,16 @@ def _collect_keyword_projects(
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
         try:
-            rows = get_results_rows(page)
+            # The search click navigates the SPA; under slow proxy latency the
+            # one-shot table queries can race it ("execution context destroyed").
+            # Retry only that race, after letting the page settle.
+            rows = run_with_navigation_retry(
+                lambda: get_results_rows(page),
+                retries=2,
+                on_retry=lambda: page.wait_for_load_state(
+                    "domcontentloaded", timeout=settings.nav_timeout_ms
+                ),
+            )
         except Exception as exc:
             _raise_browser_closed(exc, page_num)
             raise
