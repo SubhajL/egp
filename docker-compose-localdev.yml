@@ -48,6 +48,11 @@ services:
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: local
       EGP_PAYMENT_PROVIDER: ${EGP_PAYMENT_PROVIDER:-mock_promptpay}
+      # mock_promptpay builds the PromptPay QR locally from this proxy id (no
+      # external acquirer / no network). Without it the provider resolves to
+      # None and billing raises "payment provider is not configured" at the
+      # Create-PromptPay-QR step. Dev placeholder — override via .env.localdev.
+      EGP_PROMPTPAY_PROXY_ID: ${EGP_PROMPTPAY_PROXY_ID:-0899999999}
       EGP_PAYMENT_CALLBACK_SECRET: ${EGP_PAYMENT_CALLBACK_SECRET:-top-secret}
       EGP_OPN_SECRET_KEY: ${EGP_OPN_SECRET_KEY:-}
       EGP_OPN_PUBLIC_KEY: ${EGP_OPN_PUBLIC_KEY:-}

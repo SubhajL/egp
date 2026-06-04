@@ -38,6 +38,8 @@ EGP_AUTH_REQUIRED=true
 EGP_JWT_SECRET=dev-jwt-secret
 EGP_SESSION_COOKIE_SECURE=false
 EGP_PAYMENT_PROVIDER=mock_promptpay
+# mock PromptPay builds the QR locally from this proxy id (no external acquirer).
+EGP_PROMPTPAY_PROXY_ID=0899999999
 EGP_ARTIFACT_STORE=local
 EGP_BACKGROUND_RUNTIME_MODE=external
 EOF
