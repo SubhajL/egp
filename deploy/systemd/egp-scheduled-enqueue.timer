@@ -1,0 +1,16 @@
+# Track C — fire the scheduled-discovery enqueuer periodically on Lightsail.
+# Cadence here only bounds how often the queue is TOPPED UP; the per-tenant
+# crawl_interval_hours still governs whether a tenant is actually due, so a
+# tight timer is safe (idempotent enqueue + due-check). See the paired
+# .service unit and docs/REMOTE_LOCAL_CRAWLER.md.
+[Unit]
+Description=Run e-GP scheduled discovery enqueue every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=true
+Unit=egp-scheduled-enqueue.service
+
+[Install]
+WantedBy=timers.target

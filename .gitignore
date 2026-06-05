@@ -36,6 +36,8 @@ apps/web/artifacts/
 .env.local
 .env.*.local
 .env.localdev
+# Track C remote crawler live env (points at PRODUCTION); .example stays committed.
+.env.remotecrawl
 
 # IDE
 .vscode/

@@ -1,19 +1,27 @@
 # Two Tracks: localhost vs production
 
 This repo runs on **two strictly separated tracks** so local experiments can never
-touch production. Separation happens on three axes — **code, config, data**.
+touch production — plus one deliberate, **guarded** bridge (Track C) for the temporary
+"www" setup where crawling must happen on a real Mac. Separation happens on three
+axes — **code, config, data**.
 
-| Axis | **Track A — localhost (your Mac)** | **Track B — production / upgrades** |
-|---|---|---|
-| **Code** | run from a worktree; never commit runtime tweaks | `feat/*`,`fix/*` → PR → `main`; tag releases |
-| **Run** | `scripts/run_local.sh` → `docker-compose-localdev.yml` + native crawler | Lightsail host: `docker-compose.yml`; Vercel: `apps/web` |
-| **Config** | `.env.localdev` (this repo, gitignored, **no secrets**) | `/etc/egp/egp.env` (Lightsail) + Vercel env UI |
-| **Data** | Docker volume `egp_egp_pgdata` @ `localhost:5434`, artifacts on local FS | Lightsail Postgres + Supabase Storage |
-| **Auth/pay** | `EGP_AUTH_REQUIRED=true`, `mock_promptpay` | real auth + OPN/Stripe |
+| Axis | **Track A — localhost (your Mac)** | **Track B — production / upgrades** | **Track C — remote crawler (temp bridge)** |
+|---|---|---|---|
+| **Code** | run from a worktree; never commit runtime tweaks | `feat/*`,`fix/*` → PR → `main`; tag releases | prod-pinned code run natively on the Mac |
+| **Run** | `scripts/run_local.sh` → `docker-compose-localdev.yml` + native crawler | Lightsail host: `docker-compose.yml`; Vercel: `apps/web` | `scripts/run_remote_crawl.sh` (guarded) + launchd; Lightsail runs API only (`discovery-executor` scaled to 0) |
+| **Config** | `.env.localdev` (this repo, gitignored, **no secrets**) | `/etc/egp/egp.env` (Lightsail) + Vercel env UI | `.env.remotecrawl` (gitignored, **points at PRODUCTION**) |
+| **Data** | Docker volume `egp_egp_pgdata` @ `localhost:5434`, artifacts on local FS | Lightsail Postgres + Supabase Storage | **PRODUCTION** Lightsail Postgres via SSH tunnel (`127.0.0.1:15432`) + Supabase Storage |
+| **Auth/pay** | `EGP_AUTH_REQUIRED=true`, `mock_promptpay` | real auth + OPN/Stripe | reads/writes the real production control-plane |
 
 ### The one rule that prevents every mix-up
 > **The localhost track and the production track never share an env file or a DB connection string.**
 > Local tools only ever see `localhost:5434`. Production config lives only on the host + Vercel.
+
+**Track C is the single, deliberate exception** — and it is fail-closed. `scripts/run_remote_crawl.sh`
+refuses to start unless `scripts/remote_crawl_guard.py` confirms an explicit production
+acknowledgement, an HTTPS API + Supabase artifacts, a warmed single-flight Chrome profile, and a DB
+target that is the SSH-tunnel loopback or a TLS Supabase URL — **never** `localhost:5434`. It is the
+exact inverse of `run_local.sh`'s localhost-only guard. See [`docs/REMOTE_LOCAL_CRAWLER.md`](docs/REMOTE_LOCAL_CRAWLER.md).
 
 ---
 
@@ -38,6 +46,32 @@ a bare `docker compose` command. The wrapper avoids that, but to remove the foot
 ```bash
 mv .env .env.production.local   # still gitignored (.env.*.local); nothing in the repo auto-loads it
 ```
+
+---
+
+## Track C — remote local crawler (temporary "www" bridge)
+
+The crawler must run on a real Mac (Cloudflare Turnstile blocks headless/Lightsail Chrome), but the
+API lives on Lightsail and the frontend on Vercel. Track C bridges them: the Mac is the **sole**
+claimer of the production `discovery_jobs` queue and crawls with real Chrome, while Lightsail runs the
+API as a pure control-plane.
+
+```bash
+cp .env.remotecrawl.example .env.remotecrawl && chmod 600 .env.remotecrawl   # then fill it in
+scripts/run_remote_crawl.sh check          # fail-closed env validation
+scripts/run_remote_crawl.sh tunnel         # SSH tunnel to prod Postgres (or run via launchd)
+scripts/run_remote_crawl.sh warm-profile   # warm the persistent Chrome profile (once)
+scripts/run_remote_crawl.sh watch          # claim + crawl the PRODUCTION queue
+scripts/install_launchd.sh install         # always-on: tunnel + watcher as launchd agents
+```
+
+On Lightsail, bring the stack up **without** the in-box crawler so the Mac is the only crawler:
+```bash
+docker compose --env-file /etc/egp/egp.env \
+  -f docker-compose.yml -f docker-compose.pg-tunnel.yml \
+  up -d --scale discovery-executor=0
+```
+Full runbook: [`docs/REMOTE_LOCAL_CRAWLER.md`](docs/REMOTE_LOCAL_CRAWLER.md).
 
 ---
 

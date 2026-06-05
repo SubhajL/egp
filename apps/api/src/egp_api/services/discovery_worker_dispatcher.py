@@ -32,6 +32,7 @@ from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
     NonRetriableDiscoveryDispatchError,
 )
+from egp_api.services.run_trigger_mapping import map_job_trigger_to_run_trigger
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -385,6 +386,7 @@ class SubprocessDiscoveryDispatcher:
 
     def dispatch(self, request: DiscoveryDispatchRequest) -> None:
         run_id = str(uuid4())
+        run_trigger = map_job_trigger_to_run_trigger(request.trigger_type)
         browser_profile_dir, cleanup_after = self._resolve_profile_dir_for_dispatch(run_id)
         browser_settings = _resolve_browser_settings_payload(
             profile_repository=self._profile_repository,
@@ -411,7 +413,7 @@ class SubprocessDiscoveryDispatcher:
             self._run_repository.create_run(
                 tenant_id=request.tenant_id,
                 profile_id=request.profile_id,
-                trigger_type="manual",
+                trigger_type=run_trigger,
                 run_id=run_id,
             )
             log_path = (
@@ -439,8 +441,8 @@ class SubprocessDiscoveryDispatcher:
                     "profile_id": request.profile_id,
                     "keyword": request.keyword,
                     "profile": request.profile_type,
-                    "trigger_type": "manual",
-                    "live": True,
+                    "trigger_type": run_trigger,
+                    "live": request.live,
                     "live_include_documents": True,
                     "browser_settings": browser_settings,
                 },
