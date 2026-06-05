@@ -67,6 +67,14 @@ def _make_discovery_dispatcher(
             spawner = getattr(app.state, "discover_spawner", None)
             if spawner is None:
                 return
+            # Prefer the request-aware dispatch so trigger_type/live survive in
+            # embedded mode (a `schedule` job must create a `schedule` run, or
+            # the scheduler's due-tenant accounting refires every tick). Fall
+            # back to the legacy 4-arg callable only for plain-callable doubles.
+            request_dispatch = getattr(spawner, "dispatch", None)
+            if callable(request_dispatch):
+                request_dispatch(request)
+                return
             spawner(
                 tenant_id=request.tenant_id,
                 profile_id=request.profile_id,

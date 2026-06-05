@@ -85,6 +85,13 @@ SOURCE_ONLY_VARS: frozenset[str] = frozenset(
         # the operator passes it once on the command line then never again,
         # so it does NOT belong in the persistent production env file.
         "EGP_FIRST_ADMIN_PASSWORD",
+        # Track C (remote-local crawler) vars live ONLY in the Mac-local,
+        # gitignored .env.remotecrawl — never in the Lightsail production env
+        # file. See scripts/remote_crawl_guard.py and docs/REMOTE_LOCAL_CRAWLER.md.
+        "EGP_REMOTECRAWL_PRODUCTION_ACK",
+        "EGP_REMOTECRAWL_SSH_HOST",
+        "EGP_REMOTECRAWL_TUNNEL_LOCAL_PORT",
+        "EGP_REMOTECRAWL_TUNNEL_REMOTE_PORT",
     }
 )
 

@@ -43,6 +43,8 @@ class DiscoveryDispatchRequest:
     profile_id: str
     profile_type: str
     keyword: str
+    trigger_type: str = "manual"
+    live: bool = True
 
 
 class DiscoveryDispatcher(Protocol):
@@ -108,6 +110,8 @@ class DiscoveryDispatchProcessor:
                     profile_id=job.profile_id,
                     profile_type=job.profile_type,
                     keyword=job.keyword,
+                    trigger_type=job.trigger_type,
+                    live=job.live,
                 )
             )
         except NonRetriableDiscoveryDispatchError as exc:

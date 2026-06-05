@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Track C — always-on remote crawler watcher. THIS MAC CRAWLS PRODUCTION.
+  __REPO_ROOT__ / __HOME__ are substituted by scripts/install_launchd.sh.
+  run_remote_crawl.sh runs the fail-closed guard before it claims any job, so a
+  misconfigured environment can never auto-loop against the wrong database.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.egp.remote-crawl</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>-lc</string>
+      <string>exec "__REPO_ROOT__/scripts/run_remote_crawl.sh" watch</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/egp/crawl.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/egp/crawl.log</string>
+  </dict>
+</plist>

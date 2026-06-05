@@ -1,0 +1,19 @@
+# Track C — enqueue-only scheduled discovery producer (runs on Lightsail).
+#
+# Once the in-box discovery-executor is disabled (off-box crawl topology),
+# nothing fires interval-based crawls. This oneshot enqueues due `schedule`
+# jobs into the discovery_jobs outbox for the off-box Mac crawler to claim.
+# It needs only a DB connection — never a browser. Driven by the paired
+# .timer unit. See docs/REMOTE_LOCAL_CRAWLER.md.
+[Unit]
+Description=e-GP scheduled discovery enqueue (no browser)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# Reuse the discovery-executor image (it has both egp_api and egp_worker).
+ExecStart=/usr/bin/docker compose --env-file /etc/egp/egp.env \
+  run --rm --no-deps discovery-executor \
+  python -m egp_api.executors.scheduled_discovery_enqueue
+WorkingDirectory=/srv/egp

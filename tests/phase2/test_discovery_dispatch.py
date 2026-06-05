@@ -144,6 +144,8 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
             profile_id=PROFILE_ID,
             profile_type="custom",
             keyword="analytics",
+            trigger_type="profile_created",
+            live=True,
         )
     ]
     assert stored.job_status == "dispatched"

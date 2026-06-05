@@ -1,0 +1,17 @@
+# Topology A overlay — publish PRODUCTION Postgres to the VM loopback so the
+# operator's Mac can reach it through an SSH tunnel (Track C remote crawler).
+#
+# Bind to 127.0.0.1 ONLY — Postgres must NEVER be reachable on a public
+# interface. The Mac forwards this loopback port over SSH:
+#   ssh -N -L 15432:127.0.0.1:15432 ubuntu@<vm>
+#
+# Bring the stack up WITH this overlay and WITHOUT the in-box crawler:
+#   docker compose --env-file /etc/egp/egp.env \
+#     -f docker-compose.yml -f docker-compose.pg-tunnel.yml \
+#     up -d --scale discovery-executor=0
+#
+# See docs/REMOTE_LOCAL_CRAWLER.md.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:15432:5432"

@@ -332,6 +332,11 @@ It includes:
 - `web`
 - `caddy`
 
+> **Off-box crawling (temporary "www" setup):** the in-Compose `discovery-executor` crawls
+> headless and is blocked by Cloudflare. To run the crawler on a real Mac instead, bring the
+> stack up with `--scale discovery-executor=0` (plus the `docker-compose.pg-tunnel.yml` overlay)
+> and follow [`docs/REMOTE_LOCAL_CRAWLER.md`](REMOTE_LOCAL_CRAWLER.md) (Track C).
+
 The local development file is now separate and should not be used for production:
 
 - [`docker-compose-localdev.yml`](../docker-compose-localdev.yml)
