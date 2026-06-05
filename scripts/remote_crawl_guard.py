@@ -8,7 +8,8 @@ acknowledged production and every safety rail is in place:
 
   * production acknowledgement token present,
   * worker events posted to the API over **https**,
-  * artifacts written to **Supabase** (not local files the API can't serve),
+  * artifacts written to an API-served object store — Cloudflare R2 (s3
+    backend) or Supabase — never local files the API can't serve,
   * a real warmed **persistent single-flight** Chrome profile, outside synced
     folders,
   * the database target is a legitimate prod connection — an SSH-tunnel
@@ -95,6 +96,72 @@ def _get(config: Mapping[str, str], key: str) -> str:
     return str(config.get(key, "") or "").strip()
 
 
+def _is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_artifact_store(config: Mapping[str, str]) -> list[str]:
+    """Require an artifact store the Lightsail API can serve to the UI.
+
+    Accepts ``s3`` (Cloudflare R2 — the chosen default) or ``supabase``; rejects
+    ``local`` (files on this Mac are unreachable by the API). For ``s3`` the R2
+    endpoint + bucket + credentials + ``AWS_DEFAULT_REGION`` must be present so
+    boto3 talks to R2 and signs download URLs with SigV4 (``AWS_REGION=auto``
+    alone yields SigV2, which R2 rejects).
+    """
+    problems: list[str] = []
+    backend = _get(config, "EGP_ARTIFACT_STORE").lower()
+    if backend == "s3":
+        if not (_get(config, "S3_BUCKET") or _get(config, "AWS_S3_BUCKET")):
+            problems.append("s3 artifact store requires S3_BUCKET (or AWS_S3_BUCKET)")
+        endpoint = _get(config, "AWS_ENDPOINT_URL_S3") or _get(
+            config, "AWS_ENDPOINT_URL"
+        )
+        if not endpoint:
+            problems.append(
+                "s3 artifact store requires AWS_ENDPOINT_URL_S3 (the Cloudflare R2 "
+                "endpoint, e.g. https://<account>.r2.cloudflarestorage.com) — "
+                "otherwise boto3 talks to AWS, not R2"
+            )
+        elif ".r2.cloudflarestorage.com" not in endpoint.lower():
+            problems.append(
+                "AWS_ENDPOINT_URL_S3 must be a Cloudflare R2 endpoint "
+                "(*.r2.cloudflarestorage.com) for Track C — refusing a non-R2 endpoint "
+                f"({endpoint!r})"
+            )
+        if _is_truthy(_get(config, "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS")):
+            problems.append(
+                "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS must not be truthy — it makes "
+                "boto3 ignore the R2 endpoint and silently talk to AWS"
+            )
+        if not _get(config, "AWS_ACCESS_KEY_ID"):
+            problems.append("s3 artifact store requires AWS_ACCESS_KEY_ID")
+        if not _get(config, "AWS_SECRET_ACCESS_KEY"):
+            problems.append("s3 artifact store requires AWS_SECRET_ACCESS_KEY")
+        if not _get(config, "AWS_DEFAULT_REGION"):
+            problems.append(
+                "s3 artifact store requires AWS_DEFAULT_REGION (set 'auto' for R2) — "
+                "it forces SigV4 presigned URLs; AWS_REGION alone yields SigV2 that R2 rejects"
+            )
+    elif backend == "supabase":
+        for supabase_key in (
+            "SUPABASE_URL",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "SUPABASE_STORAGE_BUCKET",
+        ):
+            if not _get(config, supabase_key):
+                problems.append(
+                    f"{supabase_key} is required for Supabase artifact storage"
+                )
+    else:
+        problems.append(
+            "EGP_ARTIFACT_STORE must be 's3' (Cloudflare R2 / S3-compatible) or "
+            "'supabase' so artifacts land in a store the API serves — not local "
+            "files on this Mac"
+        )
+    return problems
+
+
 def validate_remote_crawl_env(config: Mapping[str, str]) -> list[str]:
     """Return a list of safety problems with the non-DB environment (empty=ok)."""
     problems: list[str] = []
@@ -112,18 +179,7 @@ def validate_remote_crawl_env(config: Mapping[str, str]) -> list[str]:
             "(worker events cross the public internet to the control-plane)"
         )
 
-    if _get(config, "EGP_ARTIFACT_STORE").lower() != "supabase":
-        problems.append(
-            "EGP_ARTIFACT_STORE must be 'supabase' so artifacts land in the "
-            "bucket the API serves (not local files on this Mac)"
-        )
-    for supabase_key in (
-        "SUPABASE_URL",
-        "SUPABASE_SERVICE_ROLE_KEY",
-        "SUPABASE_STORAGE_BUCKET",
-    ):
-        if not _get(config, supabase_key):
-            problems.append(f"{supabase_key} is required for Supabase artifact storage")
+    problems.extend(_validate_artifact_store(config))
 
     if not _get(config, "EGP_BROWSER_CHROME_PATH"):
         problems.append(

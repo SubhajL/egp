@@ -101,7 +101,10 @@ def test_systemd_enqueue_timer_is_periodic() -> None:
 
 def test_env_example_is_production_safe_template() -> None:
     text = (REPO_ROOT / ".env.remotecrawl.example").read_text(encoding="utf-8")
-    assert "EGP_ARTIFACT_STORE=supabase" in text
+    # Artifacts go to Cloudflare R2 via the s3 backend (not Supabase).
+    assert "EGP_ARTIFACT_STORE=s3" in text
+    assert "r2.cloudflarestorage.com" in text
+    assert "AWS_ENDPOINT_URL_S3" in text
     assert "CHANGE_ME" in text  # only placeholders, no real secrets
     # The template must NOT pre-acknowledge production: copying it alone must not
     # satisfy the guard. The exact ack value appears only as comment guidance.

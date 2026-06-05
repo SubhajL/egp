@@ -30,7 +30,7 @@ Vercel UI ──HTTPS──▶ Lightsail API (Caddy/TLS)
    egp_worker.main ──CDP──▶ REAL Mac Chrome (warmed persistent profile) ──▶ gprocurement.go.th
         ├─ runs / profiles / tasks ─────▶ PRODUCTION Postgres   (via SSH tunnel, required)
         ├─ project events ──HTTPS /internal/worker/projects/* (X-EGP-Worker-Token) ──▶ Lightsail API
-        └─ TOR documents ──HTTPS──▶ Supabase Storage (same bucket the API serves)
+        └─ TOR documents ──HTTPS──▶ Cloudflare R2 (s3 backend; same bucket the API serves)
 ```
 
 Why the Mac still needs the database: the worker is DB-coupled — `run_discover_workflow`
@@ -46,8 +46,8 @@ This setup uses **Topology A — SSH tunnel to the Lightsail Postgres**. The con
 Postgres is published to the VM loopback (`127.0.0.1:15432`) and forwarded to the Mac
 over SSH. Postgres is **never** exposed on a public interface.
 
-(Topology B — a managed Supabase Postgres reachable directly over TLS with
-`sslmode=require` — is also supported by the guard; set `DATABASE_URL` to the Supabase
+(Topology B — a managed Postgres reachable directly over TLS with `sslmode=require`
+(e.g. Neon, RDS) — is also supported by the guard; set `DATABASE_URL` to that
 connection string and skip the tunnel.)
 
 ---
@@ -59,8 +59,12 @@ connection string and skip the tunnel.)
 1. In `/etc/egp/egp.env` confirm:
    ```
    EGP_BACKGROUND_RUNTIME_MODE=external
-   EGP_ARTIFACT_STORE=supabase
-   SUPABASE_URL=…  SUPABASE_SERVICE_ROLE_KEY=…  SUPABASE_STORAGE_BUCKET=egp-documents
+   # Artifacts on Cloudflare R2 (s3 backend) — MUST match what the Mac uploads,
+   # so the API can serve documents via signed URLs.
+   EGP_ARTIFACT_STORE=s3
+   S3_BUCKET=egp-documents
+   AWS_ENDPOINT_URL_S3=https://<account>.r2.cloudflarestorage.com
+   AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…  AWS_REGION=auto
    EGP_INTERNAL_WORKER_TOKEN=…            # the Mac sends this as X-EGP-Worker-Token
    ```
 2. Bring the stack up **without** the in-box crawler, **with** the tunnel overlay:
@@ -95,7 +99,8 @@ connection string and skip the tunnel.)
    ```
    Fill in: `EGP_REMOTECRAWL_SSH_HOST`, the production `DATABASE_URL` (tunnel form
    `…@127.0.0.1:15432/egp`), `EGP_INTERNAL_API_BASE_URL=https://api.<domain>`,
-   `EGP_INTERNAL_WORKER_TOKEN`, the Supabase vars, `EGP_BROWSER_CHROME_PATH`, and a
+   `EGP_INTERNAL_WORKER_TOKEN`, the R2 vars (`S3_BUCKET`, `AWS_ENDPOINT_URL_S3`,
+   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), `EGP_BROWSER_CHROME_PATH`, and a
    persistent profile dir **outside** OneDrive/iCloud/Dropbox.
 3. Validate — the guard fails closed on any missing/unsafe value:
    ```bash
@@ -141,10 +146,10 @@ Mac watcher claims and crawls them. Scheduled crawls are queued by the Lightsail
 |---|---|
 | Production ack | `EGP_REMOTECRAWL_PRODUCTION_ACK=I_UNDERSTAND_THIS_WRITES_PRODUCTION` |
 | Event transport | `EGP_INTERNAL_API_BASE_URL` is `https://` |
-| Artifacts | `EGP_ARTIFACT_STORE=supabase` + `SUPABASE_URL/SERVICE_ROLE_KEY/STORAGE_BUCKET` |
+| Artifacts | `EGP_ARTIFACT_STORE=s3` + `S3_BUCKET` + `AWS_ENDPOINT_URL_S3` (R2) + `AWS_ACCESS_KEY_ID/SECRET` (or `supabase` + its vars) |
 | Browser | real `EGP_BROWSER_CHROME_PATH`, `EGP_BROWSER_PROFILE_MODE=persistent`, dir outside synced folders |
 | Single-flight | `EGP_DISCOVERY_WORKER_COUNT=1` |
-| Database | SSH-tunnel loopback port **or** TLS Supabase URL — **never** `localhost:5434` |
+| Database | SSH-tunnel loopback port **or** TLS managed-Postgres URL (`sslmode=require`) — **never** `localhost:5434` |
 
 The guard runs before every `crawl`/`watch`, including under launchd, so a misconfigured
 environment can never auto-loop against the wrong database.
@@ -157,8 +162,8 @@ environment can never auto-loop against the wrong database.
   persistent-profile flock prevents a second local worker.
 - **Mac offline** → jobs sit `pending` (durable queue, no loss). A run left `running` after
   a mid-job crash can be reconciled manually in `crawl_runs`.
-- **Wrong artifact store** → guard requires `supabase`, so documents always land where the
-  API can serve them.
+- **Wrong artifact store** → guard requires an API-served store (`s3`/R2 or `supabase`) and
+  rejects `local`, so documents always land where the API can serve them.
 - **Rollback** → `scripts/install_launchd.sh uninstall` (or stop `watch`), close the tunnel,
   and leave `discovery-executor=0` (crawling paused, control-plane intact). Reverting to
   in-box crawling means accepting the known Cloudflare `401`.

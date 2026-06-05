@@ -33,15 +33,18 @@ ACK = "I_UNDERSTAND_THIS_WRITES_PRODUCTION"
 
 
 def _valid_config(tmp_path: Path) -> dict[str, str]:
+    # Default: Cloudflare R2 via the s3 backend (the chosen artifact store).
     return {
         "EGP_REMOTECRAWL_PRODUCTION_ACK": ACK,
         "DATABASE_URL": "postgresql://egp:pw@127.0.0.1:15432/egp",
         "EGP_INTERNAL_API_BASE_URL": "https://api.example.com",
         "EGP_INTERNAL_WORKER_TOKEN": "tok",
-        "EGP_ARTIFACT_STORE": "supabase",
-        "SUPABASE_URL": "https://ref.supabase.co",
-        "SUPABASE_SERVICE_ROLE_KEY": "service-role-key",
-        "SUPABASE_STORAGE_BUCKET": "egp-documents",
+        "EGP_ARTIFACT_STORE": "s3",
+        "S3_BUCKET": "egp-documents",
+        "AWS_ENDPOINT_URL_S3": "https://acct123.r2.cloudflarestorage.com",
+        "AWS_ACCESS_KEY_ID": "r2-access-key",
+        "AWS_SECRET_ACCESS_KEY": "r2-secret-key",
+        "AWS_DEFAULT_REGION": "auto",
         "EGP_BROWSER_CHROME_PATH": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "EGP_BROWSER_PROFILE_MODE": "persistent",
         "EGP_BROWSER_PERSISTENT_PROFILE_DIR": str(tmp_path / "prod-profile"),
@@ -50,6 +53,23 @@ def _valid_config(tmp_path: Path) -> dict[str, str]:
         "EGP_REMOTECRAWL_TUNNEL_LOCAL_PORT": "15432",
         "EGP_REMOTECRAWL_TUNNEL_REMOTE_PORT": "15432",
     }
+
+
+def _supabase_config(tmp_path: Path) -> dict[str, str]:
+    config = _valid_config(tmp_path)
+    for key in (
+        "S3_BUCKET",
+        "AWS_ENDPOINT_URL_S3",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_DEFAULT_REGION",
+    ):
+        config.pop(key, None)
+    config["EGP_ARTIFACT_STORE"] = "supabase"
+    config["SUPABASE_URL"] = "https://ref.supabase.co"
+    config["SUPABASE_SERVICE_ROLE_KEY"] = "service-role-key"
+    config["SUPABASE_STORAGE_BUCKET"] = "egp-documents"
+    return config
 
 
 # --- parse_env_file -------------------------------------------------------
@@ -93,14 +113,62 @@ def test_non_https_internal_api_is_refused(tmp_path: Path) -> None:
     assert any("https" in p.lower() for p in validate_remote_crawl_env(config))
 
 
-def test_non_supabase_artifact_store_is_refused(tmp_path: Path) -> None:
+def test_local_artifact_store_is_refused(tmp_path: Path) -> None:
+    # Local files on the Mac can't be served by the Lightsail API — refuse.
     config = _valid_config(tmp_path)
     config["EGP_ARTIFACT_STORE"] = "local"
-    assert any("supabase" in p.lower() for p in validate_remote_crawl_env(config))
+    problems = validate_remote_crawl_env(config)
+    assert any("s3" in p.lower() and "supabase" in p.lower() for p in problems)
 
 
-def test_missing_supabase_credentials_is_refused(tmp_path: Path) -> None:
+def test_valid_s3_r2_config_has_no_env_problems(tmp_path: Path) -> None:
+    assert validate_remote_crawl_env(_valid_config(tmp_path)) == []
+
+
+def test_s3_missing_bucket_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
+    config.pop("S3_BUCKET")
+    assert any("bucket" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_s3_missing_endpoint_is_refused(tmp_path: Path) -> None:
+    config = _valid_config(tmp_path)
+    config.pop("AWS_ENDPOINT_URL_S3")
+    assert any("endpoint" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_s3_missing_credentials_is_refused(tmp_path: Path) -> None:
+    config = _valid_config(tmp_path)
+    config.pop("AWS_SECRET_ACCESS_KEY")
+    assert any("aws_secret_access_key" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_s3_missing_region_is_refused(tmp_path: Path) -> None:
+    # Without AWS_DEFAULT_REGION, boto3 presigns SigV2 URLs that R2 rejects.
+    config = _valid_config(tmp_path)
+    config.pop("AWS_DEFAULT_REGION")
+    assert any("aws_default_region" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_s3_non_r2_endpoint_is_refused(tmp_path: Path) -> None:
+    config = _valid_config(tmp_path)
+    config["AWS_ENDPOINT_URL_S3"] = "https://s3.us-east-1.amazonaws.com"
+    assert any("r2" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_s3_ignore_configured_endpoint_is_refused(tmp_path: Path) -> None:
+    # This botocore flag makes boto3 ignore the R2 endpoint and talk to AWS.
+    config = _valid_config(tmp_path)
+    config["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"] = "true"
+    assert any("ignore_configured_endpoint" in p.lower() for p in validate_remote_crawl_env(config))
+
+
+def test_supabase_backend_still_accepted_with_creds(tmp_path: Path) -> None:
+    assert validate_remote_crawl_env(_supabase_config(tmp_path)) == []
+
+
+def test_supabase_backend_missing_creds_is_refused(tmp_path: Path) -> None:
+    config = _supabase_config(tmp_path)
     config.pop("SUPABASE_SERVICE_ROLE_KEY")
     assert any("supabase" in p.lower() for p in validate_remote_crawl_env(config))
 
@@ -137,7 +205,7 @@ def test_missing_worker_token_is_refused(tmp_path: Path) -> None:
 
 def test_changeme_placeholder_value_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
-    config["SUPABASE_SERVICE_ROLE_KEY"] = "CHANGE_ME_SUPABASE_SERVICE_ROLE_KEY"
+    config["AWS_SECRET_ACCESS_KEY"] = "CHANGE_ME_R2_SECRET_ACCESS_KEY"
     assert any("change_me" in p.lower() for p in validate_remote_crawl_env(config))
 
 
@@ -263,7 +331,7 @@ def test_main_print_env_emits_nul_delimited_after_validation(
     out = capsys.readouterr().out
     assert "\0" in out, "print-env must NUL-delimit so the wrapper exports without shell eval"
     pairs = dict(item.split("=", 1) for item in out.split("\0") if item)
-    assert pairs["EGP_ARTIFACT_STORE"] == "supabase"
+    assert pairs["EGP_ARTIFACT_STORE"] == "s3"
     # A Chrome path WITH SPACES round-trips intact (the bash-source bug class).
     assert " " in pairs["EGP_BROWSER_CHROME_PATH"]
 
