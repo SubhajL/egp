@@ -44,6 +44,18 @@ services:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: ${EGP_ARTIFACT_STORE:-local}
+      # Object-store creds for the artifacts the API serves to the UI. Must be
+      # declared here or the container can't reach the store (compose env is
+      # per-service, not passed wholesale). Default backend is Cloudflare R2
+      # (s3); Supabase vars are the optional fallback. See docs/REMOTE_LOCAL_CRAWLER.md.
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_ENDPOINT_URL_S3: ${AWS_ENDPOINT_URL_S3:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-}
       EGP_PAYMENT_PROVIDER: ${EGP_PAYMENT_PROVIDER:-opn}
       EGP_PAYMENT_CALLBACK_SECRET: ${EGP_PAYMENT_CALLBACK_SECRET:?set EGP_PAYMENT_CALLBACK_SECRET in your environment}
       EGP_AUTH_REQUIRED: ${EGP_AUTH_REQUIRED:-true}
@@ -125,6 +137,17 @@ services:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
       EGP_ARTIFACT_STORE: ${EGP_ARTIFACT_STORE:-local}
+      # Object-store creds (R2 default / Supabase optional) — the worker uploads
+      # downloaded TOR documents here. Declared explicitly (compose env is
+      # per-service). See docs/REMOTE_LOCAL_CRAWLER.md.
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_ENDPOINT_URL_S3: ${AWS_ENDPOINT_URL_S3:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-}
       EGP_DISCOVERY_WORKER_COUNT: ${EGP_DISCOVERY_WORKER_COUNT:-1}
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
       EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
