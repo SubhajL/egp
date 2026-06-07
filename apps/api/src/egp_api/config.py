@@ -98,6 +98,25 @@ def _get_positive_float_env(
     return value
 
 
+def _get_nonnegative_float_env(
+    *,
+    name: str,
+    default: float,
+    override: float | str | None = None,
+) -> float:
+    if override is None:
+        raw: float | str = os.getenv(name, str(default))
+    else:
+        raw = override
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be a non-negative number") from exc
+    if value < 0:
+        raise RuntimeError(f"{name} must be a non-negative number")
+    return value
+
+
 def get_browser_cdp_port_base(override: int | str | None = None) -> int:
     """Return the first Chrome CDP port available for discovery workers."""
 
@@ -146,6 +165,24 @@ def get_browser_project_detail_timeout_s(override: float | str | None = None) ->
     """Per-project detail/document extraction budget (seconds)."""
     return _get_positive_float_env(
         name="EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S", default=240.0, override=override
+    )
+
+
+def get_browser_warmup_stale_after_seconds(override: float | str | None = None) -> float:
+    """Return the freshness window for on-demand persistent-profile warmups."""
+    return _get_nonnegative_float_env(
+        name="EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS",
+        default=1_800.0,
+        override=override,
+    )
+
+
+def get_browser_predispatch_warm_seconds(override: float | str | None = None) -> float:
+    """Return the post-preflight hold time for on-demand dispatch warmups."""
+    return _get_nonnegative_float_env(
+        name="EGP_BROWSER_PREDISPATCH_WARM_SECONDS",
+        default=0.0,
+        override=override,
     )
 
 

@@ -16,6 +16,13 @@ class NonRetriableDiscoveryDispatchError(RuntimeError):
 
 
 class DiscoveryJobStore(Protocol):
+    def has_claimable_discovery_jobs(
+        self,
+        *,
+        stale_after_seconds: float = 60.0,
+        exclude_job_ids: Collection[str] | None = None,
+    ) -> bool: ...
+
     def claim_pending_discovery_jobs(
         self,
         *,
@@ -51,10 +58,15 @@ class DiscoveryDispatcher(Protocol):
     def dispatch(self, request: DiscoveryDispatchRequest) -> None: ...
 
 
+class DiscoveryPreDispatchPreparer(Protocol):
+    def prepare_for_dispatch(self) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveryDispatchProcessor:
     repository: DiscoveryJobStore
     dispatcher: DiscoveryDispatcher
+    pre_dispatch_preparer: DiscoveryPreDispatchPreparer | None = None
     max_attempts: int = 3
     retry_delay_seconds: float = 30.0
     claim_limit: int = 10
@@ -68,6 +80,14 @@ class DiscoveryDispatchProcessor:
         processed_job_ids: set[str] = set()
         while processed < requested_limit:
             batch_limit = min(worker_count, requested_limit - processed)
+            if not self.repository.has_claimable_discovery_jobs(
+                stale_after_seconds=self.claim_stale_after_seconds,
+                exclude_job_ids=processed_job_ids,
+            ):
+                break
+            if self.pre_dispatch_preparer is not None:
+                if not self.pre_dispatch_preparer.prepare_for_dispatch():
+                    break
             jobs = self.repository.claim_pending_discovery_jobs(
                 limit=batch_limit,
                 stale_after_seconds=self.claim_stale_after_seconds,

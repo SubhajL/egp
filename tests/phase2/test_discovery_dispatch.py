@@ -23,6 +23,16 @@ class RecordingDiscoveryDispatcher:
         self.requests.append(request)
 
 
+class RecordingPreDispatchPreparer:
+    def __init__(self, events: list[str], *, should_continue: bool = True) -> None:
+        self.events = events
+        self.should_continue = should_continue
+
+    def prepare_for_dispatch(self) -> bool:
+        self.events.append("prepare")
+        return self.should_continue
+
+
 class RaisingDiscoveryDispatcher:
     def __init__(self, exception: Exception) -> None:
         self.exception = exception
@@ -38,6 +48,18 @@ class RecordingClaimStore:
         self._jobs_by_id = {job.id: job for job in jobs}
         self.claim_limits: list[int] = []
         self.recorded_job_ids: list[str] = []
+        self.events: list[str] = []
+
+    def has_claimable_discovery_jobs(
+        self,
+        *,
+        stale_after_seconds: float = 60.0,
+        exclude_job_ids=None,
+    ) -> bool:
+        del stale_after_seconds
+        excluded = set(exclude_job_ids or ())
+        self.events.append("probe")
+        return any(job.id not in excluded for job in self._jobs)
 
     def claim_pending_discovery_jobs(
         self,
@@ -48,6 +70,7 @@ class RecordingClaimStore:
     ) -> list[DiscoveryJobRecord]:
         del stale_after_seconds
         excluded = set(exclude_job_ids or ())
+        self.events.append("claim")
         self.claim_limits.append(limit)
         claimable = [job for job in self._jobs if job.id not in excluded]
         claimed = claimable[:limit]
@@ -269,6 +292,59 @@ def test_discovery_dispatch_processor_claims_only_worker_capacity_per_batch() ->
         "four",
         "five",
     }
+
+
+def test_discovery_dispatch_processor_prepares_before_claiming_jobs() -> None:
+    store = RecordingClaimStore(
+        [_job_record("11111111-1111-1111-1111-111111111111", keyword="one")]
+    )
+    dispatcher = RecordingDiscoveryDispatcher()
+    preparer = RecordingPreDispatchPreparer(store.events)
+    processor = DiscoveryDispatchProcessor(
+        repository=store,
+        dispatcher=dispatcher,
+        pre_dispatch_preparer=preparer,
+    )
+
+    assert processor.process_pending() == 1
+
+    assert store.events[:3] == ["probe", "prepare", "claim"]
+    assert [request.keyword for request in dispatcher.requests] == ["one"]
+
+
+def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimable() -> None:
+    store = RecordingClaimStore([])
+    dispatcher = RecordingDiscoveryDispatcher()
+    preparer = RecordingPreDispatchPreparer(store.events)
+    processor = DiscoveryDispatchProcessor(
+        repository=store,
+        dispatcher=dispatcher,
+        pre_dispatch_preparer=preparer,
+    )
+
+    assert processor.process_pending() == 0
+
+    assert store.events == ["probe"]
+    assert dispatcher.requests == []
+
+
+def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false() -> None:
+    store = RecordingClaimStore(
+        [_job_record("11111111-1111-1111-1111-111111111111", keyword="one")]
+    )
+    dispatcher = RecordingDiscoveryDispatcher()
+    preparer = RecordingPreDispatchPreparer(store.events, should_continue=False)
+    processor = DiscoveryDispatchProcessor(
+        repository=store,
+        dispatcher=dispatcher,
+        pre_dispatch_preparer=preparer,
+    )
+
+    assert processor.process_pending() == 0
+
+    assert store.events == ["probe", "prepare"]
+    assert store.claim_limits == []
+    assert dispatcher.requests == []
 
 
 def test_discovery_dispatch_processor_retries_and_then_fails(tmp_path) -> None:

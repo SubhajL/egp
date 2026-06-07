@@ -269,5 +269,6 @@ def configure_services(
     app.state.discovery_dispatch_processor = DiscoveryDispatchProcessor(
         repository=bundle.discovery_job_repository,
         dispatcher=discovery_dispatcher,
+        pre_dispatch_preparer=discovery_dispatcher,
         worker_count=app.state.discovery_dispatch_worker_count,
     )

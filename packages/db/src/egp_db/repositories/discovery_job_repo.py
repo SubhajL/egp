@@ -294,6 +294,43 @@ class SqlDiscoveryJobRepository:
                 ).scalar_one()
             )
 
+    def has_claimable_discovery_jobs(
+        self,
+        *,
+        stale_after_seconds: float = 60.0,
+        exclude_job_ids: Collection[str] | None = None,
+    ) -> bool:
+        now = _now()
+        stale_started_at = datetime.fromtimestamp(
+            now.timestamp() - max(1.0, float(stale_after_seconds)), UTC
+        )
+        excluded_job_ids = {
+            normalize_uuid_string(job_id) for job_id in (exclude_job_ids or ())
+        }
+        claimable_conditions = [
+            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
+            or_(
+                DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
+                DISCOVERY_JOBS_TABLE.c.processing_started_at <= stale_started_at,
+            ),
+        ]
+        if excluded_job_ids:
+            claimable_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
+            )
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(DISCOVERY_JOBS_TABLE.c.id)
+                    .where(and_(*claimable_conditions))
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+        return row is not None
+
     def claim_pending_discovery_jobs(
         self,
         *,

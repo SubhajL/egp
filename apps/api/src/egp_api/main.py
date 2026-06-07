@@ -63,6 +63,13 @@ def _make_discovery_dispatcher(
     app: FastAPI,
 ) -> DiscoveryDispatcher:
     class _AppStateDiscoveryDispatcher:
+        def prepare_for_dispatch(self) -> bool:
+            spawner = getattr(app.state, "discover_spawner", None)
+            prepare = getattr(spawner, "prepare_for_dispatch", None)
+            if callable(prepare):
+                return bool(prepare())
+            return True
+
         def dispatch(self, request: DiscoveryDispatchRequest) -> None:
             spawner = getattr(app.state, "discover_spawner", None)
             if spawner is None:
