@@ -58,6 +58,16 @@ function formatBytes(value: number): string {
   return `${value} B`;
 }
 
+function documentCaptureEmptyMessage(status: string | null | undefined): string {
+  if (status === "failed" || status === "timeout") {
+    return "ดึงเอกสารล่าสุดไม่สำเร็จ";
+  }
+  if (status === "enqueued" || status === "no_documents" || status === "skipped") {
+    return "ยังไม่พบเอกสาร — กำลังตรวจซ้ำ";
+  }
+  return "ยังไม่มีเอกสารสำหรับโครงการนี้";
+}
+
 function formatDuration(startedAt: string | null, finishedAt: string | null): string {
   if (!startedAt || !finishedAt) return "—";
   const durationMs = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
@@ -126,6 +136,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const aliases = detailData?.aliases ?? [];
   const statusEvents = detailData?.status_events ?? [];
   const documents = documentData?.documents ?? [];
+  const documentCaptureStatus = documentData?.capture_status ?? null;
   const crawlEvidence = evidenceData?.evidence ?? [];
   const isClosed = project ? CLOSED_STATES.includes(project.project_state) : false;
   const timeline =
@@ -410,7 +421,9 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                   {localizeApiError(documentsError, "ไม่สามารถโหลดรายการเอกสารได้")}
                 </p>
               ) : documents.length === 0 ? (
-                <p className="text-sm text-[var(--text-muted)]">ยังไม่มีเอกสารสำหรับโครงการนี้</p>
+                <p className="text-sm text-[var(--text-muted)]">
+                  {documentCaptureEmptyMessage(documentCaptureStatus?.status)}
+                </p>
               ) : (
                 <div className="space-y-3">
                   {documents.map((document) => (

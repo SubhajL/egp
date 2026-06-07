@@ -130,6 +130,17 @@
           "legendFormat": "dispatch {{outcome}}"
         }
       ]
+    },
+    {
+      "id": 11,
+      "title": "Document capture attempts",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (status, outcome) (rate(egp_document_capture_attempts_total[15m]))",
+          "legendFormat": "{{status}} {{outcome}}"
+        }
+      ]
     }
   ]
 }

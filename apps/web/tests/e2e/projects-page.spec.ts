@@ -516,3 +516,64 @@ test("project detail links expired document-download failures to billing", async
     "/billing",
   );
 });
+
+async function mockProjectDetailWithEmptyDocuments(page: Page, captureStatus: unknown) {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, RULES_RESPONSE);
+        return;
+      case "GET /v1/projects/project-1":
+        await fulfillJson(route, 200, {
+          project: PROJECTS_RESPONSE.projects[0],
+          aliases: [],
+          status_events: [],
+        });
+        return;
+      case "GET /v1/documents/projects/project-1":
+        await fulfillJson(route, 200, {
+          documents: [],
+          capture_status: captureStatus,
+        });
+        return;
+      case "GET /v1/projects/project-1/crawl-evidence":
+        await fulfillJson(route, 200, { evidence: [] });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+}
+
+test("project detail shows retrying document capture empty state", async ({ page }) => {
+  await mockProjectDetailWithEmptyDocuments(page, {
+    status: "enqueued",
+    reason: "backfill_job_created",
+    doc_count: 0,
+    attempted_at: "2026-06-07T02:00:00Z",
+  });
+
+  await page.goto("/projects/project-1");
+
+  await expect(page.getByText("ยังไม่พบเอกสาร — กำลังตรวจซ้ำ")).toBeVisible();
+});
+
+test("project detail shows failed document capture empty state", async ({ page }) => {
+  await mockProjectDetailWithEmptyDocuments(page, {
+    status: "failed",
+    reason: "download_table_timeout",
+    doc_count: 0,
+    attempted_at: "2026-06-07T02:00:00Z",
+  });
+
+  await page.goto("/projects/project-1");
+
+  await expect(page.getByText("ดึงเอกสารล่าสุดไม่สำเร็จ")).toBeVisible();
+});

@@ -190,6 +190,12 @@ describe("project, document, and rules wrappers", () => {
       status_events: [],
     };
     const documents: DocumentListResponse = {
+      capture_status: {
+        status: "enqueued",
+        reason: "backfill_job_created",
+        doc_count: 0,
+        attempted_at: "2026-05-16T00:05:00Z",
+      },
       documents: [
         {
           id: "document-1",

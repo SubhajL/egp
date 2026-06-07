@@ -1209,7 +1209,9 @@
       "BillingPaymentProvider": {
         "enum": [
           "mock_promptpay",
-          "opn"
+          "promptpay_manual",
+          "opn",
+          "stripe"
         ],
         "title": "BillingPaymentProvider",
         "type": "string"
@@ -3045,6 +3047,41 @@
         "title": "DiscoverProjectIngestResponse",
         "type": "object"
       },
+      "DocumentCaptureStatusResponse": {
+        "properties": {
+          "attempted_at": {
+            "title": "Attempted At",
+            "type": "string"
+          },
+          "doc_count": {
+            "title": "Doc Count",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason",
+          "doc_count",
+          "attempted_at"
+        ],
+        "title": "DocumentCaptureStatusResponse",
+        "type": "object"
+      },
       "DocumentDiffDetailResponse": {
         "properties": {
           "diff": {
@@ -3662,6 +3699,39 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LineWebhookResponse": {
+        "properties": {
+          "image_events": {
+            "title": "Image Events",
+            "type": "integer"
+          },
+          "slips_created": {
+            "title": "Slips Created",
+            "type": "integer"
+          },
+          "slips_matched": {
+            "title": "Slips Matched",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "text_events": {
+            "title": "Text Events",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "text_events",
+          "image_events",
+          "slips_created",
+          "slips_matched"
+        ],
+        "title": "LineWebhookResponse",
+        "type": "object"
+      },
       "ListDocumentDiffsResponse": {
         "properties": {
           "diffs": {
@@ -3711,6 +3781,16 @@
       },
       "ListDocumentsResponse": {
         "properties": {
+          "capture_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentCaptureStatusResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "documents": {
             "items": {
               "$ref": "#/components/schemas/DocumentResponse"
@@ -3962,6 +4042,31 @@
         "title": "OneDriveOAuthStartResponse",
         "type": "object"
       },
+      "PaymentConfigResponse": {
+        "properties": {
+          "line_add_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line Add Url"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "line_add_url"
+        ],
+        "title": "PaymentConfigResponse",
+        "type": "object"
+      },
       "PaymentRequestCallbackRequest": {
         "properties": {
           "amount": {
@@ -4018,6 +4123,156 @@
           "occurred_at"
         ],
         "title": "PaymentRequestCallbackRequest",
+        "type": "object"
+      },
+      "PaymentSlipListResponse": {
+        "properties": {
+          "slips": {
+            "items": {
+              "$ref": "#/components/schemas/PaymentSlipResponse"
+            },
+            "title": "Slips",
+            "type": "array"
+          }
+        },
+        "required": [
+          "slips"
+        ],
+        "title": "PaymentSlipListResponse",
+        "type": "object"
+      },
+      "PaymentSlipResponse": {
+        "properties": {
+          "billing_record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Billing Record Id"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "image_object_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Object Key"
+          },
+          "line_user_id": {
+            "title": "Line User Id",
+            "type": "string"
+          },
+          "payment_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Request Id"
+          },
+          "received_at": {
+            "title": "Received At",
+            "type": "string"
+          },
+          "reference_code_match": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Code Match"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "verification_notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Notes"
+          },
+          "verification_status": {
+            "title": "Verification Status",
+            "type": "string"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          },
+          "verified_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified By User Id"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "billing_record_id",
+          "payment_request_id",
+          "line_user_id",
+          "reference_code_match",
+          "image_object_key",
+          "verification_status",
+          "verified_by_user_id",
+          "verified_at",
+          "verification_notes",
+          "received_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "PaymentSlipResponse",
         "type": "object"
       },
       "ProcurementType": {
@@ -4960,6 +5215,34 @@
           "folder_id"
         ],
         "title": "SelectOneDriveFolderRequest",
+        "type": "object"
+      },
+      "SlipActionRequest": {
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "SlipActionRequest",
         "type": "object"
       },
       "StartFreeTrialRequest": {
@@ -7851,6 +8134,27 @@
         ]
       }
     },
+    "/v1/billing/payment-config": {
+      "get": {
+        "operationId": "get_payment_config_v1_billing_payment_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Payment Config",
+        "tags": [
+          "line"
+        ]
+      }
+    },
     "/v1/billing/payment-requests/{request_id}/callbacks": {
       "post": {
         "operationId": "handle_billing_payment_request_callback_v1_billing_payment_requests__request_id__callbacks_post",
@@ -7992,6 +8296,27 @@
           }
         },
         "summary": "Handle Opn Provider Webhook",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
+    "/v1/billing/providers/stripe/webhooks": {
+      "post": {
+        "operationId": "handle_stripe_provider_webhook_v1_billing_providers_stripe_webhooks_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingRecordDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Handle Stripe Provider Webhook",
         "tags": [
           "billing"
         ]
@@ -8281,6 +8606,211 @@
         "summary": "Transition Billing Record",
         "tags": [
           "billing"
+        ]
+      }
+    },
+    "/v1/billing/slips": {
+      "get": {
+        "operationId": "list_payment_slips_v1_billing_slips_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSlipListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Payment Slips",
+        "tags": [
+          "line"
+        ]
+      }
+    },
+    "/v1/billing/slips/{slip_id}/image": {
+      "get": {
+        "operationId": "get_payment_slip_image_v1_billing_slips__slip_id__image_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slip_id",
+            "required": true,
+            "schema": {
+              "title": "Slip Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Payment Slip Image",
+        "tags": [
+          "line"
+        ]
+      }
+    },
+    "/v1/billing/slips/{slip_id}/reject": {
+      "post": {
+        "operationId": "reject_payment_slip_v1_billing_slips__slip_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slip_id",
+            "required": true,
+            "schema": {
+              "title": "Slip Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlipActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSlipResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Payment Slip",
+        "tags": [
+          "line"
+        ]
+      }
+    },
+    "/v1/billing/slips/{slip_id}/verify": {
+      "post": {
+        "operationId": "verify_payment_slip_v1_billing_slips__slip_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slip_id",
+            "required": true,
+            "schema": {
+              "title": "Slip Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlipActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentSlipResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Payment Slip",
+        "tags": [
+          "line"
         ]
       }
     },
@@ -9146,6 +9676,27 @@
         "summary": "Export Excel",
         "tags": [
           "exports"
+        ]
+      }
+    },
+    "/v1/integrations/line/webhook": {
+      "post": {
+        "operationId": "handle_line_webhook_v1_integrations_line_webhook_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LineWebhookResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Handle Line Webhook",
+        "tags": [
+          "line"
         ]
       }
     },

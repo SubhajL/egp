@@ -179,6 +179,9 @@ def configure_services(
         admin_console_base_url=get_admin_console_base_url(None) or resolved_web_base_url,
     )
     app.state.entitlement_service = entitlement_service
+    app.state.document_capture_attempt_repository = (
+        bundle.document_capture_attempt_repository
+    )
     app.state.document_repository = bundle.document_repository
     app.state.notification_repository = bundle.notification_repository
     app.state.discovery_job_repository = bundle.discovery_job_repository
@@ -211,6 +214,7 @@ def configure_services(
         bundle.document_repository,
         entitlement_service=entitlement_service,
         project_repository=bundle.project_repository,
+        capture_attempt_repository=bundle.document_capture_attempt_repository,
         notification_dispatcher=gated_notification_dispatcher,
         audit_repository=bundle.audit_repository,
     )

@@ -57,6 +57,17 @@
           "annotations": {
             "summary": "e-GP is returning 429 responses"
           }
+        },
+        {
+          "alert": "EGPDocumentCaptureNonSuccessRate",
+          "expr": "sum(rate(egp_document_capture_attempts_total{outcome=\"non_success\"}[15m])) > 0",
+          "for": "15m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "Document capture attempts are not succeeding"
+          }
         }
       ]
     }

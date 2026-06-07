@@ -31,6 +31,7 @@ from egp_shared_types.enums import (
     DocumentType,
     ProjectState,
 )
+from egp_observability.metrics import record_document_capture_attempt
 
 from .document_schema import DOCUMENTS_TABLE
 from .profile_repo import CRAWL_PROFILES_TABLE
@@ -140,6 +141,8 @@ def _coerce_date(value: date | datetime | str | None) -> date | None:
 def _dt_to_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
     return value.isoformat()
 
 
@@ -258,6 +261,7 @@ class SqlDocumentCaptureAttemptRepository:
                 .mappings()
                 .one()
             )
+        record_document_capture_attempt(status=normalized_status.value)
         return _attempt_from_mapping(row)
 
     def find_project_by_number(

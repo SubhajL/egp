@@ -8,6 +8,10 @@ from dataclasses import dataclass
 import logging
 from typing import TYPE_CHECKING, Protocol
 
+from egp_db.repositories.document_capture_attempt_repo import (
+    DocumentCaptureAttemptRecord,
+    SqlDocumentCaptureAttemptRepository,
+)
 from egp_db.repositories.audit_repo import SqlAuditRepository
 from egp_db.repositories.document_repo import (
     DocumentContentResult,
@@ -52,6 +56,33 @@ class DocumentDownloadLink:
     sha256: str
 
 
+@dataclass(frozen=True)
+class DocumentCaptureStatusSnapshot:
+    status: str
+    reason: str | None
+    doc_count: int
+    attempted_at: str
+
+
+@dataclass(frozen=True)
+class DocumentListResult:
+    documents: list[object]
+    capture_status: DocumentCaptureStatusSnapshot | None
+
+
+def _capture_status_snapshot(
+    attempt: DocumentCaptureAttemptRecord | None,
+) -> DocumentCaptureStatusSnapshot | None:
+    if attempt is None:
+        return None
+    return DocumentCaptureStatusSnapshot(
+        status=attempt.status.value,
+        reason=attempt.reason,
+        doc_count=attempt.doc_count,
+        attempted_at=attempt.attempted_at,
+    )
+
+
 class DocumentIngestService:
     def __init__(
         self,
@@ -59,12 +90,14 @@ class DocumentIngestService:
         *,
         entitlement_service: CapabilityEntitlementService | None = None,
         project_repository: SqlProjectRepository | None = None,
+        capture_attempt_repository: SqlDocumentCaptureAttemptRepository | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
         audit_repository: SqlAuditRepository | None = None,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
         self._project_repository = project_repository
+        self._capture_attempt_repository = capture_attempt_repository
         self._notification_dispatcher = notification_dispatcher
         self._audit_repository = audit_repository
 
@@ -196,6 +229,26 @@ class DocumentIngestService:
 
     def list_documents(self, *, tenant_id: str, project_id: str):
         return self._repository.list_documents(tenant_id, project_id)
+
+    def list_documents_with_capture_status(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+    ) -> DocumentListResult:
+        documents = list(self.list_documents(tenant_id=tenant_id, project_id=project_id))
+        attempt = (
+            self._capture_attempt_repository.get_latest_attempt_for_project(
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+            if self._capture_attempt_repository is not None
+            else None
+        )
+        return DocumentListResult(
+            documents=documents,
+            capture_status=_capture_status_snapshot(attempt),
+        )
 
     def list_document_diffs(self, *, tenant_id: str, project_id: str):
         return self._repository.list_document_diffs(
