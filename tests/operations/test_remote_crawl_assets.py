@@ -57,6 +57,14 @@ def test_install_launchd_sh_parses_and_targets_both_agents() -> None:
     assert "launchctl" in text
 
 
+def test_install_launchd_sh_keeps_warm_profile_timer_opt_in() -> None:
+    text = (REPO_ROOT / "scripts" / "install_launchd.sh").read_text(encoding="utf-8")
+    assert "DEFAULT_LABELS=(com.egp.pg-tunnel com.egp.remote-crawl)" in text
+    assert "OPTIONAL_WARM_LABEL=com.egp.pg-warm" in text
+    assert "--with-warm" in text
+    assert "LABELS=(com.egp.pg-tunnel com.egp.remote-crawl com.egp.pg-warm)" not in text
+
+
 def test_pg_tunnel_overlay_binds_loopback_only() -> None:
     overlay = yaml.safe_load(
         (REPO_ROOT / "docker-compose.pg-tunnel.yml").read_text(encoding="utf-8")
@@ -106,6 +114,8 @@ def test_env_example_is_production_safe_template() -> None:
     assert "r2.cloudflarestorage.com" in text
     assert "AWS_ENDPOINT_URL_S3" in text
     assert "CHANGE_ME" in text  # only placeholders, no real secrets
+    assert "EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS=1800" in text
+    assert "EGP_BROWSER_PREDISPATCH_WARM_SECONDS=0" in text
     # The template must NOT pre-acknowledge production: copying it alone must not
     # satisfy the guard. The exact ack value appears only as comment guidance.
     assert "EGP_REMOTECRAWL_PRODUCTION_ACK=I_UNDERSTAND_THIS_WRITES_PRODUCTION" not in text

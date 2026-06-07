@@ -65,6 +65,37 @@ def warmup_settings_from_env(env: Mapping[str, str] | None = None) -> BrowserDis
     )
 
 
+def warmup_settings_from_browser_settings(
+    browser_settings: Mapping[str, object],
+) -> BrowserDiscoverySettings:
+    """Build warm-up settings from the dispatcher browser payload."""
+
+    profile_dir = str(browser_settings.get("browser_profile_dir", "")).strip()
+    if not profile_dir:
+        raise RuntimeError("browser_settings.browser_profile_dir is required to warm a profile")
+    return BrowserDiscoverySettings(
+        cdp_port=int(str(browser_settings.get("browser_cdp_port", "9320")).strip()),
+        browser_profile_dir=Path(profile_dir).expanduser(),
+        chrome_path=_optional_string(browser_settings.get("browser_chrome_path")),
+        use_xvfb=bool(browser_settings.get("browser_use_xvfb", False)),
+        proxy_server=_optional_string(browser_settings.get("browser_proxy_server")),
+        nav_timeout_ms=int(str(browser_settings.get("browser_nav_timeout_ms", "60000")).strip()),
+        cloudflare_timeout_ms=int(
+            str(browser_settings.get("browser_cloudflare_timeout_ms", "120000")).strip()
+        ),
+        cloudflare_reload_retries=int(
+            str(browser_settings.get("browser_cloudflare_reload_retries", "1")).strip()
+        ),
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def warm_page(page, settings: BrowserDiscoverySettings, *, wait=wait_for_cloudflare) -> None:
     """Navigate e-GP and REQUIRE Cloudflare clearance at each step.
 
@@ -77,29 +108,36 @@ def warm_page(page, settings: BrowserDiscoverySettings, *, wait=wait_for_cloudfl
             raise RuntimeError(f"warm-up failed: Cloudflare not cleared on {url}")
 
 
-def main() -> int:
+def run_profile_warmup(
+    settings: BrowserDiscoverySettings,
+    *,
+    warm_seconds: float,
+    acquire_lock: bool = True,
+    status_prefix: str = "WARMUP",
+) -> bool:
+    """Warm or preflight a persistent browser profile.
+
+    Returns ``False`` only when ``acquire_lock`` is requested and another process
+    already owns the profile lock.
+    """
+
     from playwright.sync_api import sync_playwright
 
-    settings = warmup_settings_from_env()
-    warm_seconds = float(os.getenv("EGP_BROWSER_WARMUP_SECONDS", "45"))
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
-
-    # Take the SAME exclusive profile lock the crawl dispatcher uses. A keep-warm
-    # pass must never launch a second Chrome on a profile a crawl is using (two
-    # Chromes on one user-data-dir corrupt it). If a crawl already holds the lock
-    # the profile is being kept warm by that crawl, so skip this heartbeat.
-    try:
-        lock_handle = acquire_profile_lock(settings.browser_profile_dir)
-    except ProfileLockedError:
-        print(
-            "WARMUP_SKIP profile busy (crawl active); skipping warm "
-            f"profile={settings.browser_profile_dir}",
-            flush=True,
-        )
-        return 0
+    lock_handle = None
+    if acquire_lock:
+        try:
+            lock_handle = acquire_profile_lock(settings.browser_profile_dir)
+        except ProfileLockedError:
+            print(
+                f"{status_prefix}_SKIP profile busy (crawl active); skipping warm "
+                f"profile={settings.browser_profile_dir}",
+                flush=True,
+            )
+            return False
 
     print(
-        f"WARMUP_START profile={settings.browser_profile_dir} "
+        f"{status_prefix}_START profile={settings.browser_profile_dir} "
         f"proxy={'set' if settings.proxy_server else 'none'} xvfb={settings.use_xvfb}",
         flush=True,
     )
@@ -107,17 +145,24 @@ def main() -> int:
     browser = None
     proc = None
     try:
-        # Inside the try so a launch failure still hits the finally: the Chrome
-        # process is reaped and the profile lock is released (never leaked).
         proc = launch_real_chrome(settings, clear_singleton_locks=True)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, settings)
         warm_page(page, settings)
-        time.sleep(warm_seconds)
-        print(f"WARMUP_OK profile={settings.browser_profile_dir}", flush=True)
+        if warm_seconds > 0:
+            time.sleep(warm_seconds)
+        print(f"{status_prefix}_OK profile={settings.browser_profile_dir}", flush=True)
+        return True
     finally:
         safe_shutdown(browser=browser, pw=pw, chrome_proc=proc)
-        release_profile_lock(lock_handle)
+        if acquire_lock:
+            release_profile_lock(lock_handle)
+
+
+def main() -> int:
+    settings = warmup_settings_from_env()
+    warm_seconds = float(os.getenv("EGP_BROWSER_WARMUP_SECONDS", "45"))
+    run_profile_warmup(settings, warm_seconds=warm_seconds)
     return 0
 
 

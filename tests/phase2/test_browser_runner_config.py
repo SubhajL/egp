@@ -15,11 +15,13 @@ from egp_api.config import (
     get_browser_cloudflare_reload_retries,
     get_browser_cloudflare_timeout_ms,
     get_browser_nav_timeout_ms,
+    get_browser_predispatch_warm_seconds,
     get_browser_persistent_profile_dir,
     get_browser_profile_mode,
     get_browser_project_detail_timeout_s,
     get_browser_proxy_server,
     get_browser_use_xvfb,
+    get_browser_warmup_stale_after_seconds,
 )
 
 
@@ -148,3 +150,39 @@ def test_get_browser_project_detail_timeout_rejects_nonpositive(
     monkeypatch.setenv("EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S", "0")
     with pytest.raises(RuntimeError):
         get_browser_project_detail_timeout_s()
+
+
+def test_get_browser_warmup_stale_after_seconds_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS", raising=False)
+    assert get_browser_warmup_stale_after_seconds() == 1_800.0
+
+
+def test_get_browser_warmup_stale_after_seconds_allows_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS", "0")
+    assert get_browser_warmup_stale_after_seconds() == 0.0
+
+
+def test_get_browser_warmup_stale_after_seconds_rejects_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS", "-1")
+    with pytest.raises(RuntimeError):
+        get_browser_warmup_stale_after_seconds()
+
+
+def test_get_browser_predispatch_warm_seconds_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_BROWSER_PREDISPATCH_WARM_SECONDS", raising=False)
+    assert get_browser_predispatch_warm_seconds() == 0.0
+
+
+def test_get_browser_predispatch_warm_seconds_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_PREDISPATCH_WARM_SECONDS", "2.5")
+    assert get_browser_predispatch_warm_seconds() == 2.5

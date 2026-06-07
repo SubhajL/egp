@@ -10,6 +10,7 @@ import signal
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,12 +21,14 @@ from egp_api.config import (
     get_browser_cloudflare_reload_retries,
     get_browser_cloudflare_timeout_ms,
     get_browser_nav_timeout_ms,
+    get_browser_predispatch_warm_seconds,
     get_browser_persistent_profile_dir,
     get_browser_profile_mode,
     get_browser_profile_root,
     get_browser_project_detail_timeout_s,
     get_browser_proxy_server,
     get_browser_use_xvfb,
+    get_browser_warmup_stale_after_seconds,
 )
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
@@ -40,6 +43,7 @@ from egp_crawler_core.profile_lock import (
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
+PROFILE_STATE_FILENAME = ".egp-profile-state.json"
 
 _logger = logging.getLogger("egp_api.main")
 
@@ -121,6 +125,74 @@ def _validate_persistent_profile_dir(profile_dir: Path) -> None:
                 "EGP_BROWSER_PERSISTENT_PROFILE_DIR must not be inside a synced folder "
                 f"({marker!r}): {profile_dir}"
             )
+
+
+def _profile_state_path(profile_dir: Path) -> Path:
+    return profile_dir / PROFILE_STATE_FILENAME
+
+
+def _parse_profile_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _read_profile_last_success_at(profile_dir: Path) -> datetime | None:
+    state_path = _profile_state_path(profile_dir)
+    if not state_path.is_file():
+        return None
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _parse_profile_timestamp(payload.get("last_success_at"))
+
+
+def _profile_warm_needed(
+    profile_dir: Path,
+    *,
+    stale_after_seconds: float,
+    now: datetime | None = None,
+) -> bool:
+    if stale_after_seconds <= 0:
+        return True
+    last_success = _read_profile_last_success_at(profile_dir)
+    if last_success is None:
+        return True
+    resolved_now = now or datetime.now(UTC)
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    else:
+        resolved_now = resolved_now.astimezone(UTC)
+    return (resolved_now - last_success).total_seconds() >= stale_after_seconds
+
+
+def _write_profile_success_state(
+    profile_dir: Path,
+    *,
+    source: str,
+    now: datetime | None = None,
+) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    resolved_now = now or datetime.now(UTC)
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    payload = {
+        "last_success_at": resolved_now.astimezone(UTC).isoformat(),
+        "source": source,
+    }
+    _profile_state_path(profile_dir).write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def _acquire_profile_lock(profile_dir: Path):
@@ -315,6 +387,8 @@ class SubprocessDiscoveryDispatcher:
         browser_cloudflare_timeout_ms: int | str | None = None,
         browser_cloudflare_reload_retries: int | str | None = None,
         browser_project_detail_timeout_s: float | str | None = None,
+        browser_warmup_stale_after_seconds: float | str | None = None,
+        browser_predispatch_warm_seconds: float | str | None = None,
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
@@ -344,6 +418,12 @@ class SubprocessDiscoveryDispatcher:
         )
         self._browser_project_detail_timeout_s = get_browser_project_detail_timeout_s(
             browser_project_detail_timeout_s
+        )
+        self._browser_warmup_stale_after_seconds = get_browser_warmup_stale_after_seconds(
+            browser_warmup_stale_after_seconds
+        )
+        self._browser_predispatch_warm_seconds = get_browser_predispatch_warm_seconds(
+            browser_predispatch_warm_seconds
         )
         if self._browser_profile_mode == "persistent":
             if self._browser_persistent_profile_dir is None:
@@ -379,6 +459,51 @@ class SubprocessDiscoveryDispatcher:
         run_dir = _browser_profile_dir_for_run_id(run_id, profile_root=self._browser_profile_root)
         return run_dir, True
 
+    def prepare_for_dispatch(self) -> bool:
+        """Warm/preflight a stale persistent profile before claiming a job."""
+
+        if self._browser_profile_mode != "persistent":
+            return True
+        assert self._browser_persistent_profile_dir is not None
+        try:
+            profile_lock = _acquire_profile_lock(self._browser_persistent_profile_dir)
+        except DiscoverySpawnError:
+            _logger.info(
+                "Persistent browser profile is busy; deferring discovery job claim "
+                "(profile_dir=%s)",
+                self._browser_persistent_profile_dir,
+            )
+            return False
+        try:
+            self._warm_persistent_profile_if_stale(
+                profile_dir=self._browser_persistent_profile_dir,
+                browser_settings=self._build_persistent_warm_browser_settings(),
+            )
+            return True
+        finally:
+            _release_profile_lock(profile_lock)
+
+    def _build_persistent_warm_browser_settings(self) -> dict[str, object]:
+        assert self._browser_persistent_profile_dir is not None
+        payload: dict[str, object] = {
+            "browser_cdp_port": _browser_cdp_port_for_run_id(
+                "predispatch-warm",
+                base=self._browser_cdp_port_base,
+                port_range=self._browser_cdp_port_range,
+            ),
+            "browser_profile_dir": str(self._browser_persistent_profile_dir),
+        }
+        if self._browser_chrome_path:
+            payload["browser_chrome_path"] = self._browser_chrome_path
+        if self._browser_proxy_server:
+            payload["browser_proxy_server"] = self._browser_proxy_server
+        if self._browser_use_xvfb:
+            payload["browser_use_xvfb"] = True
+        payload["browser_nav_timeout_ms"] = self._browser_nav_timeout_ms
+        payload["browser_cloudflare_timeout_ms"] = self._browser_cloudflare_timeout_ms
+        payload["browser_cloudflare_reload_retries"] = self._browser_cloudflare_reload_retries
+        return payload
+
     def dispatch(self, request: DiscoveryDispatchRequest) -> None:
         run_id = str(uuid4())
         run_trigger = map_job_trigger_to_run_trigger(request.trigger_type)
@@ -405,6 +530,10 @@ class SubprocessDiscoveryDispatcher:
             else None
         )
         try:
+            self._warm_persistent_profile_if_stale(
+                profile_dir=browser_profile_dir,
+                browser_settings=browser_settings,
+            )
             self._run_repository.create_run(
                 tenant_id=request.tenant_id,
                 profile_id=request.profile_id,
@@ -530,6 +659,11 @@ class SubprocessDiscoveryDispatcher:
             finally:
                 if log_handle is not None:
                     log_handle.close()
+            if self._browser_profile_mode == "persistent":
+                self._record_persistent_profile_success(
+                    profile_dir=browser_profile_dir,
+                    source="crawl",
+                )
         finally:
             _release_profile_lock(profile_lock)
             if cleanup_after:
@@ -537,6 +671,50 @@ class SubprocessDiscoveryDispatcher:
                     browser_profile_dir,
                     profile_root=self._browser_profile_root,
                 )
+
+    def _warm_persistent_profile_if_stale(
+        self,
+        *,
+        profile_dir: Path,
+        browser_settings: dict[str, object],
+    ) -> None:
+        if self._browser_profile_mode != "persistent":
+            return
+        if not _profile_warm_needed(
+            profile_dir,
+            stale_after_seconds=self._browser_warmup_stale_after_seconds,
+        ):
+            _logger.info("Persistent browser profile is fresh; skipping pre-dispatch warm")
+            return
+
+        from egp_worker.warmup import (
+            run_profile_warmup,
+            warmup_settings_from_browser_settings,
+        )
+
+        _logger.info(
+            "Persistent browser profile is stale; running pre-dispatch warm (profile_dir=%s)",
+            profile_dir,
+        )
+        settings = warmup_settings_from_browser_settings(browser_settings)
+        run_profile_warmup(
+            settings,
+            warm_seconds=self._browser_predispatch_warm_seconds,
+            acquire_lock=False,
+            status_prefix="PREDISPATCH_WARMUP",
+        )
+        self._record_persistent_profile_success(profile_dir=profile_dir, source="warm")
+
+    def _record_persistent_profile_success(self, *, profile_dir: Path, source: str) -> None:
+        try:
+            _write_profile_success_state(profile_dir, source=source)
+        except Exception:
+            _logger.warning(
+                "Failed to write persistent browser profile state (profile_dir=%s source=%s)",
+                profile_dir,
+                source,
+                exc_info=True,
+            )
 
     def _safe_update_run_summary(
         self,

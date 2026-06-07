@@ -2,14 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Track C — periodic keep-warm for the persistent Chrome profile. Cloudflare's
-  per-profile clearance (cf_clearance) expires after tens of minutes, so this
-  refreshes it on an interval and scheduled/triggered crawls never hit a cold
-  profile. run_remote_crawl.sh warm-profile takes the SAME exclusive profile
-  lock as the crawl, so a heartbeat that fires mid-crawl exits as a no-op
-  ("WARMUP_SKIP"). This is an INTERVAL task (StartInterval), NOT a daemon —
-  hence no KeepAlive. The one-time INITIAL warm may still need a human to solve
-  a Cloudflare challenge; the interval only refreshes an already-valid clearance.
+  Track C — OPTIONAL periodic keep-warm for the persistent Chrome profile. The
+  default watcher already warms/preflights on demand before stale crawls; install
+  this timer only when an operator deliberately wants interval-based refreshes.
+  run_remote_crawl.sh warm-profile takes the SAME exclusive profile lock as the
+  crawl, so a heartbeat that fires mid-crawl exits as a no-op ("WARMUP_SKIP").
+  This is an INTERVAL task (StartInterval), NOT a daemon — hence no KeepAlive.
+  The one-time INITIAL warm may still need a human to solve a Cloudflare
+  challenge; the interval only refreshes an already-valid clearance.
   __REPO_ROOT__ / __HOME__ are substituted by scripts/install_launchd.sh.
 -->
 <plist version="1.0">

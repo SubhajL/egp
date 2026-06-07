@@ -94,6 +94,7 @@ def build_discovery_dispatch_runtime(
             engine=shared_engine,
         ),
         dispatcher=dispatcher,
+        pre_dispatch_preparer=dispatcher,
         worker_count=get_discovery_worker_count(worker_count),
     )
     return DiscoveryDispatchRuntime(

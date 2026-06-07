@@ -62,7 +62,7 @@ scripts/run_remote_crawl.sh check          # fail-closed env validation
 scripts/run_remote_crawl.sh tunnel         # SSH tunnel to prod Postgres (or run via launchd)
 scripts/run_remote_crawl.sh warm-profile   # warm the persistent Chrome profile (once)
 scripts/run_remote_crawl.sh watch          # claim + crawl the PRODUCTION queue
-scripts/install_launchd.sh install         # always-on: tunnel + watcher as launchd agents
+scripts/install_launchd.sh install         # always-on: tunnel + watcher; on-demand warm before stale crawls
 ```
 
 On Lightsail, bring the stack up **without** the in-box crawler so the Mac is the only crawler:

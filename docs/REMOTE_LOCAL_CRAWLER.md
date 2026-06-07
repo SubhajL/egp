@@ -163,14 +163,16 @@ scripts/run_remote_crawl.sh watch
 ### Always-on (launchd)
 
 ```bash
-scripts/install_launchd.sh install     # tunnel + watcher + keep-warm auto-start at login, restart on crash
+scripts/install_launchd.sh install     # tunnel + watcher auto-start at login, restart on crash
+scripts/install_launchd.sh install --with-warm  # optional: also run keep-warm every 15 min
 scripts/install_launchd.sh status
 scripts/install_launchd.sh uninstall
 ```
-Three agents are installed: `com.egp.pg-tunnel` (the SSH tunnel),
+By default two agents are installed: `com.egp.pg-tunnel` (the SSH tunnel) and
 `com.egp.remote-crawl` (the watcher — run under `caffeinate -i` so the Mac never
-idle-sleeps and skips a heartbeat), and `com.egp.pg-warm` (the keep-warm timer,
-every 15 min). Logs: `~/Library/Logs/egp/{tunnel,crawl,warm}.log`.
+idle-sleeps while actively watching). `com.egp.pg-warm` is optional; install it
+only with `--with-warm` if you deliberately want a browser keep-warm every 15 min.
+Logs: `~/Library/Logs/egp/{tunnel,crawl,warm}.log`.
 
 ### Keeping the profile warm (Cloudflare clearance)
 
@@ -179,8 +181,18 @@ site. Cloudflare Turnstile issues a per-profile clearance (`cf_clearance`) that
 **expires after tens of minutes**; on a cold/expired profile the search UI never
 renders and a crawl fails with a `wait_for_selector` timeout on the Search button.
 
+The default watcher does **on-demand pre-dispatch warm/preflight** instead of
+opening Chrome every 15 minutes forever. When a pending job is dispatched in
+persistent-profile mode, the dispatcher takes the same profile lock used by the
+crawl, checks `<profile>/.egp-profile-state.json`, and warms only if the last
+successful warm or crawl is older than
+`EGP_BROWSER_WARMUP_STALE_AFTER_SECONDS` (default 1800 seconds). A successful
+crawl refreshes that timestamp, so back-to-back jobs do not relaunch a warm
+browser.
+
+When explicitly installed with `scripts/install_launchd.sh install --with-warm`,
 `com.egp.pg-warm` runs `run_remote_crawl.sh warm-profile` every 15 minutes to
-refresh that clearance, so scheduled/triggered crawls never hit a cold profile.
+refresh that clearance, so scheduled/triggered crawls are less likely to hit a cold profile.
 It is **lock-safe**: `warm-profile` takes the *same* exclusive profile lock
 (`<profile>/.egp-crawl.lock`, via `egp_crawler_core.profile_lock`) that a crawl
 holds, so a heartbeat firing mid-crawl exits as a no-op (`WARMUP_SKIP`) instead

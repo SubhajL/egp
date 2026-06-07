@@ -9,6 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,11 @@ def _request() -> DiscoveryDispatchRequest:
 
 
 def _make_dispatcher(tmp_path: Path, warm_dir: Path) -> SubprocessDiscoveryDispatcher:
+    warm_dir.mkdir(parents=True, exist_ok=True)
+    (warm_dir / ".egp-profile-state.json").write_text(
+        json.dumps({"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}),
+        encoding="utf-8",
+    )
     return SubprocessDiscoveryDispatcher(
         "postgresql://example.test/egp",
         artifact_root=tmp_path / "artifacts",
@@ -73,6 +79,119 @@ def _make_dispatcher(tmp_path: Path, warm_dir: Path) -> SubprocessDiscoveryDispa
         browser_use_xvfb=True,
         browser_chrome_path="/opt/chrome/chrome",
     )
+
+
+def test_persistent_mode_warms_stale_profile_before_worker_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    events: list[str] = []
+
+    def fake_warm(settings, **kwargs) -> bool:
+        events.append(f"warm:{settings.browser_profile_dir}")
+        assert kwargs["acquire_lock"] is False
+        return True
+
+    def fake_popen(*args, **kwargs):
+        events.append("spawn")
+        return _FakeProcess()
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", fake_warm)
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        fake_popen,
+    )
+
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+        browser_profile_mode="persistent",
+        browser_persistent_profile_dir=warm_dir,
+        browser_warmup_stale_after_seconds=1_800,
+        browser_predispatch_warm_seconds=0,
+    )
+
+    dispatcher.dispatch(_request())
+
+    assert events == [f"warm:{warm_dir.resolve()}", "spawn"]
+
+
+def test_persistent_mode_skips_warm_when_profile_recently_used(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_dir.mkdir(parents=True)
+    (warm_dir / ".egp-profile-state.json").write_text(
+        json.dumps(
+            {
+                "last_success_at": datetime.now(UTC).isoformat(),
+                "source": "crawl",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_warm(*args, **kwargs) -> bool:
+        del args, kwargs
+        raise AssertionError("recent profile should not be warmed")
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", fail_warm)
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *a, **k: _FakeProcess(),
+    )
+
+    SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+        browser_profile_mode="persistent",
+        browser_persistent_profile_dir=warm_dir,
+        browser_warmup_stale_after_seconds=1_800,
+    ).dispatch(_request())
+
+
+def test_persistent_mode_records_successful_crawl_as_recent_use(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_dir.mkdir(parents=True)
+    stale_time = datetime.now(UTC) - timedelta(hours=2)
+    (warm_dir / ".egp-profile-state.json").write_text(
+        json.dumps({"last_success_at": stale_time.isoformat(), "source": "warm"}),
+        encoding="utf-8",
+    )
+    warm_calls = {"count": 0}
+
+    def fake_warm(*args, **kwargs) -> bool:
+        del args, kwargs
+        warm_calls["count"] += 1
+        return True
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", fake_warm)
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *a, **k: _FakeProcess(),
+    )
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+        browser_profile_mode="persistent",
+        browser_persistent_profile_dir=warm_dir,
+        browser_warmup_stale_after_seconds=1_800,
+    )
+
+    dispatcher.dispatch(_request())
+    dispatcher.dispatch(_request())
+
+    state = json.loads((warm_dir / ".egp-profile-state.json").read_text(encoding="utf-8"))
+    assert warm_calls["count"] == 1
+    assert state["source"] == "crawl"
 
 
 def test_persistent_mode_reuses_dir_and_passes_proxy_xvfb_chrome(
@@ -134,6 +253,27 @@ def test_persistent_mode_blocks_when_profile_already_locked(
         )
         with pytest.raises(DiscoverySpawnError):
             _make_dispatcher(tmp_path, warm_dir).dispatch(_request())
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+
+
+def test_prepare_for_dispatch_defers_when_profile_already_locked(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_dir.mkdir(parents=True)
+    lock_handle = open(warm_dir / ".egp-crawl.lock", "w")
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def must_not_warm(*args, **kwargs) -> bool:
+        del args, kwargs
+        raise AssertionError("locked profile should defer before warm")
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", must_not_warm)
+    try:
+        assert _make_dispatcher(tmp_path, warm_dir).prepare_for_dispatch() is False
     finally:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
