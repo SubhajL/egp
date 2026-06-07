@@ -46,6 +46,13 @@ cmd_install() {
   for label in "${LABELS[@]}"; do
     render "$label"
     launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+    # bootout is asynchronous; bootstrapping before the old instance is fully
+    # torn down makes launchctl return "Bootstrap failed: 5: Input/output
+    # error". Wait until the label is gone (up to ~10s) before bootstrapping.
+    for _ in $(seq 1 50); do
+      launchctl print "gui/$uid/$label" >/dev/null 2>&1 || break
+      sleep 0.2
+    done
     launchctl bootstrap "gui/$uid" "$AGENT_DIR/$label.plist"
     echo "loaded $label"
   done
