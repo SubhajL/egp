@@ -374,21 +374,9 @@ def _download_one_document(
     _trace_document_progress("target_prepare_start", target_doc=target_doc)
     dismiss_modal(page)
     _trace_document_progress("target_prepare_finished", target_doc=target_doc)
-    _sleep(0.5)
     is_final_tor_target = target_doc == "เอกสารประกวดราคา"
-    downloadable_rows = []
     _trace_document_progress("table_scan_start", target_doc=target_doc)
-    try:
-        tables = page.query_selector_all("table")
-    except Exception:
-        tables = []
-    for table in tables:
-        header_combined = " ".join(
-            header.inner_text().strip() for header in table.query_selector_all("th")
-        )
-        if "ดูข้อมูล" not in header_combined and "ดาวน์โหลด" not in header_combined:
-            continue
-        downloadable_rows.extend(table.query_selector_all("tbody tr"))
+    downloadable_rows = _wait_for_downloadable_detail_rows(page)
     _trace_document_progress(
         "table_scan_finished",
         target_doc=target_doc,
@@ -397,7 +385,7 @@ def _download_one_document(
 
     for row in downloadable_rows:
         cells = row.query_selector_all("td")
-        if len(cells) < 3:
+        if len(cells) < 2:
             continue
         doc_name = ""
         for cell in cells:
@@ -408,12 +396,7 @@ def _download_one_document(
         if not doc_name:
             continue
         _trace_document_progress("row_matched", target_doc=target_doc, doc_name=doc_name)
-        last_cell = cells[-1]
-        clickable = (
-            last_cell.query_selector("a[href], a[onclick], button:not([disabled]), [role='button']")
-            or last_cell.query_selector("a, button, [role='button']")
-            or last_cell
-        )
+        clickable = _row_download_clickable(row, cells) or cells[-1]
         _trace_document_progress("clickable_selected", target_doc=target_doc, doc_name=doc_name)
         if is_draft_tor_doc_label(doc_name):
             dismiss_modal(page)
@@ -435,7 +418,11 @@ def _download_one_document(
                 return [
                     document
                     for document in downloaded
-                    if is_final_tor_doc_label(str(document.get("source_label") or doc_name))
+                    if _downloaded_document_matches_target(
+                        target_doc,
+                        document,
+                        fallback_label=doc_name,
+                    )
                 ]
             return downloaded
         if target_doc == "ประกาศเชิญชวน":
@@ -455,6 +442,71 @@ def _download_one_document(
                 document_context=document_context,
             )
     return []
+
+
+def _wait_for_downloadable_detail_rows(page, *, attempts: int = 8) -> list[object]:
+    for attempt in range(attempts):
+        rows = _iter_downloadable_detail_rows(page)
+        if rows or attempt == attempts - 1:
+            return rows
+        _sleep(0.25)
+    return []
+
+
+def _iter_downloadable_detail_rows(page) -> list[object]:
+    try:
+        tables = page.query_selector_all("table")
+    except Exception:
+        return []
+    downloadable_rows: list[object] = []
+    for table in tables:
+        rows = _detail_page_table_rows(table)
+        if not _table_has_downloadable_document_rows(table, rows):
+            continue
+        downloadable_rows.extend(rows)
+    return downloadable_rows
+
+
+def _table_has_downloadable_document_rows(table, rows: list[object]) -> bool:
+    header_combined = " ".join(
+        header.inner_text().strip() for header in table.query_selector_all("th")
+    )
+    if "ดูข้อมูล" in header_combined or "ดาวน์โหลด" in header_combined:
+        return True
+    return any(
+        _row_download_clickable(row, row.query_selector_all("td")) is not None for row in rows
+    )
+
+
+def _row_download_clickable(row, cells: list[object]) -> object | None:
+    for cell in reversed(cells):
+        clickable = cell.query_selector(
+            "a[href], a[onclick], button:not([disabled]), [role='button']"
+        ) or cell.query_selector("a, button, [role='button']")
+        if clickable is not None:
+            return clickable
+    try:
+        return row.query_selector(
+            "a[href], a[onclick], button:not([disabled]), [role='button']"
+        ) or row.query_selector("a, button, [role='button']")
+    except Exception:
+        return None
+
+
+def _downloaded_document_matches_target(
+    target_doc: str,
+    document: dict[str, object],
+    *,
+    fallback_label: str,
+) -> bool:
+    if target_doc != "เอกสารประกวดราคา":
+        return True
+    candidates = (
+        str(document.get("source_label") or ""),
+        str(document.get("file_name") or ""),
+        fallback_label,
+    )
+    return any(is_final_tor_doc_label(candidate) for candidate in candidates)
 
 
 def _collect_detail_page_link_documents(
