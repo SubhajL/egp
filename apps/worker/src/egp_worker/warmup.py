@@ -18,6 +18,12 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from egp_crawler_core.profile_lock import (
+    acquire_profile_lock,
+    ProfileLockedError,
+    release_profile_lock,
+)
+
 from .browser_discovery import (
     MAIN_PAGE_URL,
     SEARCH_URL,
@@ -77,15 +83,33 @@ def main() -> int:
     settings = warmup_settings_from_env()
     warm_seconds = float(os.getenv("EGP_BROWSER_WARMUP_SECONDS", "45"))
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
+
+    # Take the SAME exclusive profile lock the crawl dispatcher uses. A keep-warm
+    # pass must never launch a second Chrome on a profile a crawl is using (two
+    # Chromes on one user-data-dir corrupt it). If a crawl already holds the lock
+    # the profile is being kept warm by that crawl, so skip this heartbeat.
+    try:
+        lock_handle = acquire_profile_lock(settings.browser_profile_dir)
+    except ProfileLockedError:
+        print(
+            "WARMUP_SKIP profile busy (crawl active); skipping warm "
+            f"profile={settings.browser_profile_dir}",
+            flush=True,
+        )
+        return 0
+
     print(
         f"WARMUP_START profile={settings.browser_profile_dir} "
         f"proxy={'set' if settings.proxy_server else 'none'} xvfb={settings.use_xvfb}",
         flush=True,
     )
-    proc = launch_real_chrome(settings, clear_singleton_locks=True)
     pw = None
     browser = None
+    proc = None
     try:
+        # Inside the try so a launch failure still hits the finally: the Chrome
+        # process is reaped and the profile lock is released (never leaked).
+        proc = launch_real_chrome(settings, clear_singleton_locks=True)
         pw = sync_playwright().start()
         browser, page = connect_playwright_to_chrome(pw, settings)
         warm_page(page, settings)
@@ -93,6 +117,7 @@ def main() -> int:
         print(f"WARMUP_OK profile={settings.browser_profile_dir}", flush=True)
     finally:
         safe_shutdown(browser=browser, pw=pw, chrome_proc=proc)
+        release_profile_lock(lock_handle)
     return 0
 
 

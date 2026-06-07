@@ -15,7 +15,9 @@
     <array>
       <string>/bin/bash</string>
       <string>-lc</string>
-      <string>exec "__REPO_ROOT__/scripts/run_remote_crawl.sh" watch</string>
+      <!-- caffeinate -i holds an idle-sleep assertion for the watcher's lifetime
+           so the Mac never sleeps and skips the keep-warm heartbeat (com.egp.pg-warm). -->
+      <string>exec caffeinate -i "__REPO_ROOT__/scripts/run_remote_crawl.sh" watch</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
