@@ -21,7 +21,11 @@ from egp_db.repositories.document_repo import (
     DocumentReviewPage,
     StoreDocumentResult,
 )
-from egp_domain.document_ingest import DocumentDownloadLink, DocumentIngestService
+from egp_domain.document_ingest import (
+    DocumentCaptureStatusSnapshot,
+    DocumentDownloadLink,
+    DocumentIngestService,
+)
 from egp_shared_types.enums import DocumentReviewAction, DocumentReviewStatus
 
 
@@ -70,8 +74,16 @@ class StoreDocumentResponse(BaseModel):
     diff_records: list[DocumentDiffResponse]
 
 
+class DocumentCaptureStatusResponse(BaseModel):
+    status: str
+    reason: str | None
+    doc_count: int
+    attempted_at: str
+
+
 class ListDocumentsResponse(BaseModel):
     documents: list[DocumentResponse]
+    capture_status: DocumentCaptureStatusResponse | None = None
 
 
 class ListDocumentDiffsResponse(BaseModel):
@@ -180,6 +192,19 @@ def _serialize_store_result(result: StoreDocumentResult) -> StoreDocumentRespons
     )
 
 
+def _serialize_capture_status(
+    snapshot: DocumentCaptureStatusSnapshot | None,
+) -> DocumentCaptureStatusResponse | None:
+    if snapshot is None:
+        return None
+    return DocumentCaptureStatusResponse(
+        status=snapshot.status,
+        reason=snapshot.reason,
+        doc_count=snapshot.doc_count,
+        attempted_at=snapshot.attempted_at,
+    )
+
+
 def _serialize_review_event(event: DocumentReviewEventRecord) -> DocumentReviewEventResponse:
     return DocumentReviewEventResponse(
         id=event.id,
@@ -259,9 +284,13 @@ def list_documents(
 ) -> ListDocumentsResponse:
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
-    documents = service.list_documents(tenant_id=resolved_tenant_id, project_id=project_id)
+    result = service.list_documents_with_capture_status(
+        tenant_id=resolved_tenant_id,
+        project_id=project_id,
+    )
     return ListDocumentsResponse(
-        documents=[_serialize_document(document) for document in documents]
+        documents=[_serialize_document(document) for document in result.documents],
+        capture_status=_serialize_capture_status(result.capture_status),
     )
 
 

@@ -17,6 +17,7 @@ from egp_shared_types.enums import NotificationType
 from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import (
+    DocumentCaptureAttemptStatus,
     DocumentReviewEventType,
     DocumentReviewStatus,
     ProcurementType,
@@ -569,6 +570,40 @@ def test_list_documents_endpoint_returns_persisted_documents(tmp_path) -> None:
     body = response.json()
     assert len(body["documents"]) == 1
     assert body["documents"][0]["document_type"] == "mid_price"
+    assert body["capture_status"] is None
+
+
+def test_list_documents_endpoint_includes_latest_capture_attempt(tmp_path) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    client.app.state.document_capture_attempt_repository.record_attempt(
+        tenant_id=TENANT_ID,
+        project_id=project_id,
+        status=DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+        reason="detail_page_without_document_rows",
+        doc_count=0,
+        attempted_at="2026-06-07T01:00:00+00:00",
+    )
+    client.app.state.document_capture_attempt_repository.record_attempt(
+        tenant_id=TENANT_ID,
+        project_id=project_id,
+        status=DocumentCaptureAttemptStatus.FAILED,
+        reason="download_table_timeout",
+        doc_count=0,
+        attempted_at="2026-06-07T02:00:00+00:00",
+    )
+
+    response = client.get(
+        f"/v1/documents/projects/{project_id}", params={"tenant_id": TENANT_ID}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["capture_status"] == {
+        "status": "failed",
+        "reason": "download_table_timeout",
+        "doc_count": 0,
+        "attempted_at": "2026-06-07T02:00:00+00:00",
+    }
 
 
 def test_ingest_document_endpoint_keeps_same_bytes_for_different_phase(

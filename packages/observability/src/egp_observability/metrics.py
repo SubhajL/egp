@@ -30,6 +30,7 @@ EGP_REQUEST_TOTAL: Final[str] = "egp_egp_request_total"
 RATE_LIMITER_WAIT_SECONDS: Final[str] = "egp_rate_limiter_wait_seconds"
 PROJECT_UPSERT_CONFLICTS_TOTAL: Final[str] = "egp_project_upsert_conflicts_total"
 DOCUMENT_UPSERT_CONFLICTS_TOTAL: Final[str] = "egp_document_upsert_conflicts_total"
+DOCUMENT_CAPTURE_ATTEMPTS_TOTAL: Final[str] = "egp_document_capture_attempts_total"
 DISCOVERY_QUEUE_DEPTH: Final[str] = "egp_discovery_queue_depth"
 DISCOVERY_DISPATCH_TOTAL: Final[str] = "egp_discovery_dispatch_total"
 DISCOVERY_INFLIGHT_RUNS: Final[str] = "egp_discovery_inflight_runs"
@@ -45,6 +46,7 @@ EXPECTED_METRIC_NAMES: Final[tuple[str, ...]] = (
     RATE_LIMITER_WAIT_SECONDS,
     PROJECT_UPSERT_CONFLICTS_TOTAL,
     DOCUMENT_UPSERT_CONFLICTS_TOTAL,
+    DOCUMENT_CAPTURE_ATTEMPTS_TOTAL,
     DISCOVERY_QUEUE_DEPTH,
     DISCOVERY_DISPATCH_TOTAL,
     DISCOVERY_INFLIGHT_RUNS,
@@ -103,6 +105,7 @@ class MetricsBundle:
     rate_limiter_wait_seconds: Histogram
     project_upsert_conflicts: Counter
     document_upsert_conflicts: Counter
+    document_capture_attempts: Counter
     discovery_queue_depth: Gauge
     discovery_dispatch_total: Counter
     discovery_inflight_runs: Gauge
@@ -187,6 +190,12 @@ def initialize_metrics() -> MetricsBundle:
             DOCUMENT_UPSERT_CONFLICTS_TOTAL,
             "Document upsert conflicts by outcome.",
             ("outcome",),
+            registry=registry,
+        ),
+        document_capture_attempts=Counter(
+            DOCUMENT_CAPTURE_ATTEMPTS_TOTAL,
+            "Document capture attempts by status and success class.",
+            ("status", "outcome"),
             registry=registry,
         ),
         discovery_queue_depth=Gauge(
@@ -290,6 +299,18 @@ def record_document_upsert_conflict(*, outcome: str) -> None:
     metrics = initialize_metrics()
     metrics.document_upsert_conflicts.labels(
         outcome=_normalize_label(outcome or "unknown")
+    ).inc()
+
+
+def record_document_capture_attempt(*, status: str) -> None:
+    """Record one document capture attempt with a low-cardinality status label."""
+
+    metrics = initialize_metrics()
+    normalized_status = _normalize_label(status or "unknown")
+    outcome = "success" if normalized_status == "succeeded" else "non_success"
+    metrics.document_capture_attempts.labels(
+        status=normalized_status,
+        outcome=outcome,
     ).inc()
 
 

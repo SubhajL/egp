@@ -47,6 +47,9 @@ from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
+from egp_db.repositories.document_capture_attempt_repo import (
+    create_document_capture_attempt_repository,
+)
 from egp_db.repositories.document_repo import create_artifact_store, create_document_repository
 from egp_db.repositories.line_payment_repo import create_line_payment_repository
 from egp_db.repositories.notification_repo import create_notification_repository
@@ -77,6 +80,7 @@ class RepositoryBundle:
     storage_credential_cipher: StorageCredentialCipher | None
     shared_engine: object
     admin_repository: object
+    document_capture_attempt_repository: object
     document_repository: object
     project_repository: object
     billing_repository: object
@@ -210,6 +214,10 @@ def build_repository_bundle(
         storage_credential_cipher=storage_credential_cipher,
         shared_engine=shared_engine,
         admin_repository=admin_repository,
+        document_capture_attempt_repository=create_document_capture_attempt_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+        ),
         document_repository=document_repository,
         project_repository=create_project_repository(
             database_url=resolved_database_url,

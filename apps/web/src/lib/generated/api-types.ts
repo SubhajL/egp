@@ -566,6 +566,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/billing/payment-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Payment Config */
+        get: operations["get_payment_config_v1_billing_payment_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/billing/payment-requests/{request_id}/callbacks": {
         parameters: {
             query?: never;
@@ -628,6 +645,23 @@ export interface paths {
         put?: never;
         /** Handle Opn Provider Webhook */
         post: operations["handle_opn_provider_webhook_v1_billing_providers_opn_webhooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/providers/stripe/webhooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Handle Stripe Provider Webhook */
+        post: operations["handle_stripe_provider_webhook_v1_billing_providers_stripe_webhooks_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -697,6 +731,74 @@ export interface paths {
         put?: never;
         /** Transition Billing Record */
         post: operations["transition_billing_record_v1_billing_records__record_id__transition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/slips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Payment Slips */
+        get: operations["list_payment_slips_v1_billing_slips_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/slips/{slip_id}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Payment Slip Image */
+        get: operations["get_payment_slip_image_v1_billing_slips__slip_id__image_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/slips/{slip_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Payment Slip */
+        post: operations["reject_payment_slip_v1_billing_slips__slip_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/slips/{slip_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify Payment Slip */
+        post: operations["verify_payment_slip_v1_billing_slips__slip_id__verify_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -915,6 +1017,23 @@ export interface paths {
         get: operations["export_excel_v1_exports_excel_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations/line/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Handle Line Webhook */
+        post: operations["handle_line_webhook_v1_integrations_line_webhook_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1513,7 +1632,7 @@ export interface components {
          * BillingPaymentProvider
          * @enum {string}
          */
-        BillingPaymentProvider: "mock_promptpay" | "opn";
+        BillingPaymentProvider: "mock_promptpay" | "promptpay_manual" | "opn" | "stripe";
         /** BillingPaymentRequestResponse */
         BillingPaymentRequestResponse: {
             /** Amount */
@@ -2090,6 +2209,17 @@ export interface components {
             created: boolean;
             project: components["schemas"]["ProjectResponse"];
         };
+        /** DocumentCaptureStatusResponse */
+        DocumentCaptureStatusResponse: {
+            /** Attempted At */
+            attempted_at: string;
+            /** Doc Count */
+            doc_count: number;
+            /** Reason */
+            reason: string | null;
+            /** Status */
+            status: string;
+        };
         /** DocumentDiffDetailResponse */
         DocumentDiffDetailResponse: {
             diff: components["schemas"]["DocumentDiffResponse"];
@@ -2307,6 +2437,19 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** LineWebhookResponse */
+        LineWebhookResponse: {
+            /** Image Events */
+            image_events: number;
+            /** Slips Created */
+            slips_created: number;
+            /** Slips Matched */
+            slips_matched: number;
+            /** Status */
+            status: string;
+            /** Text Events */
+            text_events: number;
+        };
         /** ListDocumentDiffsResponse */
         ListDocumentDiffsResponse: {
             /** Diffs */
@@ -2325,6 +2468,7 @@ export interface components {
         };
         /** ListDocumentsResponse */
         ListDocumentsResponse: {
+            capture_status?: components["schemas"]["DocumentCaptureStatusResponse"] | null;
             /** Documents */
             documents: components["schemas"]["DocumentResponse"][];
         };
@@ -2410,6 +2554,13 @@ export interface components {
             /** State */
             state: string;
         };
+        /** PaymentConfigResponse */
+        PaymentConfigResponse: {
+            /** Line Add Url */
+            line_add_url: string | null;
+            /** Provider */
+            provider: string;
+        };
         /** PaymentRequestCallbackRequest */
         PaymentRequestCallbackRequest: {
             /** Amount */
@@ -2428,6 +2579,42 @@ export interface components {
             status: components["schemas"]["BillingPaymentRequestStatus"];
             /** Tenant Id */
             tenant_id?: string | null;
+        };
+        /** PaymentSlipListResponse */
+        PaymentSlipListResponse: {
+            /** Slips */
+            slips: components["schemas"]["PaymentSlipResponse"][];
+        };
+        /** PaymentSlipResponse */
+        PaymentSlipResponse: {
+            /** Billing Record Id */
+            billing_record_id: string | null;
+            /** Created At */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Image Object Key */
+            image_object_key: string | null;
+            /** Line User Id */
+            line_user_id: string;
+            /** Payment Request Id */
+            payment_request_id: string | null;
+            /** Received At */
+            received_at: string;
+            /** Reference Code Match */
+            reference_code_match: string | null;
+            /** Tenant Id */
+            tenant_id: string | null;
+            /** Updated At */
+            updated_at: string;
+            /** Verification Notes */
+            verification_notes: string | null;
+            /** Verification Status */
+            verification_status: string;
+            /** Verified At */
+            verified_at: string | null;
+            /** Verified By User Id */
+            verified_by_user_id: string | null;
         };
         /**
          * ProcurementType
@@ -2720,6 +2907,13 @@ export interface components {
             folder_url?: string | null;
             /** Tenant Id */
             tenant_id?: string | null;
+        };
+        /** SlipActionRequest */
+        SlipActionRequest: {
+            /** Amount */
+            amount?: string | null;
+            /** Note */
+            note?: string | null;
         };
         /** StartFreeTrialRequest */
         StartFreeTrialRequest: {
@@ -4194,6 +4388,26 @@ export interface operations {
             };
         };
     };
+    get_payment_config_v1_billing_payment_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentConfigResponse"];
+                };
+            };
+        };
+    };
     handle_billing_payment_request_callback_v1_billing_payment_requests__request_id__callbacks_post: {
         parameters: {
             query?: never;
@@ -4285,6 +4499,26 @@ export interface operations {
         };
     };
     handle_opn_provider_webhook_v1_billing_providers_opn_webhooks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingRecordDetailResponse"];
+                };
+            };
+        };
+    };
+    handle_stripe_provider_webhook_v1_billing_providers_stripe_webhooks_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -4464,6 +4698,139 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BillingRecordDetailResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_payment_slips_v1_billing_slips_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentSlipListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_payment_slip_image_v1_billing_slips__slip_id__image_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slip_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_payment_slip_v1_billing_slips__slip_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slip_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlipActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentSlipResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_payment_slip_v1_billing_slips__slip_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slip_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlipActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaymentSlipResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4883,6 +5250,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    handle_line_webhook_v1_integrations_line_webhook_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineWebhookResponse"];
                 };
             };
         };

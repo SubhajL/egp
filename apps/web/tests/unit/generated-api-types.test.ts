@@ -105,7 +105,15 @@ describe("generated API contract", () => {
       aliases: [],
       status_events: [],
     };
-    const documents: DocumentListResponse = { documents: [] };
+    const documents: DocumentListResponse = {
+      documents: [],
+      capture_status: {
+        status: "failed",
+        reason: "download_table_timeout",
+        doc_count: 0,
+        attempted_at: "2026-06-07T02:00:00Z",
+      },
+    };
     const rules: RulesResponse = {
       profiles: [],
       entitlements: {
@@ -159,6 +167,7 @@ describe("generated API contract", () => {
     expect(generatedProjectList.projects).toEqual([]);
     expect(generatedProjectDetail.project.id).toBe("project-1");
     expect(generatedDocuments.documents).toEqual([]);
+    expect(generatedDocuments.capture_status?.status).toBe("failed");
     expect(generatedRules.profiles).toEqual([]);
   });
 

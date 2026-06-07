@@ -26,6 +26,7 @@ EXPECTED_METRIC_NAMES = {
     "egp_rate_limiter_wait_seconds",
     "egp_project_upsert_conflicts_total",
     "egp_document_upsert_conflicts_total",
+    "egp_document_capture_attempts_total",
     "egp_discovery_queue_depth",
     "egp_discovery_dispatch_total",
     "egp_discovery_inflight_runs",
@@ -146,6 +147,22 @@ def test_document_upsert_conflict_metric_records_resolved_outcome() -> None:
     )
 
 
+def test_document_capture_attempt_metric_records_non_success_status() -> None:
+    from egp_observability.metrics import (
+        record_document_capture_attempt,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_document_capture_attempt(status="failed")
+
+    assert (
+        'egp_document_capture_attempts_total{outcome="non_success",status="failed"} 1.0'
+        in _metric_output()
+    )
+
+
 def test_egp_request_and_rate_limiter_metric_helpers_record_outcomes() -> None:
     from egp_observability.metrics import (
         observe_rate_limiter_wait,
@@ -188,5 +205,6 @@ def test_grafana_alert_rules_yaml_validates(repo_root: Path) -> None:
         "egp_worker_jobs_total",
         "egp_worker_subprocess_count",
         "egp_egp_request_total",
+        "egp_document_capture_attempts_total",
     ):
         assert metric_name in serialized
