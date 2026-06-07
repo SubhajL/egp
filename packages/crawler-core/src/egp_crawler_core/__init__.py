@@ -18,6 +18,12 @@ from .discovery_authorization import (
 )
 from .document_hasher import hash_file
 from .invitation_rules import is_invitation_stage_status
+from .profile_lock import (
+    acquire_profile_lock,
+    PROFILE_LOCK_FILENAME,
+    ProfileLockedError,
+    release_profile_lock,
+)
 from .project_lifecycle import transition_state
 from .rate_limiter import (
     CircuitOpenError,
@@ -29,6 +35,7 @@ from .rate_limiter import (
 )
 
 __all__ = [
+    "acquire_profile_lock",
     "build_project_aliases",
     "CircuitOpenError",
     "check_consulting_timeout",
@@ -45,7 +52,10 @@ __all__ = [
     "hash_file",
     "is_invitation_stage_status",
     "normalize_keyword",
+    "PROFILE_LOCK_FILENAME",
+    "ProfileLockedError",
     "RateLimiterConfig",
+    "release_profile_lock",
     "require_discovery_authorization",
     "reset_default_rate_limiter_for_tests",
     "resolve_effective_discovery_entitlement",

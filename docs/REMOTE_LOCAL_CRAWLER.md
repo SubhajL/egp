@@ -54,6 +54,43 @@ connection string and skip the tunnel.)
 
 ## One-time setup
 
+> Deployment-specific values (server IP, Cloudflare account ID, domain) are kept in the
+> operator's local notes, **not** in this public repo.
+
+### Applying R2 + the tunnel to a box that predates #139 (override-file method)
+
+PR #139 adds the R2 env passthrough to the base `docker-compose.yml`, and #138 adds
+`docker-compose.pg-tunnel.yml`. If the box is on an **older** revision (e.g. `#136`)
+you don't need a full upgrade — the image already has the boto3/`s3`
+code, so just add an **untracked** `docker-compose.override.yml` (auto-merged by Compose,
+no git drift, survives a later `git pull`):
+
+```yaml
+# /home/ubuntu/egp/docker-compose.override.yml
+services:
+  postgres:
+    ports: ["127.0.0.1:15432:5432"]      # loopback only — tunnel target, never public
+  api:
+    environment: &r2
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_ENDPOINT_URL_S3: ${AWS_ENDPOINT_URL_S3:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-}
+  discovery-executor:
+    environment: *r2
+```
+```bash
+cd /home/ubuntu/egp
+sudo docker compose --env-file /etc/egp/egp.env config -q        # validate
+sudo docker compose --env-file /etc/egp/egp.env up -d api postgres
+docker exec egp-api-1 printenv AWS_ENDPOINT_URL_S3               # confirm the API got it
+```
+After a full deploy to #139+, delete the override (the base compose then carries these).
+
 ### Lightsail (control-plane only)
 
 1. In `/etc/egp/egp.env` confirm:
@@ -64,7 +101,9 @@ connection string and skip the tunnel.)
    EGP_ARTIFACT_STORE=s3
    S3_BUCKET=egp-documents
    AWS_ENDPOINT_URL_S3=https://<account>.r2.cloudflarestorage.com
-   AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…  AWS_REGION=auto
+   AWS_ACCESS_KEY_ID=…  AWS_SECRET_ACCESS_KEY=…  AWS_DEFAULT_REGION=auto
+   #  ^ MUST be AWS_DEFAULT_REGION (not AWS_REGION) — it forces SigV4 presigned
+   #    URLs; AWS_REGION=auto alone yields SigV2, which R2 rejects.
    EGP_INTERNAL_WORKER_TOKEN=…            # the Mac sends this as X-EGP-Worker-Token
    ```
 2. Bring the stack up **without** the in-box crawler, **with** the tunnel overlay:
@@ -124,11 +163,35 @@ scripts/run_remote_crawl.sh watch
 ### Always-on (launchd)
 
 ```bash
-scripts/install_launchd.sh install     # tunnel + watcher auto-start at login, restart on crash
+scripts/install_launchd.sh install     # tunnel + watcher + keep-warm auto-start at login, restart on crash
 scripts/install_launchd.sh status
 scripts/install_launchd.sh uninstall
 ```
-Logs: `~/Library/Logs/egp/{tunnel,crawl}.log`.
+Three agents are installed: `com.egp.pg-tunnel` (the SSH tunnel),
+`com.egp.remote-crawl` (the watcher — run under `caffeinate -i` so the Mac never
+idle-sleeps and skips a heartbeat), and `com.egp.pg-warm` (the keep-warm timer,
+every 15 min). Logs: `~/Library/Logs/egp/{tunnel,crawl,warm}.log`.
+
+### Keeping the profile warm (Cloudflare clearance)
+
+"Warm" vs "cold" describes the **crawler's persistent profile**, not the e-GP
+site. Cloudflare Turnstile issues a per-profile clearance (`cf_clearance`) that
+**expires after tens of minutes**; on a cold/expired profile the search UI never
+renders and a crawl fails with a `wait_for_selector` timeout on the Search button.
+
+`com.egp.pg-warm` runs `run_remote_crawl.sh warm-profile` every 15 minutes to
+refresh that clearance, so scheduled/triggered crawls never hit a cold profile.
+It is **lock-safe**: `warm-profile` takes the *same* exclusive profile lock
+(`<profile>/.egp-crawl.lock`, via `egp_crawler_core.profile_lock`) that a crawl
+holds, so a heartbeat firing mid-crawl exits as a no-op (`WARMUP_SKIP`) instead
+of launching a second Chrome on the profile (which would corrupt it). A running
+crawl is itself keeping the profile warm, so skipping is correct.
+
+> ⚠️ The **one-time initial** warm (and any warm after a full lapse — e.g. the
+> Mac was off for hours) may need a human to solve a Cloudflare challenge: run
+> `scripts/run_remote_crawl.sh warm-profile` once and clear it on screen. The
+> timer only *refreshes* an already-valid clearance — it cannot solve an
+> interactive challenge unattended.
 
 ### Triggering a crawl
 

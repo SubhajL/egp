@@ -3,6 +3,7 @@
 # Install/uninstall the Track C always-on launchd agents (macOS):
 #   • com.egp.pg-tunnel    — SSH tunnel to PRODUCTION Postgres
 #   • com.egp.remote-crawl — native crawler watching the PRODUCTION queue
+#   • com.egp.pg-warm      — periodic keep-warm of the persistent Chrome profile
 #
 # Templates live in deploy/launchd/*.plist with __REPO_ROOT__ / __HOME__
 # placeholders; this script substitutes them into ~/Library/LaunchAgents and
@@ -19,7 +20,7 @@ ROOT="$PWD"
 TEMPLATE_DIR="$ROOT/deploy/launchd"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs/egp"
-LABELS=(com.egp.pg-tunnel com.egp.remote-crawl)
+LABELS=(com.egp.pg-tunnel com.egp.remote-crawl com.egp.pg-warm)
 
 assert_safe_path() {  # $1=name $2=path — reject chars unsafe for sed/XML plist rendering
   case "$2" in
@@ -48,7 +49,7 @@ cmd_install() {
     launchctl bootstrap "gui/$uid" "$AGENT_DIR/$label.plist"
     echo "loaded $label"
   done
-  echo "Installed. Logs: $LOG_DIR/{tunnel,crawl}.log"
+  echo "Installed. Logs: $LOG_DIR/{tunnel,crawl,warm}.log"
 }
 
 cmd_uninstall() {

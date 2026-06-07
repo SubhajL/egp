@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import logging
@@ -33,6 +32,11 @@ from egp_api.services.discovery_dispatch import (
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.run_trigger_mapping import map_job_trigger_to_run_trigger
+from egp_crawler_core.profile_lock import (
+    acquire_profile_lock as _shared_acquire_profile_lock,
+    ProfileLockedError,
+    release_profile_lock as _shared_release_profile_lock,
+)
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -120,33 +124,24 @@ def _validate_persistent_profile_dir(profile_dir: Path) -> None:
 
 
 def _acquire_profile_lock(profile_dir: Path):
-    """Take an exclusive, non-blocking flock so one warmed profile = one browser.
+    """Take the shared exclusive profile lock; one warmed profile = one browser.
 
-    Returns the open lock-file handle (caller releases it). Raises
-    ``DiscoverySpawnError`` if the profile is already in use by another crawl.
+    Delegates to the cross-process lock in ``egp_crawler_core.profile_lock`` so
+    the crawl and the keep-warm routine share the SAME lock file and can never
+    use the persistent profile simultaneously. Returns the open lock-file handle
+    (caller releases it). Raises ``DiscoverySpawnError`` (retriable) if the
+    profile is already in use by another crawl.
     """
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = profile_dir / ".egp-crawl.lock"
-    handle = lock_path.open("w")
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as exc:
-        handle.close()
+        return _shared_acquire_profile_lock(profile_dir)
+    except ProfileLockedError as exc:
         raise DiscoverySpawnError(
             f"persistent browser profile is locked by another crawl ({profile_dir})"
         ) from exc
-    return handle
 
 
 def _release_profile_lock(handle) -> None:
-    if handle is None:
-        return
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
-    finally:
-        handle.close()
+    _shared_release_profile_lock(handle)
 
 
 def _kill_process_group(proc) -> None:
