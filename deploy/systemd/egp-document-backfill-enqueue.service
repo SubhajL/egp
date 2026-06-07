@@ -1,0 +1,16 @@
+# Track C — targeted document backfill enqueue producer (runs on Lightsail).
+#
+# This oneshot scans open projects that still have no invitation/TOR document
+# rows, applies durable attempt backoff/caps, and enqueues project-number
+# `backfill` discovery jobs for the off-box Mac crawler to claim.
+[Unit]
+Description=e-GP targeted document backfill enqueue (no browser)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker compose --env-file /etc/egp/egp.env \
+  run --rm --no-deps discovery-executor \
+  python -m egp_api.executors.document_backfill_enqueue
+WorkingDirectory=/srv/egp

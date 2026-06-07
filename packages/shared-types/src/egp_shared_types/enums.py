@@ -48,6 +48,15 @@ class DocumentPhase(StrEnum):
     UNKNOWN = "unknown"
 
 
+class DocumentCaptureAttemptStatus(StrEnum):
+    ENQUEUED = "enqueued"
+    SUCCEEDED = "succeeded"
+    NO_DOCUMENTS = "no_documents"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+
+
 class ArtifactBucket(StrEnum):
     PRICING_ONLY = "pricing_only"
     INVITATION_PLUS_PRICING = "invitation_plus_pricing"

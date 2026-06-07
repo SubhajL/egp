@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.discovery_authorization import (
+    DiscoveryAuthorizationError,
     DiscoveryAuthorizationSnapshot,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
@@ -17,11 +18,16 @@ from egp_crawler_core.discovery_authorization import (
 from egp_crawler_core.invitation_rules import is_invitation_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
+from egp_db.repositories.document_capture_attempt_repo import (
+    SqlDocumentCaptureAttemptRepository,
+    create_document_capture_attempt_repository,
+)
 from egp_db.repositories.billing_repo import create_billing_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
+from egp_shared_types.enums import DocumentCaptureAttemptStatus
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
@@ -59,6 +65,7 @@ _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
     }
 )
 _LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
+_BACKFILL_TRIGGER_TYPE = "backfill"
 
 
 def _load_discovery_authorization_snapshot(
@@ -84,6 +91,51 @@ def _load_discovery_authorization_snapshot(
         subscriptions=subscriptions,
         active_keywords=active_keywords,
     )
+
+
+def _is_backfill_trigger(trigger_type: str | None) -> bool:
+    return str(trigger_type or "").strip().lower() == _BACKFILL_TRIGGER_TYPE
+
+
+def _require_backfill_authorization(snapshot: DiscoveryAuthorizationSnapshot) -> None:
+    if not snapshot.has_active_subscription:
+        raise DiscoveryAuthorizationError("active subscription required for runs")
+    if snapshot.over_keyword_limit:
+        raise DiscoveryAuthorizationError("active keyword configuration exceeds plan limit")
+
+
+def _backfill_project_id_for_keyword(
+    *,
+    database_url: str | None,
+    tenant_id: str,
+    keyword: str,
+    capture_attempt_repository: SqlDocumentCaptureAttemptRepository | None = None,
+) -> str | None:
+    if database_url is None:
+        return None
+    repository = capture_attempt_repository or create_document_capture_attempt_repository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    return repository.find_project_by_number(tenant_id=tenant_id, project_number=keyword)
+
+
+def _authorize_discovery_request(
+    *,
+    snapshot: DiscoveryAuthorizationSnapshot,
+    database_url: str | None,
+    tenant_id: str,
+    keyword: str,
+    trigger_type: str,
+) -> None:
+    if _is_backfill_trigger(trigger_type) and _backfill_project_id_for_keyword(
+        database_url=database_url,
+        tenant_id=tenant_id,
+        keyword=keyword,
+    ):
+        _require_backfill_authorization(snapshot)
+        return
+    require_discovery_authorization(snapshot=snapshot, keyword=keyword)
 
 
 def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
@@ -175,6 +227,38 @@ def _build_discover_task_failure_result(
     return result
 
 
+def _document_capture_attempt_status_for_payload(
+    *,
+    discovered: dict[str, object],
+    downloaded_documents: list[object],
+    failed: bool = False,
+) -> DocumentCaptureAttemptStatus:
+    if failed:
+        return DocumentCaptureAttemptStatus.FAILED
+    collection_status = str(discovered.get("document_collection_status") or "").strip()
+    if collection_status == "timeout":
+        return DocumentCaptureAttemptStatus.TIMEOUT
+    if collection_status == "failed":
+        return DocumentCaptureAttemptStatus.FAILED
+    if downloaded_documents:
+        return DocumentCaptureAttemptStatus.SUCCEEDED
+    return DocumentCaptureAttemptStatus.NO_DOCUMENTS
+
+
+def _document_capture_attempt_reason_for_payload(
+    *,
+    discovered: dict[str, object],
+    failed_error: str | None = None,
+) -> str | None:
+    if failed_error:
+        return failed_error
+    reason = str(discovered.get("document_collection_reason") or "").strip()
+    if reason:
+        return reason
+    collection_status = str(discovered.get("document_collection_status") or "").strip()
+    return collection_status or None
+
+
 def run_discover_workflow(
     *,
     tenant_id: str,
@@ -206,7 +290,13 @@ def run_discover_workflow(
             database_url=database_url,
             tenant_id=tenant_id,
         )
-        require_discovery_authorization(snapshot=authorization_snapshot, keyword=keyword)
+        _authorize_discovery_request(
+            snapshot=authorization_snapshot,
+            database_url=database_url,
+            tenant_id=tenant_id,
+            keyword=keyword,
+            trigger_type=trigger_type,
+        )
     if run_repository is None:
         if database_url is None:
             raise ValueError("database_url is required when repositories are not provided")
@@ -242,6 +332,7 @@ def run_discover_workflow(
     live_progress: dict[str, object] | None = None
     live_crawl_anomaly_count = 0
     live_crawl_latest_anomaly: dict[str, object] | None = None
+    backfill_recorded_project_ids: set[str] = set()
 
     def _current_summary() -> dict[str, object]:
         summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
@@ -270,6 +361,38 @@ def run_discover_workflow(
     def _discovered_project_key(discovered: dict[str, object]) -> str:
         return str(discovered.get("project_number") or discovered["project_name"]).casefold()
 
+    def _record_backfill_capture_attempt(
+        *,
+        project_id: str,
+        discovered: dict[str, object],
+        downloaded_documents: list[object],
+        failed: bool = False,
+        failed_error: str | None = None,
+    ) -> None:
+        if not _is_backfill_trigger(trigger_type) or database_url is None:
+            return
+        repository = create_document_capture_attempt_repository(
+            database_url=database_url,
+            bootstrap_schema=False,
+        )
+        status = _document_capture_attempt_status_for_payload(
+            discovered=discovered,
+            downloaded_documents=downloaded_documents,
+            failed=failed,
+        )
+        repository.record_attempt(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            run_id=run.id,
+            status=status,
+            reason=_document_capture_attempt_reason_for_payload(
+                discovered=discovered,
+                failed_error=failed_error,
+            ),
+            doc_count=len(downloaded_documents),
+        )
+        backfill_recorded_project_ids.add(project_id)
+
     def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
         nonlocal error_count, ignored_late_stage_projects, run_level_error
         source_status_text = str(discovered.get("source_status_text") or "")
@@ -294,10 +417,14 @@ def run_discover_workflow(
         task_keyword = str(discovered.get("keyword") or keyword)
         safe_discovered = _task_safe_payload(discovered)
         task = None
+        project: ProjectRecord | None = None
         if authorization_snapshot is not None:
-            require_discovery_authorization(
+            _authorize_discovery_request(
                 snapshot=authorization_snapshot,
+                database_url=database_url,
+                tenant_id=tenant_id,
                 keyword=task_keyword,
+                trigger_type=trigger_type,
             )
         try:
             task = run_repository.create_task(
@@ -351,6 +478,11 @@ def run_discover_workflow(
                     project_id=project.id,
                     downloaded_documents=downloaded_documents,
                 )
+            _record_backfill_capture_attempt(
+                project_id=project.id,
+                discovered=discovered,
+                downloaded_documents=downloaded_documents,
+            )
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
@@ -360,6 +492,21 @@ def run_discover_workflow(
             return project
         except Exception as exc:
             error_count += 1
+            if project is not None and project.id not in backfill_recorded_project_ids:
+                try:
+                    _record_backfill_capture_attempt(
+                        project_id=project.id,
+                        discovered=discovered,
+                        downloaded_documents=list(discovered.get("downloaded_documents") or []),
+                        failed=True,
+                        failed_error=str(exc),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to record document backfill capture failure for %s",
+                        project.id,
+                        exc_info=True,
+                    )
             logger.exception(
                 "Project persistence failed for %s",
                 project_key,
@@ -455,6 +602,27 @@ def run_discover_workflow(
         summary_json["error"] = run_level_error
     elif anomaly_error is not None:
         summary_json["error"] = anomaly_error
+    if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
+        existing_project_id = _backfill_project_id_for_keyword(
+            database_url=database_url,
+            tenant_id=tenant_id,
+            keyword=keyword,
+        )
+        if (
+            existing_project_id is not None
+            and existing_project_id not in backfill_recorded_project_ids
+        ):
+            create_document_capture_attempt_repository(
+                database_url=database_url,
+                bootstrap_schema=False,
+            ).record_attempt(
+                tenant_id=tenant_id,
+                project_id=existing_project_id,
+                run_id=run.id,
+                status=DocumentCaptureAttemptStatus.FAILED,
+                reason=run_level_error or anomaly_error or "backfill_project_not_rediscovered",
+                doc_count=0,
+            )
     run_repository.mark_run_finished(
         run.id,
         status="partial"
