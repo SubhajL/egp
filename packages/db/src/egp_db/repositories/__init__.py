@@ -23,6 +23,12 @@ from .discovery_job_repo import (
     SqlDiscoveryJobRepository,
     create_discovery_job_repository,
 )
+from .document_capture_attempt_repo import (
+    DocumentCaptureAttemptRecord,
+    DocumentCaptureBackfillCandidate,
+    SqlDocumentCaptureAttemptRepository,
+    create_document_capture_attempt_repository,
+)
 from .document_repo import (
     DocumentDiffRecord,
     DocumentRecord,
@@ -46,12 +52,15 @@ __all__ = [
     "BillingSubscriptionRecord",
     "BillingSummary",
     "DiscoveryJobRecord",
+    "DocumentCaptureAttemptRecord",
+    "DocumentCaptureBackfillCandidate",
     "DocumentDiffRecord",
     "DocumentRecord",
     "FilesystemDocumentRepository",
     "ProjectUpsertRecord",
     "SqlAuthRepository",
     "SqlDiscoveryJobRepository",
+    "SqlDocumentCaptureAttemptRepository",
     "SqlDocumentRepository",
     "StoreDocumentResult",
     "build_document_record",
@@ -60,6 +69,7 @@ __all__ = [
     "create_auth_repository",
     "create_billing_repository",
     "create_discovery_job_repository",
+    "create_document_capture_attempt_repository",
     "create_document_repository",
     "hash_password",
     "verify_password",

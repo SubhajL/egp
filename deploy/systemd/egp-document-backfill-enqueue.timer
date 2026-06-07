@@ -1,0 +1,15 @@
+# Track C — periodically top up targeted document backfill jobs.
+#
+# The table-backed attempt cap/backoff governs retries; this timer only bounds
+# how often due candidates are scanned.
+[Unit]
+Description=Run e-GP targeted document backfill enqueue every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+Persistent=true
+Unit=egp-document-backfill-enqueue.service
+
+[Install]
+WantedBy=timers.target

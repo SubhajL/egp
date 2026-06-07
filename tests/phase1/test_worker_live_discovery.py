@@ -6,10 +6,21 @@ from types import SimpleNamespace
 
 import pytest
 from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.document_capture_attempt_repo import (
+    SqlDocumentCaptureAttemptRepository,
+)
 from egp_db.repositories.profile_repo import create_profile_repository
+from egp_db.repositories.project_repo import (
+    SqlProjectRepository,
+    build_project_upsert_record,
+)
 from sqlalchemy import text
 
-from egp_shared_types.enums import ProjectState
+from egp_shared_types.enums import (
+    DocumentCaptureAttemptStatus,
+    ProcurementType,
+    ProjectState,
+)
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
     LiveDiscoveryPartialError,
@@ -332,6 +343,29 @@ def _seed_profile(
     )
 
 
+def _seed_backfill_project(
+    *,
+    database_url: str,
+    project_number: str,
+) -> None:
+    repository = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
+    repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number=project_number,
+            search_name=f"search {project_number}",
+            detail_name=f"detail {project_number}",
+            project_name=f"project {project_number}",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-06-08",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+
+
 def test_run_discover_workflow_denies_without_active_subscription(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-denied.sqlite3'}"
     run_repository = FakeRunRepository()
@@ -377,6 +411,127 @@ def test_run_worker_job_discover_denies_when_keyword_not_entitled(tmp_path) -> N
                 "discovered_projects": [],
             }
         )
+
+
+def test_run_worker_job_backfill_allows_existing_project_number_and_records_no_documents(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-backfill-no-docs.sqlite3'}"
+    project_number = "69049163846"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+    _seed_backfill_project(database_url=database_url, project_number=project_number)
+    capture_repository = SqlDocumentCaptureAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": database_url,
+            "artifact_root": str(tmp_path / "artifacts"),
+            "tenant_id": TENANT_ID,
+            "keyword": project_number,
+            "trigger_type": "backfill",
+            "discovered_projects": [
+                {
+                    "project_number": project_number,
+                    "search_name": "ระบบข้อมูลกลาง",
+                    "detail_name": "โครงการระบบข้อมูลกลาง",
+                    "project_name": "โครงการระบบข้อมูลกลาง",
+                    "organization_name": "กรมตัวอย่าง",
+                    "proposal_submission_date": "2026-06-08",
+                    "budget_amount": "1500000.00",
+                    "project_state": ProjectState.OPEN_INVITATION.value,
+                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    "downloaded_documents": [],
+                    "document_collection_status": "no_documents",
+                    "document_collection_reason": "document_collection_empty",
+                }
+            ],
+        }
+    )
+
+    latest_attempt = capture_repository.get_latest_attempt_for_project(
+        tenant_id=TENANT_ID,
+        project_number=project_number,
+    )
+    assert result["run_status"] == "succeeded"
+    assert latest_attempt is not None
+    assert latest_attempt.status is DocumentCaptureAttemptStatus.NO_DOCUMENTS
+    assert latest_attempt.doc_count == 0
+    assert latest_attempt.run_id == result["run_id"]
+
+
+def test_run_worker_job_backfill_records_success_doc_count(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-backfill-success.sqlite3'}"
+    project_number = "69049163847"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(database_url=database_url, keywords=["analytics"])
+    _seed_backfill_project(database_url=database_url, project_number=project_number)
+    capture_repository = SqlDocumentCaptureAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": database_url,
+            "artifact_root": str(tmp_path / "artifacts"),
+            "tenant_id": TENANT_ID,
+            "keyword": project_number,
+            "trigger_type": "backfill",
+            "discovered_projects": [
+                {
+                    "project_number": project_number,
+                    "search_name": "ระบบข้อมูลกลาง",
+                    "detail_name": "โครงการระบบข้อมูลกลาง",
+                    "project_name": "โครงการระบบข้อมูลกลาง",
+                    "organization_name": "กรมตัวอย่าง",
+                    "proposal_submission_date": "2026-06-08",
+                    "budget_amount": "1500000.00",
+                    "project_state": ProjectState.OPEN_INVITATION.value,
+                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    "downloaded_documents": [
+                        {
+                            "file_name": "invite.pdf",
+                            "file_bytes": b"invite",
+                            "source_label": "ประกาศเชิญชวน",
+                            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                            "source_page_text": "",
+                            "project_state": ProjectState.OPEN_INVITATION.value,
+                        }
+                    ],
+                    "document_collection_status": "succeeded",
+                }
+            ],
+        }
+    )
+
+    latest_attempt = capture_repository.get_latest_attempt_for_project(
+        tenant_id=TENANT_ID,
+        project_number=project_number,
+    )
+    assert result["run_status"] == "succeeded"
+    assert latest_attempt is not None
+    assert latest_attempt.status is DocumentCaptureAttemptStatus.SUCCEEDED
+    assert latest_attempt.doc_count == 1
 
 
 def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(
@@ -653,7 +808,9 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
             "keyword": "แพลตฟอร์ม",
             "keyword_index": 1,
             "keyword_count": 1,
-            "updated_at": run_repository.finished_summary["live_progress"]["updated_at"],
+            "updated_at": run_repository.finished_summary["live_progress"][
+                "updated_at"
+            ],
         },
         "live_crawl_anomaly_count": 1,
         "live_crawl_latest_anomaly": {
@@ -719,7 +876,9 @@ def test_run_discover_workflow_marks_invalid_live_detail_as_failed(
             "stage": "project_detail_invalid",
             "keyword": "แพลตฟอร์ม",
             "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
-            "updated_at": run_repository.finished_summary["live_progress"]["updated_at"],
+            "updated_at": run_repository.finished_summary["live_progress"][
+                "updated_at"
+            ],
         },
         "live_crawl_anomaly_count": 1,
         "live_crawl_latest_anomaly": {
@@ -989,7 +1148,9 @@ def test_run_discover_workflow_can_opt_into_live_browser_document_downloads(
     assert captured_ingest["downloaded_documents"][0]["file_bytes"] == b"tor-v1"
 
 
-def test_run_discover_workflow_ignores_projects_first_seen_after_invitation_stage() -> None:
+def test_run_discover_workflow_ignores_projects_first_seen_after_invitation_stage() -> (
+    None
+):
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
 
@@ -1607,12 +1768,12 @@ def test_run_discover_workflow_records_run_error_when_task_creation_fails() -> N
         tenant_id=TENANT_ID,
         keyword="analytics",
         discovered_projects=[
-                {
-                    "keyword": "analytics",
-                    "project_name": "ระบบวิเคราะห์ข้อมูล",
-                    "organization_name": "กรมตัวอย่าง",
-                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
-                }
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
         ],
         run_repository=run_repository,
         project_event_sink=sink,
@@ -1640,12 +1801,12 @@ def test_run_discover_workflow_keeps_run_summary_clean_when_task_row_has_error()
         tenant_id=TENANT_ID,
         keyword="analytics",
         discovered_projects=[
-                {
-                    "keyword": "analytics",
-                    "project_name": "ระบบวิเคราะห์ข้อมูล",
-                    "organization_name": "กรมตัวอย่าง",
-                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
-                }
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
         ],
         run_repository=run_repository,
         project_event_sink=ExplodingSink(),
@@ -1683,12 +1844,12 @@ def test_run_discover_workflow_logs_document_ingest_failure_context(
         tenant_id=TENANT_ID,
         keyword="analytics",
         discovered_projects=[
-                {
-                    "keyword": "analytics",
-                    "project_name": "ระบบวิเคราะห์ข้อมูล",
-                    "organization_name": "กรมตัวอย่าง",
-                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
-                    "downloaded_documents": [
+            {
+                "keyword": "analytics",
+                "project_name": "ระบบวิเคราะห์ข้อมูล",
+                "organization_name": "กรมตัวอย่าง",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "downloaded_documents": [
                     {
                         "file_name": "tor.pdf",
                         "file_bytes": b"tor-v1",
@@ -2020,7 +2181,9 @@ def test_run_scheduled_discovery_executes_due_jobs_from_repository_state() -> No
     ]
 
 
-def test_run_scheduled_discovery_reuses_authorization_snapshot_per_tenant_batch() -> None:
+def test_run_scheduled_discovery_reuses_authorization_snapshot_per_tenant_batch() -> (
+    None
+):
     executed_jobs: list[dict[str, object]] = []
     billing_repository = FakeBillingRepository(
         {
