@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from egp_worker.browser_downloads import (
@@ -56,6 +57,13 @@ class FakeRow:
             return self._cells
         return []
 
+    def query_selector(self, selector: str):
+        for cell in self._cells:
+            clickable = cell.query_selector(selector)
+            if clickable is not None:
+                return clickable
+        return None
+
 
 class FakeTable:
     def __init__(
@@ -104,6 +112,21 @@ class FakePage:
         return None
 
 
+class FakeDelayedTablePage(FakePage):
+    def __init__(self, delayed_tables: list[FakeTable]) -> None:
+        super().__init__([])
+        self._delayed_tables = delayed_tables
+        self.table_queries = 0
+
+    def query_selector_all(self, selector: str):
+        if selector == "table":
+            self.table_queries += 1
+            if self.table_queries == 1:
+                return []
+            return self._delayed_tables
+        return super().query_selector_all(selector)
+
+
 class FakeNoDownloadWaitPage(FakePage):
     def expect_download(self, timeout=None):
         raise AssertionError(
@@ -148,6 +171,52 @@ class FakeDownloadWithExpiredPath:
         saved_path = Path(target_path)
         saved_path.write_bytes(b"zip-bytes")
         self.saved_paths.append(saved_path)
+
+
+def _fixture_path(name: str) -> Path:
+    return Path(__file__).resolve().parents[1] / "fixtures" / "browser_downloads" / name
+
+
+def _fake_page_from_detail_fixture(name: str) -> FakePage:
+    html = _fixture_path(name).read_text(encoding="utf-8")
+    assert "69049163846" in html
+    rows: list[FakeRow] = []
+    for row_html in re.findall(
+        r"<tr[^>]+data-fixture-row=\"document\"[^>]*>(.*?)</tr>",
+        html,
+        flags=re.DOTALL,
+    ):
+        cell_htmls = re.findall(r"<td[^>]*>(.*?)</td>", row_html, flags=re.DOTALL)
+        cells: list[FakeCell] = []
+        for cell_html in cell_htmls:
+            text = re.sub(r"<[^>]+>", " ", cell_html)
+            text = re.sub(r"\s+", " ", text).strip()
+            clickable = None
+            if re.search(r"<(?:a|button)\b", cell_html):
+                clickable = FakeClickable(
+                    {
+                        "href": (
+                            re.search(r'href="([^"]*)"', cell_html).group(1)
+                            if re.search(r'href="([^"]*)"', cell_html)
+                            else None
+                        ),
+                        "onclick": (
+                            re.search(r'onclick="([^"]*)"', cell_html).group(1)
+                            if re.search(r'onclick="([^"]*)"', cell_html)
+                            else None
+                        ),
+                        "dataToggle": (
+                            re.search(r'data-toggle="([^"]*)"', cell_html).group(1)
+                            if re.search(r'data-toggle="([^"]*)"', cell_html)
+                            else None
+                        ),
+                        "tag": "button" if "<button" in cell_html else "a",
+                        "textContent": text,
+                    }
+                )
+            cells.append(FakeCell(text, clickable=clickable))
+        rows.append(FakeRow(cells))
+    return FakePage([FakeTable([], rows)])
 
 
 class FakeKeyboard:
@@ -452,6 +521,204 @@ def test_invitation_popup_collects_final_tor(monkeypatch, tmp_path: Path) -> Non
     assert [document["source_label"] for document in downloaded] == [
         "ประกาศเชิญชวน",
         "เอกสารประกวดราคา",
+    ]
+
+
+def test_download_one_document_waits_until_downloadable_rows_exist(monkeypatch) -> None:
+    clickable = FakeClickable()
+    page = FakeDelayedTablePage(
+        [
+            FakeTable(
+                ["ลำดับ", "ประกาศที่เกี่ยวข้อง", "วันที่ประกาศ", "ดูข้อมูล"],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("1"),
+                            FakeCell("ประกาศเชิญชวน"),
+                            FakeCell("10/04/2569"),
+                            FakeCell("", clickable=clickable),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        lambda page, btn, doc_name, document_context=None: [
+            {
+                "file_name": "invite.pdf",
+                "file_bytes": b"invite",
+                "source_label": doc_name,
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ],
+    )
+
+    downloaded = _download_one_document(page, "ประกาศเชิญชวน")
+
+    assert page.table_queries >= 2
+    assert downloaded == [
+        {
+            "file_name": "invite.pdf",
+            "file_bytes": b"invite",
+            "source_label": "ประกาศเชิญชวน",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_download_one_document_detects_row_level_download_table_fixture(
+    monkeypatch,
+) -> None:
+    page = _fake_page_from_detail_fixture("detail_69049163846.html")
+    captured_buttons: list[FakeClickable] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_handle_direct_or_page_download(page, btn, doc_name, document_context=None):
+        captured_buttons.append(btn)
+        return [
+            {
+                "file_name": "69049163846_08052569.zip",
+                "file_bytes": b"zip",
+                "source_label": doc_name,
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        fake_handle_direct_or_page_download,
+    )
+
+    downloaded = _download_one_document(page, "เอกสารประกวดราคา")
+
+    assert len(captured_buttons) == 1
+    assert downloaded == [
+        {
+            "file_name": "69049163846_08052569.zip",
+            "file_bytes": b"zip",
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_download_one_document_accepts_two_cell_rows(monkeypatch) -> None:
+    clickable = FakeClickable()
+    page = FakePage(
+        [
+            FakeTable(
+                ["รายการ", "ดูข้อมูล"],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("ประกาศราคากลาง"),
+                            FakeCell("", clickable=clickable),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    selected_buttons: list[FakeClickable] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_handle_direct_or_page_download(page, btn, doc_name, document_context=None):
+        selected_buttons.append(btn)
+        return [
+            {
+                "file_name": "mid-price.pdf",
+                "file_bytes": b"price",
+                "source_label": doc_name,
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        fake_handle_direct_or_page_download,
+    )
+
+    downloaded = _download_one_document(page, "ประกาศราคากลาง")
+
+    assert selected_buttons == [clickable]
+    assert downloaded == [
+        {
+            "file_name": "mid-price.pdf",
+            "file_bytes": b"price",
+            "source_label": "ประกาศราคากลาง",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_final_tor_filter_falls_back_to_download_filename(monkeypatch) -> None:
+    clickable = FakeClickable()
+    page = FakePage(
+        [
+            FakeTable(
+                ["ลำดับ", "เอกสาร", "วันที่ประกาศ", "ดูข้อมูล"],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("1"),
+                            FakeCell("เอกสารประกวดราคา"),
+                            FakeCell("11/04/2569"),
+                            FakeCell("", clickable=clickable),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        lambda page, btn, doc_name, document_context=None: [
+            {
+                "file_name": "tor-final.zip",
+                "file_bytes": b"tor",
+                "source_label": "download",
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ],
+    )
+
+    downloaded = _download_one_document(page, "เอกสารประกวดราคา")
+
+    assert downloaded == [
+        {
+            "file_name": "tor-final.zip",
+            "file_bytes": b"tor",
+            "source_label": "download",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
     ]
 
 
