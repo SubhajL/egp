@@ -30,6 +30,8 @@ test-results/
 egp_crawler_runtime.log
 project_list.xlsx
 apps/web/artifacts/
+/artifacts/
+egp-dev-logs.md
 
 # Environment
 .env
