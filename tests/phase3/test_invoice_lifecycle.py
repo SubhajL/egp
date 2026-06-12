@@ -30,6 +30,46 @@ def _create_client(tmp_path) -> TestClient:
     )
 
 
+def _tenant_plan_code(client: TestClient) -> str:
+    with client.app.state.db_engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT plan_code FROM tenants WHERE id = :tenant_id"),
+            {"tenant_id": TENANT_ID},
+        ).one()
+    return str(row[0])
+
+
+def _set_tenant_plan_code(client: TestClient, *, plan_code: str) -> None:
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenants (
+                    id,
+                    name,
+                    slug,
+                    plan_code,
+                    is_active,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :tenant_id,
+                    'Test Tenant',
+                    'test-tenant',
+                    :plan_code,
+                    1,
+                    '2026-04-08T00:00:00+00:00',
+                    '2026-04-08T00:00:00+00:00'
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    plan_code = excluded.plan_code,
+                    updated_at = excluded.updated_at
+                """
+            ),
+            {"tenant_id": TENANT_ID, "plan_code": plan_code},
+        )
+
+
 def _seed_subscription(
     client: TestClient,
     *,
@@ -608,6 +648,59 @@ def test_one_time_can_request_upgrade_to_monthly_membership(tmp_path) -> None:
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
 
+def test_active_subscription_settlement_updates_tenant_profile_plan(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = _utc_today()
+    _seed_subscription(
+        client,
+        plan_code="one_time_search_pack",
+        billing_period_start=today,
+        billing_period_end=today + timedelta(days=2),
+        keyword_limit=1,
+    )
+    _set_tenant_plan_code(client, plan_code="one_time_search_pack")
+
+    upgrade_response = client.post(
+        "/v1/billing/upgrades",
+        json={
+            "tenant_id": TENANT_ID,
+            "target_plan_code": "monthly_membership",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+    assert upgrade_response.status_code == 201
+    upgrade_detail = upgrade_response.json()
+
+    payment_response = client.post(
+        f"/v1/billing/records/{upgrade_detail['record']['id']}/payments",
+        json={
+            "tenant_id": TENANT_ID,
+            "payment_method": "bank_transfer",
+            "amount": "25.00",
+            "currency": "THB",
+            "reference_code": "KBANK-UPG-NOW-001",
+            "received_at": f"{today.isoformat()}T03:30:00+00:00",
+            "note": "Customer transfer",
+        },
+    )
+    assert payment_response.status_code == 201
+    payment = payment_response.json()
+
+    reconciled_response = client.post(
+        f"/v1/billing/payments/{payment['id']}/reconcile",
+        json={
+            "tenant_id": TENANT_ID,
+            "status": "reconciled",
+            "note": "Matched against statement",
+        },
+    )
+    assert reconciled_response.status_code == 200
+    reconciled = reconciled_response.json()
+    assert reconciled["subscription"]["subscription_status"] == "active"
+    assert reconciled["subscription"]["plan_code"] == "monthly_membership"
+    assert _tenant_plan_code(client) == "monthly_membership"
+
+
 def test_expired_one_time_can_request_renewal_to_one_time_search_pack(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = _utc_today()
@@ -869,6 +962,7 @@ def test_future_start_upgrade_settlement_preserves_current_active_subscription(
         billing_period_end=today + timedelta(days=2),
         keyword_limit=1,
     )
+    _set_tenant_plan_code(client, plan_code="one_time_search_pack")
     future_start = today + timedelta(days=5)
 
     upgrade_response = client.post(
@@ -921,6 +1015,7 @@ def test_future_start_upgrade_settlement_preserves_current_active_subscription(
         and detail["subscription"]["id"] == source_subscription_id
     )
     assert source_record["subscription"]["subscription_status"] == "active"
+    assert _tenant_plan_code(client) == "one_time_search_pack"
 
 
 def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(
