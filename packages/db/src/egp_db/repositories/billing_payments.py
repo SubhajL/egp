@@ -24,7 +24,6 @@ from .billing_schema import (
     BILLING_RECORDS_TABLE,
     BILLING_SUBSCRIPTIONS_TABLE,
 )
-from .profile_repo import CRAWL_PROFILES_TABLE
 from .billing_utils import (
     _normalize_amount,
     _normalize_datetime,
@@ -35,9 +34,28 @@ from .billing_utils import (
     _reconciled_total_for_payments,
     _subscription_status_for_period,
 )
+from .admin_repo import TENANTS_TABLE
+from .profile_repo import CRAWL_PROFILES_TABLE
 
 
 class BillingPaymentMixin:
+    def _sync_tenant_plan_for_active_subscription(
+        self,
+        *,
+        connection,
+        tenant_id: str,
+        plan_code: str,
+        subscription_status: BillingSubscriptionStatus,
+        now,
+    ) -> None:
+        if subscription_status is not BillingSubscriptionStatus.ACTIVE:
+            return
+        connection.execute(
+            update(TENANTS_TABLE)
+            .where(TENANTS_TABLE.c.id == normalize_uuid_string(tenant_id))
+            .values(plan_code=plan_code, updated_at=now)
+        )
+
     def _deactivate_profiles_for_one_time_renewal(
         self,
         *,
@@ -372,6 +390,13 @@ class BillingPaymentMixin:
                         note=note,
                         from_status=None,
                         to_status=subscription_status.value,
+                    )
+                    self._sync_tenant_plan_for_active_subscription(
+                        connection=connection,
+                        tenant_id=tenant_id,
+                        plan_code=record_before.plan_code,
+                        subscription_status=subscription_status,
+                        now=now,
                     )
                     self._deactivate_profiles_for_one_time_renewal(
                         connection=connection,

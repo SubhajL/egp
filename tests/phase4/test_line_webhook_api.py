@@ -11,7 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -109,7 +109,7 @@ def _post_webhook(client, payload: dict):
 
 
 def _create_record(client, *, record_number="INV-2026-0001") -> dict:
-    start = date(2026, 5, 1)
+    start = datetime.now(UTC).date()
     response = client.post(
         "/v1/billing/records",
         json={
