@@ -24,6 +24,10 @@ import {
   type BillingSubscription,
 } from "@/lib/api";
 import { useBillingPlans, useBillingRecords, usePaymentConfig } from "@/lib/hooks";
+import {
+  isPaymentRequestExpired,
+  isUsablePendingPaymentRequest,
+} from "@/lib/billing-payment-requests";
 import { buildLinePaymentMessage, buildLinePaymentUrl } from "@/lib/line";
 import { supportsCardPayment } from "@/lib/payment";
 import { formatBudget, formatThaiDate } from "@/lib/utils";
@@ -373,6 +377,7 @@ export default function BillingPage() {
   const [upgradeError, setUpgradeError] = useState<string | null>(null);
   const [upgradeStatusMessage, setUpgradeStatusMessage] = useState<string | null>(null);
   const [renderedQrSvg, setRenderedQrSvg] = useState("");
+  const [paymentRequestClock, setPaymentRequestClock] = useState(() => new Date());
   const [actionBusy, setActionBusy] = useState(false);
   const [upgradeInFlightPlanCode, setUpgradeInFlightPlanCode] = useState<string | null>(null);
   const [upgradeCopy, setUpgradeCopy] = useState<string | null>(null);
@@ -457,8 +462,16 @@ export default function BillingPage() {
   const latestPaymentRequest = selectedRecord?.payment_requests[0] ?? null;
   const latestRequestIsPromptPay = latestPaymentRequest?.payment_method === "promptpay_qr";
   const latestRequestIsCard = latestPaymentRequest?.payment_method === "card";
+  const latestPaymentRequestExpired = isPaymentRequestExpired(
+    latestPaymentRequest,
+    paymentRequestClock,
+  );
+  const latestPaymentRequestUsable = isUsablePendingPaymentRequest(
+    latestPaymentRequest,
+    paymentRequestClock,
+  );
   const liveStatusPolling =
-    !selectedRecord?.record.is_stale_unpaid && latestPaymentRequest?.status === "pending";
+    !selectedRecord?.record.is_stale_unpaid && latestPaymentRequestUsable;
 
   const { data: paymentConfig } = usePaymentConfig();
   // Card rails only exist for OPN/Stripe; manual PromptPay (the focus) is QR-only,
@@ -481,7 +494,10 @@ export default function BillingPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const payload = latestRequestIsPromptPay ? latestPaymentRequest?.qr_payload : "";
+    const payload =
+      latestRequestIsPromptPay && !latestPaymentRequestExpired
+        ? latestPaymentRequest?.qr_payload
+        : "";
     if (!payload) {
       setRenderedQrSvg("");
       return () => {
@@ -510,7 +526,27 @@ export default function BillingPage() {
     return () => {
       cancelled = true;
     };
-  }, [latestPaymentRequest, latestRequestIsPromptPay]);
+  }, [latestPaymentRequest, latestPaymentRequestExpired, latestRequestIsPromptPay]);
+
+  useEffect(() => {
+    if (latestPaymentRequest?.status !== "pending" || !latestPaymentRequest.expires_at) {
+      return;
+    }
+    const expiresAtMs = Date.parse(latestPaymentRequest.expires_at);
+    if (Number.isNaN(expiresAtMs)) {
+      return;
+    }
+    const delayMs = Math.max(0, expiresAtMs - Date.now() + 1_000);
+    const timer = window.setTimeout(
+      () => setPaymentRequestClock(new Date()),
+      Math.min(delayMs, 2_147_483_647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    latestPaymentRequest?.id,
+    latestPaymentRequest?.status,
+    latestPaymentRequest?.expires_at,
+  ]);
 
   async function refreshBilling() {
     await queryClient.invalidateQueries({ queryKey: ["billing-records"] });
@@ -622,18 +658,21 @@ export default function BillingPage() {
     setPaymentError(null);
     setActionBusy(true);
     try {
-      const detail = await createBillingPaymentRequest(selectedRecord.record.id, {
-        provider: paymentConfig?.provider ?? "opn",
-        // Force QR for providers without card rails (e.g. promptpay_manual).
-        payment_method: cardPaymentSupported ? paymentRequestMethod : "promptpay_qr",
-      });
+      const selectedPaymentMethod = cardPaymentSupported ? paymentRequestMethod : "promptpay_qr";
+      const detail =
+        selectedPaymentMethod === "promptpay_qr"
+          ? await createPromptPayRequestForRecord(selectedRecord.record.id)
+          : await createBillingPaymentRequest(selectedRecord.record.id, {
+              provider: paymentConfig?.provider ?? "opn",
+              payment_method: selectedPaymentMethod,
+            });
       await refreshBilling();
       setSelectedRecordId(detail.record.id);
     } catch (mutationError) {
       setPaymentError(
         localizeApiError(
           mutationError,
-          paymentRequestMethod === "card"
+          cardPaymentSupported && paymentRequestMethod === "card"
             ? "ไม่สามารถสร้างลิงก์ชำระด้วยบัตรได้"
             : "ไม่สามารถสร้าง PromptPay QR ได้",
         ),
@@ -729,6 +768,13 @@ export default function BillingPage() {
       !selectedRecord.record.is_stale_unpaid &&
       selectedRecord.record.outstanding_balance !== "0.00"
     : false;
+  const createPaymentRequestLabel = latestPaymentRequestExpired
+    ? latestRequestIsCard
+      ? "สร้างลิงก์ชำระใหม่"
+      : "สร้าง QR ใหม่"
+    : cardPaymentSupported && paymentRequestMethod === "card"
+      ? "สร้างลิงก์ชำระด้วยบัตร"
+      : "สร้าง PromptPay QR";
   const canStartFreeTrial =
     !isLoading &&
     currentSubscription === null &&
@@ -1195,9 +1241,7 @@ export default function BillingPage() {
                           onClick={() => void handleCreatePaymentRequest()}
                           className="rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-sm font-semibold text-primary transition-colors hover:border-primary disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          {cardPaymentSupported && paymentRequestMethod === "card"
-                            ? "สร้างลิงก์ชำระด้วยบัตร"
-                            : "สร้าง PromptPay QR"}
+                          {createPaymentRequestLabel}
                         </button>
                       </div>
                     ) : null}
@@ -1293,8 +1337,18 @@ export default function BillingPage() {
                           ระบบกำลังอัปเดตสถานะอัตโนมัติทุก 5 วินาที
                         </p>
                       ) : null}
+                      {latestPaymentRequestExpired ? (
+                        <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                          <p className="text-sm font-semibold text-amber-900">
+                            QR นี้หมดอายุแล้ว
+                          </p>
+                          <p className="mt-1 text-sm text-amber-800">
+                            กด “สร้าง QR ใหม่” เพื่อออกคำขอชำระเงินใหม่สำหรับบิลนี้
+                          </p>
+                        </div>
+                      ) : null}
 
-                      {latestRequestIsPromptPay ? (
+                      {latestRequestIsPromptPay && !latestPaymentRequestExpired ? (
                         <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-[200px_minmax(0,1fr)]">
                           <div
                             className="mx-auto w-[180px] rounded-2xl bg-white p-3 shadow-[var(--shadow-soft)]"
@@ -1351,7 +1405,7 @@ export default function BillingPage() {
                         </div>
                       ) : null}
 
-                      {latestRequestIsCard ? (
+                      {latestRequestIsCard && !latestPaymentRequestExpired ? (
                         <div className="mt-4 rounded-2xl bg-[var(--bg-surface)] p-4">
                           <p className="text-sm text-[var(--text-secondary)]">
                             ส่งลูกค้าไปยังหน้าชำระเงินของ Opn เพื่อกรอกข้อมูลบัตรและยืนยัน 3DS ตามที่ธนาคารร้องขอ

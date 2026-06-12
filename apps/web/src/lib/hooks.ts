@@ -36,6 +36,7 @@ import {
   type CurrentSessionResponse,
 } from "./api";
 import { clearStoredCurrentSession, writeStoredCurrentSession } from "./auth";
+import { isUsablePendingPaymentRequest } from "./billing-payment-requests";
 
 function shouldAutoRefreshBilling(snapshot: BillingListResponse | undefined): boolean {
   if (!snapshot) {
@@ -51,7 +52,7 @@ function shouldAutoRefreshBilling(snapshot: BillingListResponse | undefined): bo
     if (!isPayableRecord) {
       return false;
     }
-    return detail.payment_requests.some((request) => request.status === "pending");
+    return detail.payment_requests.some((request) => isUsablePendingPaymentRequest(request));
   });
 }
 
