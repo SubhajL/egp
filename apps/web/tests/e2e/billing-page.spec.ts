@@ -410,6 +410,66 @@ function buildUpgradeWithQrResponse() {
   };
 }
 
+type BillingRecordsFixture = ReturnType<typeof buildBillingRecordsResponse>;
+
+function buildExpiredPromptPayBillingRecordsResponse(): BillingRecordsFixture {
+  const base = buildBillingRecordsResponse();
+  const upgrade = buildUpgradeWithQrResponse();
+  return {
+    ...base,
+    records: [
+      {
+        ...upgrade,
+        record: {
+          ...upgrade.record,
+          id: "record-expired-1",
+          record_number: "EXPIRED-QR-1",
+          status: "awaiting_payment",
+          outstanding_balance: "1500.00",
+        },
+        payment_requests: [
+          {
+            ...upgrade.payment_requests[0],
+            id: "request-expired-1",
+            billing_record_id: "record-expired-1",
+            provider: "promptpay_manual",
+            provider_reference: "expired-promptpay-ref",
+            payment_url: "https://payments.example/expired-qr",
+            qr_payload: "EXPIRED-PROMPTPAY-PAYLOAD",
+            expires_at: "2000-01-01T00:00:00Z",
+          },
+        ],
+      },
+      ...base.records,
+    ],
+    total: 2,
+    summary: {
+      open_records: 1,
+      awaiting_reconciliation: 0,
+      outstanding_amount: "1500.00",
+      collected_amount: "0.00",
+    },
+  };
+}
+
+function buildFreshPromptPayRecordDetail() {
+  const fixture = buildExpiredPromptPayBillingRecordsResponse();
+  const detail = fixture.records[0];
+  return {
+    ...detail,
+    payment_requests: [
+      {
+        ...detail.payment_requests[0],
+        id: "request-fresh-1",
+        provider_reference: "fresh-promptpay-ref",
+        payment_url: "https://payments.example/fresh-qr",
+        qr_payload: "FRESH-PROMPTPAY-PAYLOAD",
+        expires_at: "2999-01-01T00:00:00Z",
+      },
+    ],
+  };
+}
+
 async function fulfillJson(route: Route, status: number, body: unknown) {
   await route.fulfill({
     status,
@@ -423,14 +483,15 @@ async function mockBillingApp(
   planCode: "free_trial" | "one_time_search_pack" | "monthly_membership",
   options: {
     failUpgradePaymentRequest?: boolean;
+    initialBillingRecords?: BillingRecordsFixture;
   } = {},
 ) {
-  let latestBillingRecords =
-    planCode === "one_time_search_pack"
+  let latestBillingRecords = options.initialBillingRecords ??
+    (planCode === "one_time_search_pack"
       ? buildOneTimeBillingRecordsResponse()
       : planCode === "monthly_membership"
         ? buildMonthlyBillingRecordsResponse()
-        : buildBillingRecordsResponse();
+        : buildBillingRecordsResponse());
   let latestRules = buildRulesResponse(planCode);
   let upgradePayload: unknown;
   let paymentRequestPayload: unknown;
@@ -452,6 +513,12 @@ async function mockBillingApp(
         return;
       case "GET /v1/billing/records":
         await fulfillJson(route, 200, latestBillingRecords);
+        return;
+      case "GET /v1/billing/payment-config":
+        await fulfillJson(route, 200, {
+          provider: "promptpay_manual",
+          line_add_url: "https://line.me/R/ti/p/@egptracker",
+        });
         return;
       case "GET /v1/rules":
         await fulfillJson(route, 200, latestRules);
@@ -486,6 +553,14 @@ async function mockBillingApp(
           return;
         }
         await fulfillJson(route, 201, buildUpgradeWithQrResponse());
+        return;
+      case "POST /v1/billing/records/record-expired-1/payment-requests":
+        paymentRequestPayload = request.postDataJSON();
+        latestBillingRecords = {
+          ...latestBillingRecords,
+          records: [buildFreshPromptPayRecordDetail(), ...latestBillingRecords.records.slice(1)],
+        };
+        await fulfillJson(route, 201, buildFreshPromptPayRecordDetail());
         return;
       default:
         await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
@@ -534,9 +609,37 @@ test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", 
     billing_period_start: todayIsoDate(),
   });
   expect(mocks.getPaymentRequestPayload()).toEqual({
-    provider: "opn",
+    provider: "promptpay_manual",
     payment_method: "promptpay_qr",
-    expires_in_minutes: 30,
+    expires_in_minutes: 1440,
+  });
+});
+
+test("billing page makes expired PromptPay QR regeneration primary", async ({ page }) => {
+  const mocks = await mockBillingApp(page, "free_trial", {
+    initialBillingRecords: buildExpiredPromptPayBillingRecordsResponse(),
+  });
+
+  await page.goto("/billing?record_id=record-expired-1");
+
+  await expect(page.getByText("PromptPay Request", { exact: true })).toBeVisible();
+  await expect(page.getByText("QR นี้หมดอายุแล้ว", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("กด “สร้าง QR ใหม่” เพื่อออกคำขอชำระเงินใหม่สำหรับบิลนี้", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "สร้าง QR ใหม่" })).toBeVisible();
+  await expect(page.getByText("EXPIRED-PROMPTPAY-PAYLOAD")).toHaveCount(0);
+  await expect(page.getByText("ระบบกำลังอัปเดตสถานะอัตโนมัติทุก 5 วินาที")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "ชำระแล้ว — ส่งสลิปผ่าน LINE" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "สร้าง QR ใหม่" }).click();
+
+  expect(mocks.getPaymentRequestPayload()).toEqual({
+    provider: "promptpay_manual",
+    payment_method: "promptpay_qr",
+    expires_in_minutes: 1440,
   });
 });
 
