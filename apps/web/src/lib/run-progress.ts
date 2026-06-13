@@ -5,6 +5,14 @@ export type RunProgressSnapshot = {
   updatedAt: string | null;
 };
 
+export type RecentKeywordRunSummary = {
+  processedCount: number;
+  succeededCount: number;
+  zeroResultCount: number;
+  failedCount: number;
+  failedKeywords: string[];
+};
+
 function readRecordSummary(
   summary: Record<string, unknown> | null,
   key: string,
@@ -154,4 +162,27 @@ export function getRunDiscoveredCount(run: RunSummary): number {
     "projects_discovered",
     "discovered",
   ]);
+}
+
+export function summarizeRecentKeywordRuns(
+  runs: RunDetailResponse[],
+): RecentKeywordRunSummary | null {
+  const completedRuns = runs.filter((detail) => !isActiveRunStatus(detail.run.status));
+  if (completedRuns.length < 2) {
+    return null;
+  }
+
+  const failedRuns = completedRuns.filter(
+    (detail) => detail.run.status === "failed" || detail.run.error_count > 0,
+  );
+  const succeededRuns = completedRuns.filter((detail) => detail.run.status === "succeeded");
+  return {
+    processedCount: completedRuns.length,
+    succeededCount: succeededRuns.length,
+    zeroResultCount: succeededRuns.filter((detail) => getRunDiscoveredCount(detail.run) === 0).length,
+    failedCount: failedRuns.length,
+    failedKeywords: failedRuns
+      .map(getRunPrimaryKeyword)
+      .filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim() !== ""),
+  };
 }

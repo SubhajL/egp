@@ -196,8 +196,6 @@ class RunService:
 def _resolve_run_log_candidates(raw_path: str, *, artifact_root: Path) -> list[Path]:
     raw = Path(raw_path.strip())
     candidates: list[Path] = [raw.resolve()]
-    if raw.is_absolute():
-        return candidates
 
     parts = raw.parts
     if "tenants" not in parts:
