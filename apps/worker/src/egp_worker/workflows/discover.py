@@ -333,6 +333,8 @@ def run_discover_workflow(
     live_crawl_anomaly_count = 0
     live_crawl_latest_anomaly: dict[str, object] | None = None
     backfill_recorded_project_ids: set[str] = set()
+    project_task_count = 0
+    keyword_task_creation_blocked = False
 
     def _current_summary() -> dict[str, object]:
         summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
@@ -357,6 +359,27 @@ def run_discover_workflow(
             live_crawl_anomaly_count += 1
             live_crawl_latest_anomaly = event_snapshot
         run_repository.update_run_summary(run.id, summary_json=_current_summary())
+
+    def _record_keyword_run_task(
+        *,
+        task_status: str,
+        result_json: dict[str, object],
+    ) -> None:
+        task = run_repository.create_task(
+            run_id=run.id,
+            task_type="discover",
+            keyword=keyword,
+            payload={
+                "keyword": keyword,
+                "source": "keyword_run",
+            },
+        )
+        run_repository.mark_task_started(task.id)
+        run_repository.mark_task_finished(
+            task.id,
+            status=task_status,
+            result_json=result_json,
+        )
 
     def _discovered_project_key(discovered: dict[str, object]) -> str:
         return str(discovered.get("project_number") or discovered["project_name"]).casefold()
@@ -394,7 +417,8 @@ def run_discover_workflow(
         backfill_recorded_project_ids.add(project_id)
 
     def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
-        nonlocal error_count, ignored_late_stage_projects, run_level_error
+        nonlocal error_count, ignored_late_stage_projects, keyword_task_creation_blocked
+        nonlocal project_task_count, run_level_error
         source_status_text = str(discovered.get("source_status_text") or "")
         if not is_invitation_stage_status(source_status_text):
             ignored_late_stage_projects += 1
@@ -433,6 +457,7 @@ def run_discover_workflow(
                 keyword=task_keyword,
                 payload=safe_discovered,
             )
+            project_task_count += 1
             run_repository.mark_task_started(task.id)
             event = DiscoveredProjectEvent(
                 tenant_id=tenant_id,
@@ -533,6 +558,7 @@ def run_discover_workflow(
                 )
             else:
                 run_level_error = str(exc)
+                keyword_task_creation_blocked = True
             return None
 
     try:
@@ -596,12 +622,27 @@ def run_discover_workflow(
         if live_crawl_latest_anomaly is not None
         else None
     )
-    effective_error_count = error_count + live_crawl_anomaly_count
     summary_json = _current_summary()
     if run_level_error is not None:
         summary_json["error"] = run_level_error
     elif anomaly_error is not None:
         summary_json["error"] = anomaly_error
+    if project_task_count == 0 and not keyword_task_creation_blocked:
+        keyword_task_error = run_level_error or anomaly_error
+        keyword_task_result: dict[str, object] = {"projects_seen": len(persisted_projects)}
+        if keyword_task_error is not None:
+            keyword_task_result["error"] = keyword_task_error
+        try:
+            _record_keyword_run_task(
+                task_status="failed" if keyword_task_error is not None else "succeeded",
+                result_json=keyword_task_result,
+            )
+        except Exception as exc:
+            error_count += 1
+            run_level_error = str(exc)
+            summary_json = _current_summary()
+            summary_json["error"] = run_level_error
+    effective_error_count = error_count + live_crawl_anomaly_count
     if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
         existing_project_id = _backfill_project_id_for_keyword(
             database_url=database_url,

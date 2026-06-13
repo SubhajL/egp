@@ -148,6 +148,12 @@ class RulesService:
                 snapshot.keyword_limit
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
+            self._entitlement_service.check_runs_admission(
+                tenant_id=tenant_id,
+                requested_keyword_count=len(
+                    {keyword.casefold() for keyword in normalized_keywords}
+                ),
+            )
 
         detail = self._repository.create_profile(
             tenant_id=tenant_id,
@@ -158,9 +164,10 @@ class RulesService:
             close_consulting_after_days=close_consulting_after_days,
             close_stale_after_days=close_stale_after_days,
             keywords=normalized_keywords,
-            enqueue_discovery_jobs=True,
         )
-        return _map_profile(detail)
+        created = _map_profile(detail)
+        self._queue_profile_created_jobs(tenant_id=tenant_id, created=created)
+        return created
 
     def update_profile(
         self,
@@ -187,9 +194,7 @@ class RulesService:
             if not normalized_name:
                 raise ValueError("profile name is required")
 
-        normalized_keywords = (
-            _normalize_keywords(keywords) if keywords is not None else None
-        )
+        normalized_keywords = _normalize_keywords(keywords) if keywords is not None else None
         current_keywords = [keyword.keyword for keyword in existing.keywords]
         effective_keywords = (
             normalized_keywords if normalized_keywords is not None else current_keywords
@@ -365,6 +370,24 @@ class RulesService:
             queued_job_count=queued_job_count,
             queued_keywords=queued_keywords,
         )
+
+    def _queue_profile_created_jobs(
+        self,
+        *,
+        tenant_id: str,
+        created: RuleProfile,
+    ) -> None:
+        if self._discovery_job_repository is None or not created.is_active:
+            return
+        for keyword in created.keywords:
+            self._discovery_job_repository.create_pending_discovery_job_if_absent(
+                tenant_id=tenant_id,
+                profile_id=created.id,
+                profile_type=created.profile_type,
+                keyword=keyword,
+                trigger_type="profile_created",
+                live=True,
+            )
 
     def _queue_profile_update_jobs(
         self,

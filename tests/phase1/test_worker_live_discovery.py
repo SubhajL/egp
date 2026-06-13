@@ -821,6 +821,23 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
         },
         "error": "live crawl anomaly: keyword_no_results",
     }
+    assert run_repository.tasks == [
+        {
+            "id": "task-1",
+            "task_type": "discover",
+            "keyword": "แพลตฟอร์ม",
+            "project_id": None,
+            "payload": {
+                "keyword": "แพลตฟอร์ม",
+                "source": "keyword_run",
+            },
+            "status": "failed",
+            "result_json": {
+                "projects_seen": 0,
+                "error": "live crawl anomaly: keyword_no_results",
+            },
+        }
+    ]
     assert sink.discovery_events == []
 
 
@@ -913,6 +930,20 @@ def test_run_discover_workflow_marks_run_started_before_live_discovery_begins() 
     assert run_repository.created_profile_id is None
     assert run_repository.finished_status == "succeeded"
     assert run_repository.finished_summary == {"projects_seen": 0}
+    assert run_repository.tasks == [
+        {
+            "id": "task-1",
+            "task_type": "discover",
+            "keyword": "แพลตฟอร์ม",
+            "project_id": None,
+            "payload": {
+                "keyword": "แพลตฟอร์ม",
+                "source": "keyword_run",
+            },
+            "status": "succeeded",
+            "result_json": {"projects_seen": 0},
+        }
+    ]
 
 
 def test_run_discover_workflow_persists_profile_id_on_run() -> None:
@@ -1176,7 +1207,20 @@ def test_run_discover_workflow_ignores_projects_first_seen_after_invitation_stag
     )
 
     assert sink.discovery_events == []
-    assert run_repository.tasks == []
+    assert run_repository.tasks == [
+        {
+            "id": "task-1",
+            "task_type": "discover",
+            "keyword": "แพลตฟอร์ม",
+            "project_id": None,
+            "payload": {
+                "keyword": "แพลตฟอร์ม",
+                "source": "keyword_run",
+            },
+            "status": "succeeded",
+            "result_json": {"projects_seen": 0},
+        }
+    ]
     assert run_repository.finished_summary == {
         "projects_seen": 0,
         "ignored_late_stage_projects": 1,

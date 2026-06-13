@@ -23,10 +23,6 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
-from egp_db.repositories.discovery_job_repo import (
-    DISCOVERY_JOBS_TABLE,
-    build_discovery_job_values,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +274,6 @@ class SqlProfileRepository:
         close_consulting_after_days: int,
         close_stale_after_days: int,
         keywords: list[str],
-        enqueue_discovery_jobs: bool = False,
     ) -> CrawlProfileDetail:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         profile_id = str(uuid4())
@@ -308,21 +303,6 @@ class SqlProfileRepository:
                         created_at=now,
                     )
                 )
-            if enqueue_discovery_jobs and is_active:
-                for keyword in keywords:
-                    connection.execute(
-                        insert(DISCOVERY_JOBS_TABLE).values(
-                            **build_discovery_job_values(
-                                tenant_id=normalized_tenant_id,
-                                profile_id=profile_id,
-                                profile_type=profile_type,
-                                keyword=keyword,
-                                trigger_type="profile_created",
-                                live=True,
-                                now=now,
-                            )
-                        )
-                    )
         detail = self.get_profile_detail(
             tenant_id=normalized_tenant_id, profile_id=profile_id
         )

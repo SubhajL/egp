@@ -223,6 +223,8 @@ def create_rule_profile(
             close_consulting_after_days=payload.close_consulting_after_days,
             close_stale_after_days=payload.close_stale_after_days,
         )
+    except RunAdmissionError as exc:
+        return _run_admission_error(exc)
     except EntitlementError as exc:
         detail = str(exc)
         return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
