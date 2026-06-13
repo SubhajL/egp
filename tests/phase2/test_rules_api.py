@@ -618,6 +618,35 @@ def test_admin_can_create_custom_profile_from_rules_api(tmp_path) -> None:
     assert body["name"] == "Keyword Watchlist"
     assert body["profile_type"] == "custom"
     assert body["keywords"] == ["analytics", "cloud procurement"]
+    with client.app.state.db_engine.connect() as connection:
+        queued_jobs = (
+            connection.execute(
+                text(
+                    """
+                SELECT keyword, trigger_type, job_status
+                FROM discovery_jobs
+                WHERE tenant_id = :tenant_id
+                ORDER BY keyword
+                """
+                ),
+                {"tenant_id": TENANT_ID},
+            )
+            .mappings()
+            .all()
+        )
+
+    assert [dict(row) for row in queued_jobs] == [
+        {
+            "keyword": "analytics",
+            "trigger_type": "profile_created",
+            "job_status": "pending",
+        },
+        {
+            "keyword": "cloud procurement",
+            "trigger_type": "profile_created",
+            "job_status": "pending",
+        },
+    ]
 
     listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
     assert listing.status_code == 200
@@ -640,7 +669,9 @@ def test_admin_can_update_profile_keywords_and_deactivate_from_rules_api(
     client.app.state.discovery_dispatch_route_kick_enabled = True
     client.app.state.discovery_dispatch_wake_signal = wake_signal
     client.app.state.discovery_dispatch_processor = FailingDiscoveryProcessor()
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     _seed_profile(
         client,
         profile_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
@@ -822,6 +853,56 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
     assert response.json()["code"] == "active_keyword_limit_exceeded"
 
 
+def test_profile_creation_denies_before_outbox_insert_when_keyword_queue_cap_exceeded(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-create-cap.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
+    _seed_tenant_entitlements(client, max_queued_keywords=1)
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Queue Cap Create",
+            "profile_type": "custom",
+            "is_active": True,
+            "keywords": ["analytics", "platform"],
+        },
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {
+        "detail": "queued keyword limit exceeded",
+        "code": "queued_keyword_limit_exceeded",
+        "status": "queued",
+        "inflight_run_count": 0,
+        "max_concurrent_runs": 1,
+        "queued_keyword_count": 2,
+        "max_queued_keywords": 1,
+    }
+    with client.app.state.db_engine.connect() as connection:
+        profile_count = connection.execute(
+            text("SELECT COUNT(*) FROM crawl_profiles WHERE tenant_id = :tenant_id"),
+            {"tenant_id": TENANT_ID},
+        ).scalar_one()
+        job_count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs WHERE tenant_id = :tenant_id"),
+            {"tenant_id": TENANT_ID},
+        ).scalar_one()
+
+    assert profile_count == 0
+    assert job_count == 0
+
+
 def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl.sqlite3'}"
     client = TestClient(
@@ -864,12 +945,16 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
     assert wake_signal.wake_count == 1
 
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert count == 1
 
 
 def test_manual_recrawl_requires_at_least_one_active_keyword(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-empty.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-empty.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -887,7 +972,9 @@ def test_manual_recrawl_requires_at_least_one_active_keyword(tmp_path) -> None:
 
 
 def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-dedupe.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-dedupe.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -922,16 +1009,20 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
     }
 
     with client.app.state.db_engine.connect() as connection:
-        rows = connection.execute(
-            text(
-                """
+        rows = (
+            connection.execute(
+                text(
+                    """
                 SELECT profile_id, keyword, job_status
                 FROM discovery_jobs
                 WHERE tenant_id = :tenant_id
                 """
-            ),
-            {"tenant_id": TENANT_ID},
-        ).mappings().all()
+                ),
+                {"tenant_id": TENANT_ID},
+            )
+            .mappings()
+            .all()
+        )
 
     assert rows == [
         {
@@ -942,8 +1033,12 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
     ]
 
 
-def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-admission.sqlite3'}"
+def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-admission.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -1019,7 +1114,9 @@ def test_manual_recrawl_denies_before_outbox_insert_when_keyword_queue_cap_excee
         )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     _seed_tenant_entitlements(client, max_queued_keywords=1)
     _seed_profile(
         client,
@@ -1046,7 +1143,9 @@ def test_manual_recrawl_denies_before_outbox_insert_when_keyword_queue_cap_excee
         "max_queued_keywords": 1,
     }
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert count == 0
 
 

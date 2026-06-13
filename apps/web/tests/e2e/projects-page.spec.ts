@@ -208,6 +208,131 @@ const NO_RESULTS_RUNS_RESPONSE = {
   offset: 0,
 };
 
+const MULTI_KEYWORD_RUNS_RESPONSE = {
+  runs: [
+    {
+      run: {
+        id: "run-failed-keyword",
+        tenant_id: "tenant-1",
+        trigger_type: "manual",
+        status: "failed",
+        profile_id: "profile-1",
+        started_at: "2026-06-12T12:01:04Z",
+        finished_at: "2026-06-12T12:01:43Z",
+        summary_json: {
+          projects_seen: 0,
+          error: "live crawl anomaly: keyword_no_results",
+          live_progress: {
+            stage: "keyword_no_results",
+            keyword: "ระบบฐานข้อมูลใหญ่",
+            updated_at: "2026-06-12T12:01:43Z",
+          },
+        },
+        error_count: 1,
+        created_at: "2026-06-12T12:01:04Z",
+      },
+      tasks: [
+        {
+          id: "task-failed-keyword",
+          run_id: "run-failed-keyword",
+          task_type: "discover",
+          project_id: null,
+          keyword: "ระบบฐานข้อมูลใหญ่",
+          status: "failed",
+          attempts: 1,
+          started_at: "2026-06-12T12:01:04Z",
+          finished_at: "2026-06-12T12:01:43Z",
+          payload: { keyword: "ระบบฐานข้อมูลใหญ่", source: "keyword_run" },
+          result_json: {
+            projects_seen: 0,
+            error: "live crawl anomaly: keyword_no_results",
+          },
+          created_at: "2026-06-12T12:01:04Z",
+        },
+      ],
+    },
+    {
+      run: {
+        id: "run-zero-keyword",
+        tenant_id: "tenant-1",
+        trigger_type: "manual",
+        status: "succeeded",
+        profile_id: "profile-1",
+        started_at: "2026-06-12T12:05:42Z",
+        finished_at: "2026-06-12T12:07:07Z",
+        summary_json: {
+          projects_seen: 0,
+          live_progress: {
+            stage: "keyword_finished",
+            keyword: "ระบบบริหารจัดการ",
+            keyword_project_count: 0,
+            updated_at: "2026-06-12T12:07:07Z",
+          },
+        },
+        error_count: 0,
+        created_at: "2026-06-12T12:05:42Z",
+      },
+      tasks: [
+        {
+          id: "task-zero-keyword",
+          run_id: "run-zero-keyword",
+          task_type: "discover",
+          project_id: null,
+          keyword: "ระบบบริหารจัดการ",
+          status: "succeeded",
+          attempts: 1,
+          started_at: "2026-06-12T12:05:42Z",
+          finished_at: "2026-06-12T12:07:07Z",
+          payload: { keyword: "ระบบบริหารจัดการ", source: "keyword_run" },
+          result_json: { projects_seen: 0 },
+          created_at: "2026-06-12T12:05:42Z",
+        },
+      ],
+    },
+    {
+      run: {
+        id: "run-success-keyword",
+        tenant_id: "tenant-1",
+        trigger_type: "manual",
+        status: "succeeded",
+        profile_id: "profile-1",
+        started_at: "2026-06-12T12:10:14Z",
+        finished_at: "2026-06-12T12:11:45Z",
+        summary_json: {
+          projects_seen: 2,
+          live_progress: {
+            stage: "keyword_finished",
+            keyword: "วิเคราะห์ข้อมูล",
+            keyword_project_count: 2,
+            updated_at: "2026-06-12T12:11:45Z",
+          },
+        },
+        error_count: 0,
+        created_at: "2026-06-12T12:10:14Z",
+      },
+      tasks: [
+        {
+          id: "task-success-keyword",
+          run_id: "run-success-keyword",
+          task_type: "discover",
+          project_id: null,
+          keyword: "วิเคราะห์ข้อมูล",
+          status: "succeeded",
+          attempts: 1,
+          started_at: "2026-06-12T12:10:14Z",
+          finished_at: "2026-06-12T12:11:45Z",
+          payload: { keyword: "วิเคราะห์ข้อมูล", source: "keyword_run" },
+          result_json: { projects_seen: 2 },
+          created_at: "2026-06-12T12:10:14Z",
+        },
+      ],
+    },
+  ],
+  total: 3,
+  limit: 10,
+  offset: 0,
+};
+
 async function fulfillJson(route: Route, status: number, body: unknown) {
   await route.fulfill({
     status,
@@ -432,6 +557,62 @@ test("projects page refreshes table after a completed crawl becomes visible", as
   await expect(page.getByText("ค้นหาเสร็จแล้ว 1 งานล่าสุด")).toBeVisible();
   await expect(page.getByText("จ้างที่ปรึกษาระบบใหม่")).toBeVisible();
   await expect(page.getByText("แสดง 1-2 จาก 2 โครงการ")).toBeVisible();
+});
+
+test("projects page summarizes recent multi-keyword crawl completion", async ({
+  page,
+}) => {
+  let hasTriggeredRecrawl = false;
+
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, CURRENT_SESSION);
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, {
+          ...RULES_RESPONSE,
+          entitlements: {
+            ...RULES_RESPONSE.entitlements,
+            active_keyword_count: 3,
+            active_keywords: ["วิเคราะห์ข้อมูล", "ระบบบริหารจัดการ", "ระบบฐานข้อมูลใหญ่"],
+          },
+        });
+        return;
+      case "GET /v1/projects":
+        await fulfillJson(route, 200, PROJECTS_RESPONSE);
+        return;
+      case "GET /v1/runs":
+        await fulfillJson(
+          route,
+          200,
+          hasTriggeredRecrawl ? MULTI_KEYWORD_RUNS_RESPONSE : EMPTY_RUNS_RESPONSE,
+        );
+        return;
+      case "POST /v1/rules/recrawl":
+        hasTriggeredRecrawl = true;
+        await fulfillJson(route, 202, {
+          queued_job_count: 3,
+          queued_keywords: ["วิเคราะห์ข้อมูล", "ระบบบริหารจัดการ", "ระบบฐานข้อมูลใหญ่"],
+        });
+        return;
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/projects");
+  await page.getByRole("button", { name: "Crawl ใหม่" }).click();
+
+  await expect(page.getByText("สรุปล่าสุด 3 คำค้น")).toBeVisible();
+  await expect(
+    page.getByText("เสร็จแล้ว 2 · ไม่พบโครงการ 1 · ล้มเหลว 1"),
+  ).toBeVisible();
+  await expect(page.getByText("ล้มเหลว: ระบบฐานข้อมูลใหญ่")).toBeVisible();
 });
 
 test("project detail links expired document-download failures to billing", async ({ page }) => {

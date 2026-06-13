@@ -13,6 +13,7 @@ import {
   getActiveRuns,
   getRunActivitySnapshot,
   getRunDiscoveredCount,
+  summarizeRecentKeywordRuns,
 } from "@/lib/run-progress";
 import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
 import {
@@ -303,6 +304,7 @@ export default function ProjectsPage() {
   const rangeEnd = totalProjects === 0 ? 0 : rangeStart + displayProjects.length - 1;
   const activeRuns = getActiveRuns(runsData?.runs ?? []);
   const activeRunCards = activeRuns.slice(0, 3).map(buildRunActivityCard);
+  const recentKeywordRunSummary = summarizeRecentKeywordRuns(runsData?.runs ?? []);
   const latestRun = runsData?.runs[0] ?? null;
   const latestRunStartedAfterManualRequest =
     latestRun !== null &&
@@ -647,6 +649,24 @@ export default function ProjectsPage() {
               ดูหน้าการทำงานทั้งหมด
             </Link>
           </div>
+
+          {activeRuns.length === 0 && recentKeywordRunSummary ? (
+            <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
+              <p className="font-medium text-[var(--text-primary)]">
+                สรุปล่าสุด {recentKeywordRunSummary.processedCount} คำค้น
+              </p>
+              <p className="mt-2">
+                เสร็จแล้ว {recentKeywordRunSummary.succeededCount} · ไม่พบโครงการ{" "}
+                {recentKeywordRunSummary.zeroResultCount} · ล้มเหลว{" "}
+                {recentKeywordRunSummary.failedCount}
+              </p>
+              {recentKeywordRunSummary.failedKeywords.length > 0 ? (
+                <p className="mt-1 text-xs text-[var(--badge-red-text)]">
+                  ล้มเหลว: {recentKeywordRunSummary.failedKeywords.join(", ")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           {activeRuns.length > 0 ? (
             <>
