@@ -10,9 +10,12 @@ from egp_db.repositories.project_repo import (
     build_project_upsert_record,
     create_project_repository,
 )
-from egp_crawler_core.invitation_rules import is_invitation_stage_status
+from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_shared_types.enums import ClosedReason, NotificationType, ProjectState
-from egp_shared_types.project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
+from egp_shared_types.project_events import (
+    CloseCheckProjectEvent,
+    DiscoveredProjectEvent,
+)
 
 
 _NEXT_STATE_BY_REASON = {
@@ -42,8 +45,10 @@ class ProjectIngestService:
         *,
         event: DiscoveredProjectEvent,
     ) -> DiscoverProjectIngestResult:
-        if not is_invitation_stage_status(event.source_status_text):
-            raise ValueError("discovery must originate from invitation stage")
+        if not is_discoverable_stage_status(event.source_status_text):
+            raise ValueError(
+                "discovery must originate from an in-scope (invitation/pre-award) stage"
+            )
         record = build_project_upsert_record(
             tenant_id=event.tenant_id,
             project_number=event.project_number,

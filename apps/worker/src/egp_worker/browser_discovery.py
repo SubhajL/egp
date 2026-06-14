@@ -22,6 +22,7 @@ from egp_crawler_core.rate_limiter import (
     exponential_backoff_delay,
     get_default_rate_limiter,
 )
+from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_document_classifier import derive_artifact_bucket
 
 try:
@@ -338,9 +339,13 @@ def _collect_keyword_projects(
         except Exception as exc:
             _raise_browser_closed(exc, page_num)
             raise
+        results_table = find_results_table(page)
+        results_columns = resolve_results_columns(results_table) if results_table else None
         eligible_rows: list[dict[str, object]] = []
         for row in rows:
-            row_payload = _extract_search_row(row)
+            if results_columns is None:
+                continue
+            row_payload = _extract_search_row(row, results_columns)
             if row_payload is None:
                 continue
             if any(blocked in row_payload["project_name"] for blocked in SKIP_KEYWORDS_IN_PROJECT):
@@ -513,6 +518,8 @@ def _collect_keyword_projects(
                 _raise_browser_closed(exc, page_num)
                 raise
 
+        if page_num >= settings.max_pages_per_keyword:
+            break
         previous_marker = get_results_page_marker(page)
         next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
         if not (next_btn and next_btn.is_visible()):
@@ -675,33 +682,45 @@ def restore_results_page(
         current_page += 1
 
 
-def _extract_search_row(row) -> dict[str, object] | None:
+def _extract_search_row(row, columns: dict[str, int]) -> dict[str, object] | None:
     cells = row.query_selector_all("td")
-    if len(cells) < 6:
+    if len(cells) <= max(columns.values()):
         return None
-    status_text = cells[4].inner_text().strip()
-    if not status_matches_target(status_text):
+    status_text = cells[columns["status"]].inner_text().strip()
+    if not is_discoverable_stage_status(status_text):
         return None
-    search_name = cells[2].inner_text().strip()
+    search_name = cells[columns["project_name"]].inner_text().strip()
     project_number = _extract_project_number_from_text(row.inner_text())
-    row_marker = _build_results_row_marker(cells)
+    row_marker = _build_results_row_marker(cells, columns)
     if project_number and not row_marker.get("project_number"):
         row_marker["project_number"] = project_number
+    organization_name = (
+        cells[columns["organization"]].inner_text().strip() if "organization" in columns else ""
+    )
     return {
         "search_name": search_name,
         "project_name": search_name,
-        "organization_name": cells[1].inner_text().strip(),
+        "organization_name": organization_name,
         "project_number": project_number,
         "source_status_text": status_text,
         "row_marker": row_marker,
     }
 
 
-def _build_results_row_marker(cells) -> dict[str, str]:
-    project_name = cells[2].inner_text().strip()
-    organization_name = cells[1].inner_text().strip()
-    budget_text = cells[3].inner_text().strip()
-    source_status_text = cells[4].inner_text().strip()
+def _build_results_row_marker(cells, columns: dict[str, int]) -> dict[str, str]:
+    project_name = cells[columns["project_name"]].inner_text().strip()
+    organization_name = (
+        cells[columns["organization"]].inner_text().strip() if "organization" in columns else ""
+    )
+    budget_text = cells[columns["budget"]].inner_text().strip() if "budget" in columns else ""
+    source_status_text = cells[columns["status"]].inner_text().strip()
+    signature_indices = sorted(
+        {
+            columns[field]
+            for field in ("organization", "purchasing_unit", "project_name", "budget", "status")
+            if field in columns
+        }
+    )
     return {
         "organization_name": organization_name,
         "project_name": project_name,
@@ -709,7 +728,7 @@ def _build_results_row_marker(cells) -> dict[str, str]:
         "budget_text": budget_text,
         "source_status_text": source_status_text,
         "visible_signature": " || ".join(
-            _compact_visible_text(cell.inner_text().strip()) for cell in cells[1:5]
+            _compact_visible_text(cells[i].inner_text().strip()) for i in signature_indices
         ),
     }
 
@@ -771,6 +790,10 @@ def _score_row_marker_candidate(current: dict[str, str], expected: dict[str, obj
 
 
 def _resolve_results_row_index(page, row_marker: dict[str, object]) -> int | None:
+    table = find_results_table(page)
+    if table is None:
+        return None
+    columns = resolve_results_columns(table)
     expected_marker = row_marker.get("row_marker")
     if isinstance(expected_marker, dict):
         marker_payload: dict[str, object] = expected_marker
@@ -779,7 +802,7 @@ def _resolve_results_row_index(page, row_marker: dict[str, object]) -> int | Non
     ranked_candidates: list[tuple[int, int]] = []
     eligible_index = 0
     for row in get_results_rows(page):
-        row_payload = _extract_search_row(row)
+        row_payload = _extract_search_row(row, columns)
         if row_payload is None:
             continue
         current_marker = row_payload.get("row_marker")
@@ -840,8 +863,15 @@ def _build_candidate_row_snapshot(
         return []
     candidates: list[dict[str, object]] = []
     eligible_index = 0
+    table = find_results_table(page)
+    if table is None:
+        return []
+    try:
+        columns = resolve_results_columns(table)
+    except ResultsColumnsError:
+        return []
     for row in get_results_rows(page):
-        row_payload = _extract_search_row(row)
+        row_payload = _extract_search_row(row, columns)
         if row_payload is None:
             continue
         current_marker = row_payload.get("row_marker")
@@ -1624,6 +1654,72 @@ def _table_matches_results_headers(table) -> bool:
     )
 
 
+class ResultsColumnsError(RuntimeError):
+    """Raised when the results table lacks a required column header.
+
+    Surfacing this loudly (instead of silently guessing a positional index) is
+    the canary for e-GP results-table layout drift — the exact failure mode that
+    silently broke discovery when a `หน่วยจัดซื้อ` column was inserted and shifted
+    every column by one.
+    """
+
+
+# Canonical field -> ordered candidate header markers (whitespace-insensitive,
+# casefolded). Markers are specific enough not to cross-match each other.
+_RESULTS_COLUMN_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("status", ("สถานะโครงการ", "สถานะ")),
+    ("project_name", ("ชื่อโครงการ",)),
+    ("organization", ("หน่วยงาน",)),
+    ("purchasing_unit", ("หน่วยจัดซื้อ",)),
+    ("budget", ("วงเงินงบประมาณ", "งบประมาณ")),
+    ("view", ("ดูข้อมูล", "ดาวน์โหลด")),
+)
+_REQUIRED_RESULTS_COLUMNS = ("status", "project_name", "view")
+
+
+def _extract_table_headers(table) -> list[str]:
+    header_selectors = ("thead th, thead td", "th", "tr:first-child th, tr:first-child td")
+    for selector in header_selectors:
+        try:
+            header_els = table.query_selector_all(selector)
+        except Exception:
+            header_els = []
+        headers = [
+            header.inner_text().strip() for header in header_els if header.inner_text().strip()
+        ]
+        if headers:
+            return headers
+    return []
+
+
+def resolve_results_columns(table) -> dict[str, int]:
+    """Map canonical result fields to column indices by HEADER TEXT.
+
+    Never hard-codes positional indices — e-GP inserts/reorders columns. Raises
+    ResultsColumnsError if a required column (status/project_name/view) is absent
+    so layout drift fails loud instead of silently reading the wrong column.
+    """
+    headers = _extract_table_headers(table)
+    compact_headers = [_compact_visible_text(header).casefold() for header in headers]
+    columns: dict[str, int] = {}
+    for field, markers in _RESULTS_COLUMN_MARKERS:
+        for marker in markers:
+            compact_marker = _compact_visible_text(marker).casefold()
+            index = next(
+                (i for i, header in enumerate(compact_headers) if compact_marker in header),
+                None,
+            )
+            if index is not None:
+                columns[field] = index
+                break
+    missing = [field for field in _REQUIRED_RESULTS_COLUMNS if field not in columns]
+    if missing:
+        raise ResultsColumnsError(
+            f"results table missing required column(s) {missing}; headers={headers}"
+        )
+    return columns
+
+
 def find_results_table(page):
     """Return the procurement search results table, if present."""
     for table in page.query_selector_all("table"):
@@ -2042,16 +2138,20 @@ def clear_search(page, settings: BrowserDiscoverySettings) -> None:
 
 
 def navigate_to_project_by_row(page, row_index: int) -> bool:
-    rows = get_results_rows(page)
+    table = find_results_table(page)
+    if table is None:
+        return False
+    columns = resolve_results_columns(table)
+    max_index = max(columns.values())
     eligible_idx = 0
-    for row in rows:
+    for row in get_results_rows(page):
         cells = row.query_selector_all("td")
-        if len(cells) < 6:
+        if len(cells) <= max_index:
             continue
-        if not status_matches_target(cells[4].inner_text().strip()):
+        if not is_discoverable_stage_status(cells[columns["status"]].inner_text().strip()):
             continue
         if eligible_idx == row_index:
-            return _open_project_from_results_cell(page, cells[5])
+            return _open_project_from_results_cell(page, cells[columns["view"]])
         eligible_idx += 1
     return False
 
