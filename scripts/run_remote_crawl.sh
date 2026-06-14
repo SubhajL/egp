@@ -61,5 +61,7 @@ case "${1:-check}" in
   warm-profile) require_env_file; run_module egp_worker.warmup ;;
   crawl)        require_env_file; shift || true; run_module egp_api.executors.discovery_dispatch --once --limit "${1:-5}" ;;
   watch)        require_env_file; run_module egp_api.executors.discovery_dispatch --poll-interval-seconds 2 ;;
-  *) echo "usage: $0 {check|tunnel|warm-profile|crawl [N]|watch}" >&2; exit 2 ;;
+  # Read-only WS0 diagnostic: dump search rows for a keyword (no persistence, no DB).
+  diagnose)     require_env_file; shift || true; guard_check; load_validated_env; exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" "$@" ;;
+  *) echo "usage: $0 {check|tunnel|warm-profile|crawl [N]|watch|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
 esac

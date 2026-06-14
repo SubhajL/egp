@@ -655,7 +655,10 @@ def test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "discovery must originate from invitation stage"
+    assert (
+        response.json()["detail"]
+        == "discovery must originate from an in-scope (invitation/pre-award) stage"
+    )
 
 
 def test_project_ingest_close_check_endpoint_transitions_project_state(

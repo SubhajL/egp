@@ -15,6 +15,7 @@ from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
     LiveDiscoveryPartialError,
     NEXT_PAGE_SELECTOR,
+    ResultsColumnsError,
     ResultsPageRecoveryError,
     SearchPageStateError,
     _collect_documents_for_payload,
@@ -30,6 +31,7 @@ from egp_worker.browser_discovery import (
     crawl_live_discovery,
     get_results_rows,
     get_results_page_marker,
+    resolve_results_columns,
     is_no_results_page,
     log_results_debug_snapshot,
     navigate_to_project_by_row,
@@ -189,6 +191,13 @@ class FakeGotoPage:
 class FakeNextPage:
     def __init__(self, *, pages_to_advance: int) -> None:
         self.remaining_clicks = pages_to_advance
+
+    def query_selector_all(self, selector: str):
+        # Provide a header-only results table so header-derived column
+        # resolution succeeds; rows come from a monkeypatched get_results_rows.
+        if selector == "table":
+            return [FakeTable(_results_headers(), [])]
+        return []
 
     def query_selector(self, selector: str):
         if selector == NEXT_PAGE_SELECTOR:
@@ -426,8 +435,11 @@ class FakeConnectedPlaywright:
 
 
 def _results_headers() -> list[str]:
+    # Real e-GP layout (7 columns) — a หน่วยงาน column precedes หน่วยจัดซื้อ,
+    # so status is at index 5 and the view action at index 6.
     return [
         "ลำดับ",
+        "หน่วยงาน",
         "หน่วยจัดซื้อ",
         "ชื่อโครงการ",
         "วงเงินงบประมาณ (บาท)",
@@ -441,6 +453,7 @@ def _results_row(
     index: str,
     organization: str,
     project_name: str,
+    purchasing_unit: str = "หน่วยจัดซื้อ X",
     budget: str = "100.00",
     status: str = "หนังสือเชิญชวน/ประกาศเชิญชวน",
     click_target: FakeClickTarget | None = None,
@@ -449,6 +462,7 @@ def _results_row(
         [
             FakeCell(index),
             FakeCell(organization),
+            FakeCell(purchasing_unit),
             FakeCell(project_name),
             FakeCell(budget),
             FakeCell(status),
@@ -1370,6 +1384,7 @@ def test_navigate_to_project_by_row_prefers_anchor_target_over_cell_fallback(
                 [
                     FakeCell("1"),
                     FakeCell("หน่วยงาน A"),
+                    FakeCell("หน่วยจัดซื้อ A"),
                     FakeCell("โครงการ A"),
                     FakeCell("100.00"),
                     FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
@@ -1529,9 +1544,9 @@ def test_collect_keyword_projects_reopens_reordered_row_by_marker(
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         opened_targets.append(project_name)
         return {
@@ -1607,9 +1622,9 @@ def test_collect_keyword_projects_raises_when_marker_missing_after_restore(
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         return {
             "project_name": project_name,
@@ -1679,9 +1694,9 @@ def test_collect_keyword_projects_continues_after_marker_missing_when_results_pa
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         opened_targets.append(project_name)
         return {
@@ -1750,9 +1765,9 @@ def test_collect_keyword_projects_continues_after_project_level_restore_error_wh
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         opened_targets.append(project_name)
         return {
@@ -1819,9 +1834,9 @@ def test_collect_keyword_projects_continues_after_row_level_site_state_error_whe
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         opened_targets.append(project_name)
         if project_name == "โครงการ A":
@@ -1887,9 +1902,9 @@ def test_collect_keyword_projects_skips_timed_out_project_and_restores_results(
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
             cells = row.query_selector_all("td")
-            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[4].inner_text():
+            if "หนังสือเชิญชวน/ประกาศเชิญชวน" not in cells[5].inner_text():
                 continue
-            eligible_names.append(cells[2].inner_text())
+            eligible_names.append(cells[3].inner_text())
         project_name = eligible_names[row_index]
         opened_targets.append(project_name)
         if project_name == "โครงการ A":
@@ -2144,7 +2159,7 @@ def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_e
     ) -> dict[str, object]:
         active_page = getattr(page, "_active_page", "1")
         row = rows_by_page[active_page][row_index]
-        project_name = row.query_selector_all("td")[2].inner_text()
+        project_name = row.query_selector_all("td")[3].inner_text()
         opened_targets.append(f"{active_page}:{project_name}")
         if active_page == "1":
             raise SearchPageStateError("e-GP site error after search results load")
@@ -2686,12 +2701,18 @@ def test_close_check_document_revisit_collects_documents_after_prelim_status(
         def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
             self.goto_calls.append((url, wait_until, timeout))
 
+        def query_selector_all(self, selector: str):
+            if selector == "table":
+                return [FakeTable(_results_headers(), [])]
+            return []
+
     page = FakeDocumentRevisitPage()
     captured: dict[str, object] = {}
+    opened_cells: list[object] = []
 
     monkeypatch.setattr(
         "egp_worker.browser_close_check._open_project_from_results_cell",
-        lambda page, cell: True,
+        lambda page, cell: opened_cells.append(cell) or True,
     )
     monkeypatch.setattr(
         "egp_worker.browser_close_check._build_source_page_text",
@@ -2733,10 +2754,13 @@ def test_close_check_document_revisit_collects_documents_after_prelim_status(
             "project_id": "project-1",
             "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
         },
-        cells=[object(), object(), object(), object(), object(), object()],
+        cells=["c0", "c1", "c2", "c3", "c4", "status5", "view6"],
         settings=BrowserDiscoverySettings(),
     )
 
+    # Regression (QCHECK HIGH): must open the ดูข้อมูล (view) column [index 6],
+    # NOT สถานะโครงการ [index 5], in the real 7-column layout.
+    assert opened_cells == ["view6"]
     assert updated["downloaded_documents"][0]["source_label"] == "ประกาศราคากลาง"
     assert captured == {
         "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
@@ -3399,3 +3423,106 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
 
     assert collect_calls == ["ที่ปรึกษา", "ที่ปรึกษา"]
     assert discovered == [{"project_name": "Recovered", "project_number": "6901"}]
+
+
+def test_resolve_results_columns_maps_real_seven_column_layout() -> None:
+    # Real e-GP layout (a หน่วยงาน column was inserted, shifting status to index 5).
+    table = FakeTable(_results_headers(), [])
+    columns = resolve_results_columns(table)
+    assert columns["organization"] == 1
+    assert columns["purchasing_unit"] == 2
+    assert columns["project_name"] == 3
+    assert columns["budget"] == 4
+    assert columns["status"] == 5
+    assert columns["view"] == 6
+
+
+def test_resolve_results_columns_raises_when_required_header_missing() -> None:
+    # Drift canary: a missing สถานะโครงการ header must fail loud, not silently
+    # read the wrong column.
+    headers = [h for h in _results_headers() if h != "สถานะโครงการ"]
+    table = FakeTable(headers, [])
+    with pytest.raises(ResultsColumnsError):
+        resolve_results_columns(table)
+
+
+def test_collect_keyword_projects_finds_invitation_row_in_shifted_layout(monkeypatch) -> None:
+    # Regression for the column-drift bug: the invitation row sits at status
+    # index 5 (budget at 4). The old cells[4] code read budget and found nothing.
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการวิเคราะห์ข้อมูล",
+                        budget="10,000,000.00",
+                        status="หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    ),
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project",
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: {
+            "project_name": search_name,
+            "project_number": "EGP-1",
+            "source_status_text": source_status_text,
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+
+    results = _collect_keyword_projects(
+        page=page,
+        keyword="วิเคราะห์ข้อมูล",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+    )
+
+    assert [result["project_name"] for result in results] == ["โครงการวิเคราะห์ข้อมูล"]
+    assert results[0]["source_status_text"] == "หนังสือเชิญชวน/ประกาศเชิญชวน"
+
+
+def test_collect_keyword_projects_does_not_paginate_past_max_pages(monkeypatch) -> None:
+    # Pagination off-by-one: with max_pages=1 the crawler must NOT click "next".
+    page = FakeNextPage(pages_to_advance=5)
+    page._active_page = "1"
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_rows",
+        lambda page: [
+            _results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A")
+        ],
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project",
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: {
+            "project_name": search_name,
+            "project_number": "EGP-1",
+            "source_status_text": source_status_text,
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    _collect_keyword_projects(
+        page=page,
+        keyword="วิเคราะห์ข้อมูล",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+    )
+
+    # No "next" click consumed → the off-by-one extra page was not requested.
+    assert page.remaining_clicks == 5

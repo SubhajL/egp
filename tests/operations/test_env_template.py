@@ -143,10 +143,10 @@ SOURCE_EXCLUDE_DIRS: frozenset[str] = frozenset(
     }
 )
 
-# Legacy crawler script + its tests + mode-c stubs are not part of the
-# runtime surface the prod template must cover.
+# Legacy crawler script + its tests + dev diagnostics + mode-c stubs are not
+# part of the runtime surface the prod template must cover.
 SOURCE_EXCLUDE_FILES: frozenset[str] = frozenset(
-    {"egp_crawler.py", "test_egp_crawler.py"}
+    {"egp_crawler.py", "test_egp_crawler.py", "diagnose_search_rows.py"}
 )
 SOURCE_EXCLUDE_PATH_PREFIXES: tuple[str, ...] = ("scripts/mode_c/",)
 
