@@ -26,6 +26,9 @@ from .browser_discovery import (
     find_search_input,
     get_results_page_marker,
     get_results_rows,
+    find_results_table,
+    resolve_results_columns,
+    ResultsColumnsError,
     launch_real_chrome,
     pagination_button_is_disabled,
     safe_shutdown,
@@ -174,12 +177,22 @@ def _find_matching_result_on_page(
 ) -> tuple[dict[str, object], list] | None:
     expected_number = str(project.get("project_number") or "").strip()
     expected_name = str(project.get("project_name") or "").strip()
+    table = find_results_table(page)
+    if table is None:
+        return None
+    try:
+        columns = resolve_results_columns(table)
+    except ResultsColumnsError:
+        return None
+    name_index = columns["project_name"]
+    status_index = columns["status"]
+    max_index = max(name_index, status_index)
     for row in get_results_rows(page):
         cells = row.query_selector_all("td")
-        if len(cells) < 5:
+        if len(cells) <= max_index:
             continue
-        search_name = cells[2].inner_text().strip()
-        status_text = cells[4].inner_text().strip()
+        search_name = cells[name_index].inner_text().strip()
+        status_text = cells[status_index].inner_text().strip()
         if expected_number and expected_number in row.inner_text():
             return (
                 _build_observation(
@@ -234,7 +247,18 @@ def _collect_documents_for_observation(
     cells: list,
     settings: BrowserDiscoverySettings,
 ) -> dict[str, object]:
-    if len(cells) < 6 or not _open_project_from_results_cell(page, cells[5]):
+    table = find_results_table(page)
+    view_index: int | None = None
+    if table is not None:
+        try:
+            view_index = resolve_results_columns(table)["view"]
+        except ResultsColumnsError:
+            view_index = None
+    if (
+        view_index is None
+        or len(cells) <= view_index
+        or not _open_project_from_results_cell(page, cells[view_index])
+    ):
         return {**observation, "downloaded_documents": []}
     try:
         downloaded_documents = collect_downloaded_documents(
@@ -242,9 +266,7 @@ def _collect_documents_for_observation(
             source_status_text=str(observation.get("source_status_text") or ""),
             source_page_text=_build_source_page_text(page),
             project_state=(
-                str(project["project_state"])
-                if project.get("project_state") is not None
-                else None
+                str(project["project_state"]) if project.get("project_state") is not None else None
             ),
         )
         return {**observation, "downloaded_documents": downloaded_documents}

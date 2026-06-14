@@ -15,7 +15,7 @@ from egp_crawler_core.discovery_authorization import (
     require_discovery_authorization,
     resolve_effective_discovery_entitlement,
 )
-from egp_crawler_core.invitation_rules import is_invitation_stage_status
+from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.document_capture_attempt_repo import (
@@ -420,7 +420,7 @@ def run_discover_workflow(
         nonlocal error_count, ignored_late_stage_projects, keyword_task_creation_blocked
         nonlocal project_task_count, run_level_error
         source_status_text = str(discovered.get("source_status_text") or "")
-        if not is_invitation_stage_status(source_status_text):
+        if not is_discoverable_stage_status(source_status_text):
             ignored_late_stage_projects += 1
             logger.info(
                 "Ignored discovery payload outside invitation stage for %s",
