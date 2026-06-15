@@ -16,6 +16,8 @@ from prometheus_client import (
 from prometheus_client import generate_latest
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from fastapi import FastAPI, Request
 
 CONTENT_TYPE: Final[str] = CONTENT_TYPE_LATEST
@@ -34,6 +36,11 @@ DOCUMENT_CAPTURE_ATTEMPTS_TOTAL: Final[str] = "egp_document_capture_attempts_tot
 DISCOVERY_QUEUE_DEPTH: Final[str] = "egp_discovery_queue_depth"
 DISCOVERY_DISPATCH_TOTAL: Final[str] = "egp_discovery_dispatch_total"
 DISCOVERY_INFLIGHT_RUNS: Final[str] = "egp_discovery_inflight_runs"
+DISCOVERY_KEYWORD_SCANS_TOTAL: Final[str] = "egp_discovery_keyword_scans_total"
+DISCOVERY_ROWS_SCANNED_TOTAL: Final[str] = "egp_discovery_rows_scanned_total"
+DISCOVERY_ELIGIBLE_ROWS_TOTAL: Final[str] = "egp_discovery_eligible_rows_total"
+DISCOVERY_ANOMALIES_TOTAL: Final[str] = "egp_discovery_anomalies_total"
+DISCOVERY_HEADER_SIGNATURE_DRIFT_TOTAL: Final[str] = "egp_discovery_header_signature_drift_total"
 
 EXPECTED_METRIC_NAMES: Final[tuple[str, ...]] = (
     API_HTTP_REQUESTS_TOTAL,
@@ -50,6 +57,11 @@ EXPECTED_METRIC_NAMES: Final[tuple[str, ...]] = (
     DISCOVERY_QUEUE_DEPTH,
     DISCOVERY_DISPATCH_TOTAL,
     DISCOVERY_INFLIGHT_RUNS,
+    DISCOVERY_KEYWORD_SCANS_TOTAL,
+    DISCOVERY_ROWS_SCANNED_TOTAL,
+    DISCOVERY_ELIGIBLE_ROWS_TOTAL,
+    DISCOVERY_ANOMALIES_TOTAL,
+    DISCOVERY_HEADER_SIGNATURE_DRIFT_TOTAL,
 )
 
 _REQUEST_DURATION_BUCKETS: Final[tuple[float, ...]] = (
@@ -109,6 +121,11 @@ class MetricsBundle:
     discovery_queue_depth: Gauge
     discovery_dispatch_total: Counter
     discovery_inflight_runs: Gauge
+    discovery_keyword_scans: Counter
+    discovery_rows_scanned: Counter
+    discovery_eligible_rows: Counter
+    discovery_anomalies: Counter
+    discovery_header_signature_drift: Counter
 
 
 _metrics: MetricsBundle | None = None
@@ -214,6 +231,35 @@ def initialize_metrics() -> MetricsBundle:
             "Discovery runs currently in flight.",
             registry=registry,
         ),
+        discovery_keyword_scans=Counter(
+            DISCOVERY_KEYWORD_SCANS_TOTAL,
+            "Discovery keyword scans by outcome and structured reason code.",
+            ("outcome", "reason"),
+            registry=registry,
+        ),
+        discovery_rows_scanned=Counter(
+            DISCOVERY_ROWS_SCANNED_TOTAL,
+            "Results-table rows scanned during discovery, by scan outcome.",
+            ("outcome",),
+            registry=registry,
+        ),
+        discovery_eligible_rows=Counter(
+            DISCOVERY_ELIGIBLE_ROWS_TOTAL,
+            "Eligible discovery rows found, by scan outcome.",
+            ("outcome",),
+            registry=registry,
+        ),
+        discovery_anomalies=Counter(
+            DISCOVERY_ANOMALIES_TOTAL,
+            "Discovery scan anomalies by structured reason code.",
+            ("reason",),
+            registry=registry,
+        ),
+        discovery_header_signature_drift=Counter(
+            DISCOVERY_HEADER_SIGNATURE_DRIFT_TOTAL,
+            "Results-table header signature drift detections (layout early warning).",
+            registry=registry,
+        ),
     )
     return _metrics
 
@@ -314,6 +360,68 @@ def record_document_capture_attempt(*, status: str) -> None:
     ).inc()
 
 
+def record_discovery_scan_summary(
+    *,
+    outcome: str,
+    reason: str,
+    rows_scanned: int,
+    eligible: int,
+) -> None:
+    """Record one keyword discovery scan's outcome, rows scanned, and eligibles."""
+
+    metrics = initialize_metrics()
+    normalized_outcome = _discovery_outcome_label(outcome)
+    metrics.discovery_keyword_scans.labels(
+        outcome=normalized_outcome,
+        reason=_discovery_reason_label(reason),
+    ).inc()
+    metrics.discovery_rows_scanned.labels(outcome=normalized_outcome).inc(
+        _coerce_non_negative_int(rows_scanned)
+    )
+    metrics.discovery_eligible_rows.labels(outcome=normalized_outcome).inc(
+        _coerce_non_negative_int(eligible)
+    )
+
+
+def record_discovery_anomaly(*, reason: str) -> None:
+    """Record one discovery scan anomaly with a low-cardinality reason code."""
+
+    initialize_metrics().discovery_anomalies.labels(
+        reason=_discovery_reason_label(reason)
+    ).inc()
+
+
+def record_discovery_header_signature_drift() -> None:
+    """Record one results-table header-signature drift detection."""
+
+    initialize_metrics().discovery_header_signature_drift.inc()
+
+
+def record_discovery_keyword_scan(scan: "Mapping[str, object]") -> None:
+    """Translate a persisted keyword_scan summary dict into discovery metrics.
+
+    Called by the API control plane after a worker run finishes (the worker is a
+    one-shot subprocess and cannot host a scrapeable ``/metrics`` endpoint). The
+    ``reason_code`` / ``header_signature_drift`` values mirror
+    ``egp_shared_types.enums.CrawlOutcomeReason`` (kept as string literals here to
+    avoid a low-level dependency on the shared-types package).
+    """
+
+    outcome = str(scan.get("outcome") or "ok")
+    reason = str(scan.get("reason_code") or "ok")
+    record_discovery_scan_summary(
+        outcome=outcome,
+        reason=reason,
+        rows_scanned=_coerce_non_negative_int(scan.get("rows_scanned")),
+        eligible=_coerce_non_negative_int(scan.get("eligible")),
+    )
+    if reason not in ("", "ok"):
+        record_discovery_anomaly(reason=reason)
+    if scan.get("header_signature_drift"):
+        record_discovery_header_signature_drift()
+        record_discovery_anomaly(reason="header_signature_drift")
+
+
 def instrument_fastapi_app(app: "FastAPI") -> None:
     """Register Prometheus middleware and the `/metrics` scrape endpoint."""
 
@@ -361,3 +469,38 @@ def _normalize_worker_command(command: str) -> str:
 def _normalize_label(value: str) -> str:
     normalized = str(value or "unknown").strip()
     return normalized if normalized else "unknown"
+
+
+def _coerce_non_negative_int(value: object) -> int:
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+# Whitelisted label values bound Prometheus cardinality: the scan dicts come
+# from persisted (and therefore untrusted) JSON, so an unknown/malformed value
+# must collapse to "unknown" rather than create an unbounded new time series.
+# Reason values mirror ``egp_shared_types.enums.CrawlOutcomeReason`` (kept as
+# literals to avoid a low-level dependency on the shared-types package).
+_DISCOVERY_OUTCOME_LABELS: Final[frozenset[str]] = frozenset({"ok", "anomaly"})
+_DISCOVERY_REASON_LABELS: Final[frozenset[str]] = frozenset(
+    {
+        "ok",
+        "keyword_no_results",
+        "no_eligible_rows",
+        "header_signature_drift",
+        "project_detail_invalid",
+        "project_detail_missing_required_fields",
+    }
+)
+
+
+def _discovery_outcome_label(outcome: str) -> str:
+    normalized = _normalize_label(outcome)
+    return normalized if normalized in _DISCOVERY_OUTCOME_LABELS else "unknown"
+
+
+def _discovery_reason_label(reason: str) -> str:
+    normalized = _normalize_label(reason)
+    return normalized if normalized in _DISCOVERY_REASON_LABELS else "unknown"

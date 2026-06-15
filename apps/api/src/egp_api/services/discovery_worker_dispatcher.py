@@ -40,6 +40,7 @@ from egp_crawler_core.profile_lock import (
     ProfileLockedError,
     release_profile_lock as _shared_release_profile_lock,
 )
+from egp_observability.metrics import record_discovery_keyword_scan
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -621,6 +622,10 @@ class SubprocessDiscoveryDispatcher:
                     raise DiscoverySpawnError(
                         f"discover worker exited non-zero for keyword {request.keyword!r}"
                     )
+                self._emit_discovery_run_metrics(
+                    tenant_id=request.tenant_id,
+                    run_id=run_id,
+                )
             except subprocess.TimeoutExpired as exc:
                 _kill_process_group(proc)
                 _, stderr = proc.communicate()
@@ -713,6 +718,48 @@ class SubprocessDiscoveryDispatcher:
                 "Failed to write persistent browser profile state (profile_dir=%s source=%s)",
                 profile_dir,
                 source,
+                exc_info=True,
+            )
+
+    def _emit_discovery_run_metrics(self, *, tenant_id: str, run_id: str) -> None:
+        """Emit discovery scan metrics from the worker-written run summary.
+
+        The worker is a one-shot subprocess and cannot host a scrapeable
+        ``/metrics`` endpoint, so the API control plane (which owns ``/metrics``)
+        reads back the finished run's ``summary_json["keyword_scans"]`` and emits
+        the WS2 anomaly/eligibility metrics. Must never fail dispatch.
+        """
+        try:
+            detail = self._run_repository.get_run_detail(
+                tenant_id=tenant_id, run_id=run_id
+            )
+        except Exception:
+            _logger.warning(
+                "Failed to read run detail for discovery metrics (run_id=%s)",
+                run_id,
+                exc_info=True,
+            )
+            return
+        if detail is None:
+            return
+        try:
+            summary = getattr(getattr(detail, "run", None), "summary_json", None)
+            if not isinstance(summary, dict):
+                return
+            keyword_scans = summary.get("keyword_scans")
+            if isinstance(keyword_scans, dict):
+                scans: object = keyword_scans.values()
+            elif isinstance(keyword_scans, list):
+                scans = keyword_scans
+            else:
+                return
+            for scan in scans:
+                if isinstance(scan, dict):
+                    record_discovery_keyword_scan(scan)
+        except Exception:
+            _logger.warning(
+                "Failed to emit discovery scan metrics (run_id=%s)",
+                run_id,
                 exc_info=True,
             )
 
