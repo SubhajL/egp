@@ -16,9 +16,11 @@ from sqlalchemy import (
     String,
     Table,
     and_,
+    case,
     desc,
     func,
     insert,
+    not_,
     or_,
     select,
 )
@@ -28,6 +30,7 @@ from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 from egp_shared_types.enums import (
     DocumentCaptureAttemptStatus,
+    DocumentCaptureReason,
     DocumentType,
     ProjectState,
 )
@@ -138,6 +141,12 @@ def _coerce_date(value: date | datetime | str | None) -> date | None:
     return date.fromisoformat(str(value))
 
 
+def _aware_datetime(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 def _dt_to_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -206,6 +215,44 @@ def _is_backoff_due(
     return latest_attempted_at <= now - timedelta(seconds=delay_seconds)
 
 
+def _is_time_cadence_due(
+    *,
+    latest_is_no_documents: bool,
+    transient_count: int,
+    transient_latest_at: datetime | None,
+    no_documents_latest_at: datetime | None,
+    latest_terminal_at: datetime | None,
+    now: datetime,
+    base_backoff_seconds: int,
+    max_backoff_seconds: int,
+    no_documents_retry_seconds: int,
+) -> bool:
+    """Time-based retry-cadence check (WS3 P1b).
+
+    Throttle, the transient attempt cap, the proposal-deadline stop, and the
+    30-day no_documents cap are all applied in SQL (see
+    ``list_due_backfill_candidates``); rows reaching here are neither throttled
+    nor exhausted, so only the cadence remains: `no_documents` retries once per
+    `no_documents_retry_seconds`; transient `failed`/`timeout` use exponential
+    backoff.
+    """
+    if latest_terminal_at is None:
+        return True
+    if latest_is_no_documents:
+        if no_documents_latest_at is None:
+            return True
+        return no_documents_latest_at <= now - timedelta(
+            seconds=max(0, int(no_documents_retry_seconds))
+        )
+    return _is_backoff_due(
+        latest_attempted_at=transient_latest_at,
+        attempt_count=transient_count,
+        now=now,
+        base_backoff_seconds=base_backoff_seconds,
+        max_backoff_seconds=max_backoff_seconds,
+    )
+
+
 class SqlDocumentCaptureAttemptRepository:
     def __init__(
         self,
@@ -232,7 +279,7 @@ class SqlDocumentCaptureAttemptRepository:
         tenant_id: str,
         project_id: str,
         status: DocumentCaptureAttemptStatus | str,
-        reason: str | None = None,
+        reason: str | DocumentCaptureReason | None = None,
         doc_count: int = 0,
         run_id: str | None = None,
         attempted_at: datetime | str | None = None,
@@ -343,24 +390,58 @@ class SqlDocumentCaptureAttemptRepository:
         max_attempts: int = 3,
         base_backoff_seconds: int = 3600,
         max_backoff_seconds: int = 86400,
+        enqueued_stale_after_seconds: int = 10800,
+        no_documents_retry_seconds: int = 86400,
+        no_documents_max_age_days: int = 30,
         limit: int = 50,
     ) -> list[DocumentCaptureBackfillCandidate]:
         effective_now = _coerce_datetime(now)
         normalized_limit = max(1, int(limit))
         normalized_max_attempts = max(1, int(max_attempts))
-        attempt_stats = (
+        attempts_table = DOCUMENT_CAPTURE_ATTEMPTS_TABLE
+        # Transient attempts (failed/timeout) drive the count cap + backoff;
+        # no_documents attempts are tracked separately for the daily/30-day
+        # heartbeat policy (WS3 P1a/P1b). enqueued/skipped/succeeded never count.
+        transient_statuses = (
+            DocumentCaptureAttemptStatus.FAILED.value,
+            DocumentCaptureAttemptStatus.TIMEOUT.value,
+        )
+        transient_stats = (
             select(
-                DOCUMENT_CAPTURE_ATTEMPTS_TABLE.c.tenant_id.label("tenant_id"),
-                DOCUMENT_CAPTURE_ATTEMPTS_TABLE.c.project_id.label("project_id"),
-                func.count().label("attempt_count"),
-                func.max(DOCUMENT_CAPTURE_ATTEMPTS_TABLE.c.attempted_at).label(
-                    "latest_attempted_at"
-                ),
+                attempts_table.c.tenant_id.label("tenant_id"),
+                attempts_table.c.project_id.label("project_id"),
+                func.count().label("transient_count"),
+                func.max(attempts_table.c.attempted_at).label("transient_latest_at"),
             )
-            .group_by(
-                DOCUMENT_CAPTURE_ATTEMPTS_TABLE.c.tenant_id,
-                DOCUMENT_CAPTURE_ATTEMPTS_TABLE.c.project_id,
+            .where(attempts_table.c.status.in_(transient_statuses))
+            .group_by(attempts_table.c.tenant_id, attempts_table.c.project_id)
+            .subquery()
+        )
+        no_doc_stats = (
+            select(
+                attempts_table.c.tenant_id.label("tenant_id"),
+                attempts_table.c.project_id.label("project_id"),
+                func.count().label("no_documents_count"),
+                func.min(attempts_table.c.attempted_at).label("no_documents_first_at"),
+                func.max(attempts_table.c.attempted_at).label("no_documents_latest_at"),
             )
+            .where(
+                attempts_table.c.status
+                == DocumentCaptureAttemptStatus.NO_DOCUMENTS.value
+            )
+            .group_by(attempts_table.c.tenant_id, attempts_table.c.project_id)
+            .subquery()
+        )
+        latest_enqueued = (
+            select(
+                attempts_table.c.tenant_id.label("tenant_id"),
+                attempts_table.c.project_id.label("project_id"),
+                func.max(attempts_table.c.attempted_at).label("latest_enqueued_at"),
+            )
+            .where(
+                attempts_table.c.status == DocumentCaptureAttemptStatus.ENQUEUED.value
+            )
+            .group_by(attempts_table.c.tenant_id, attempts_table.c.project_id)
             .subquery()
         )
         target_documents = (
@@ -404,6 +485,49 @@ class SqlDocumentCaptureAttemptRepository:
             ProjectState.OPEN_PUBLIC_HEARING.value,
             ProjectState.OPEN_CONSULTING.value,
         ]
+        transient_count_col = func.coalesce(transient_stats.c.transient_count, 0)
+        no_documents_count_col = func.coalesce(no_doc_stats.c.no_documents_count, 0)
+        transient_latest = transient_stats.c.transient_latest_at
+        no_doc_latest = no_doc_stats.c.no_documents_latest_at
+        no_doc_first = no_doc_stats.c.no_documents_first_at
+        enqueued_latest = latest_enqueued.c.latest_enqueued_at
+        # Ties (equal latest timestamps) resolve to the transient branch.
+        latest_is_no_documents = and_(
+            no_doc_latest.is_not(None),
+            or_(transient_latest.is_(None), no_doc_latest > transient_latest),
+        )
+        latest_is_transient = and_(
+            transient_latest.is_not(None),
+            or_(no_doc_latest.is_(None), transient_latest >= no_doc_latest),
+        )
+        # True "latest terminal" timestamp (ties -> transient). coalesce() is
+        # wrong here (it always prefers transient even when no_documents is
+        # newer), which would mis-order and starve the prefetch.
+        latest_terminal_expr = case(
+            (latest_is_transient, transient_latest),
+            else_=no_doc_latest,
+        )
+        # Deterministic exclusions pushed into SQL (WS3 P1a/P1b) so the bounded
+        # Python cadence filter below only ever sees non-throttled, non-exhausted
+        # rows (which sort last) — avoids prefetch starvation.
+        enqueue_stale_threshold = effective_now - timedelta(
+            seconds=max(0, int(enqueued_stale_after_seconds))
+        )
+        no_documents_age_threshold = effective_now - timedelta(
+            days=max(0, int(no_documents_max_age_days))
+        )
+        active_enqueue_throttle = and_(
+            enqueued_latest.is_not(None),
+            enqueued_latest > enqueue_stale_threshold,
+            or_(transient_latest.is_(None), enqueued_latest > transient_latest),
+            or_(no_doc_latest.is_(None), enqueued_latest > no_doc_latest),
+        )
+        transient_exhausted = and_(
+            latest_is_transient, transient_count_col >= normalized_max_attempts
+        )
+        no_documents_exhausted = and_(
+            latest_is_no_documents, no_doc_first <= no_documents_age_threshold
+        )
         statement = (
             select(
                 PROJECTS_TABLE.c.tenant_id,
@@ -413,8 +537,11 @@ class SqlDocumentCaptureAttemptRepository:
                 PROJECTS_TABLE.c.proposal_submission_date,
                 active_profiles.c.profile_id,
                 active_profiles.c.profile_type,
-                func.coalesce(attempt_stats.c.attempt_count, 0).label("attempt_count"),
-                attempt_stats.c.latest_attempted_at,
+                (transient_count_col + no_documents_count_col).label("attempt_count"),
+                transient_count_col.label("transient_count"),
+                transient_stats.c.transient_latest_at,
+                no_doc_stats.c.no_documents_latest_at,
+                latest_terminal_expr.label("latest_attempted_at"),
                 func.coalesce(target_documents.c.target_document_count, 0).label(
                     "target_document_count"
                 ),
@@ -427,10 +554,24 @@ class SqlDocumentCaptureAttemptRepository:
                 ),
             )
             .outerjoin(
-                attempt_stats,
+                transient_stats,
                 and_(
-                    attempt_stats.c.tenant_id == PROJECTS_TABLE.c.tenant_id,
-                    attempt_stats.c.project_id == PROJECTS_TABLE.c.id,
+                    transient_stats.c.tenant_id == PROJECTS_TABLE.c.tenant_id,
+                    transient_stats.c.project_id == PROJECTS_TABLE.c.id,
+                ),
+            )
+            .outerjoin(
+                no_doc_stats,
+                and_(
+                    no_doc_stats.c.tenant_id == PROJECTS_TABLE.c.tenant_id,
+                    no_doc_stats.c.project_id == PROJECTS_TABLE.c.id,
+                ),
+            )
+            .outerjoin(
+                latest_enqueued,
+                and_(
+                    latest_enqueued.c.tenant_id == PROJECTS_TABLE.c.tenant_id,
+                    latest_enqueued.c.project_id == PROJECTS_TABLE.c.id,
                 ),
             )
             .outerjoin(
@@ -449,12 +590,13 @@ class SqlDocumentCaptureAttemptRepository:
                     PROJECTS_TABLE.c.proposal_submission_date >= effective_now.date(),
                 ),
                 func.coalesce(target_documents.c.target_document_count, 0) == 0,
-                func.coalesce(attempt_stats.c.attempt_count, 0)
-                < normalized_max_attempts,
+                not_(active_enqueue_throttle),
+                not_(transient_exhausted),
+                not_(no_documents_exhausted),
             )
             .order_by(
-                attempt_stats.c.latest_attempted_at.is_not(None),
-                attempt_stats.c.latest_attempted_at,
+                latest_terminal_expr.is_not(None),
+                latest_terminal_expr,
                 PROJECTS_TABLE.c.last_seen_at,
                 PROJECTS_TABLE.c.id,
             )
@@ -464,15 +606,24 @@ class SqlDocumentCaptureAttemptRepository:
             rows = connection.execute(statement).mappings().all()
         candidates: list[DocumentCaptureBackfillCandidate] = []
         for row in rows:
-            latest_attempted_at = row["latest_attempted_at"]
-            if latest_attempted_at is not None and latest_attempted_at.tzinfo is None:
-                latest_attempted_at = latest_attempted_at.replace(tzinfo=UTC)
-            if not _is_backoff_due(
-                latest_attempted_at=latest_attempted_at,
-                attempt_count=int(row["attempt_count"] or 0),
+            transient_latest_at = _aware_datetime(row["transient_latest_at"])
+            no_documents_latest_at = _aware_datetime(row["no_documents_latest_at"])
+            terminal_times = [t for t in (transient_latest_at, no_documents_latest_at) if t]
+            latest_terminal_at = max(terminal_times) if terminal_times else None
+            latest_is_no_doc = no_documents_latest_at is not None and (
+                transient_latest_at is None
+                or no_documents_latest_at > transient_latest_at
+            )
+            if not _is_time_cadence_due(
+                latest_is_no_documents=latest_is_no_doc,
+                transient_count=int(row["transient_count"] or 0),
+                transient_latest_at=transient_latest_at,
+                no_documents_latest_at=no_documents_latest_at,
+                latest_terminal_at=latest_terminal_at,
                 now=effective_now,
                 base_backoff_seconds=base_backoff_seconds,
                 max_backoff_seconds=max_backoff_seconds,
+                no_documents_retry_seconds=no_documents_retry_seconds,
             ):
                 continue
             candidates.append(_candidate_from_mapping(row))

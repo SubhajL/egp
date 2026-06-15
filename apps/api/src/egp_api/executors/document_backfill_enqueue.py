@@ -12,7 +12,7 @@ from egp_db.repositories.document_capture_attempt_repo import (
     DocumentCaptureBackfillCandidate,
     create_document_capture_attempt_repository,
 )
-from egp_shared_types.enums import DocumentCaptureAttemptStatus
+from egp_shared_types.enums import DocumentCaptureAttemptStatus, DocumentCaptureReason
 
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,9 @@ def enqueue_document_backfill_jobs(
     max_attempts: int = 3,
     base_backoff_seconds: int = 3600,
     max_backoff_seconds: int = 86400,
+    enqueued_stale_after_seconds: int = 10800,
+    no_documents_retry_seconds: int = 86400,
+    no_documents_max_age_days: int = 30,
 ) -> dict[str, int]:
     """Enqueue due project-number backfill jobs for zero invitation/TOR projects."""
 
@@ -63,6 +66,9 @@ def enqueue_document_backfill_jobs(
         max_attempts=max_attempts,
         base_backoff_seconds=base_backoff_seconds,
         max_backoff_seconds=max_backoff_seconds,
+        enqueued_stale_after_seconds=enqueued_stale_after_seconds,
+        no_documents_retry_seconds=no_documents_retry_seconds,
+        no_documents_max_age_days=no_documents_max_age_days,
         limit=limit,
     )
     enqueued_count = 0
@@ -89,7 +95,7 @@ def enqueue_document_backfill_jobs(
             tenant_id=candidate.tenant_id,
             project_id=candidate.project_id,
             status=DocumentCaptureAttemptStatus.ENQUEUED,
-            reason="backfill_job_created",
+            reason=DocumentCaptureReason.BACKFILL_JOB_CREATED,
             doc_count=0,
             attempted_at=now,
         )
@@ -114,6 +120,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--base-backoff-seconds", type=int, default=3600)
     parser.add_argument("--max-backoff-seconds", type=int, default=86400)
+    parser.add_argument("--enqueued-stale-after-seconds", type=int, default=10800)
+    parser.add_argument("--no-documents-retry-seconds", type=int, default=86400)
+    parser.add_argument("--no-documents-max-age-days", type=int, default=30)
     return parser
 
 
@@ -130,6 +139,9 @@ def main(
         max_attempts=args.max_attempts,
         base_backoff_seconds=args.base_backoff_seconds,
         max_backoff_seconds=args.max_backoff_seconds,
+        enqueued_stale_after_seconds=args.enqueued_stale_after_seconds,
+        no_documents_retry_seconds=args.no_documents_retry_seconds,
+        no_documents_max_age_days=args.no_documents_max_age_days,
     )
     logger.info(
         "Enqueued document backfill jobs (new=%d of candidates=%d, attempts=%d, skipped=%d)",
