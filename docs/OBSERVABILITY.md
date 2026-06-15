@@ -24,7 +24,7 @@ Operators access the UIs via SSH tunnel (§4).
 
 ### What the dashboard covers
 
-The auto-loaded `e-GP Observability Baseline` dashboard (10 panels)
+The auto-loaded `e-GP Observability Baseline` dashboard (13 panels)
 includes:
 
 - Request rate (per route, 2xx vs 5xx split)
@@ -32,13 +32,37 @@ includes:
 - Worker queue depth + run-status distribution
 - Rate-limiter token availability + 429 count
 - Tenant admission rejections (PR-08)
+- **Discovery eligibility rate** + keyword-scan outcomes (WS2)
+- **Discovery anomalies + results-table header-signature drift** (WS2)
+
+#### Discovery anomaly metrics (WS2)
+
+The crawler can silently return zero projects if e-GP changes the
+results-table layout (the column-drift incident). These metrics make such
+misses impossible to hide. They are emitted by the **API control plane**
+after each worker run finishes — read back from the worker-written
+`crawl_runs.summary_json["keyword_scans"]` — because the worker is a
+one-shot subprocess with no scrapeable `/metrics` listener:
+
+- `egp_discovery_keyword_scans_total{outcome,reason}` — one per keyword scan
+- `egp_discovery_rows_scanned_total{outcome}` / `egp_discovery_eligible_rows_total{outcome}`
+  — the eligibility-rate numerator/denominator
+- `egp_discovery_anomalies_total{reason}` — `no_eligible_rows` (the canary)
+  and `header_signature_drift`
+- `egp_discovery_header_signature_drift_total` — results-table layout changed
+
+Alert rules (`infrastructure/grafana/alerts.yml`):
+`EGPDiscoveryEligibilityRateCollapsed` (critical — fleet eligibility ≈ 0
+while rows are scanned), `EGPDiscoveryZeroEligibleScans` (canary), and
+`EGPDiscoveryHeaderSignatureDrift` (early warning for the next layout drift).
 
 ### What's NOT in PR-E
 
 - **Worker `/metrics` endpoint**: workers update Prometheus counters
   in-process but do not yet expose an HTTP listener. Tracked as a
   follow-up; until then, worker metrics are visible only as
-  side-effects on API-side metrics.
+  side-effects on API-side metrics. (WS2 discovery metrics sidestep this
+  by being emitted in the API process from the persisted run summary.)
 - **Node-exporter** (host CPU/memory/disk): can be added later as a
   second overlay; the launch baseline gets by on Lightsail's built-in
   host metrics.

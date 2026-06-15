@@ -13,7 +13,7 @@ import time
 import inspect
 from collections.abc import Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from datetime import date
 from pathlib import Path
 
@@ -39,7 +39,12 @@ except (
         raise ModuleNotFoundError("playwright is required for live browser discovery")
 
 
-from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    ArtifactBucket,
+    CrawlOutcomeReason,
+    ProcurementType,
+    ProjectState,
+)
 
 from .browser_downloads import collect_downloaded_documents
 from .browser_site_state import clear_site_error_toast, has_site_error_toast
@@ -313,6 +318,129 @@ def crawl_live_discovery(
         safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
 
 
+@dataclass
+class KeywordScanAccumulator:
+    """Aggregates per-keyword scan telemetry across pages (WS2 canary).
+
+    Makes silent discovery misses impossible to hide: when rows were scanned but
+    none were eligible (`reason_code == no_eligible_rows`) the workflow surfaces a
+    non-terminal anomaly instead of a plain `succeeded` run. Header-signature
+    drift is recorded as an informational early-warning flag.
+    """
+
+    keyword: str
+    egp_found: int | None = None
+    rows_scanned: int = 0
+    # status_eligible = rows whose status passed the discoverable-stage gate,
+    # BEFORE skip-keyword / dedupe filtering. The canary keys off this (not the
+    # post-filter accepted count) so an all-skipped or all-duplicate keyword is
+    # NOT a false "no eligible rows" anomaly.
+    status_eligible: int = 0
+    accepted: int = 0
+    rejected_by_status: int = 0
+    unreadable_rows: int = 0
+    skip_hits: int = 0
+    dedup_hits: int = 0
+    pages_scanned: int = 0
+    header_signature: str = ""
+    header_signature_drift: bool = False
+    status_buckets: dict[str, int] = dataclass_field(default_factory=dict)
+
+    def record_row_status(self, status_text: str | None) -> None:
+        bucket = (status_text or "").strip() or "<unreadable>"
+        self.status_buckets[bucket] = self.status_buckets.get(bucket, 0) + 1
+        if status_text is None:
+            self.unreadable_rows += 1
+        elif not is_discoverable_stage_status(status_text):
+            self.rejected_by_status += 1
+
+    def record_status_eligible(self) -> None:
+        self.status_eligible += 1
+
+    def record_skip_hit(self) -> None:
+        self.skip_hits += 1
+
+    def record_dedup_hit(self) -> None:
+        self.dedup_hits += 1
+
+    def record_accepted(self) -> None:
+        self.accepted += 1
+
+    def record_page(self, *, rows: int, header_signature: str) -> None:
+        self.pages_scanned += 1
+        self.rows_scanned += rows
+        if header_signature and not self.header_signature:
+            self.header_signature = header_signature
+        if header_signature and header_signature != EXPECTED_RESULTS_HEADER_SIGNATURE:
+            self.header_signature_drift = True
+
+    @property
+    def reason_code(self) -> CrawlOutcomeReason:
+        # Canary 1: rows were on the page but none had a discoverable status
+        # (the column-drift signature, or a status-vocabulary gap).
+        if self.rows_scanned > 0 and self.status_eligible == 0:
+            return CrawlOutcomeReason.NO_ELIGIBLE_ROWS
+        # Canary 2: e-GP reports projects but we scanned zero rows — the results
+        # table was not recognized (e.g. a required header was renamed), which
+        # would otherwise be a completely silent miss.
+        if (self.egp_found or 0) > 0 and self.rows_scanned == 0:
+            return CrawlOutcomeReason.NO_ELIGIBLE_ROWS
+        return CrawlOutcomeReason.OK
+
+    @property
+    def outcome(self) -> str:
+        if self.reason_code is not CrawlOutcomeReason.OK or self.header_signature_drift:
+            return "anomaly"
+        return "ok"
+
+    def to_summary_event(self) -> dict[str, object]:
+        event: dict[str, object] = {
+            "rows_scanned": self.rows_scanned,
+            "eligible": self.status_eligible,
+            "accepted": self.accepted,
+            "rejected_by_status": self.rejected_by_status,
+            "unreadable_rows": self.unreadable_rows,
+            "skip_hits": self.skip_hits,
+            "dedup_hits": self.dedup_hits,
+            "pages_scanned": self.pages_scanned,
+            "header_signature": self.header_signature,
+            "header_signature_drift": self.header_signature_drift,
+            "status_buckets": dict(self.status_buckets),
+            "outcome": self.outcome,
+            "reason_code": str(self.reason_code),
+        }
+        if self.egp_found is not None:
+            event["egp_found"] = self.egp_found
+        return event
+
+
+def _extract_row_status_text(row, columns: dict[str, int]) -> str | None:
+    """Best-effort read of a row's status cell for telemetry bucketing only."""
+    try:
+        cells = row.query_selector_all("td")
+        status_index = columns["status"]
+        if len(cells) <= status_index:
+            return None
+        return cells[status_index].inner_text().strip()
+    except Exception:
+        return None
+
+
+def _read_egp_found_count(page) -> int | None:
+    """Read e-GP's `จำนวนโครงการที่พบ : N` ground-truth result count, if present."""
+    try:
+        body = page.inner_text("body")
+    except Exception:
+        return None
+    match = re.search(r"จำนวนโครงการที่พบ\s*:?\s*([0-9,]+)", body or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
 def _collect_keyword_projects(
     *,
     page,
@@ -323,6 +451,7 @@ def _collect_keyword_projects(
     project_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
+    scan = KeywordScanAccumulator(keyword=keyword)
     page_num = 1
     while page_num <= settings.max_pages_per_keyword:
         try:
@@ -341,20 +470,28 @@ def _collect_keyword_projects(
             raise
         results_table = find_results_table(page)
         results_columns = resolve_results_columns(results_table) if results_table else None
+        header_signature = _results_header_signature(results_table) if results_table else ""
+        if page_num == 1 and scan.egp_found is None:
+            scan.egp_found = _read_egp_found_count(page)
         eligible_rows: list[dict[str, object]] = []
         for row in rows:
             if results_columns is None:
                 continue
+            scan.record_row_status(_extract_row_status_text(row, results_columns))
             row_payload = _extract_search_row(row, results_columns)
             if row_payload is None:
                 continue
+            scan.record_status_eligible()
             if any(blocked in row_payload["project_name"] for blocked in SKIP_KEYWORDS_IN_PROJECT):
+                scan.record_skip_hit()
                 continue
             dedupe_key = str(
                 row_payload.get("project_number") or row_payload["project_name"]
             ).casefold()
             if dedupe_key in seen_keys:
+                scan.record_dedup_hit()
                 continue
+            scan.record_accepted()
             eligible_rows.append(
                 {
                     "project_name": row_payload["project_name"],
@@ -365,6 +502,7 @@ def _collect_keyword_projects(
                     "row_marker": row_payload["row_marker"],
                 }
             )
+        scan.record_page(rows=len(rows), header_signature=header_signature)
         _log_live_progress(
             "page_scan_finished",
             keyword=keyword,
@@ -581,6 +719,11 @@ def _collect_keyword_projects(
             keyword=keyword,
             extra={"page_num": page_num},
         )
+    _log_live_progress(
+        "keyword_scan_summary",
+        keyword=keyword,
+        extra=scan.to_summary_event(),
+    )
     return results
 
 
@@ -1718,6 +1861,37 @@ def resolve_results_columns(table) -> dict[str, int]:
             f"results table missing required column(s) {missing}; headers={headers}"
         )
     return columns
+
+
+def _header_signature_from_texts(headers: list[str]) -> str:
+    """Build a deterministic, whitespace-insensitive results-header signature."""
+    return " | ".join(
+        compact for header in headers if (compact := _compact_visible_text(header).casefold())
+    )
+
+
+def _results_header_signature(table) -> str:
+    """Return the compact header signature of a results table (drift fingerprint)."""
+    return _header_signature_from_texts(_extract_table_headers(table))
+
+
+# The known-good 7-column layout (a `หน่วยจัดซื้อ` column was inserted in the
+# WS1 column-drift incident). When the live signature differs from this baseline
+# the keyword scan records `header_signature_drift` as an early warning for the
+# NEXT layout change. Update this constant when e-GP intentionally changes the
+# results-table layout.
+EXPECTED_RESULTS_HEADER_TEXTS = (
+    "ลำดับ",
+    "หน่วยงาน",
+    "หน่วยจัดซื้อ",
+    "ชื่อโครงการ",
+    "วงเงินงบประมาณ (บาท)",
+    "สถานะโครงการ",
+    "ดูข้อมูล",
+)
+EXPECTED_RESULTS_HEADER_SIGNATURE = _header_signature_from_texts(
+    list(EXPECTED_RESULTS_HEADER_TEXTS)
+)
 
 
 def find_results_table(page):
