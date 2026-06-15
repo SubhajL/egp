@@ -16,7 +16,7 @@ COPY packages/ packages/
 COPY apps/worker/src apps/worker/src
 
 RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir fastapi uvicorn[standard] pydantic \
+    pip install --no-cache-dir 'fastapi<0.136' uvicorn[standard] pydantic \
     python-jose[cryptography] openpyxl psycopg[binary] \
     sqlalchemy boto3 supabase playwright httpx prometheus-client
 
