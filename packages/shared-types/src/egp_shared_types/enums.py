@@ -100,6 +100,22 @@ class CrawlTaskType(StrEnum):
     DOWNLOAD = "download"
 
 
+class CrawlOutcomeReason(StrEnum):
+    """Structured reason codes for a keyword discovery scan outcome.
+
+    Persisted in ``crawl_runs.summary_json`` / ``crawl_tasks.result_json`` and
+    used by the WS2 discovery anomaly canary so silent misses cannot hide as a
+    plain ``succeeded`` run. Shared vocabulary for telemetry + Prometheus labels.
+    """
+
+    OK = "ok"
+    KEYWORD_NO_RESULTS = "keyword_no_results"
+    NO_ELIGIBLE_ROWS = "no_eligible_rows"
+    HEADER_SIGNATURE_DRIFT = "header_signature_drift"
+    PROJECT_DETAIL_INVALID = "project_detail_invalid"
+    PROJECT_DETAIL_MISSING_REQUIRED_FIELDS = "project_detail_missing_required_fields"
+
+
 class UserRole(StrEnum):
     OWNER = "owner"
     ADMIN = "admin"

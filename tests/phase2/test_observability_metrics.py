@@ -30,6 +30,11 @@ EXPECTED_METRIC_NAMES = {
     "egp_discovery_queue_depth",
     "egp_discovery_dispatch_total",
     "egp_discovery_inflight_runs",
+    "egp_discovery_keyword_scans_total",
+    "egp_discovery_rows_scanned_total",
+    "egp_discovery_eligible_rows_total",
+    "egp_discovery_anomalies_total",
+    "egp_discovery_header_signature_drift_total",
 }
 
 
@@ -181,6 +186,131 @@ def test_egp_request_and_rate_limiter_metric_helpers_record_outcomes() -> None:
     assert "egp_rate_limiter_wait_seconds_sum 0.25" in metrics_text
 
 
+def test_discovery_scan_summary_metric_helper_records_counts() -> None:
+    from egp_observability.metrics import (
+        record_discovery_scan_summary,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_scan_summary(
+        outcome="anomaly", reason="no_eligible_rows", rows_scanned=5, eligible=0
+    )
+
+    text = _metric_output()
+    assert (
+        'egp_discovery_keyword_scans_total{outcome="anomaly",reason="no_eligible_rows"} 1.0'
+        in text
+    )
+    assert 'egp_discovery_rows_scanned_total{outcome="anomaly"} 5.0' in text
+    assert 'egp_discovery_eligible_rows_total{outcome="anomaly"} 0.0' in text
+
+
+def test_discovery_anomaly_metric_helper_records_reason() -> None:
+    from egp_observability.metrics import (
+        record_discovery_anomaly,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_anomaly(reason="no_eligible_rows")
+
+    assert (
+        'egp_discovery_anomalies_total{reason="no_eligible_rows"} 1.0' in _metric_output()
+    )
+
+
+def test_discovery_header_signature_drift_metric_increments() -> None:
+    from egp_observability.metrics import (
+        record_discovery_header_signature_drift,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_header_signature_drift()
+
+    assert "egp_discovery_header_signature_drift_total 1.0" in _metric_output()
+
+
+def test_record_discovery_keyword_scan_translates_anomaly_summary() -> None:
+    from egp_observability.metrics import (
+        record_discovery_keyword_scan,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_keyword_scan(
+        {
+            "outcome": "anomaly",
+            "reason_code": "no_eligible_rows",
+            "rows_scanned": 3,
+            "eligible": 0,
+            "header_signature_drift": True,
+        }
+    )
+
+    text = _metric_output()
+    assert (
+        'egp_discovery_keyword_scans_total{outcome="anomaly",reason="no_eligible_rows"} 1.0'
+        in text
+    )
+    assert 'egp_discovery_anomalies_total{reason="no_eligible_rows"} 1.0' in text
+    assert 'egp_discovery_anomalies_total{reason="header_signature_drift"} 1.0' in text
+    assert "egp_discovery_header_signature_drift_total 1.0" in text
+
+
+def test_record_discovery_keyword_scan_ok_records_no_anomaly() -> None:
+    from egp_observability.metrics import (
+        record_discovery_keyword_scan,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_keyword_scan(
+        {"outcome": "ok", "reason_code": "ok", "rows_scanned": 4, "eligible": 4}
+    )
+
+    text = _metric_output()
+    assert 'egp_discovery_keyword_scans_total{outcome="ok",reason="ok"} 1.0' in text
+    assert 'egp_discovery_rows_scanned_total{outcome="ok"} 4.0' in text
+    assert 'egp_discovery_eligible_rows_total{outcome="ok"} 4.0' in text
+    # An OK scan must not emit any anomaly sample (HELP/TYPE lines are fine).
+    assert "egp_discovery_anomalies_total{" not in text
+    assert "egp_discovery_header_signature_drift_total 1.0" not in text
+
+
+def test_record_discovery_keyword_scan_whitelists_unknown_labels() -> None:
+    # Scan dicts come from persisted (untrusted) JSON — unknown outcome/reason
+    # values must collapse to "unknown" to bound Prometheus cardinality.
+    from egp_observability.metrics import (
+        record_discovery_keyword_scan,
+        reset_metrics_for_tests,
+    )
+
+    reset_metrics_for_tests()
+
+    record_discovery_keyword_scan(
+        {
+            "outcome": "weird-outcome",
+            "reason_code": "totally-bogus-reason",
+            "rows_scanned": 1,
+            "eligible": 0,
+        }
+    )
+
+    text = _metric_output()
+    assert (
+        'egp_discovery_keyword_scans_total{outcome="unknown",reason="unknown"} 1.0'
+        in text
+    )
+    assert 'egp_discovery_anomalies_total{reason="unknown"} 1.0' in text
+
+
 def test_grafana_dashboard_json_validates(repo_root: Path) -> None:
     dashboard_path = repo_root / "infrastructure" / "grafana" / "dashboard.json"
 
@@ -206,5 +336,16 @@ def test_grafana_alert_rules_yaml_validates(repo_root: Path) -> None:
         "egp_worker_subprocess_count",
         "egp_egp_request_total",
         "egp_document_capture_attempts_total",
+        "egp_discovery_rows_scanned_total",
+        "egp_discovery_eligible_rows_total",
+        "egp_discovery_anomalies_total",
+        "egp_discovery_header_signature_drift_total",
     ):
         assert metric_name in serialized
+    # WS2 discovery anomaly alert rules must be wired.
+    for alert_name in (
+        "EGPDiscoveryEligibilityRateCollapsed",
+        "EGPDiscoveryZeroEligibleScans",
+        "EGPDiscoveryHeaderSignatureDrift",
+    ):
+        assert alert_name in serialized

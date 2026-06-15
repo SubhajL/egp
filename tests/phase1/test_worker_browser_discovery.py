@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from egp_shared_types.enums import ArtifactBucket, ProcurementType, ProjectState
+from egp_shared_types.enums import (
+    ArtifactBucket,
+    CrawlOutcomeReason,
+    ProcurementType,
+    ProjectState,
+)
 from egp_worker.browser_close_check import (
     _collect_documents_for_observation,
     _find_matching_observation_on_page,
@@ -13,9 +18,13 @@ from egp_worker.browser_close_check import (
 from egp_worker.browser_discovery import (
     BrowserClosedDuringKeyword,
     BrowserDiscoverySettings,
+    EXPECTED_RESULTS_HEADER_SIGNATURE,
+    KeywordScanAccumulator,
     LiveDiscoveryPartialError,
     NEXT_PAGE_SELECTOR,
     ResultsColumnsError,
+    _LIVE_PROGRESS_CALLBACK,
+    _results_header_signature,
     ResultsPageRecoveryError,
     SearchPageStateError,
     _collect_documents_for_payload,
@@ -3526,3 +3535,261 @@ def test_collect_keyword_projects_does_not_paginate_past_max_pages(monkeypatch) 
 
     # No "next" click consumed → the off-by-one extra page was not requested.
     assert page.remaining_clicks == 5
+
+
+# ---------------------------------------------------------------------------
+# WS2 — keyword-scan telemetry + canary ("make misses impossible to hide")
+# ---------------------------------------------------------------------------
+
+
+def test_crawl_outcome_reason_enum_has_canary_values() -> None:
+    assert CrawlOutcomeReason.OK == "ok"
+    assert CrawlOutcomeReason.NO_ELIGIBLE_ROWS == "no_eligible_rows"
+    assert CrawlOutcomeReason.HEADER_SIGNATURE_DRIFT == "header_signature_drift"
+    assert CrawlOutcomeReason.KEYWORD_NO_RESULTS == "keyword_no_results"
+
+
+def test_results_header_signature_matches_expected_for_canonical_layout() -> None:
+    # The known-good 7-column layout must equal the pinned baseline signature.
+    table = FakeTable(_results_headers(), [])
+    assert _results_header_signature(table) == EXPECTED_RESULTS_HEADER_SIGNATURE
+
+
+def test_keyword_scan_accumulator_flags_no_eligible_rows_canary() -> None:
+    # Rows scanned but none status-eligible → the canary that would have caught
+    # the column-drift bug on day one.
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล")
+    accumulator.record_row_status("จัดทำสัญญา/บริหารสัญญา")
+    accumulator.record_row_status("ยกเลิกโครงการ")
+    accumulator.record_page(rows=2, header_signature=EXPECTED_RESULTS_HEADER_SIGNATURE)
+
+    assert accumulator.rows_scanned == 2
+    assert accumulator.status_eligible == 0
+    assert accumulator.rejected_by_status == 2
+    assert accumulator.reason_code == CrawlOutcomeReason.NO_ELIGIBLE_ROWS
+    assert accumulator.outcome == "anomaly"
+    summary = accumulator.to_summary_event()
+    assert summary["reason_code"] == "no_eligible_rows"
+    assert summary["eligible"] == 0
+    assert summary["status_buckets"]["จัดทำสัญญา/บริหารสัญญา"] == 1
+    assert summary["header_signature_drift"] is False
+
+
+def test_keyword_scan_accumulator_is_ok_when_rows_are_eligible() -> None:
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล")
+    accumulator.record_row_status("หนังสือเชิญชวน/ประกาศเชิญชวน")
+    accumulator.record_status_eligible()
+    accumulator.record_accepted()
+    accumulator.record_page(rows=1, header_signature=EXPECTED_RESULTS_HEADER_SIGNATURE)
+
+    assert accumulator.reason_code == CrawlOutcomeReason.OK
+    assert accumulator.outcome == "ok"
+    assert accumulator.header_signature_drift is False
+    assert accumulator.rejected_by_status == 0
+    assert accumulator.to_summary_event()["eligible"] == 1
+
+
+def test_keyword_scan_accumulator_all_skipped_rows_are_not_a_canary() -> None:
+    # All status-eligible rows were filtered by SKIP_KEYWORDS — a legitimate
+    # zero-accepted result, NOT a discovery miss. Must NOT trip the canary.
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล")
+    accumulator.record_row_status("หนังสือเชิญชวน/ประกาศเชิญชวน")
+    accumulator.record_status_eligible()
+    accumulator.record_skip_hit()
+    accumulator.record_page(rows=1, header_signature=EXPECTED_RESULTS_HEADER_SIGNATURE)
+
+    assert accumulator.reason_code == CrawlOutcomeReason.OK
+    summary = accumulator.to_summary_event()
+    assert summary["eligible"] == 1
+    assert summary["accepted"] == 0
+    assert summary["skip_hits"] == 1
+
+
+def test_keyword_scan_accumulator_all_duplicate_rows_are_not_a_canary() -> None:
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล")
+    accumulator.record_row_status("หนังสือเชิญชวน/ประกาศเชิญชวน")
+    accumulator.record_status_eligible()
+    accumulator.record_dedup_hit()
+    accumulator.record_page(rows=1, header_signature=EXPECTED_RESULTS_HEADER_SIGNATURE)
+
+    assert accumulator.reason_code == CrawlOutcomeReason.OK
+    assert accumulator.to_summary_event()["dedup_hits"] == 1
+
+
+def test_keyword_scan_accumulator_flags_egp_found_but_zero_rows_scanned() -> None:
+    # e-GP reports projects but we scanned zero rows → the results table was not
+    # recognized (e.g. a renamed required header). Must not be a silent miss.
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล", egp_found=761)
+    accumulator.record_page(rows=0, header_signature="")
+
+    assert accumulator.rows_scanned == 0
+    assert accumulator.reason_code == CrawlOutcomeReason.NO_ELIGIBLE_ROWS
+
+
+def test_keyword_scan_accumulator_flags_header_signature_drift() -> None:
+    # A changed header layout sets the drift flag (early warning for next drift),
+    # but drift alone is informational and does not change the reason code.
+    accumulator = KeywordScanAccumulator(keyword="วิเคราะห์ข้อมูล")
+    accumulator.record_row_status("หนังสือเชิญชวน/ประกาศเชิญชวน")
+    accumulator.record_status_eligible()
+    accumulator.record_page(rows=1, header_signature="ลำดับ|something|new")
+
+    assert accumulator.header_signature_drift is True
+    assert accumulator.reason_code == CrawlOutcomeReason.OK
+    assert accumulator.to_summary_event()["header_signature_drift"] is True
+
+
+def test_keyword_scan_accumulator_counts_skip_and_dedup_hits() -> None:
+    accumulator = KeywordScanAccumulator(keyword="x")
+    accumulator.record_skip_hit()
+    accumulator.record_dedup_hit()
+    accumulator.record_dedup_hit()
+
+    summary = accumulator.to_summary_event()
+    assert summary["skip_hits"] == 1
+    assert summary["dedup_hits"] == 2
+
+
+def test_keyword_scan_accumulator_summary_omits_unknown_egp_found() -> None:
+    accumulator = KeywordScanAccumulator(keyword="x")
+    accumulator.record_page(rows=0, header_signature=EXPECTED_RESULTS_HEADER_SIGNATURE)
+    assert "egp_found" not in accumulator.to_summary_event()
+
+
+def _capture_live_progress(callback_target: list[dict[str, object]]):
+    return _LIVE_PROGRESS_CALLBACK.set(callback_target.append)
+
+
+def test_collect_keyword_projects_emits_no_eligible_canary_summary() -> None:
+    # Two post-award rows: scanned > 0 but eligible == 0 → canary anomaly.
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการ X",
+                        status="จัดทำสัญญา/บริหารสัญญา",
+                    ),
+                    _results_row(
+                        index="2",
+                        organization="หน่วยงาน B",
+                        project_name="โครงการ Y",
+                        status="ยกเลิกโครงการ",
+                    ),
+                ],
+            )
+        ]
+    )
+    events: list[dict[str, object]] = []
+    token = _capture_live_progress(events)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    assert results == []
+    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert summary["rows_scanned"] == 2
+    assert summary["eligible"] == 0
+    assert summary["rejected_by_status"] == 2
+    assert summary["reason_code"] == "no_eligible_rows"
+    assert summary["header_signature_drift"] is False
+
+
+def test_collect_keyword_projects_emits_ok_summary_when_eligible(monkeypatch) -> None:
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการวิเคราะห์ข้อมูล",
+                        status="หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    ),
+                ],
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project",
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: {
+            "project_name": search_name,
+            "project_number": "EGP-1",
+            "source_status_text": source_status_text,
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    events: list[dict[str, object]] = []
+    token = _capture_live_progress(events)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    assert [result["project_name"] for result in results] == ["โครงการวิเคราะห์ข้อมูล"]
+    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert summary["eligible"] == 1
+    assert summary["accepted"] == 1
+    assert summary["rows_scanned"] == 1
+    assert summary["reason_code"] == "ok"
+
+
+def test_collect_keyword_projects_all_skip_rows_is_not_a_canary() -> None:
+    # A discoverable row whose project name matches SKIP_KEYWORDS_IN_PROJECT
+    # ("ทางหลวง") is status-eligible but not accepted — this is NOT a discovery
+    # miss, so the no-eligible canary must not fire.
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการก่อสร้างทางหลวง",
+                        status="หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    ),
+                ],
+            )
+        ]
+    )
+    events: list[dict[str, object]] = []
+    token = _capture_live_progress(events)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    assert results == []
+    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert summary["rows_scanned"] == 1
+    assert summary["eligible"] == 1
+    assert summary["accepted"] == 0
+    assert summary["skip_hits"] == 1
+    assert summary["reason_code"] == "ok"

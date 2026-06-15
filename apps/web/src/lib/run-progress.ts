@@ -69,6 +69,8 @@ export function formatProgressStage(stage: string): string {
       return "โหลดหน้าถัดไปแล้ว";
     case "keyword_finished":
       return "จบคำค้น";
+    case "keyword_scan_summary":
+      return "สรุปผลการสแกนคำค้น";
     case "project_timeout":
       return "โครงการใช้เวลานานเกินกำหนด";
     default:

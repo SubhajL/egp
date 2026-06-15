@@ -4,6 +4,7 @@ import json
 import os
 import signal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -291,3 +292,87 @@ def test_discover_spawner_persists_absolute_worker_log_path_for_relative_artifac
         "worker_owner_pid": os.getpid(),
         "worker_pid": process.pid,
     }
+
+
+def test_discover_spawner_emits_scan_metrics_from_finished_run(tmp_path) -> None:
+    from egp_observability.metrics import render_prometheus_metrics, reset_metrics_for_tests
+
+    reset_metrics_for_tests()
+
+    class FakeRunRepository:
+        def get_run_detail(self, *, tenant_id: str, run_id: str):
+            return SimpleNamespace(
+                run=SimpleNamespace(
+                    summary_json={
+                        "keyword_scans": {
+                            "แพลตฟอร์ม": {
+                                "outcome": "anomaly",
+                                "reason_code": "no_eligible_rows",
+                                "rows_scanned": 5,
+                                "eligible": 0,
+                                "header_signature_drift": False,
+                            }
+                        }
+                    }
+                ),
+                tasks=[],
+            )
+
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path,
+        run_repository=FakeRunRepository(),
+    )
+
+    spawner._emit_discovery_run_metrics(tenant_id="tenant-1", run_id="run-1")
+
+    text = render_prometheus_metrics()[0].decode("utf-8")
+    assert (
+        'egp_discovery_keyword_scans_total{outcome="anomaly",reason="no_eligible_rows"} 1.0'
+        in text
+    )
+    assert 'egp_discovery_rows_scanned_total{outcome="anomaly"} 5.0' in text
+    assert 'egp_discovery_anomalies_total{reason="no_eligible_rows"} 1.0' in text
+
+
+def test_discover_spawner_metric_emit_is_nonblocking(tmp_path) -> None:
+    from egp_observability.metrics import reset_metrics_for_tests
+
+    reset_metrics_for_tests()
+
+    class BrokenRunRepository:
+        def get_run_detail(self, *, tenant_id: str, run_id: str):
+            raise RuntimeError("database unavailable")
+
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path,
+        run_repository=BrokenRunRepository(),
+    )
+
+    # Metric emission must never fail dispatch — a broken read is swallowed.
+    spawner._emit_discovery_run_metrics(tenant_id="tenant-1", run_id="run-1")
+
+
+@pytest.mark.parametrize("bad_summary", ["not-a-dict", [1, 2, 3], None])
+def test_discover_spawner_metric_emit_tolerates_non_dict_summary(
+    tmp_path, bad_summary
+) -> None:
+    from egp_observability.metrics import reset_metrics_for_tests
+
+    reset_metrics_for_tests()
+
+    class WeirdRunRepository:
+        def get_run_detail(self, *, tenant_id: str, run_id: str):
+            return SimpleNamespace(
+                run=SimpleNamespace(summary_json=bad_summary), tasks=[]
+            )
+
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path,
+        run_repository=WeirdRunRepository(),
+    )
+
+    # A malformed/missing summary_json must not raise out of dispatch.
+    spawner._emit_discovery_run_metrics(tenant_id="tenant-1", run_id="run-1")

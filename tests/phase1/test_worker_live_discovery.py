@@ -908,6 +908,158 @@ def test_run_discover_workflow_marks_invalid_live_detail_as_failed(
     assert sink.discovery_events == []
 
 
+def _emit_keyword_scan(progress_callback, scan_event: dict[str, object]) -> None:
+    progress_callback(
+        {
+            "stage": "page_scan_finished",
+            "keyword": scan_event["keyword"],
+            "page_num": 1,
+            "row_count": scan_event.get("rows_scanned", 0),
+            "eligible_count": scan_event.get("eligible", 0),
+        }
+    )
+    progress_callback({"stage": "keyword_scan_summary", **scan_event})
+    # crawl_live_discovery emits keyword_finished AFTER the scan summary, so the
+    # canary must be detected at event arrival, not from the final live_progress.
+    progress_callback(
+        {
+            "stage": "keyword_finished",
+            "keyword": scan_event["keyword"],
+            "keyword_index": 1,
+            "keyword_count": 1,
+            "keyword_project_count": scan_event.get("eligible", 0),
+            "total_project_count": scan_event.get("eligible", 0),
+        }
+    )
+
+
+def test_run_discover_workflow_marks_no_eligible_canary_as_failed(monkeypatch) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        _emit_keyword_scan(
+            kwargs["progress_callback"],
+            {
+                "keyword": "แพลตฟอร์ม",
+                "rows_scanned": 2,
+                "eligible": 0,
+                "rejected_by_status": 2,
+                "reason_code": "no_eligible_rows",
+                "outcome": "anomaly",
+                "header_signature_drift": False,
+                "status_buckets": {"จัดทำสัญญา/บริหารสัญญา": 2},
+            },
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "failed"
+    assert run_repository.finished_error_count == 1
+    summary = run_repository.finished_summary
+    assert summary["live_crawl_anomaly_count"] == 1
+    scans = summary["keyword_scans"]
+    assert scans["แพลตฟอร์ม"]["reason_code"] == "no_eligible_rows"
+    assert scans["แพลตฟอร์ม"]["rows_scanned"] == 2
+    assert scans["แพลตฟอร์ม"]["status_buckets"] == {"จัดทำสัญญา/บริหารสัญญา": 2}
+    assert "no_eligible_rows" in str(summary["error"])
+    assert sink.discovery_events == []
+
+
+def test_run_discover_workflow_persists_ok_keyword_scan_summary(monkeypatch) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        _emit_keyword_scan(
+            kwargs["progress_callback"],
+            {
+                "keyword": "แพลตฟอร์ม",
+                "rows_scanned": 3,
+                "eligible": 2,
+                "rejected_by_status": 1,
+                "reason_code": "ok",
+                "outcome": "ok",
+                "header_signature_drift": False,
+            },
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    assert result.run.run.status == "succeeded"
+    summary = run_repository.finished_summary
+    assert summary["keyword_scans"]["แพลตฟอร์ม"]["eligible"] == 2
+    assert summary["keyword_scans"]["แพลตฟอร์ม"]["reason_code"] == "ok"
+    assert "live_crawl_anomaly_count" not in summary
+
+
+def test_run_discover_workflow_records_header_drift_without_failing(monkeypatch) -> None:
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        _emit_keyword_scan(
+            kwargs["progress_callback"],
+            {
+                "keyword": "แพลตฟอร์ม",
+                "rows_scanned": 1,
+                "eligible": 1,
+                "reason_code": "ok",
+                "outcome": "anomaly",
+                "header_signature": "a | b | c",
+                "header_signature_drift": True,
+            },
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+
+    # Header drift is informational only — WS1 made columns header-derived, so a
+    # drift no longer breaks discovery; it must not fail the run on its own.
+    assert result.run.run.status == "succeeded"
+    summary = run_repository.finished_summary
+    assert summary["keyword_scans"]["แพลตฟอร์ม"]["header_signature_drift"] is True
+    assert "live_crawl_anomaly_count" not in summary
+
+
 def test_run_discover_workflow_marks_run_started_before_live_discovery_begins() -> None:
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()

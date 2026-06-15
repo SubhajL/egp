@@ -27,7 +27,7 @@ from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
-from egp_shared_types.enums import DocumentCaptureAttemptStatus
+from egp_shared_types.enums import CrawlOutcomeReason, DocumentCaptureAttemptStatus
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
@@ -65,7 +65,21 @@ _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
     }
 )
 _LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
+_KEYWORD_SCAN_SUMMARY_STAGE = "keyword_scan_summary"
 _BACKFILL_TRIGGER_TYPE = "backfill"
+
+
+def _keyword_scan_is_canary_anomaly(event: dict[str, object]) -> bool:
+    """True for a keyword_scan_summary that scanned rows but found none eligible.
+
+    This is the WS2 canary: silent discovery misses (the column-drift failure
+    mode) surface as a non-terminal anomaly instead of a plain `succeeded` run.
+    Header-signature drift is deliberately NOT treated as a run-failing anomaly —
+    WS1 made columns header-derived, so drift is an informational early warning.
+    """
+    if str(event.get("stage") or "") != _KEYWORD_SCAN_SUMMARY_STAGE:
+        return False
+    return str(event.get("reason_code") or "") == CrawlOutcomeReason.NO_ELIGIBLE_ROWS
 
 
 def _load_discovery_authorization_snapshot(
@@ -187,7 +201,9 @@ def _snapshot_live_progress_event(event: dict[str, object]) -> dict[str, object]
 
 
 def _live_progress_is_crawl_anomaly(event: dict[str, object]) -> bool:
-    return str(event.get("stage") or "") in _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES
+    if str(event.get("stage") or "") in _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES:
+        return True
+    return _keyword_scan_is_canary_anomaly(event)
 
 
 def _live_progress_is_terminal_crawl_anomaly(event: dict[str, object]) -> bool:
@@ -196,6 +212,9 @@ def _live_progress_is_terminal_crawl_anomaly(event: dict[str, object]) -> bool:
 
 def _build_live_crawl_anomaly_error(latest_anomaly: dict[str, object]) -> str:
     stage = str(latest_anomaly.get("stage") or "unknown")
+    if stage == _KEYWORD_SCAN_SUMMARY_STAGE:
+        reason = str(latest_anomaly.get("reason_code") or stage)
+        return f"live crawl anomaly: {reason}"
     return f"live crawl anomaly: {stage}"
 
 
@@ -332,6 +351,7 @@ def run_discover_workflow(
     live_progress: dict[str, object] | None = None
     live_crawl_anomaly_count = 0
     live_crawl_latest_anomaly: dict[str, object] | None = None
+    keyword_scans: dict[str, dict[str, object]] = {}
     backfill_recorded_project_ids: set[str] = set()
     project_task_count = 0
     keyword_task_creation_blocked = False
@@ -346,7 +366,28 @@ def run_discover_workflow(
             summary["live_crawl_anomaly_count"] = live_crawl_anomaly_count
         if live_crawl_latest_anomaly is not None:
             summary["live_crawl_latest_anomaly"] = live_crawl_latest_anomaly
+        if keyword_scans:
+            summary["keyword_scans"] = {name: dict(scan) for name, scan in keyword_scans.items()}
         return summary
+
+    def _record_keyword_scan(event_snapshot: dict[str, object]) -> None:
+        scan_keyword = str(event_snapshot.get("keyword") or keyword)
+        keyword_scans[scan_keyword] = {
+            key: value
+            for key, value in event_snapshot.items()
+            if key not in ("stage", "keyword")
+        }
+        if event_snapshot.get("header_signature_drift"):
+            logger.warning(
+                "Results-table header signature drift detected for keyword %s",
+                scan_keyword,
+                extra={
+                    "egp_event": "results_header_signature_drift",
+                    "tenant_id": tenant_id,
+                    "keyword": scan_keyword,
+                    "header_signature": event_snapshot.get("header_signature"),
+                },
+            )
 
     def _record_live_progress(event: dict[str, object]) -> None:
         nonlocal live_crawl_anomaly_count, live_crawl_latest_anomaly, live_progress
@@ -355,6 +396,8 @@ def run_discover_workflow(
             **event_snapshot,
             "updated_at": datetime.now(UTC).isoformat(),
         }
+        if str(event_snapshot.get("stage") or "") == _KEYWORD_SCAN_SUMMARY_STAGE:
+            _record_keyword_scan(event_snapshot)
         if _live_progress_is_crawl_anomaly(event_snapshot):
             live_crawl_anomaly_count += 1
             live_crawl_latest_anomaly = event_snapshot

@@ -141,6 +141,36 @@
           "legendFormat": "{{status}} {{outcome}}"
         }
       ]
+    },
+    {
+      "id": 12,
+      "title": "Discovery eligibility rate",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(egp_discovery_eligible_rows_total[1h])) / clamp_min(sum(rate(egp_discovery_rows_scanned_total[1h])), 1)",
+          "legendFormat": "eligible / scanned"
+        },
+        {
+          "expr": "sum by (outcome, reason) (rate(egp_discovery_keyword_scans_total[1h]))",
+          "legendFormat": "{{outcome}} {{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Discovery anomalies and header drift",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(egp_discovery_anomalies_total[1h]))",
+          "legendFormat": "{{reason}}"
+        },
+        {
+          "expr": "sum(rate(egp_discovery_header_signature_drift_total[1h]))",
+          "legendFormat": "header signature drift"
+        }
+      ]
     }
   ]
 }
