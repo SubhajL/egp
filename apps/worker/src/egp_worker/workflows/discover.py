@@ -27,7 +27,11 @@ from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
-from egp_shared_types.enums import CrawlOutcomeReason, DocumentCaptureAttemptStatus
+from egp_shared_types.enums import (
+    CrawlOutcomeReason,
+    DocumentCaptureAttemptStatus,
+    DocumentCaptureReason,
+)
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
@@ -264,18 +268,38 @@ def _document_capture_attempt_status_for_payload(
     return DocumentCaptureAttemptStatus.NO_DOCUMENTS
 
 
+# Map worker-internal collection reasons to structured capture reason codes
+# (WS3 arch#3). The raw exception text is intentionally NOT used as the reason
+# (unbounded cardinality) — failure detail lives in the task/run result_json.
+_COLLECTION_REASON_TO_CAPTURE_REASON: dict[str, DocumentCaptureReason] = {
+    "document_collection_empty": DocumentCaptureReason.NO_DOCUMENTS,
+    "document_collection_timeout": DocumentCaptureReason.TIMEOUT,
+    "document_collection_failed": DocumentCaptureReason.FAILED,
+    DocumentCaptureReason.LIVE_DISCOVERY_METADATA_FIRST.value: (
+        DocumentCaptureReason.LIVE_DISCOVERY_METADATA_FIRST
+    ),
+}
+
+
 def _document_capture_attempt_reason_for_payload(
     *,
     discovered: dict[str, object],
     failed_error: str | None = None,
 ) -> str | None:
     if failed_error:
-        return failed_error
-    reason = str(discovered.get("document_collection_reason") or "").strip()
-    if reason:
-        return reason
+        return DocumentCaptureReason.FAILED.value
     collection_status = str(discovered.get("document_collection_status") or "").strip()
-    return collection_status or None
+    if collection_status == "timeout":
+        return DocumentCaptureReason.TIMEOUT.value
+    if collection_status == "failed":
+        return DocumentCaptureReason.FAILED.value
+    raw_reason = str(discovered.get("document_collection_reason") or "").strip()
+    mapped = _COLLECTION_REASON_TO_CAPTURE_REASON.get(raw_reason)
+    if mapped is not None:
+        return mapped.value
+    if list(discovered.get("downloaded_documents") or []):
+        return None
+    return DocumentCaptureReason.NO_DOCUMENTS.value
 
 
 def run_discover_workflow(
@@ -704,7 +728,11 @@ def run_discover_workflow(
                 project_id=existing_project_id,
                 run_id=run.id,
                 status=DocumentCaptureAttemptStatus.FAILED,
-                reason=run_level_error or anomaly_error or "backfill_project_not_rediscovered",
+                reason=(
+                    DocumentCaptureReason.FAILED.value
+                    if (run_level_error or anomaly_error)
+                    else DocumentCaptureReason.BACKFILL_PROJECT_NOT_REDISCOVERED.value
+                ),
                 doc_count=0,
             )
     run_repository.mark_run_finished(

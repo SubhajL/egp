@@ -14,6 +14,7 @@ from egp_db.repositories.project_repo import (
 )
 from egp_shared_types.enums import (
     DocumentCaptureAttemptStatus,
+    DocumentCaptureReason,
     ProcurementType,
     ProjectState,
 )
@@ -156,50 +157,210 @@ def test_candidate_selection_skips_invitation_or_tor_docs(tmp_path) -> None:
     assert capture_repository.list_due_backfill_candidates(now=NOW, limit=10) == []
 
 
-def test_candidate_selection_honors_backoff_and_cap(tmp_path) -> None:
+def _record(capture_repository, project, status, *, ago, reason="x"):
+    capture_repository.record_attempt(
+        tenant_id=TENANT_ID,
+        project_id=project.id,
+        status=status,
+        reason=reason,
+        doc_count=0,
+        attempted_at=NOW - ago,
+    )
+
+
+def _due_project_ids(capture_repository, *, now=NOW, **kwargs):
+    return [
+        c.project_id
+        for c in capture_repository.list_due_backfill_candidates(now=now, limit=10, **kwargs)
+    ]
+
+
+def test_retry_cap_counts_only_terminal_attempts_not_enqueued(tmp_path) -> None:
+    # P1a: many enqueued (non-terminal) attempts must NOT burn the retry cap.
     _, project_repository, _, profile_repository, capture_repository = (
         _create_repositories(tmp_path)
     )
     _create_profile(profile_repository)
-    recent = _create_project(project_repository, project_number="69049163846")
-    capped = _create_project(project_repository, project_number="69049163847")
-    due = _create_project(project_repository, project_number="69049163848")
-
-    capture_repository.record_attempt(
-        tenant_id=TENANT_ID,
-        project_id=recent.id,
-        status=DocumentCaptureAttemptStatus.ENQUEUED,
-        reason="backfill_job_created",
-        doc_count=0,
-        attempted_at=NOW - timedelta(minutes=30),
-    )
-    for index in range(3):
-        capture_repository.record_attempt(
-            tenant_id=TENANT_ID,
-            project_id=capped.id,
-            status=DocumentCaptureAttemptStatus.NO_DOCUMENTS,
-            reason=f"attempt_{index}",
-            doc_count=0,
-            attempted_at=NOW - timedelta(days=index + 1),
+    project = _create_project(project_repository)
+    for index in range(5):
+        _record(
+            capture_repository,
+            project,
+            DocumentCaptureAttemptStatus.ENQUEUED,
+            ago=timedelta(hours=4 + index),  # all stale (>3h) so no throttle
         )
-    capture_repository.record_attempt(
+
+    assert _due_project_ids(capture_repository, max_attempts=3) == [project.id]
+
+
+def test_recent_enqueued_throttles_then_stale_enqueued_reenqueues(tmp_path) -> None:
+    # P1a: a fresh enqueued throttles; once past the stale horizon it no longer does.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    project = _create_project(project_repository)
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.ENQUEUED, ago=timedelta(minutes=30))
+
+    assert _due_project_ids(capture_repository, enqueued_stale_after_seconds=10800) == []
+
+    # Same row is now 4h old (> 3h horizon) → no longer throttles.
+    assert _due_project_ids(
+        capture_repository,
+        now=NOW + timedelta(hours=4),
+        enqueued_stale_after_seconds=10800,
+    ) == [project.id]
+
+
+def test_terminal_after_enqueued_clears_throttle(tmp_path) -> None:
+    # P1a: a terminal outcome after the enqueued supersedes the throttle.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    project = _create_project(project_repository)
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.ENQUEUED, ago=timedelta(hours=2))
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=1, minutes=30))
+
+    # transient: 1 terminal < cap, backoff 1h elapsed (90m) → due.
+    assert _due_project_ids(capture_repository) == [project.id]
+
+
+def test_no_documents_uses_daily_cadence_not_count_cap(tmp_path) -> None:
+    # P1b: no_documents retries once/day and ignores the transient attempt cap.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    fresh = _create_project(project_repository, project_number="69049163851")
+    daily_due = _create_project(project_repository, project_number="69049163852")
+    _record(capture_repository, fresh, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=12))
+    for index in range(5):  # 5 > max_attempts=3, but no_documents ignores the count cap
+        _record(
+            capture_repository,
+            daily_due,
+            DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+            ago=timedelta(hours=25 + index * 24),
+        )
+
+    assert _due_project_ids(capture_repository, max_attempts=3) == [daily_due.id]
+
+
+def test_no_documents_stops_after_30_day_cap_when_deadline_unknown(tmp_path) -> None:
+    # P1b: with no proposal deadline, no_documents stops after the 30-day horizon.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    project = _create_project(
+        project_repository, project_number="69049163853", proposal_submission_date=None
+    )
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(days=31))
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=25))
+
+    assert _due_project_ids(capture_repository, no_documents_max_age_days=30) == []
+
+
+def test_transient_failed_honors_backoff_and_attempt_cap(tmp_path) -> None:
+    # P1b: failed/timeout keep exponential backoff + the attempt-count cap.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    capped = _create_project(project_repository, project_number="69049163854")
+    due = _create_project(project_repository, project_number="69049163855")
+    for index in range(3):
+        _record(capture_repository, capped, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=index + 1))
+    _record(capture_repository, due, DocumentCaptureAttemptStatus.TIMEOUT, ago=timedelta(hours=3))
+
+    assert _due_project_ids(capture_repository, max_attempts=3) == [due.id]
+
+
+def test_record_attempt_persists_reason_enum_value(tmp_path) -> None:
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    project = _create_project(project_repository)
+
+    record = capture_repository.record_attempt(
         tenant_id=TENANT_ID,
-        project_id=due.id,
+        project_id=project.id,
         status=DocumentCaptureAttemptStatus.NO_DOCUMENTS,
-        reason="old_attempt",
-        doc_count=0,
-        attempted_at=NOW - timedelta(hours=3),
+        reason=DocumentCaptureReason.NO_DOCUMENTS,
     )
 
-    candidates = capture_repository.list_due_backfill_candidates(
-        now=NOW,
-        max_attempts=3,
-        base_backoff_seconds=3600,
-        max_backoff_seconds=86400,
-        limit=10,
+    assert record.reason == "no_documents"
+    latest = capture_repository.get_latest_attempt_for_project(
+        tenant_id=TENANT_ID, project_id=project.id
     )
+    assert latest is not None and latest.reason == "no_documents"
 
-    assert [candidate.project_id for candidate in candidates] == [due.id]
+
+def test_throttled_enqueued_flood_does_not_starve_due_candidate(tmp_path) -> None:
+    # HIGH regression: a flood of recently-enqueued (throttled) projects sorts
+    # ahead of due rows; they must be excluded in SQL so the due project is not
+    # crowded out of the bounded prefetch window (limit * 5).
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    for index in range(11):  # > limit(2) * 5 prefetch
+        throttled = _create_project(
+            project_repository, project_number=f"700000{index:05d}"
+        )
+        _record(
+            capture_repository,
+            throttled,
+            DocumentCaptureAttemptStatus.ENQUEUED,
+            ago=timedelta(minutes=20),
+        )
+    due = _create_project(project_repository, project_number="69049163860")
+    _record(capture_repository, due, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=3))
+
+    candidates = capture_repository.list_due_backfill_candidates(now=NOW, limit=2)
+
+    assert due.id in [candidate.project_id for candidate in candidates]
+
+
+def test_old_transient_plus_fresh_no_documents_flood_does_not_starve(tmp_path) -> None:
+    # HIGH (round 2): "latest terminal" must use the truly-newest terminal time.
+    # Old failed + fresh no_documents rows are not-due (24h cadence) but must NOT
+    # sort to the front (by their old transient time) and starve a due row.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    for index in range(11):  # > limit(2) * 5 prefetch
+        noisy = _create_project(project_repository, project_number=f"710000{index:05d}")
+        _record(capture_repository, noisy, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(days=10))
+        _record(capture_repository, noisy, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=1))
+    due = _create_project(project_repository, project_number="69049163861")
+    _record(capture_repository, due, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=3))
+
+    candidates = capture_repository.list_due_backfill_candidates(now=NOW, limit=2)
+
+    assert due.id in [candidate.project_id for candidate in candidates]
+
+
+def test_no_documents_history_then_timeout_is_not_immediately_exhausted(tmp_path) -> None:
+    # MEDIUM-1 regression: the transient attempt cap counts only failed/timeout,
+    # NOT prior no_documents heartbeats.
+    _, project_repository, _, profile_repository, capture_repository = (
+        _create_repositories(tmp_path)
+    )
+    _create_profile(profile_repository)
+    project = _create_project(project_repository)
+    for index in range(3):
+        _record(
+            capture_repository,
+            project,
+            DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+            ago=timedelta(hours=25 + index * 24),
+        )
+    _record(capture_repository, project, DocumentCaptureAttemptStatus.TIMEOUT, ago=timedelta(hours=2))
+
+    assert _due_project_ids(capture_repository, max_attempts=3) == [project.id]
 
 
 def test_candidate_selection_skips_past_proposal_deadline_and_missing_profile(

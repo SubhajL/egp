@@ -92,6 +92,26 @@ def test_enqueue_creates_project_number_backfill_job() -> None:
     }
 
 
+def test_enqueue_forwards_retry_policy_knobs() -> None:
+    capture_repository = _FakeCaptureRepository([])
+    discovery_repository = _FakeDiscoveryJobRepository(created=True)
+
+    enqueue_document_backfill_jobs(
+        database_url="postgresql://example.test/egp",
+        capture_attempt_repository=capture_repository,
+        discovery_job_repository=discovery_repository,
+        now="2026-06-07T00:00:00+00:00",
+        enqueued_stale_after_seconds=7200,
+        no_documents_retry_seconds=43200,
+        no_documents_max_age_days=14,
+    )
+
+    assert capture_repository.requested is not None
+    assert capture_repository.requested["enqueued_stale_after_seconds"] == 7200
+    assert capture_repository.requested["no_documents_retry_seconds"] == 43200
+    assert capture_repository.requested["no_documents_max_age_days"] == 14
+
+
 def test_enqueue_does_not_record_attempt_for_existing_pending_job() -> None:
     capture_repository = _FakeCaptureRepository([_candidate()])
     discovery_repository = _FakeDiscoveryJobRepository(created=False)
@@ -136,3 +156,35 @@ def test_main_runs_backfill_enqueue_once() -> None:
     assert seen["database_url"] == "postgresql://example.test/egp"
     assert seen["limit"] == 25
     assert seen["max_attempts"] == 4
+
+
+def test_main_forwards_retry_policy_cli_flags() -> None:
+    seen: dict[str, object] = {}
+
+    def _fake_enqueue(**kwargs):
+        seen.update(kwargs)
+        return {
+            "candidate_count": 0,
+            "enqueued_count": 0,
+            "created_count": 0,
+            "skipped_count": 0,
+        }
+
+    code = main(
+        [
+            "--database-url",
+            "postgresql://example.test/egp",
+            "--enqueued-stale-after-seconds",
+            "7200",
+            "--no-documents-retry-seconds",
+            "43200",
+            "--no-documents-max-age-days",
+            "14",
+        ],
+        enqueue=_fake_enqueue,
+    )
+
+    assert code == 0
+    assert seen["enqueued_stale_after_seconds"] == 7200
+    assert seen["no_documents_retry_seconds"] == 43200
+    assert seen["no_documents_max_age_days"] == 14

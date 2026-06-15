@@ -57,6 +57,24 @@ class DocumentCaptureAttemptStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class DocumentCaptureReason(StrEnum):
+    """Structured reason codes for `document_capture_attempts.reason`.
+
+    Replaces free-text reason strings (WS3 arch#3) with a low-cardinality,
+    queryable vocabulary aligned with WS2's `CrawlOutcomeReason`. Stored as the
+    enum's string value in the existing TEXT column (no migration).
+    """
+
+    LIVE_DISCOVERY_METADATA_FIRST = "live_discovery_metadata_first"
+    BACKFILL_JOB_CREATED = "backfill_job_created"
+    BACKFILL_PROJECT_NOT_REDISCOVERED = "backfill_project_not_rediscovered"
+    NO_DOCUMENTS = "no_documents"
+    TIMEOUT = "timeout"
+    FAILED = "failed"
+    PROPOSAL_DEADLINE_PASSED = "proposal_deadline_passed"
+    RETRY_EXHAUSTED = "retry_exhausted"
+
+
 class ArtifactBucket(StrEnum):
     PRICING_ONLY = "pricing_only"
     INVITATION_PLUS_PRICING = "invitation_plus_pricing"
