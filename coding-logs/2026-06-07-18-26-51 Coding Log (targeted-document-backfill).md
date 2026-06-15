@@ -275,3 +275,11 @@ LOW
 - Roll out migration first.
 - Deploy the executor and systemd unit/timer next.
 - Disable `egp-document-backfill-enqueue.timer` to stop new retries without deleting audit/backoff history.
+
+## Merge / Landing (2026-06-07 18:45:00 +07)
+
+- Created Graphite PR #142: `https://github.com/SubhajL/egp/pull/142`.
+- GitHub Actions and Claude review jobs failed before runner startup because the GitHub account is locked due to a billing issue; check annotations reported: "The job was not started because your account is locked due to a billing issue."
+- Used admin squash merge as requested. PR #142 merged to `origin/main` at `67fecd2dd4c90a8461b784e725e1048a16531c96`.
+- Fetched `origin/main` and merged it into local `main` with a normal merge commit to preserve the pre-existing local-only `main` commit `d64d503a`.
+- Local `main` now contains the PR changes and is ahead of `origin/main` by the preserved local-only commit plus the local merge commit.

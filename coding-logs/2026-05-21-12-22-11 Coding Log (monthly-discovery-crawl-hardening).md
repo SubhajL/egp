@@ -244,3 +244,152 @@ LOW
 ### Rollout Notes
 - No DB migration or flag required; the worker writes anomaly metadata into existing `crawl_runs.summary_json`.
 - After deploy, monitor scheduled discovery runs with `status in ('failed', 'partial')` and `summary_json.error` beginning with `live crawl anomaly:`.
+
+
+## Review (2026-05-22 20:31:00) - system
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: concurrent customer crawling launch-readiness
+- Commands Run: git rev-parse --show-toplevel; git branch --show-current; git status --porcelain=v1; git log -n 20 --oneline --decorate; read AGENTS.md, CLAUDE.md, docs/PRD.md, docs/LIGHTSAIL_LOW_COST_LAUNCH.md; inspected discovery dispatcher, worker browser launch, discovery job repository, project/document persistence, docker-compose.yml, API Dockerfile; Auggie attempted and returned 429.
+- Sources: apps/api/src/egp_api/services/discovery_dispatch.py; apps/api/src/egp_api/services/discovery_worker_dispatcher.py; apps/api/src/egp_api/bootstrap/background.py; apps/api/src/egp_api/executors/discovery_dispatch.py; apps/worker/src/egp_worker/browser_discovery.py; packages/db/src/egp_db/repositories/discovery_job_repo.py; packages/db/src/egp_db/repositories/project_persistence.py; packages/db/src/egp_db/repositories/project_schema.py; docker-compose.yml; apps/api/Dockerfile.
+
+### High-Level Assessment
+- The product has the right high-level shape for early launch: API queues discovery jobs, a separate discovery executor claims jobs, and worker subprocesses perform browser crawls.
+- The current single-host production-oriented Compose setup correctly defaults the API to external background mode, which keeps discovery dispatch out of the HTTP server.
+- The database model is tenant-scoped and has useful uniqueness constraints for project identity.
+- Launching with more than one simultaneous crawler is risky as implemented because browser instances are not isolated per worker.
+- The Docker runtime also appears mismatched with the browser launcher: Chromium is installed by Playwright, but the launcher default points to a macOS Chrome path.
+- Under customer crawl bursts, API responsiveness, worker reliability, duplicate job execution, and DB race handling are the main risks.
+
+### Strengths
+- External discovery executor is already supported and enabled in production Compose.
+- Worker count is configurable through EGP_DISCOVERY_WORKER_COUNT.
+- Project rows are tenant-scoped and protected by a tenant/canonical-project unique constraint.
+- Manual recrawl enqueues jobs instead of doing the crawl inside the request handler when external mode is used.
+- Tests cover dispatch worker_count behavior, retries, and background mode selection.
+
+### Key Risks / Gaps (severity ordered)
+CRITICAL
+- Concurrent browser workers share the same default CDP port and browser profile. BrowserDiscoverySettings defaults cdp_port=9222 and a single browser_profile_dir, while launch_real_chrome always launches with those values. With EGP_DISCOVERY_WORKER_COUNT=2 in docker-compose.yml, two customer crawls can attach to or disrupt the same Chrome instance/profile. One worker shutting down can close the browser being used by another worker.
+- Production Docker browser launch appears broken or at least unproven. apps/api/Dockerfile installs Playwright Chromium, but BrowserDiscoverySettings defaults chrome_path to /Applications/Google Chrome.app/Contents/MacOS/Google Chrome. The dispatcher only passes max_pages_per_keyword, not a Linux Chromium executable path, unique CDP port, or unique profile directory.
+
+HIGH
+- Embedded mode can block the API event loop during crawl dispatch. The API lifespan creates run_discovery_dispatch_loop, which calls synchronous processor.process_pending; the dispatcher then blocks on proc.communicate for up to three hours. Production Compose avoids this with external mode, but embedded remains a serious footgun and matched the local symptom where API endpoints timed out while a worker was running.
+- The discovery job lease is a fixed 60-second stale window with no heartbeat. Jobs remain pending while a worker runs; another executor or accidental embedded+external deployment can reclaim and duplicate a long-running crawl after the lease goes stale.
+- There is no customer-facing crawl-rate throttle beyond worker_count and keyword entitlements. A few monthly customers with many keywords can create a long queue and monopolize the shared executor/host.
+
+MEDIUM
+- Project/document persistence uses select-then-insert around unique constraints rather than database-native upsert/retry. Simultaneous crawls finding the same project/document can raise uniqueness errors instead of cleanly merging.
+- Scheduled discovery currently runs as a periodic worker command rather than the same durable queue path, so an overlapping scheduled crawl and manual crawl can contend for browser resources.
+- Single-VM launch puts API, Postgres, executors, browser processes, and artifacts on one host. The launch doc acknowledges browser bursts can contend with API resources.
+
+LOW
+- Tests cover dispatch concurrency with fake dispatchers, but not real concurrent browser launches with distinct profiles/ports, Linux Docker Chrome resolution, or multi-customer crawl bursts.
+
+### Nit-Picks / Nitty Gritty
+- Discovery dispatch creates runs with trigger_type="manual" even when the discovery job trigger_type may be profile_created/profile_updated/schedule.
+- The docs recommend cron/systemd for scheduled discovery, but that path bypasses the durable discovery_jobs table.
+- The environment has both embedded and external modes; misconfiguration can create duplicate or blocking processors.
+
+### Tactical Improvements (1–3 days)
+1. Set production EGP_DISCOVERY_WORKER_COUNT=1 until browser isolation is fixed.
+2. Fix Docker browser launch by using Playwright-managed Chromium or a Linux chrome_path passed from configuration.
+3. Allocate per-job browser profile directories and CDP ports, or replace CDP launch with Playwright browser.launch using isolated contexts.
+4. Keep API in external background mode only for launch; add startup logging/health that makes embedded mode obvious.
+5. Add a lease heartbeat or extend processing leases safely while a worker subprocess is alive.
+6. Add a smoke test that runs two live/browser workers in parallel and asserts no shared-port/profile interference.
+
+### Strategic Improvements (1–6 weeks)
+1. Move all scheduled discovery into the durable discovery_jobs queue so manual and scheduled work share one back-pressure path.
+2. Add per-tenant and global crawl quotas: max concurrent tenant workers, max queued jobs, cooldown windows, and admin override.
+3. Split browser workers onto separate compute after traction, before increasing worker_count materially.
+4. Convert project/document writes to database-native ON CONFLICT upserts or catch/retry IntegrityError as update/read.
+5. Add operational dashboards for queue depth, active workers, worker memory, crawl duration, failures by tenant, and API latency during crawl bursts.
+
+### Big Architectural Changes (only if justified)
+- Proposal: Move from local subprocess spawning to a dedicated worker service/queue once more than a handful of customers crawl concurrently.
+  - Pros: isolates browser CPU/memory from API, enables per-worker resource limits, safer horizontal scaling, clearer observability.
+  - Cons: more infrastructure, deployment complexity, queue visibility/retention decisions.
+  - Migration Plan: first fix single-host browser isolation; route scheduled discovery through discovery_jobs; add tenant/global throttles; then run discovery-executor on a worker host/container; finally move to managed queue/worker pool if demand proves it.
+  - Tests/Rollout: start with worker_count=1 canary; add two-worker integration test; enable worker_count=2 for internal tenant only; monitor API latency and queue duration; then open limited customer concurrency.
+
+### Open Questions / Assumptions
+- Assumes launch target is the checked-in single-VM Compose/Lightsail path.
+- Assumes crawls are browser-heavy and often exceed 60 seconds.
+- Assumes several customers may press recrawl or add active keywords around the same time.
+
+
+## Review (2026-05-23 09:03:58 +07) - system
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: discovery crawl launch-readiness / concurrency assessment
+- Commands Run: git rev-parse --show-toplevel; git branch --show-current; git status --porcelain=v1; git log -n 20 --oneline --decorate; Auggie codebase retrieval (failed with HTTP 429); targeted rg/nl/sed inspections of discovery dispatcher, worker browser settings, project/document persistence, discovery jobs, background bootstrap, PRD, and AGENTS.md files.
+- Sources: AGENTS.md, apps/api/AGENTS.md, apps/worker/AGENTS.md, packages/AGENTS.md, packages/db/AGENTS.md, docs/PRD.md, apps/api/src/egp_api/services/discovery_worker_dispatcher.py, apps/api/src/egp_api/services/discovery_dispatch.py, apps/api/src/egp_api/bootstrap/background.py, apps/worker/src/egp_worker/browser_discovery.py, apps/worker/src/egp_worker/main.py, apps/worker/src/egp_worker/workflows/discover.py, packages/db/src/egp_db/repositories/project_persistence.py, packages/db/src/egp_db/repositories/project_aliases.py, packages/db/src/egp_db/repositories/project_lifecycle.py, packages/db/src/egp_db/repositories/document_persistence.py, packages/db/src/egp_db/repositories/discovery_job_repo.py, packages/db/src/egp_db/connection.py.
+
+### High-Level Assessment
+- The senior engineer's launch-readiness concern is directionally correct: current discovery crawling is only safe while effectively serialized.
+- The intended PRD calls for isolated browser workers and stable multi-tenant production readiness, but the current API dispatch path does not allocate per-worker browser isolation.
+- `EGP_DISCOVERY_WORKER_COUNT` defaults to 1, so normal behavior is a global FIFO crawl queue.
+- Raising worker count on one host can make subprocess workers attach to the same Chrome CDP endpoint/profile because the worker defaults remain fixed.
+- The queue and persistence layers have several check-then-act paths that are acceptable under serialization but fragile under real parallelism.
+- One important additional launch risk: the default embedded discovery loop runs blocking subprocess dispatch from the FastAPI event loop, so a live crawl can block the API process unless production uses the external dispatcher mode.
+
+### Strengths
+- Tenant scoping is consistently present in the inspected repositories and routes.
+- Discovery job claiming uses a conditional update with rowcount checking, so simultaneous claim attempts do not simply double-claim fresh rows.
+- The worker already accepts `browser_settings` for `cdp_port` and `browser_profile_dir`, so the browser-isolation fix is mainly dispatcher/runtime wiring plus tests.
+- Document storage has a database uniqueness constraint for duplicate hashes/classes/phases, although the application path is not fully concurrent-idempotent.
+
+### Key Risks / Gaps (severity ordered)
+CRITICAL
+- Browser isolation is missing in the API dispatch path. `BrowserDiscoverySettings` defaults to CDP port 9222 and `~/download/TOR/.browser_profile`; `launch_real_chrome()` and `connect_playwright_to_chrome()` trust that port without verifying process ownership. `SubprocessDiscoveryDispatcher` only forwards `max_pages_per_keyword` in `browser_settings`, so parallel workers on one host can attach to the same Chrome endpoint/profile.
+- Default embedded discovery dispatch can block the API event loop. `build_lifespan()` creates an async task that directly calls `run_discovery_dispatch_loop()`, which calls synchronous `processor.process_pending()` and then `proc.communicate()` for up to 3 hours per worker. Production should run discovery dispatch externally or move blocking work off the event loop before launch.
+
+HIGH
+- Queue behavior is global FIFO with no tenant fairness. `DiscoveryDispatchProcessor` claims in worker-count-sized batches ordered by due/created time; default worker count is 1. A tenant with many active keywords can hold the queue ahead of later tenants.
+- There is no global or per-host rate limiter for gprocurement crawling. The crawler has fixed sleeps and local recovery retries, but no shared limiter, exponential backoff, jitter, or circuit breaker.
+- Project upsert is not concurrent-idempotent. `upsert_project()` does select-then-insert/update under a unique `(tenant_id, canonical_project_id)` constraint. Concurrent discovery of the same project can raise an `IntegrityError`; the workflow catches this as a project/task failure and the outbox job may still be marked dispatched rather than retried.
+- State transitions are vulnerable to stale-read last-writer-wins behavior. `transition_project()` and `upsert_project()` compute transitions from a row selected without lock/CAS; concurrent close-check and discovery can overwrite each other's state with stale decisions.
+
+MEDIUM
+- Discovery-job enqueue deduplication is check-then-insert without a unique constraint, so concurrent manual recrawl/profile updates can create duplicate pending jobs.
+- Discovery job stale-claim timeout is 60 seconds while live crawls run for minutes or hours. The conditional claim is atomic for fresh claims, but stale reclaim can double-dispatch a genuinely still-running job across multiple dispatchers or route-triggered processors.
+- SQLAlchemy engine creation uses default Postgres pool sizing, with no explicit relationship to worker count, per-worker repositories, document ingest, and API traffic.
+- Document duplicate handling is database-protected but not application-idempotent under concurrency: two identical inserts can both pass the pre-check, then one hits the unique index after artifact writes.
+
+LOW
+- Existing tests verify worker_count concurrency at the dispatcher abstraction and worker-side parsing of browser settings, but do not cover dispatcher-generated unique CDP/profile settings, concurrent upsert races, stale-claim behavior, or rate-limit/backoff policy.
+
+### Nit-Picks / Nitty Gritty
+- The prior assessment slightly overstates one point: project persistence exceptions are caught per project in the discover workflow, so they do not necessarily crash the subprocess. The practical outcome is still bad because the run becomes failed/partial while the discovery outbox can be marked dispatched.
+- The prior assessment also calls document storage cleanly duplicate-safe under concurrency. The DB constraint prevents duplicate committed rows, but the application path can still surface an IntegrityError and cleanup path under concurrent same-document inserts.
+- The system is not literally using one persistent browser today; it spawns per job, but with a shared default profile/port. That distinction does not reduce the concurrent-crawl risk.
+
+### Tactical Improvements (1-3 days)
+1. Add dispatcher-owned browser isolation: allocate unique CDP ports and run-scoped profile dirs, pass them in `browser_settings`, verify worker tests cover the actual API dispatcher payload, and clean profile dirs after safe shutdown.
+2. Set production default to external discovery dispatch, or move `processor.process_pending()` onto a dedicated thread/process executor so FastAPI's event loop cannot be blocked by crawl subprocesses.
+3. Add a host-level e-GP rate limiter with jittered exponential backoff and a short circuit breaker before increasing `EGP_DISCOVERY_WORKER_COUNT`.
+4. Make project upsert and alias/document inserts conflict-aware using Postgres `ON CONFLICT`/retry-read behavior; add a concurrent test using PostgreSQL, not only SQLite.
+5. Add per-tenant in-flight caps and queue fairness, even a simple round-robin claim query or bounded per-tenant admission gate.
+
+### Strategic Improvements (1-6 weeks)
+1. Treat browser workers as a bounded pool with explicit leases: worker_id, port, profile path, tenant/run/job ownership, heartbeat, and cleanup.
+2. Split job lifecycle from dispatch completion: distinguish spawned, running, succeeded, failed, partial, and cancelled instead of marking the outbox `dispatched` after a subprocess exits regardless of run success.
+3. Introduce durable crawl scheduling/admission control with per-tenant quotas, retry policy, and observability dashboards for queue age, crawl duration, WAF/rate-limit signals, and failure classes.
+4. Add Postgres-backed concurrency tests for project/document idempotency and state transitions.
+
+### Big Architectural Changes (only if justified)
+- Proposal: move live discovery dispatch out of the API process entirely and operate it as a dedicated worker service with an explicit browser-worker pool.
+  - Pros: protects API availability, gives a clear concurrency boundary, centralizes rate limiting and browser lifecycle, and makes worker_count an operational setting rather than an API footgun.
+  - Cons: requires deployment/process supervision work and more explicit run/job state modeling.
+  - Migration Plan: first run `EGP_BACKGROUND_RUNTIME_MODE=external` in production; then add browser leases and unique profile/port allocation; then add fair queue/admission controls; then raise concurrency gradually behind metrics.
+  - Tests/Rollout: add unit tests for payload isolation, integration tests for concurrent upserts, smoke test external dispatcher, and rollout with worker_count=1 then 2 under rate-limit metrics.
+
+### Open Questions / Assumptions
+- I did not run live crawls or Postgres stress tests during this review.
+- The browser cross-talk scenario depends on same-host parallel workers; it is a launch blocker if one host can ever run worker_count > 1 or multiple dispatchers share the same host defaults.
+- If production is already configured with `EGP_BACKGROUND_RUNTIME_MODE=external`, the API-event-loop blocking risk is mitigated operationally but still unsafe as the repo default.

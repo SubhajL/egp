@@ -367,3 +367,83 @@ LOW
 - Keep `EGP_DISCOVERY_WORKER_COUNT=1` for the first PR-03 observation window.
 - Pilot `EGP_DISCOVERY_WORKER_COUNT=2` on one host only after single-worker behavior is clean.
 - Roll back by restoring worker count to 1 and redeploying the previous image if orphan Chrome PIDs exceed worker count after 60 seconds or any tenant attribution anomaly appears.
+
+## Merge (2026-05-24 06:01:34 +0700)
+
+- PR #106 (`feat: isolate discovery worker browsers`) was admin-merged into `main`.
+- Merge commit: `6fc0223f2876d0fc9011c1cf178bc39a09d45646`.
+- Pre-merge GitHub state: PR was mergeable but blocked by failed CI/claude checks; all CI jobs ended in 1-2 seconds with no step details in compact metadata.
+- Local sync: fetched `origin/main` and updated local `main` to match `origin/main`.
+- Next: monitor the PR-03 production pilot gates described above.
+
+
+## Review (2026-06-07 18:07:19 +0700) - system
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: document capture/retry/status visibility subsystem
+- Commands Run: git rev-parse --show-toplevel; git branch --show-current; git status --porcelain=v1; git log -n 20 --oneline --decorate; rg for document capture/retry/API/UI identifiers; nl/sed on worker, API, web, db, docs, and tests.
+- Sources: AGENTS.md; CLAUDE.md; docs/PRD.md; docs/DEPLOYMENT.md; docs/REMOTE_LOCAL_CRAWLER.md; docs/LIGHTSAIL_LOW_COST_LAUNCH.md; apps/worker/src/egp_worker/browser_downloads.py; browser_discovery.py; browser_close_check.py; workflows/discover.py; workflows/close_check.py; apps/api/src/egp_api/executors/discovery_dispatch.py; scheduled_discovery_enqueue.py; services/discovery_worker_dispatcher.py; apps/api/src/egp_api/routes/documents.py; routes/projects.py; packages/db project/document repositories; apps/web project detail page; relevant phase1/phase2/phase4 tests.
+
+### High-Level Assessment
+- The prior diagnosis is mostly correct: the project-detail empty document panel reflects zero persisted rows from /v1/documents/projects/{project_id}, not entitlement filtering.
+- Document capture is a single live attempt per discovery observation and has brittle targeted-table heuristics: fixed 0.5s settle, header keyword gate, >=3 cell row requirement, label-first target matching, and final-TOR label filtering.
+- The close-check live retry path does have a catch-22: it selects only projects that already have invitation-stage document rows, excluding zero-doc misses.
+- Production/off-box Track C runners dispatch discovery jobs, not close_check jobs. However scheduled discovery enqueue exists and can be a retry path if the timer is installed and due jobs are generated; the original statement that close-check is the only possible retry mechanism is too absolute.
+- Capture status is produced in worker payload/raw_snapshot, but raw_snapshot is stored on project_status_events, not projects, and status event deduplication can prevent later capture outcomes from being persisted.
+
+### Strengths
+- Worker discovery keeps metadata when document collection times out, so project rows are not lost with document failures.
+- Discovery dispatcher explicitly sends live_include_documents=true.
+- Document list endpoint is tenant/project scoped and ungated; download byte/link paths are entitlement-gated.
+- Tests already cover no_documents/timeout payload marking, close-check document revisit plumbing, and the current has_invitation_stage_documents=True selector.
+- Scheduled discovery enqueue exists for the off-box topology and can create repeat discovery jobs without browser work on the VM.
+
+### Key Risks / Gaps (severity ordered)
+CRITICAL
+- Zero-document projects are excluded from close-check retries. close_check.py lines 111-116 calls list_projects(..., has_invitation_stage_documents=True), and project_queries.py lines 182-191 defines that as a document row with source_status_text like invitation. Impact: first-pass zero-doc projects cannot be recovered by close-check.
+- Capture outcome persistence is not a reliable project-level fact. browser_discovery.py lines 1077-1105 writes document_collection_status into raw_snapshot, but project_schema.py lines 108-123 stores raw_snapshot only on project_status_events. project_aliases.py lines 122-134 skips inserting a new status event when observed_status_text and normalized_status match the latest event, so later retry outcomes can be invisible.
+
+HIGH
+- Targeted document-table detection is brittle. browser_downloads.py lines 377-391 performs a fixed 0.5s sleep and only considers tables whose th text contains ดูข้อมูล or ดาวน์โหลด. Rows with icon-only headers, late-rendered tables, or non-table/card layouts can produce zero downloadable_rows.
+- Targeted row parsing drops plausible rows. browser_downloads.py lines 398-401 skips rows with fewer than 3 td cells; two-cell layouts (label + action) are currently ignored.
+- Final TOR collection can discard valid artifacts based on label-only classification. browser_downloads.py lines 433-439 filters successful final-target downloads using is_final_tor_doc_label on source_label/doc_name, while classifier.py lines 70-142 can return OTHER for odd/bare labels. The ingest classifier can use file_name/status/page context, but this early filter happens before ingest.
+- Track C production runner does not invoke close_check. scripts/run_remote_crawl.sh lines 62-63 and discovery_dispatch.py lines 63-105/133-155 only claim discovery_jobs and dispatch discover worker payloads. The worker supports close_check commands, but no checked runner/scheduler sends them.
+
+MEDIUM
+- Scheduled discovery is a partial retry path, not a complete backfill. scheduled_discovery_enqueue.py lines 44-89 can enqueue due active profile keywords, and discovery_job_repo.py lines 194-244 allows new schedule jobs after no pending duplicate remains. But docs mark timer install optional, and it retries by keyword/search-result availability, not by explicit zero-doc/backfill state.
+- UI empty state lacks operational context. apps/web/src/app/(app)/projects/[id]/page.tsx lines 408-414 renders a flat empty message from documents.length; it ignores status_events.raw_snapshot even though routes/projects.py lines 54-62 and 144-162 expose it.
+- Observability lacks a low-cardinality document collection metric. metrics.py defines API, worker, e-GP request, queue, dispatch, and upsert metrics, but no document_collection_status counter; current signals are logs/progress payloads.
+
+LOW
+- The recommended confirmation SQL in the prior analysis is wrong for this schema: projects has no raw_snapshot column. Query latest project_status_events.raw_snapshot instead, and treat the result as possibly stale due event dedupe.
+- Existing parser tests focus on header-keyed table happy paths and procurement-plan fallbacks. Missing fixture tests for delayed tables, two-cell rows, icon-only action columns, generic doc links/buttons, and final-TOR filename fallback.
+
+### Nit-Picks / Nitty Gritty
+- _download_documents_from_current_view waits for a table and can find nested download tables, but the initial targeted scan still fails before that path unless it first matches a target row or falls to narrow detail-page candidates.
+- collect_downloaded_documents skips fallback after any clean targeted success, which is fine for avoiding duplicates but can hide other document categories if the first target succeeds and later targets silently miss without throwing.
+- The UI has crawl evidence available through /v1/projects/{project_id}/crawl-evidence; an operator-focused status summary could draw from both latest status event raw_snapshot and recent task payload/result_json.
+
+### Tactical Improvements (1-3 days)
+1. Add a document-backfill selection path for open/early projects with zero documents or latest capture outcome in no_documents/timeout/failed/deferred; do not reuse has_invitation_stage_documents=True.
+2. Wire a scheduled/runner command for document backfill or close-check-with-documents in Track C, with a bounded limit and tenant scoping.
+3. Add first-class latest document_collection_status/reason fields or a latest document_collection_observations table; do not rely only on deduped status_events.raw_snapshot.
+4. Surface capture status in project detail API/UI and replace the flat empty state with status-aware copy.
+5. Add a Prometheus counter such as egp_document_collection_total{status,reason} plus task/run summary counts.
+
+### Strategic Improvements (1-6 weeks)
+1. Split document collection into its own durable job type keyed by tenant_id/project_id, with retry/backoff, max age, status, and operator retry controls.
+2. Treat document capture attempts as audit/observability events separate from lifecycle status events, so repeated same-status observations are preserved without polluting lifecycle history.
+3. Maintain fixture-based crawler parser tests from real e-GP HTML snapshots for each known layout family.
+
+### Big Architectural Changes (only if justified)
+- Proposal: introduce a document_capture_jobs/document_capture_attempts subsystem rather than overloading discovery and close_check.
+  - Pros: explicit retries, metrics, UI status, decouples document availability from lifecycle closure, avoids catch-22.
+  - Cons: new schema and scheduler path; needs careful tenant scoping and queue bounds.
+  - Migration Plan: first add latest capture fields/attempt table; populate from existing latest status_events where possible; enqueue only zero-doc early/open projects; run dry/limited Track C batches; then make discovery enqueue capture jobs instead of doing all capture inline.
+  - Tests/Rollout: unit tests for selectors and retry state; repository tests for tenant isolation; worker tests for job status transitions; staged batch limit in production; metrics alert on failed/timeout/no_documents rates.
+
+### Open Questions / Assumptions
+- I did not run the production read-only DB query, so the exact failure mode for project 8e645ef7-a063-45b9-a8bb-cec61d6983fa remains unconfirmed.
+- Whether scheduled discovery is currently installed in production is operational state, not provable from code. The repo documents it as optional in the off-box Track C setup.
