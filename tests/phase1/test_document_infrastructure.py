@@ -4,6 +4,7 @@ import base64
 import logging
 import sqlite3
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -471,6 +472,54 @@ def test_ingest_downloaded_documents_persists_multiple_downloads(tmp_path) -> No
     with sqlite3.connect(database_path) as connection:
         row = connection.execute("SELECT COUNT(*) FROM documents").fetchone()
     assert row == (2,)
+
+
+def test_ingest_downloaded_documents_forwards_artifact_storage_config(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_ingest_document_artifact(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            created=True,
+            document=SimpleNamespace(
+                id="document-1",
+                sha256="sha",
+                document_type=SimpleNamespace(value="tor"),
+                document_phase=SimpleNamespace(value="final"),
+                storage_key="prod/tor.pdf",
+                managed_backup_storage_key=None,
+            ),
+            diff_records=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.ingest_document_artifact",
+        fake_ingest_document_artifact,
+    )
+
+    ingest_downloaded_documents(
+        database_url=None,
+        artifact_root=tmp_path / "artifacts",
+        artifact_storage_backend="s3",
+        artifact_bucket="egp-documents",
+        artifact_prefix="prod",
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        downloaded_documents=[
+            {
+                "file_name": "tor.pdf",
+                "file_bytes": b"tor-v1",
+                "source_label": "ร่างขอบเขตของงาน",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        ],
+    )
+
+    assert captured["artifact_storage_backend"] == "s3"
+    assert captured["artifact_bucket"] == "egp-documents"
+    assert captured["artifact_prefix"] == "prod"
 
 
 def test_ingest_downloaded_documents_logs_start_and_success(tmp_path, caplog) -> None:

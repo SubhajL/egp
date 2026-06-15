@@ -1334,7 +1334,49 @@ def test_document_download_link_falls_back_to_proxy_url_for_local_store(
     assert body["url"].endswith(f"/v1/documents/{document_id}/download")
 
 
-def test_document_download_link_returns_signed_url_when_store_supports_it(
+def test_document_download_link_returns_proxy_url_for_managed_supabase_store(
+    tmp_path,
+) -> None:
+    supabase_client = FakeSupabaseClient()
+    client = create_test_client(
+        tmp_path,
+        artifact_storage_backend="supabase",
+        artifact_bucket="egp-documents",
+        supabase_url="https://project.supabase.co",
+        supabase_service_role_key="service-role-key",
+        supabase_client=supabase_client,
+    )
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document = ingest_response.json()["document"]
+    document_id = document["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download-link",
+        params={"tenant_id": TENANT_ID},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direct"] is False
+    assert body["filename"] == "tor.pdf"
+    assert body["sha256"] == document["sha256"]
+    assert body["size_bytes"] == document["size_bytes"]
+    assert body["url"].endswith(f"/v1/documents/{document_id}/download")
+    assert supabase_client.storage.from_("egp-documents").sign_calls == []
+
+
+def test_document_download_link_returns_signed_url_for_prefixed_provider_key(
     tmp_path, monkeypatch
 ) -> None:
     from egp_db.repositories import document_repo
@@ -1353,6 +1395,9 @@ def test_document_download_link_returns_signed_url_when_store_supports_it(
         },
     )
     document_id = ingest_response.json()["document"]["id"]
+    set_document_storage_key(
+        client, document_id=document_id, storage_key="google_drive:drive-file-id"
+    )
 
     signed = "https://signed.example.com/bucket/tor.pdf?token=abc"
     monkeypatch.setattr(
