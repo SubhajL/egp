@@ -65,6 +65,11 @@ from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
 class RepositoryBundle:
     resolved_artifact_root: Path
     resolved_database_url: str
+    resolved_artifact_storage_backend: str
+    resolved_artifact_bucket: str | None
+    resolved_artifact_prefix: str
+    resolved_supabase_url: str | None
+    resolved_supabase_service_role_key: str | None
     resolved_auth_required: bool
     resolved_internal_worker_token: str | None
     resolved_jwt_secret: str
@@ -152,19 +157,28 @@ def build_repository_bundle(
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
     session_cookie_secure = get_session_cookie_secure(None)
     session_cookie_samesite = get_session_cookie_samesite(None)
+    resolved_artifact_storage_backend = get_artifact_storage_backend(
+        artifact_storage_backend
+    )
+    resolved_artifact_bucket = get_artifact_bucket(artifact_bucket)
+    resolved_artifact_prefix = get_artifact_prefix(artifact_prefix)
+    resolved_supabase_url = get_supabase_url(supabase_url)
+    resolved_supabase_service_role_key = get_supabase_service_role_key(
+        supabase_service_role_key
+    )
     shared_engine = create_shared_engine(resolved_database_url)
     admin_repository = create_admin_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
     )
     managed_artifact_store = create_artifact_store(
-        storage_backend=get_artifact_storage_backend(artifact_storage_backend),
+        storage_backend=resolved_artifact_storage_backend,
         artifact_root=resolved_artifact_root,
-        s3_bucket=get_artifact_bucket(artifact_bucket),
-        s3_prefix=get_artifact_prefix(artifact_prefix),
+        s3_bucket=resolved_artifact_bucket,
+        s3_prefix=resolved_artifact_prefix,
         s3_client=s3_client,
-        supabase_url=get_supabase_url(supabase_url),
-        supabase_service_role_key=get_supabase_service_role_key(supabase_service_role_key),
+        supabase_url=resolved_supabase_url,
+        supabase_service_role_key=resolved_supabase_service_role_key,
         supabase_client=supabase_client,
     )
     storage_credential_cipher = (
@@ -187,18 +201,23 @@ def build_repository_bundle(
         database_url=resolved_database_url,
         engine=shared_engine,
         artifact_store_resolver=tenant_artifact_store_resolver,
-        storage_backend=get_artifact_storage_backend(artifact_storage_backend),
+        storage_backend=resolved_artifact_storage_backend,
         artifact_root=resolved_artifact_root,
-        s3_bucket=get_artifact_bucket(artifact_bucket),
-        s3_prefix=get_artifact_prefix(artifact_prefix),
+        s3_bucket=resolved_artifact_bucket,
+        s3_prefix=resolved_artifact_prefix,
         s3_client=s3_client,
-        supabase_url=get_supabase_url(supabase_url),
-        supabase_service_role_key=get_supabase_service_role_key(supabase_service_role_key),
+        supabase_url=resolved_supabase_url,
+        supabase_service_role_key=resolved_supabase_service_role_key,
         supabase_client=supabase_client,
     )
     return RepositoryBundle(
         resolved_artifact_root=resolved_artifact_root,
         resolved_database_url=resolved_database_url,
+        resolved_artifact_storage_backend=resolved_artifact_storage_backend,
+        resolved_artifact_bucket=resolved_artifact_bucket,
+        resolved_artifact_prefix=resolved_artifact_prefix,
+        resolved_supabase_url=resolved_supabase_url,
+        resolved_supabase_service_role_key=resolved_supabase_service_role_key,
         resolved_auth_required=resolved_auth_required,
         resolved_internal_worker_token=resolved_internal_worker_token,
         resolved_jwt_secret=resolved_jwt_secret,

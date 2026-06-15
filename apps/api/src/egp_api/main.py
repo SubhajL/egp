@@ -46,6 +46,11 @@ def _make_discover_spawner(
     database_url: str,
     *,
     artifact_root: Path | None = None,
+    artifact_storage_backend: str | None = None,
+    artifact_bucket: str | None = None,
+    artifact_prefix: str | None = None,
+    supabase_url: str | None = None,
+    supabase_service_role_key: str | None = None,
     run_repository=None,
     profile_repository=None,
 ) -> SubprocessDiscoveryDispatcher:
@@ -54,6 +59,11 @@ def _make_discover_spawner(
     return SubprocessDiscoveryDispatcher(
         database_url,
         artifact_root=artifact_root,
+        artifact_storage_backend=artifact_storage_backend,
+        artifact_bucket=artifact_bucket,
+        artifact_prefix=artifact_prefix,
+        supabase_url=supabase_url,
+        supabase_service_role_key=supabase_service_role_key,
         run_repository=run_repository,
         profile_repository=profile_repository,
     )

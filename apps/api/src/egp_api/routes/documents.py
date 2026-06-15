@@ -492,11 +492,10 @@ def get_document_download_link(
 ) -> DocumentDownloadLinkResponse:
     """Resolve the URL the browser should hit to download a document.
 
-    For artifact stores that can mint signed URLs (Supabase, S3, Drive,
-    OneDrive) the response carries a direct, time-limited URL so the browser
-    can stream the bytes from origin storage without proxying through the
-    API. For local-filesystem stores (and any store that cannot produce an
-    HTTP URL) the response falls back to the API's own ``/download`` route.
+    Managed stores (local, Supabase, S3/R2) fall back to the API's own
+    ``/download`` route so missing artifacts surface as structured API errors
+    instead of raw object-store XML. Prefixed external tenant providers may
+    still return direct, time-limited URLs when the repository can mint them.
 
     The response shape lets the frontend always do the same thing: navigate
     to ``url`` (e.g. via ``<a href={url} download>``) and let the browser

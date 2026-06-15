@@ -15,6 +15,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from egp_api.config import (
+    get_artifact_bucket,
+    get_artifact_prefix,
+    get_artifact_storage_backend,
     get_browser_cdp_port_base,
     get_browser_cdp_port_range,
     get_browser_chrome_path,
@@ -373,6 +376,11 @@ class SubprocessDiscoveryDispatcher:
         database_url: str,
         *,
         artifact_root: Path | None = None,
+        artifact_storage_backend: str | None = None,
+        artifact_bucket: str | None = None,
+        artifact_prefix: str | None = None,
+        supabase_url: str | None = None,
+        supabase_service_role_key: str | None = None,
         run_repository=None,
         profile_repository=None,
         timeout_seconds: float = DISCOVER_WORKER_TIMEOUT_SECONDS,
@@ -393,6 +401,15 @@ class SubprocessDiscoveryDispatcher:
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
+        self._artifact_storage_backend = get_artifact_storage_backend(
+            artifact_storage_backend
+        )
+        self._artifact_bucket = get_artifact_bucket(artifact_bucket)
+        self._artifact_prefix = get_artifact_prefix(artifact_prefix)
+        self._supabase_url = supabase_url.strip() if supabase_url else None
+        self._supabase_service_role_key = (
+            supabase_service_role_key.strip() if supabase_service_role_key else None
+        )
         self._run_repository = run_repository or _NoopRunRepository()
         self._profile_repository = profile_repository
         self._timeout_seconds = timeout_seconds
@@ -561,6 +578,11 @@ class SubprocessDiscoveryDispatcher:
                     "command": "discover",
                     "database_url": self._database_url,
                     "artifact_root": str(self._artifact_root),
+                    "artifact_storage_backend": self._artifact_storage_backend,
+                    "artifact_bucket": self._artifact_bucket,
+                    "artifact_prefix": self._artifact_prefix,
+                    "supabase_url": self._supabase_url,
+                    "supabase_service_role_key": self._supabase_service_role_key,
                     "tenant_id": request.tenant_id,
                     "run_id": run_id,
                     "profile_id": request.profile_id,

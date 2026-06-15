@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+EXTERNAL_DIRECT_DOWNLOAD_PREFIXES = ("google_drive:", "onedrive:")
+
 
 class CapabilityEntitlementService(Protocol):
     def require_capability(self, *, tenant_id: str, capability: str) -> None:
@@ -441,22 +443,23 @@ class DocumentIngestService:
         if document is None:
             raise KeyError(document_id)
 
-        signed_url: str | None
-        try:
-            candidate = self._repository.get_download_url(
-                tenant_id=tenant_id,
-                document_id=document_id,
-                expires_in=expires_in,
-            )
-        except Exception:  # noqa: BLE001 - fall back to proxy on any resolver error
-            signed_url = None
-        else:
-            signed_url = (
-                candidate
-                if isinstance(candidate, str)
-                and (candidate.startswith("https://") or candidate.startswith("http://"))
-                else None
-            )
+        signed_url: str | None = None
+        if document.storage_key.startswith(EXTERNAL_DIRECT_DOWNLOAD_PREFIXES):
+            try:
+                candidate = self._repository.get_download_url(
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    expires_in=expires_in,
+                )
+            except Exception:  # noqa: BLE001 - fall back to proxy on any resolver error
+                signed_url = None
+            else:
+                signed_url = (
+                    candidate
+                    if isinstance(candidate, str)
+                    and (candidate.startswith("https://") or candidate.startswith("http://"))
+                    else None
+                )
 
         return DocumentDownloadLink(
             url=signed_url,

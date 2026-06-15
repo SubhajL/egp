@@ -11,7 +11,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from egp_api.config import get_artifact_root, get_database_url, get_discovery_worker_count
+from egp_api.config import (
+    get_artifact_bucket,
+    get_artifact_prefix,
+    get_artifact_root,
+    get_artifact_storage_backend,
+    get_database_url,
+    get_discovery_worker_count,
+    get_supabase_service_role_key,
+    get_supabase_url,
+)
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
 from egp_api.services.run_service import RunService
@@ -85,6 +94,11 @@ def build_discovery_dispatch_runtime(
     dispatcher = SubprocessDiscoveryDispatcher(
         resolved_database_url,
         artifact_root=resolved_artifact_root,
+        artifact_storage_backend=get_artifact_storage_backend(None),
+        artifact_bucket=get_artifact_bucket(None),
+        artifact_prefix=get_artifact_prefix(None),
+        supabase_url=get_supabase_url(None),
+        supabase_service_role_key=get_supabase_service_role_key(None),
         run_repository=run_repository,
         profile_repository=profile_repository,
     )

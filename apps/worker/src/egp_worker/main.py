@@ -84,6 +84,26 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
     return replace(BrowserDiscoverySettings(), **updates)
 
 
+def _artifact_storage_kwargs(payload: dict[str, object]) -> dict[str, str | None]:
+    return {
+        "artifact_storage_backend": str(payload.get("artifact_storage_backend") or "local"),
+        "artifact_bucket": (
+            str(payload["artifact_bucket"])
+            if payload.get("artifact_bucket") is not None
+            else None
+        ),
+        "artifact_prefix": str(payload.get("artifact_prefix") or ""),
+        "supabase_url": (
+            str(payload["supabase_url"]) if payload.get("supabase_url") is not None else None
+        ),
+        "supabase_service_role_key": (
+            str(payload["supabase_service_role_key"])
+            if payload.get("supabase_service_role_key") is not None
+            else None
+        ),
+    }
+
+
 def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     command = str(payload.get("command") or "").strip()
     if command == "discover":
@@ -102,6 +122,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             browser_settings=_build_browser_settings(payload),
             live_include_documents=bool(payload.get("live_include_documents", True)),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
+            **_artifact_storage_kwargs(payload),
             storage_credentials_secret=(
                 str(payload["storage_credentials_secret"])
                 if payload.get("storage_credentials_secret") is not None
@@ -127,6 +148,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             live=bool(payload.get("live", False)),
             live_include_documents=bool(payload.get("live_include_documents", True)),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
+            **_artifact_storage_kwargs(payload),
             storage_credentials_secret=(
                 str(payload["storage_credentials_secret"])
                 if payload.get("storage_credentials_secret") is not None
@@ -145,21 +167,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
         result = ingest_document_artifact(
             artifact_root=str(payload["artifact_root"]),
             database_url=str(payload["database_url"]),
-            artifact_storage_backend=str(payload.get("artifact_storage_backend") or "local"),
-            artifact_bucket=(
-                str(payload["artifact_bucket"])
-                if payload.get("artifact_bucket") is not None
-                else None
-            ),
-            artifact_prefix=str(payload.get("artifact_prefix") or ""),
-            supabase_url=(
-                str(payload["supabase_url"]) if payload.get("supabase_url") is not None else None
-            ),
-            supabase_service_role_key=(
-                str(payload["supabase_service_role_key"])
-                if payload.get("supabase_service_role_key") is not None
-                else None
-            ),
+            **_artifact_storage_kwargs(payload),
             storage_credentials_secret=(
                 str(payload["storage_credentials_secret"])
                 if payload.get("storage_credentials_secret") is not None

@@ -1313,9 +1313,15 @@ def test_run_discover_workflow_can_opt_into_live_browser_document_downloads(
         live=True,
         live_include_documents=True,
         artifact_root=tmp_path / "artifacts",
+        artifact_storage_backend="s3",
+        artifact_bucket="egp-documents",
+        artifact_prefix="prod",
     )
 
     assert captured_crawl["include_documents"] is True
+    assert captured_ingest["artifact_storage_backend"] == "s3"
+    assert captured_ingest["artifact_bucket"] == "egp-documents"
+    assert captured_ingest["artifact_prefix"] == "prod"
     assert "document_collection_status" not in run_repository.tasks[0]["payload"]
     assert run_repository.tasks[0]["payload"]["downloaded_documents"] == [
         {
@@ -1732,6 +1738,42 @@ def test_run_worker_job_forwards_run_id_and_artifact_root_to_discover_workflow(
     assert result["run_id"] == "run-reserved"
     assert captured["run_id"] == "run-reserved"
     assert captured["artifact_root"] == tmp_path / "reserved-artifacts"
+
+
+def test_run_worker_job_forwards_artifact_storage_config_to_discover_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_discover_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(
+                run=SimpleNamespace(id="run-storage", status="succeeded")
+            ),
+            projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_discover_workflow", fake_run_discover_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "discover",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-storage.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "keyword": "analytics",
+            "artifact_storage_backend": "s3",
+            "artifact_bucket": "egp-documents",
+            "artifact_prefix": "prod",
+        }
+    )
+
+    assert result["run_id"] == "run-storage"
+    assert captured["artifact_storage_backend"] == "s3"
+    assert captured["artifact_bucket"] == "egp-documents"
+    assert captured["artifact_prefix"] == "prod"
 
 
 def test_run_discover_workflow_uses_per_project_keyword_when_live_source_returns_it() -> (
@@ -2286,6 +2328,54 @@ def test_run_close_check_workflow_requests_live_document_revisit(monkeypatch) ->
     assert captured["include_documents"] is True
 
 
+def test_run_close_check_workflow_forwards_artifact_storage_to_document_ingest(
+    monkeypatch, tmp_path
+) -> None:
+    run_repository = FakeRunRepository()
+    captured_ingest: dict[str, object] = {}
+
+    class CloseSink:
+        def record_close_check(self, event):
+            raise AssertionError("non-closing revisit should not emit close events")
+
+    def fake_ingest_downloaded_documents(**kwargs):
+        captured_ingest.update(kwargs)
+        return [SimpleNamespace(created=True)]
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.close_check.ingest_downloaded_documents",
+        fake_ingest_downloaded_documents,
+    )
+
+    run_close_check_workflow(
+        tenant_id=TENANT_ID,
+        observations=[
+            {
+                "project_id": "project-1",
+                "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+                "downloaded_documents": [
+                    {
+                        "file_name": "tor.pdf",
+                        "file_bytes": b"tor-v1",
+                        "source_label": "ร่างเอกสารประกวดราคา",
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    }
+                ],
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=CloseSink(),
+        artifact_root=tmp_path / "artifacts",
+        artifact_storage_backend="s3",
+        artifact_bucket="egp-documents",
+        artifact_prefix="prod",
+    )
+
+    assert captured_ingest["artifact_storage_backend"] == "s3"
+    assert captured_ingest["artifact_bucket"] == "egp-documents"
+    assert captured_ingest["artifact_prefix"] == "prod"
+
+
 def test_build_scheduled_discovery_jobs_returns_due_active_profile_keywords() -> None:
     jobs = build_scheduled_discovery_jobs(
         tenants=[
@@ -2644,6 +2734,41 @@ def test_run_worker_job_dispatches_live_close_check_command(
     }
     assert captured["live"] is True
     assert captured["trigger_type"] == "schedule"
+
+
+def test_run_worker_job_forwards_artifact_storage_config_to_close_check_workflow(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_close_check_workflow(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            run=SimpleNamespace(
+                run=SimpleNamespace(id="run-close-storage", status="succeeded")
+            ),
+            updated_projects=[],
+        )
+
+    monkeypatch.setattr(
+        "egp_worker.main.run_close_check_workflow", fake_run_close_check_workflow
+    )
+
+    result = run_worker_job(
+        {
+            "command": "close_check",
+            "database_url": f"sqlite+pysqlite:///{tmp_path / 'worker-close.sqlite3'}",
+            "tenant_id": TENANT_ID,
+            "artifact_storage_backend": "s3",
+            "artifact_bucket": "egp-documents",
+            "artifact_prefix": "prod",
+        }
+    )
+
+    assert result["run_id"] == "run-close-storage"
+    assert captured["artifact_storage_backend"] == "s3"
+    assert captured["artifact_bucket"] == "egp-documents"
+    assert captured["artifact_prefix"] == "prod"
 
 
 def test_run_worker_job_dispatches_scheduled_discovery_command(monkeypatch) -> None:

@@ -260,6 +260,11 @@ def configure_services(
     app.state.discover_spawner = discover_spawner_factory(
         bundle.resolved_database_url,
         artifact_root=bundle.resolved_artifact_root,
+        artifact_storage_backend=bundle.resolved_artifact_storage_backend,
+        artifact_bucket=bundle.resolved_artifact_bucket,
+        artifact_prefix=bundle.resolved_artifact_prefix,
+        supabase_url=bundle.resolved_supabase_url,
+        supabase_service_role_key=bundle.resolved_supabase_service_role_key,
         run_repository=bundle.run_repository,
         profile_repository=bundle.profile_repository,
     )
