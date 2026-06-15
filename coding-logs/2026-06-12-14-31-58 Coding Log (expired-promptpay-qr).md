@@ -182,3 +182,69 @@ LOW
 ### Rollout Notes
 - Frontend-only behavior change; no API/schema/env migration required.
 - Monitor user reports around QR regeneration and admin slip queue matching after deploy.
+
+## Review (2026-06-12 23:03:13 +07) - system
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: discovery/crawler queue, run/task persistence, and project/runs UI truth surface for the 12-keyword TOR-style test
+- Commands Run: `git rev-parse --show-toplevel`; `git branch --show-current`; `git status --porcelain=v1`; `git log -n 20 --oneline --decorate`; Auggie semantic search attempt; direct `rg`/`nl` inspection; production `psql` read-only queries through `ssh egp`; production container/env/log-path checks
+- Sources: `AGENTS.md`, `apps/api/src/egp_api/services/rules_service.py`, `packages/db/src/egp_db/repositories/profile_repo.py`, `apps/api/src/egp_api/services/discovery_dispatch.py`, `apps/api/src/egp_api/services/discovery_worker_dispatcher.py`, `apps/worker/src/egp_worker/workflows/discover.py`, `apps/web/src/app/(app)/projects/page.tsx`, `apps/web/src/app/(app)/runs/page.tsx`, `apps/web/src/lib/run-progress.ts`, production `crawl_profiles`, `discovery_jobs`, `crawl_runs`, `projects`
+
+### High-Level Assessment
+- The multi-keyword test did reach the backend queue and worker path. Production has one 12-keyword active custom profile and 12 `profile_created` discovery jobs marked `dispatched`.
+- The backend currently models those 12 keywords as 12 independent single-keyword crawl runs, not as one batch run.
+- All 12 recent runs finished between `2026-06-12 11:56:49+00` and `2026-06-12 12:12:19+00`; 11 succeeded with zero projects and one failed with `live crawl anomaly: keyword_no_results`.
+- The tenant still has 17 projects, with latest project row created `2026-06-07 05:01:48+00`, so the Jun 12 multi-keyword run created no new project rows.
+- The UI mostly watches latest run/project rows, so a fully processed zero-result batch can look like it "tried then stopped".
+
+### Strengths
+- The discovery outbox is durable enough to show all 12 profile-created jobs and final status.
+- The worker writes useful live progress into `crawl_runs.summary_json`, including the keyword, even when no `crawl_tasks` row exists.
+- The project page already polls `/v1/runs` and can show active/latest run cards; the missing piece is batch-aware status, not a total absence of runtime data.
+
+### Key Risks / Gaps (severity ordered)
+CRITICAL
+- No critical data-loss finding in this pass. The crawler ran; it just produced no project rows.
+
+HIGH
+- Zero-result keyword runs do not create `crawl_tasks`, because tasks are only created inside `_persist_discovered_project()` after an eligible project payload exists (`apps/worker/src/egp_worker/workflows/discover.py:396-435`). Result: run/task tables cannot answer "which keywords were processed?" without parsing `summary_json`, and the runs page shows empty task keyword rows for zero-result runs.
+- Profile creation bypasses the safer manual recrawl admission path. `queue_active_discovery_jobs()` calls `check_runs_admission()` and dedupes through `create_pending_discovery_job_if_absent()` (`apps/api/src/egp_api/services/rules_service.py:300-367`), but `create_profile()` only checks subscription/keyword limit then asks the repository to enqueue jobs inline (`apps/api/src/egp_api/services/rules_service.py:140-162`; `packages/db/src/egp_db/repositories/profile_repo.py:311-325`). A newly created 12-keyword profile can therefore bypass queued-run caps and create direct outbox rows without the same operator feedback semantics.
+- The project page is not batch-aware. It requests only the latest 10 runs and uses one latest completed run as the post-action summary (`apps/web/src/app/(app)/projects/page.tsx:291-316`, `717-752`). For 12 queued keywords represented as 12 runs, it can show "latest job finished with 0 projects" while hiding the other 11 keywords.
+
+MEDIUM
+- `profile_created`/`profile_updated` jobs are collapsed to `crawl_runs.trigger_type='manual'` (`apps/api/src/egp_api/services/run_trigger_mapping.py:20-30`). That keeps the DB check constraint happy, but makes production run history unable to distinguish first-time profile seeding from a user-requested recrawl without joining back to `discovery_jobs`.
+- Production run metadata from this incident points `worker_log_path` at `/Users/subhajlimanond/dev/egp/.data/artifacts/...`, but the current container resolves `EGP_ARTIFACT_ROOT=/var/lib/egp/artifacts` and has only `/var/lib/egp/artifacts` mounted. `RunService.get_run_log()` returns only the exact absolute path when `worker_log_path` is absolute (`apps/api/src/egp_api/services/run_service.py:170-190`, `196-208`), so old absolute dev paths make logs unavailable through the app.
+- `discovery_jobs.job_status='dispatched'` is semantically overloaded. The processor marks the job dispatched after `dispatch()` returns (`apps/api/src/egp_api/services/discovery_dispatch.py:125-175`), but the subprocess dispatcher blocks on the worker completion (`apps/api/src/egp_api/services/discovery_worker_dispatcher.py:575-601`). In practice "dispatched" means "worker exited successfully enough", not merely "started".
+
+LOW
+- The 12-keyword profile was created as a second `คำค้นหลัก` custom profile, while the legacy TOR keyword set exists only in `egp_crawler.py`. There is no product-level "TOR" preset/import path, so operators can accidentally create duplicate generic groups and lose the intent of the keyword set.
+
+### Nit-Picks / Nitty Gritty
+- One keyword (`ระบบฐานข้อมูลใหญ่`) becomes failed because terminal `keyword_no_results` is treated as a live crawl anomaly, while other zero-result runs finished as succeeded with `keyword_finished`. This is confusing unless the UI separates "no matching results" from "crawler failure".
+- The run task table is currently project-centric. That is reasonable for persisted project work, but it is not adequate as an audit trail for keyword-level crawling.
+- The current project page refetches projects when the latest completed run changes, but no project rows were created, so the visible result table legitimately stays unchanged.
+
+### Tactical Improvements (1-3 days)
+1. Persist a keyword-level crawl task (or equivalent run item) at keyword start, even if no project is found. Finish it as `succeeded` with `projects_seen=0`, or `failed` with the live anomaly/error.
+2. Make profile creation use the same discovery job service path as manual recrawl: admission check, pending-job dedupe, queued keyword response, and consistent notification/wake behavior.
+3. Add a batch status surface on the project page after recrawl/profile creation: "12 keywords queued/processed, 11 completed with 0 projects, 1 failed: ระบบฐานข้อมูลใหญ่" instead of only the latest run.
+4. Store `worker_log_path` as a path relative to artifact root, or normalize absolute paths containing `/tenants/...` through the current artifact root before rejecting them.
+5. Introduce a first-class TOR preset/import action instead of relying on the legacy script constants.
+
+### Strategic Improvements (1-6 weeks)
+1. Add a crawl batch entity tying one user action to N keyword runs. Keep current per-keyword workers, but expose batch state for UI/admin/operator diagnostics.
+2. Split discovery outbox lifecycle labels: `pending`, `claimed`, `worker_started`, `worker_finished`, `failed`. Keep `crawl_runs` as execution evidence, but avoid calling completed work only `dispatched`.
+3. Normalize profile templates/presets in DB or config-managed seed data so legacy crawler constants are not the only source of truth for business keyword sets.
+
+### Big Architectural Changes (only if justified)
+- Proposal: Introduce a lightweight `crawl_batches`/`crawl_batch_items` model for user-triggered or profile-triggered multi-keyword crawls.
+  - Pros: clean operator truth for multi-keyword requests, better UI progress, simple per-keyword retry/resume, no need to overload latest-run cards.
+  - Cons: one schema migration and API/UI contract expansion; existing run history needs compatibility handling.
+  - Migration Plan: create batch tables; write batch rows only for new profile-create/manual-recrawl actions; keep existing per-keyword run workers; backfill no historical rows initially; add UI batch card; later link discovery jobs to batch items.
+  - Tests/Rollout: repository tests for batch/item lifecycle, API tests for recrawl/profile-create responses, UI tests for mixed zero-result/failure batches, production feature flag or read-only batch card first.
+
+### Open Questions / Assumptions
+- Assumption: the Jun 12 user-facing symptom refers to tenant `c717b262-07a8-477d-bb78-f36a4a814eb7` and the 12-keyword profile `697c1002-ad87-4263-b40d-5c9563dc364c`.
+- Assumption: a true "no projects found" keyword should not be presented to users as a crawler failure unless the browser/search page state was abnormal.
