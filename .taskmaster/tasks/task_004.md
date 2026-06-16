@@ -22,7 +22,7 @@ Validate production-readiness outcomes with quota enforcement tests, webhook con
 
 ### 4.1. Implement multi-tenant quotas and entitlement enforcement
 
-**Status:** done  
+**Status:** done
 **Dependencies:** None  
 
 Enforce per-tenant limits and plan-based product boundaries.
@@ -37,8 +37,8 @@ Task 4.1 is implemented through a new entitlement layer in `apps/api/src/egp_api
 
 ### 4.2. Add webhook notification delivery
 
-**Status:** done  
-**Dependencies:** None  
+**Status:** done
+**Dependencies:** None
 
 Deliver machine-consumable notifications alongside email and in-product surfaces.
 
@@ -52,8 +52,8 @@ Implementation note: Webhook notification delivery is implemented across package
 
 ### 4.3. Build a full audit log
 
-**Status:** done  
-**Dependencies:** None  
+**Status:** done
+**Dependencies:** None
 
 Capture material state changes and operator actions for investigation and compliance.
 
@@ -109,14 +109,25 @@ is in `tests/operations/test_soc_runbook.py`.
 
 ### 4.6. Validate disaster recovery and backup workflows
 
-**Status:** pending  
-**Dependencies:** None  
+**Status:** done
+**Dependencies:** None
 
 Prove backups and restores work for the platform’s critical state and artifacts.
 
 **Details:**
 
 Define backup coverage for the database and artifact storage, then run restore validation against realistic data. Ensure restores preserve tenant isolation and document integrity.
+
+<info added on 2026-06-16T12:35:08.392+07:00>
+Completed with a real non-production Postgres backup/restore drill. The drill now
+seeds two tenants plus project, document, and billing records, dumps/restores a
+throwaway database, and verifies restored tenant count, project count, document
+count, billing record count, tenant isolation, document SHA preservation,
+billing status preservation, and backup sidecar SHA verification. Evidence is in
+`docs/DR_RESTORE_DRILL_EVIDENCE.md`; executable coverage is in
+`tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres`
+and `tests/operations/test_restore_drill_evidence.py`.
+</info added on 2026-06-16T12:35:08.392+07:00>
 
 ### 4.7. Add cost observability and support tooling
 
