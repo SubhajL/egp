@@ -112,7 +112,8 @@ def _stable_worker_document_contract(result) -> dict[str, Any]:
         "source_status_text": result.document.source_status_text,
         "size_bytes": result.document.size_bytes,
         "is_current": result.document.is_current,
-        "has_supersedes_document_id": result.document.supersedes_document_id is not None,
+        "has_supersedes_document_id": result.document.supersedes_document_id
+        is not None,
     }
 
 
@@ -194,7 +195,9 @@ def test_worker_document_ingest_routes_through_canonical_service_boundary(
     }
 
 
-def test_api_and_worker_document_ingest_share_project_context_contract(tmp_path) -> None:
+def test_api_and_worker_document_ingest_share_project_context_contract(
+    tmp_path,
+) -> None:
     api_client = _create_test_client(tmp_path, database_name="api")
     worker_client = _create_test_client(tmp_path, database_name="worker")
     api_project_id = _seed_public_hearing_project(
@@ -233,17 +236,17 @@ def test_api_and_worker_document_ingest_share_project_context_contract(tmp_path)
         file_bytes=b"version-two",
     )
 
-    assert _stable_document_contract(api_first["document"]) == _stable_worker_document_contract(
-        worker_first
-    )
-    assert _stable_document_contract(api_second["document"]) == _stable_worker_document_contract(
-        worker_second
-    )
+    assert _stable_document_contract(
+        api_first["document"]
+    ) == _stable_worker_document_contract(worker_first)
+    assert _stable_document_contract(
+        api_second["document"]
+    ) == _stable_worker_document_contract(worker_second)
     assert len(api_second["diff_records"]) == 1
     assert len(worker_second.diff_records) == 1
-    assert _stable_diff_contract(api_second["diff_records"][0]) == _stable_worker_diff_contract(
-        worker_second
-    )
+    assert _stable_diff_contract(
+        api_second["diff_records"][0]
+    ) == _stable_worker_diff_contract(worker_second)
 
 
 def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
@@ -259,6 +262,8 @@ def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
         file_name="tor.pdf",
         file_bytes=b"same-retried-artifact",
     )
+    artifact_path = tmp_path / "retry-artifacts" / api_result["document"]["storage_key"]
+    artifact_path.unlink()
 
     retry_result = _worker_ingest(
         client,
@@ -285,6 +290,7 @@ def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
     assert retry_result.created is False
     assert retry_result.document.id == api_result["document"]["id"]
     assert retry_result.diff_records == []
+    assert artifact_path.read_bytes() == b"same-retried-artifact"
     assert row == (1, 0, 0)
 
     canonical_success_events = [
@@ -295,10 +301,14 @@ def test_cross_path_document_retry_is_idempotent(tmp_path, caplog) -> None:
     replay_event = next(
         record
         for record in caplog.records
-        if getattr(record, "egp_event", "") == "document_store_duplicate_replay_detected"
+        if getattr(record, "egp_event", "")
+        == "document_store_duplicate_replay_detected"
     )
 
-    assert [record.document_created for record in canonical_success_events] == [True, False]
+    assert [record.document_created for record in canonical_success_events] == [
+        True,
+        False,
+    ]
     assert canonical_success_events[-1].actor_subject == "system:worker"
     assert canonical_success_events[-1].diff_record_count == 0
     assert replay_event.existing_document_id == api_result["document"]["id"]

@@ -577,6 +577,99 @@ def test_store_document_dedupes_same_project_and_hash(tmp_path) -> None:
     assert second.document.id == first.document.id
 
 
+def test_store_document_repairs_missing_managed_artifact_on_duplicate_replay(
+    tmp_path, caplog
+) -> None:
+    repository = FilesystemDocumentRepository(tmp_path)
+    caplog.set_level(logging.INFO, logger="egp_db.repositories.document_repo")
+    first = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"same-bytes",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    artifact_path = tmp_path / first.document.storage_key
+    artifact_path.unlink()
+
+    replay = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-copy.pdf",
+        file_bytes=b"same-bytes",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    with sqlite3.connect(tmp_path / "document_metadata.sqlite3") as connection:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM documents WHERE project_id = ?",
+            (PROJECT_ID,),
+        ).fetchone()[0]
+
+    assert replay.created is False
+    assert replay.document.id == first.document.id
+    assert replay.document.storage_key == first.document.storage_key
+    assert replay.document.managed_backup_storage_key is None
+    assert artifact_path.read_bytes() == b"same-bytes"
+    assert row_count == 1
+    repair_event = next(
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", "")
+        == "document_store_duplicate_artifact_repaired"
+    )
+    assert repair_event.existing_document_id == first.document.id
+    assert repair_event.repair_provider == "managed"
+    assert repair_event.repair_storage_key == first.document.storage_key
+
+
+def test_store_document_repairs_missing_external_primary_to_managed_backup(
+    tmp_path,
+) -> None:
+    google_client = FakeGoogleDriveClient()
+    repository = _google_repository(
+        tmp_path,
+        managed_backup_enabled=False,
+        google_client=google_client,
+    )
+    first = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor.pdf",
+        file_bytes=b"external-primary",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+    google_client.download_exception = FileNotFoundError("drive artifact missing")
+
+    replay = repository.store_document(
+        tenant_id=TENANT_ID,
+        project_id=PROJECT_ID,
+        file_name="tor-copy.pdf",
+        file_bytes=b"external-primary",
+        source_label="ร่างขอบเขตของงาน",
+        source_status_text="เปิดรับฟังคำวิจารณ์",
+    )
+
+    assert replay.created is False
+    assert replay.document.id == first.document.id
+    assert replay.document.storage_key == first.document.storage_key
+    assert replay.document.managed_backup_storage_key is not None
+    assert google_client.upload_calls == [
+        {
+            "access_token": "access-for-google-client-id",
+            "folder_id": "drive-folder-id",
+            "name": "tor.pdf",
+            "data": b"external-primary",
+            "content_type": "application/pdf",
+        }
+    ]
+    backup_path = tmp_path / "managed" / replay.document.managed_backup_storage_key
+    assert backup_path.read_bytes() == b"external-primary"
+
+
 def test_store_document_supersedes_previous_version_and_creates_diff(tmp_path) -> None:
     repository = FilesystemDocumentRepository(tmp_path)
     first = repository.store_document(

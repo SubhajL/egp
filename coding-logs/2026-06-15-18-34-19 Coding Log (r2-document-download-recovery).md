@@ -721,3 +721,92 @@ LOW
 ### Rollout Notes
 - Deploy API and worker/remote-crawler runtime together. Vercel/web deployment alone does not activate the worker storage fix.
 - Existing sampled production keys are missing from both R2 and the API container artifact root; this code prevents raw XML exposure but does not recreate historical missing objects.
+
+## Implementation (2026-06-16 09:37:01 +07) - duplicate replay artifact repair
+
+### Goal
+Fix duplicate document replay so a preserved `documents` row no longer blocks artifact recovery when the storage object has disappeared. The durable behavior is: verify the existing artifact, rewrite replay bytes to managed storage if missing, keep the same logical document row, and let targeted backfill/recrawl repair project `69039416683`.
+
+### What Changed
+- `packages/db/src/egp_db/artifact_store.py`: added an `exists()` capability to artifact stores. Local storage checks the filesystem, S3/R2 uses `head_object`, and provider stores fall back to a guarded read probe.
+- `packages/db/src/egp_db/repositories/document_persistence.py`: before returning the duplicate replay result, checks whether the existing artifact or managed backup is readable. If missing, it writes the replay bytes to managed storage. Managed rows are rewritten at their existing key; external-provider rows receive/refresh `managed_backup_storage_key`.
+- `tests/phase1/test_document_persistence.py`: added regression coverage for missing managed artifacts and missing external primaries repaired into managed backup storage without creating a second document row.
+- `tests/phase3/test_document_ingest_contract.py`: extended the API-to-worker retry contract so worker replay bytes restore a missing artifact while keeping one row, zero diffs, and the canonical duplicate replay event.
+
+### TDD Evidence
+- RED command:
+  `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py -k 'repairs_missing' -q`
+- RED result: 2 failed. The managed-artifact replay returned `created=False` but left the artifact path missing; the external-primary replay returned the existing row with `managed_backup_storage_key is None`.
+- GREEN focused command:
+  `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py -k 'repairs_missing' -q`
+- GREEN result: 2 passed.
+
+### Tests Run
+- `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_cross_path_document_retry_is_idempotent -q`: 1 passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py -q`: 26 passed.
+- `./.venv/bin/ruff format packages/db/src/egp_db/artifact_store.py packages/db/src/egp_db/repositories/document_persistence.py tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py`: 2 files reformatted, 2 unchanged.
+- `./.venv/bin/python -m compileall packages/db/src apps/worker/src`: passed.
+- `./.venv/bin/ruff check packages/db/src/egp_db/artifact_store.py packages/db/src/egp_db/repositories/document_persistence.py tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py`: passed.
+- `./.venv/bin/ruff check apps/worker packages`: passed.
+- `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py -q`: 29 passed.
+- Same 29-test command repeated three consecutive times for flake check: 29 passed each run. One parallel run emitted a pytest temporary-directory cleanup warning after passing; no test failed.
+
+### Wiring Verification
+| Component | Wiring Verified? | Evidence |
+|-----------|------------------|----------|
+| Artifact existence probe | YES | `DocumentPersistenceMixin._document_artifact_exists()` calls `ResolvedArtifactStore.decode_storage_key()` and `ArtifactStore.exists()` before duplicate replay returns. |
+| Duplicate replay repair | YES | `DocumentPersistenceMixin.store_document()` calls `_repair_duplicate_document_artifact()` only inside the existing-document branch, preserving row identity and returning `created=False`. |
+| Managed row repair | YES | Regression test unlinks the managed object, replays same bytes, and verifies the original `storage_key` is restored with one document row. |
+| External row repair | YES | Regression test simulates a missing Google Drive primary and verifies `managed_backup_storage_key` is populated with managed bytes while the original row id and primary key remain. |
+| Worker/API replay path | YES | `test_cross_path_document_retry_is_idempotent` deletes the API-ingested artifact, replays from worker bytes, and verifies one row, zero diffs, and restored bytes. |
+
+### Self Review / QCHECK
+- CRITICAL: No findings.
+- HIGH: No findings.
+- MEDIUM: No findings.
+- LOW: No findings.
+- Residual risk: provider `exists()` for Google Drive/OneDrive/Supabase uses a read-style probe where cheap metadata checks are not available in the current abstraction; S3/R2 uses `head_object`.
+
+### Behavior Changes And Risk Notes
+- Duplicate replay is still idempotent for metadata: no new document row, no diff row, no review row.
+- Missing managed artifacts are repaired at the existing storage key, matching the existing document row.
+- Missing external primary artifacts are repaired by adding managed backup storage, so existing provider references are preserved while download/content reads can fall back.
+- The targeted backfill must still be run for project number `69039416683` after deployment; this change makes that replay repair the artifact instead of silently returning the stale row.
+
+### Follow-ups / Known Gaps
+- Production deployment is required for API/worker behavior; merge to `main` alone is not enough for Lightsail.
+- After deployment, run a targeted backfill/recrawl for `69039416683` and verify the document row still exists, the managed object exists, and document download streams bytes.
+
+## Review (2026-06-16 09:37:58 +07) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: staged working tree before commit
+- Commit reviewed: working tree on `4f0b812c`
+- Commands Run: Auggie formal-review retrieval for artifact repair paths; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --name-only`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`; targeted line inspection for `packages/db/src/egp_db/repositories/document_persistence.py`, `packages/db/src/egp_db/artifact_store.py`, `tests/phase1/test_document_persistence.py`, and `tests/phase3/test_document_ingest_contract.py`; `./.venv/bin/python -m pytest tests/phase3/test_document_ingest_contract.py::test_cross_path_document_retry_is_idempotent -q`; `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py -q`; `./.venv/bin/python -m compileall packages/db/src apps/worker/src`; `./.venv/bin/ruff check packages/db/src/egp_db/artifact_store.py packages/db/src/egp_db/repositories/document_persistence.py tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py`; `./.venv/bin/ruff check apps/worker packages`; `./.venv/bin/python -m pytest tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py -q` repeated three times
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: treating provider read/probe exceptions as "artifact unavailable, attempt managed repair" is the desired duplicate-replay behavior; if managed write also fails, the replay raises and does not silently claim repair.
+- Assumption: when an external primary is missing, preserving `storage_key` and adding `managed_backup_storage_key` is preferred over replacing the primary provider reference.
+
+### Recommended Tests / Validation
+- Already passed: document persistence suite, API-worker ingest contract test, ruff checks, compileall, and three consecutive runs of the combined 29-test document set.
+- Production validation after deploy: run targeted backfill/recrawl for project number `69039416683`, verify the existing project/document row remains, verify the managed object exists in production storage, and verify document download streams bytes.
+
+### Rollout Notes
+- Backend/worker deployment is required on Lightsail; Vercel/web auto-deploy alone will not activate this repository-layer repair.
+- The targeted backfill should be project-number scoped to `69039416683`, not a broad discovery recrawl.

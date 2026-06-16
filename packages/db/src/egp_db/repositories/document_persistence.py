@@ -12,6 +12,7 @@ from egp_db.artifact_store import ArtifactStore
 from egp_db.db_utils import normalize_uuid_string
 from egp_db.tenant_storage_resolver import (
     ResolvedDocumentWritePlan,
+    decode_provider_storage_key,
     encode_provider_storage_key,
 )
 from egp_document_classifier.classifier import derive_artifact_bucket
@@ -154,6 +155,129 @@ class DocumentPersistenceMixin:
             cleanup_count += 1
         return cleanup_count
 
+    def _artifact_exists(self, artifact_store: ArtifactStore, storage_key: str) -> bool:
+        exists = getattr(artifact_store, "exists", None)
+        if callable(exists):
+            return bool(exists(storage_key))
+        try:
+            artifact_store.get_bytes(storage_key)
+        except Exception:
+            return False
+        return True
+
+    def _document_artifact_exists(
+        self,
+        *,
+        tenant_id: str,
+        document: DocumentRecord,
+    ) -> bool:
+        try:
+            resolved_artifact_store = self._resolve_artifact_store_for_storage_key(
+                tenant_id=tenant_id,
+                storage_key=document.storage_key,
+            )
+            if self._artifact_exists(
+                resolved_artifact_store.store,
+                resolved_artifact_store.decode_storage_key(document.storage_key),
+            ):
+                return True
+        except Exception:
+            pass
+        if document.managed_backup_storage_key is None:
+            return False
+        return self._artifact_exists(
+            self._artifact_store,
+            document.managed_backup_storage_key,
+        )
+
+    def _managed_repair_storage_key(
+        self,
+        *,
+        tenant_id: str,
+        document: DocumentRecord,
+    ) -> str:
+        provider, decoded_storage_key = decode_provider_storage_key(
+            document.storage_key
+        )
+        if provider == "managed":
+            return decoded_storage_key
+        if document.managed_backup_storage_key is not None:
+            return document.managed_backup_storage_key
+        safe_name = _sanitize_file_name(document.file_name)
+        return (
+            f"tenants/{tenant_id}/projects/{document.project_id}/artifacts/"
+            f"{document.sha256}/{safe_name}"
+        )
+
+    def _repair_duplicate_document_artifact(
+        self,
+        connection,
+        *,
+        tenant_id: str,
+        document: DocumentRecord,
+        file_bytes: bytes,
+        content_type: str | None,
+    ) -> DocumentRecord:
+        provider, _ = decode_provider_storage_key(document.storage_key)
+        repair_storage_key = self._managed_repair_storage_key(
+            tenant_id=tenant_id,
+            document=document,
+        )
+        stored_repair_key = self._artifact_store.put_bytes(
+            key=repair_storage_key,
+            data=file_bytes,
+            content_type=content_type,
+        )
+        update_values: dict[str, str] = {}
+        if provider == "managed":
+            update_values["storage_key"] = stored_repair_key
+        else:
+            update_values["managed_backup_storage_key"] = stored_repair_key
+        if update_values:
+            connection.execute(
+                update(DOCUMENTS_TABLE)
+                .where(
+                    and_(
+                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                        DOCUMENTS_TABLE.c.id == document.id,
+                    )
+                )
+                .values(**update_values)
+            )
+        row = (
+            connection.execute(
+                select(DOCUMENTS_TABLE)
+                .where(
+                    and_(
+                        DOCUMENTS_TABLE.c.tenant_id == tenant_id,
+                        DOCUMENTS_TABLE.c.id == document.id,
+                    )
+                )
+                .limit(1)
+            )
+            .mappings()
+            .one()
+        )
+        repaired_document = _document_from_mapping(row)
+        logger.warning(
+            "Repaired missing artifact for duplicate document replay %s",
+            document.file_name,
+            extra={
+                "egp_event": "document_store_duplicate_artifact_repaired",
+                "tenant_id": tenant_id,
+                "project_id": document.project_id,
+                "existing_document_id": document.id,
+                "document_sha256": document.sha256,
+                "document_type": document.document_type.value,
+                "document_phase": document.document_phase.value,
+                "storage_key": document.storage_key,
+                "managed_backup_storage_key": document.managed_backup_storage_key,
+                "repair_provider": "managed",
+                "repair_storage_key": stored_repair_key,
+            },
+        )
+        return repaired_document
+
     def store_document(
         self,
         *,
@@ -208,6 +332,18 @@ class DocumentPersistenceMixin:
                     document_phase=draft_document.document_phase,
                 )
                 if existing is not None:
+                    repaired_existing = existing
+                    if not self._document_artifact_exists(
+                        tenant_id=tenant_id,
+                        document=existing,
+                    ):
+                        repaired_existing = self._repair_duplicate_document_artifact(
+                            connection,
+                            tenant_id=tenant_id,
+                            document=existing,
+                            file_bytes=file_bytes,
+                            content_type=content_type,
+                        )
                     logger.info(
                         "Duplicate document replay detected for %s",
                         file_name,
@@ -224,7 +360,7 @@ class DocumentPersistenceMixin:
                     )
                     return StoreDocumentResult(
                         created=False,
-                        document=existing,
+                        document=repaired_existing,
                         diff_records=[],
                     )
 

@@ -22,6 +22,8 @@ class ArtifactStore(Protocol):
 
     def get_bytes(self, key: str) -> bytes: ...
 
+    def exists(self, key: str) -> bool: ...
+
     def delete(self, key: str) -> None: ...
 
     def download_url(self, key: str, *, expires_in: int = 300) -> str: ...
@@ -120,6 +122,13 @@ class GoogleDriveArtifactStore:
     def get_bytes(self, key: str) -> bytes:
         return self._client.download_file(access_token=self._access_token, file_id=key)
 
+    def exists(self, key: str) -> bool:
+        try:
+            self.get_bytes(key)
+            return True
+        except Exception:
+            return False
+
     def delete(self, key: str) -> None:
         self._client.delete_file(access_token=self._access_token, file_id=key)
 
@@ -163,6 +172,13 @@ class OneDriveArtifactStore:
     def get_bytes(self, key: str) -> bytes:
         return self._client.download_file(access_token=self._access_token, file_id=key)
 
+    def exists(self, key: str) -> bool:
+        try:
+            self.get_bytes(key)
+            return True
+        except Exception:
+            return False
+
     def delete(self, key: str) -> None:
         self._client.delete_file(access_token=self._access_token, file_id=key)
 
@@ -190,6 +206,9 @@ class LocalArtifactStore:
 
     def get_bytes(self, key: str) -> bytes:
         return (self._base_dir / key).read_bytes()
+
+    def exists(self, key: str) -> bool:
+        return (self._base_dir / key).exists()
 
     def iter_bytes(
         self, key: str, *, chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE
@@ -267,6 +286,16 @@ class S3ArtifactStore:
         )
         body = response["Body"]
         return body.read() if hasattr(body, "read") else bytes(body)
+
+    def exists(self, key: str) -> bool:
+        try:
+            self._s3_client.head_object(
+                Bucket=self._bucket,
+                Key=self._qualified_key(key),
+            )
+            return True
+        except Exception:
+            return False
 
     def iter_bytes(
         self, key: str, *, chunk_size: int = DEFAULT_DOWNLOAD_CHUNK_SIZE
@@ -385,6 +414,13 @@ class SupabaseArtifactStore:
         if isinstance(result, str):
             return result.encode("utf-8")
         raise TypeError("Unsupported Supabase download payload")
+
+    def exists(self, key: str) -> bool:
+        try:
+            self._bucket_client.download(self._qualified_key(key))
+            return True
+        except Exception:
+            return False
 
     def delete(self, key: str) -> None:
         self._bucket_client.remove([self._qualified_key(key)])
