@@ -21,6 +21,7 @@ from egp_api.config import (
     get_browser_cdp_port_base,
     get_browser_cdp_port_range,
     get_browser_chrome_path,
+    get_browser_cloudflare_operator_timeout_ms,
     get_browser_cloudflare_reload_retries,
     get_browser_cloudflare_timeout_ms,
     get_browser_nav_timeout_ms,
@@ -255,6 +256,7 @@ def _resolve_browser_settings_payload(
     nav_timeout_ms: int | None = None,
     cloudflare_timeout_ms: int | None = None,
     cloudflare_reload_retries: int | None = None,
+    cloudflare_operator_timeout_ms: int | None = None,
     project_detail_timeout_s: float | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -277,6 +279,8 @@ def _resolve_browser_settings_payload(
         payload["browser_cloudflare_timeout_ms"] = cloudflare_timeout_ms
     if cloudflare_reload_retries is not None:
         payload["browser_cloudflare_reload_retries"] = cloudflare_reload_retries
+    if cloudflare_operator_timeout_ms is not None:
+        payload["browser_cloudflare_operator_wait_timeout_ms"] = cloudflare_operator_timeout_ms
     if project_detail_timeout_s is not None:
         payload["browser_project_detail_timeout_s"] = project_detail_timeout_s
     if profile_repository is None:
@@ -395,6 +399,7 @@ class SubprocessDiscoveryDispatcher:
         browser_nav_timeout_ms: int | str | None = None,
         browser_cloudflare_timeout_ms: int | str | None = None,
         browser_cloudflare_reload_retries: int | str | None = None,
+        browser_cloudflare_operator_timeout_ms: int | str | None = None,
         browser_project_detail_timeout_s: float | str | None = None,
         browser_warmup_stale_after_seconds: float | str | None = None,
         browser_predispatch_warm_seconds: float | str | None = None,
@@ -433,6 +438,9 @@ class SubprocessDiscoveryDispatcher:
         )
         self._browser_cloudflare_reload_retries = get_browser_cloudflare_reload_retries(
             browser_cloudflare_reload_retries
+        )
+        self._browser_cloudflare_operator_timeout_ms = get_browser_cloudflare_operator_timeout_ms(
+            browser_cloudflare_operator_timeout_ms
         )
         self._browser_project_detail_timeout_s = get_browser_project_detail_timeout_s(
             browser_project_detail_timeout_s
@@ -520,6 +528,9 @@ class SubprocessDiscoveryDispatcher:
         payload["browser_nav_timeout_ms"] = self._browser_nav_timeout_ms
         payload["browser_cloudflare_timeout_ms"] = self._browser_cloudflare_timeout_ms
         payload["browser_cloudflare_reload_retries"] = self._browser_cloudflare_reload_retries
+        payload["browser_cloudflare_operator_wait_timeout_ms"] = (
+            self._browser_cloudflare_operator_timeout_ms
+        )
         return payload
 
     def dispatch(self, request: DiscoveryDispatchRequest) -> None:
@@ -540,6 +551,7 @@ class SubprocessDiscoveryDispatcher:
             nav_timeout_ms=self._browser_nav_timeout_ms,
             cloudflare_timeout_ms=self._browser_cloudflare_timeout_ms,
             cloudflare_reload_retries=self._browser_cloudflare_reload_retries,
+            cloudflare_operator_timeout_ms=self._browser_cloudflare_operator_timeout_ms,
             project_detail_timeout_s=self._browser_project_detail_timeout_s,
         )
         profile_lock = (

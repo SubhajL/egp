@@ -34,3 +34,16 @@ def test_build_browser_settings_blank_proxy_is_treated_as_none() -> None:
     )
     assert settings is not None
     assert settings.proxy_server is None
+
+
+def test_build_browser_settings_parses_cloudflare_operator_timeout() -> None:
+    settings = _build_browser_settings(
+        {
+            "browser_settings": {
+                "browser_cdp_port": 9222,
+                "browser_cloudflare_operator_wait_timeout_ms": "45000",
+            }
+        }
+    )
+    assert settings is not None
+    assert settings.cloudflare_operator_wait_timeout_ms == 45_000

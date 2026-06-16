@@ -161,6 +161,15 @@ def get_browser_cloudflare_reload_retries(override: int | str | None = None) -> 
     )
 
 
+def get_browser_cloudflare_operator_timeout_ms(override: int | str | None = None) -> int:
+    """How long to keep Chrome open for operator-assisted Cloudflare verification."""
+    return _get_nonnegative_int_env(
+        name="EGP_BROWSER_CLOUDFLARE_OPERATOR_TIMEOUT_MS",
+        default=600_000,
+        override=override,
+    )
+
+
 def get_browser_project_detail_timeout_s(override: float | str | None = None) -> float:
     """Per-project detail/document extraction budget (seconds)."""
     return _get_positive_float_env(
