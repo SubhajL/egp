@@ -810,3 +810,36 @@ LOW
 ### Rollout Notes
 - Backend/worker deployment is required on Lightsail; Vercel/web auto-deploy alone will not activate this repository-layer repair.
 - The targeted backfill should be project-number scoped to `69039416683`, not a broad discovery recrawl.
+## Review (2026-06-16 09:56:20 +07) - working-tree follow-up
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: working tree follow-up for duplicate rediscovery lifecycle preservation
+- Commands Run: `git status --porcelain=v1`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --name-only`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --stat`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- packages/domain/src/egp_domain/project_ingest.py`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- tests/phase1/test_worker_workflows.py`; `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py::test_api_project_event_sink_preserves_existing_state_on_duplicate_rediscovery -q`; `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py tests/phase1/test_document_persistence.py tests/phase3/test_document_ingest_contract.py -q`; `./.venv/bin/ruff check packages/domain/src/egp_domain/project_ingest.py tests/phase1/test_worker_workflows.py`; `./.venv/bin/python -m compileall packages/domain/src`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: duplicate invitation-stage rediscovery for an already advanced project should preserve the existing lifecycle state, but still update observation fields and allow document replay.
+- Assumption: the repository-level transition guard should remain strict for direct upsert callers; the exception belongs at the worker ingest boundary.
+
+### Recommended Tests / Validation
+- Already run: focused API-sink regression test for `tor_downloaded` existing project plus `open_invitation` duplicate rediscovery.
+- Already run: related worker workflow, document persistence, and document ingest contract tests.
+- Production validation still requires rerunning the targeted project backfill and checking R2 object existence for project `69039416683`.
+
+### Rollout Notes
+- No schema or environment changes.
+- Deploy API image before rerunning the targeted backfill so `/internal/worker/projects/discover` accepts duplicate rediscovery without lifecycle rollback.

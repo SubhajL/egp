@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 
+from egp_crawler_core.project_lifecycle import transition_state
 from egp_db.repositories.project_repo import (
     ProjectRecord,
+    ProjectUpsertRecord,
     SqlProjectRepository,
     build_project_upsert_record,
     create_project_repository,
@@ -62,6 +65,10 @@ class ProjectIngestService:
             project_state=event.project_state,
         )
         existing = self._repository.find_existing_project(record)
+        record = _preserve_existing_state_for_rediscovery(
+            existing=existing,
+            record=record,
+        )
         project = self._repository.upsert_project(
             record,
             source_status_text=event.source_status_text,
@@ -112,6 +119,30 @@ class ProjectIngestService:
                 },
             )
         return project
+
+
+def _preserve_existing_state_for_rediscovery(
+    *,
+    existing: ProjectRecord | None,
+    record: ProjectUpsertRecord,
+) -> ProjectUpsertRecord:
+    if existing is None:
+        return record
+    try:
+        transition_state(
+            current_state=existing.project_state,
+            next_state=record.project_state,
+            closed_reason=record.closed_reason,
+        )
+    except ValueError as exc:
+        if "illegal project state transition" not in str(exc):
+            raise
+        return replace(
+            record,
+            project_state=existing.project_state,
+            closed_reason=existing.closed_reason,
+        )
+    return record
 
 
 def create_project_ingest_service(

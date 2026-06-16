@@ -565,6 +565,69 @@ def test_api_project_event_sink_posts_discovery_to_auth_enabled_api(tmp_path) ->
     assert stored.project_state is ProjectState.OPEN_INVITATION
 
 
+def test_api_project_event_sink_preserves_existing_state_on_duplicate_rediscovery(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-replay.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=True,
+            jwt_secret="unused-for-internal-route",
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+        )
+    )
+    seeded = client.app.state.project_repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-3100",
+            search_name="ระบบข้อมูลกลาง",
+            detail_name="โครงการระบบข้อมูลกลาง",
+            project_name="โครงการระบบข้อมูลกลาง",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.TOR_DOWNLOADED,
+        ),
+        source_status_text="เอกสารประกวดราคา",
+    )
+    sink = ApiProjectEventSink(
+        base_url=str(client.base_url),
+        worker_token=INTERNAL_WORKER_TOKEN,
+        client=client,
+    )
+
+    project = sink.record_discovery(
+        DiscoveredProjectEvent(
+            tenant_id=TENANT_ID,
+            keyword="EGP-2026-3100",
+            project_number="EGP-2026-3100",
+            search_name="ระบบข้อมูลกลาง",
+            detail_name="โครงการระบบข้อมูลกลาง",
+            project_name="โครงการระบบข้อมูลกลาง",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-01",
+            budget_amount="1500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+            source_status_text="ประกาศเชิญชวน",
+            raw_snapshot={"page": 1},
+        )
+    )
+
+    stored = client.app.state.project_repository.get_project(
+        tenant_id=TENANT_ID,
+        project_id=seeded.id,
+    )
+
+    assert project.id == seeded.id
+    assert stored is not None
+    assert stored.project_state is ProjectState.TOR_DOWNLOADED
+    assert stored.source_status_text == "ประกาศเชิญชวน"
+
+
 def test_api_project_event_sink_posts_close_check_to_auth_enabled_api(tmp_path) -> None:
     database_url = (
         f"sqlite+pysqlite:///{tmp_path / 'phase1-worker-remote-close.sqlite3'}"
