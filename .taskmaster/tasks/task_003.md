@@ -2,7 +2,7 @@
 
 **Title:** Phase 3: TOR Intelligence and Payments
 
-**Status:** in-progress
+**Status:** done
 
 **Dependencies:** 2
 
@@ -61,7 +61,7 @@ Implemented an API-first document review workflow on top of `document_diffs`. Ad
 
 ### 3.4. Generate payment links and PromptPay QR codes
 
-**Status:** pending  
+**Status:** done
 **Dependencies:** None  
 
 Support commercial beta payment collection flows for subscriptions or invoice settlement.
@@ -69,6 +69,21 @@ Support commercial beta payment collection flows for subscriptions or invoice se
 **Details:**
 
 Implement payment link creation and PromptPay QR generation in a way that integrates cleanly with invoice records and tenant-scoped billing state. Keep external provider calls isolated behind service boundaries.
+
+<info added on 2026-06-16T12:12:42.978+07:00>
+Reconciled against current implementation. Payment request creation, provider-backed
+payment links, OPN PromptPay QR generation, manual PromptPay QR generation, and
+LINE-mediated manual settlement are implemented across
+`apps/api/src/egp_api/services/payment_provider.py`,
+`apps/api/src/egp_api/services/billing_service.py`,
+`apps/api/src/egp_api/routes/billing.py`,
+`apps/web/src/app/(app)/billing/page.tsx`,
+`packages/db/src/migrations/005_payment_requests.sql`, and
+`packages/db/src/migrations/024_promptpay_manual_provider.sql`. Coverage exists in
+`tests/phase3/test_payment_links.py`, `tests/phase3/test_promptpay_manual_provider.py`,
+and `apps/web/tests/e2e/billing-page.spec.ts`; operator docs are in
+`docs/MANUAL_WEB_APP_TESTING.md` and `docs/LINE_MANUAL_PROMPTPAY.md`.
+</info added on 2026-06-16T12:12:42.978+07:00>
 
 ### 3.5. Implement invoice lifecycle and subscription activation
 

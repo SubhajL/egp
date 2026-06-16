@@ -843,3 +843,77 @@ LOW
 ### Rollout Notes
 - No schema or environment changes.
 - Deploy API image before rerunning the targeted backfill so `/internal/worker/projects/discover` accepts duplicate rediscovery without lifecycle rollback.
+
+## Implementation Summary (2026-06-16 12:13:23 +0700) - SOC runbook and Task Master reconciliation
+
+### Goal
+- Close the remaining non-runtime operational gaps before production validation: add a dedicated SOC/incident-response master runbook and reconcile stale Task Master statuses so it can be used as the current source of truth.
+
+### What changed
+- `docs/SOC_INCIDENT_RESPONSE.md`
+  - Added the master SOC incident-response runbook linking the existing Lightsail, Track C remote crawler, observability, backup/restore, secret-rotation, Stripe, LINE PromptPay, and Vercel runbooks.
+  - Added severity definitions, first-15-minute response, incident-record requirements, escalation matrix, recovery playbooks, and exact document-backfill validation steps for project `69039416683`.
+  - The validation path covers Lightsail deploy, targeted backfill enqueue/drain, R2 `head_object`, and authenticated API download byte-stream checks with `Content-Length`.
+- `tests/operations/test_soc_runbook.py`
+  - Added drift coverage that requires the SOC runbook to exist, link the existing operational docs, include the targeted project validation path, and retain basic incident-response sections.
+- `.taskmaster/tasks/tasks.json`, `.taskmaster/tasks/task_003.md`, `.taskmaster/tasks/task_004.md`
+  - Reconciled Task Master status for implemented payment links/PromptPay QR (3.4), Phase 3 (3), self-service admin (4.4), and SOC/runbooks (4.5).
+  - Left DR/backup restore validation (4.6) pending because documentation exists but no current restore-drill evidence was found or run.
+
+### TDD evidence
+- RED: `./.venv/bin/python -m pytest tests/operations/test_soc_runbook.py -q`
+  - Result: failed with four failures because `docs/SOC_INCIDENT_RESPONSE.md` did not exist.
+- GREEN: `./.venv/bin/python -m pytest tests/operations/test_soc_runbook.py -q`
+  - Result: `4 passed in 0.01s`.
+
+### Tests run
+- `./.venv/bin/python -m pytest tests/operations/test_soc_runbook.py -q` - passed.
+
+### Wiring verification evidence
+- The runbook is linked by test coverage through `tests/operations/test_soc_runbook.py`.
+- Existing runtime commands referenced in the runbook were verified against actual checked-in entry points:
+  - `python -m egp_api.executors.document_backfill_enqueue`
+  - `scripts/run_remote_crawl.sh crawl`
+  - `GET /v1/documents/{document_id}/download`
+  - S3/R2 `head_object` via the `boto3`-backed `S3ArtifactStore`.
+
+### Behavior changes and risk notes
+- No runtime behavior changed; this is documentation, operations drift coverage, and Task Master reconciliation.
+- The production blocker remains runtime validation after merge/deploy: deploy API/worker on Lightsail, run the targeted backfill for `69039416683`, verify the R2 object, and verify API download streams bytes.
+
+### Follow-ups / known gaps
+- Task Master now shows only Phase 4.6 as pending under Phase 4; keep it pending until a real backup/restore drill is run and recorded.
+
+## Review (2026-06-16 12:16:00 +0700) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: staged working tree before commit
+- Commit reviewed: working tree on `716cdfca`
+- Commands Run: Auggie retrieval for SOC/runbook, backfill, R2/download, deployment, and Task Master surfaces; Task Master `get_tasks`; Task Master `set_task_status` for `3.4`, `3`, `4.4`, and `4.5`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --name-only`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --check`; targeted staged diff inspection for `.taskmaster/tasks/task_003.md`, `.taskmaster/tasks/task_004.md`, `.taskmaster/tasks/tasks.json`, `docs/SOC_INCIDENT_RESPONSE.md`, and `tests/operations/test_soc_runbook.py`; `for i in 1 2 3; do ./.venv/bin/python -m pytest tests/operations/test_soc_runbook.py -q || exit 1; done`; `./.venv/bin/ruff check tests/operations/test_soc_runbook.py`; `./.venv/bin/python -m compileall tests/operations/test_soc_runbook.py`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: marking Task Master 4.4 done is appropriate because admin APIs/UI, support views, storage settings, billing visibility, and tests are present; DR validation remains pending because only runbook coverage, not a fresh restore drill, is evidenced.
+- Assumption: the SOC runbook is allowed to document an incident-commander-approved SQL fallback for exact one-project backfill enqueue, while the normal path remains the existing `document_backfill_enqueue` executor.
+
+### Recommended Tests / Validation
+- Already passed: SOC runbook drift test three consecutive times, ruff on the new operations test, compileall for the new operations test, and staged whitespace check.
+- Runtime validation still required after merge/deploy: deploy Lightsail API/executors, run targeted project `69039416683` backfill, verify R2 `head_object`, and verify API download streams bytes with `Content-Length`.
+
+### Rollout Notes
+- No schema or runtime code changes.
+- Lightsail backend deployment is still required after merge; Vercel/frontend auto-deploy does not update API/executor containers.
