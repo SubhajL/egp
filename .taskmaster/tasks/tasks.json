@@ -165,7 +165,7 @@
         "id": "3",
         "title": "Phase 3: TOR Intelligence and Payments",
         "description": "Deliver the commercial beta intelligence and payment workflows described in PRD phase 3.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "2"
         ],
@@ -210,11 +210,12 @@
             "id": 4,
             "title": "Generate payment links and PromptPay QR codes",
             "description": "Support commercial beta payment collection flows for subscriptions or invoice settlement.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Implement payment link creation and PromptPay QR generation in a way that integrates cleanly with invoice records and tenant-scoped billing state. Keep external provider calls isolated behind service boundaries.",
             "testStrategy": "Use provider mocks to verify payment link payloads, QR generation, callback handling, and failure states.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-06-16T05:12:42.978Z"
           },
           {
             "id": 5,
@@ -228,7 +229,7 @@
             "updatedAt": "2026-04-04T23:27:46.958Z"
           }
         ],
-        "updatedAt": "2026-04-05T06:32:43.000Z"
+        "updatedAt": "2026-06-16T05:12:42.978Z"
       },
       {
         "id": "4",
@@ -279,21 +280,23 @@
             "id": 4,
             "title": "Implement self-service admin capabilities",
             "description": "Provide tenant-facing administrative controls needed for production operation.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Add admin APIs and UI surfaces for tenant management, notification settings, billing state visibility, and support-safe configuration changes. Keep permission boundaries explicit.",
             "testStrategy": "Exercise authorized and unauthorized admin actions and confirm tenant admins can modify only their own configuration.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-06-16T05:12:47.159Z"
           },
           {
             "id": 5,
             "title": "Produce SOC and operational runbooks",
             "description": "Document and operationalize incident response, maintenance, and platform operations.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Write the production runbooks covering incidents, scheduled operations, recovery procedures, and support escalation. Keep them aligned with the actual architecture in CLAUDE.md and the implemented platform flows.",
             "testStrategy": "Run a tabletop review or dry run against the documented procedures and record any gaps.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-06-16T05:12:47.239Z"
           },
           {
             "id": 6,
@@ -317,14 +320,14 @@
             "updatedAt": "2026-04-05T10:59:02.309Z"
           }
         ],
-        "updatedAt": "2026-04-05T10:59:02.309Z"
+        "updatedAt": "2026-06-16T05:12:47.239Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-04-05T10:59:02.309Z",
+      "lastModified": "2026-06-16T05:12:47.239Z",
       "taskCount": 4,
-      "completedCount": 2,
+      "completedCount": 3,
       "tags": [
         "master"
       ]

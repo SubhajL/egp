@@ -67,7 +67,7 @@ Implementation note: Task 4.3 adds additive schema in packages/db/src/migrations
 
 ### 4.4. Implement self-service admin capabilities
 
-**Status:** pending  
+**Status:** done
 **Dependencies:** None  
 
 Provide tenant-facing administrative controls needed for production operation.
@@ -76,9 +76,19 @@ Provide tenant-facing administrative controls needed for production operation.
 
 Add admin APIs and UI surfaces for tenant management, notification settings, billing state visibility, and support-safe configuration changes. Keep permission boundaries explicit.
 
+<info added on 2026-06-16T12:12:47.159+07:00>
+Reconciled against current implementation. Tenant/user admin, notification settings,
+billing visibility, audit/support views, and tenant storage configuration are present
+through the admin route package in `apps/api/src/egp_api/routes/admin/`, supporting
+services under `apps/api/src/egp_api/services/`, and the admin UI under
+`apps/web/src/app/(app)/admin/`. Regression coverage includes
+`tests/phase4/test_admin_api.py`, `tests/phase4/test_admin_route_registration.py`,
+and tenant storage/admin support tests.
+</info added on 2026-06-16T12:12:47.159+07:00>
+
 ### 4.5. Produce SOC and operational runbooks
 
-**Status:** pending  
+**Status:** done
 **Dependencies:** None  
 
 Document and operationalize incident response, maintenance, and platform operations.
@@ -86,6 +96,16 @@ Document and operationalize incident response, maintenance, and platform operati
 **Details:**
 
 Write the production runbooks covering incidents, scheduled operations, recovery procedures, and support escalation. Keep them aligned with the actual architecture in CLAUDE.md and the implemented platform flows.
+
+<info added on 2026-06-16T12:12:47.239+07:00>
+Reconciled by adding `docs/SOC_INCIDENT_RESPONSE.md`, a master SOC/incident-response
+runbook linking the existing Lightsail, remote crawler, observability,
+backup/restore, secret rotation, Stripe, LINE PromptPay, and Vercel runbooks.
+It includes the production document-backfill validation path for project
+`69039416683`, including API/worker deployment, targeted backfill enqueue/drain,
+R2 `head_object`, and API byte-streaming download verification. Drift coverage
+is in `tests/operations/test_soc_runbook.py`.
+</info added on 2026-06-16T12:12:47.239+07:00>
 
 ### 4.6. Validate disaster recovery and backup workflows
 
@@ -100,7 +120,7 @@ Define backup coverage for the database and artifact storage, then run restore v
 
 ### 4.7. Add cost observability and support tooling
 
-**Status:** pending  
+**Status:** done
 **Dependencies:** None  
 
 Expose operating cost signals and internal tooling needed to support customers at production scale.
