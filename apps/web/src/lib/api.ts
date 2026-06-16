@@ -568,6 +568,37 @@ export async function fetchDocumentDownloadLink(
   return apiFetch<DocumentDownloadLinkResponse>(url);
 }
 
+function enforceHttpsForSecurePage(url: string): string {
+  if (typeof window === "undefined" || window.location.protocol !== "https:") {
+    return url;
+  }
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.protocol === "http:") {
+      parsed.protocol = "https:";
+    }
+    return parsed.toString();
+  } catch {
+    return url.replace(/^http:\/\//i, "https://");
+  }
+}
+
+export function resolveDocumentDownloadHref(link: DocumentDownloadLinkResponse): string {
+  if (link.direct) {
+    return enforceHttpsForSecurePage(link.url);
+  }
+  try {
+    const apiBase = new URL(getApiBaseUrl());
+    const parsed = new URL(link.url, apiBase);
+    parsed.protocol = apiBase.protocol;
+    parsed.hostname = apiBase.hostname;
+    parsed.port = apiBase.port;
+    return enforceHttpsForSecurePage(parsed.toString());
+  } catch {
+    return enforceHttpsForSecurePage(link.url);
+  }
+}
+
 export async function fetchDocumentDownloadFile(
   documentId: string,
 ) : Promise<DocumentDownloadFileResponse> {

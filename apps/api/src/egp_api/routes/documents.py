@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
@@ -255,6 +255,23 @@ def _build_content_disposition(file_name: str) -> str:
             safe_suffix = f".{safe_suffix}"
         safe_ascii = f"document{safe_suffix or '.bin'}"
     return f"attachment; filename=\"{safe_ascii}\"; filename*=UTF-8''{quote(normalized_file_name)}"
+
+
+def _first_forwarded_header_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    first = value.split(",", maxsplit=1)[0].strip()
+    return first or None
+
+
+def _build_proxy_download_url(request: Request, *, document_id: str) -> str:
+    generated = str(request.url_for("download_document", document_id=document_id))
+    parsed = urlsplit(generated)
+    forwarded_proto = _first_forwarded_header_value(request.headers.get("x-forwarded-proto"))
+    forwarded_host = _first_forwarded_header_value(request.headers.get("x-forwarded-host"))
+    scheme = forwarded_proto if forwarded_proto in {"http", "https"} else parsed.scheme
+    host = forwarded_host or request.headers.get("host") or parsed.netloc
+    return urlunsplit((scheme, host, parsed.path, parsed.query, parsed.fragment))
 
 
 @router.post("/ingest", response_model=StoreDocumentResponse)
@@ -527,7 +544,7 @@ def get_document_download_link(
             size_bytes=link.size_bytes,
             sha256=link.sha256,
         )
-    proxy_url = str(request.url_for("download_document", document_id=document_id))
+    proxy_url = _build_proxy_download_url(request, document_id=document_id)
     return DocumentDownloadLinkResponse(
         url=proxy_url,
         filename=link.filename,

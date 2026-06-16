@@ -27,6 +27,7 @@ import {
   fetchWebhooks,
   login,
   register,
+  resolveDocumentDownloadHref,
   startGoogleDriveOAuth,
   updateTenantSettings,
 } from "../../src/lib/api";
@@ -38,6 +39,7 @@ import type {
   CurrentSessionResponse,
   DashboardSummaryResponse,
   DocumentListResponse,
+  DocumentDownloadLinkResponse,
   ProjectDetailResponse,
   ProjectListResponse,
   RunListResponse,
@@ -132,6 +134,38 @@ describe("generated API type adoption", () => {
 describe("project, document, and rules wrappers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("normalizes proxy download links to the configured HTTPS API origin", () => {
+    const previousApiBaseUrl = process.env.NEXT_PUBLIC_EGP_API_BASE_URL;
+    process.env.NEXT_PUBLIC_EGP_API_BASE_URL = "https://api.egptracker.com";
+    vi.stubGlobal("window", {
+      location: {
+        protocol: "https:",
+        hostname: "www.egptracker.com",
+        href: "https://www.egptracker.com/projects/project-1",
+        origin: "https://www.egptracker.com",
+      },
+    });
+    const link: DocumentDownloadLinkResponse = {
+      url: "http://internal-api:8000/v1/documents/document-1/download",
+      filename: "tor.pdf",
+      direct: false,
+      size_bytes: 123,
+      sha256: "abc",
+    };
+
+    try {
+      expect(resolveDocumentDownloadHref(link)).toBe(
+        "https://api.egptracker.com/v1/documents/document-1/download",
+      );
+    } finally {
+      if (previousApiBaseUrl === undefined) {
+        delete process.env.NEXT_PUBLIC_EGP_API_BASE_URL;
+      } else {
+        process.env.NEXT_PUBLIC_EGP_API_BASE_URL = previousApiBaseUrl;
+      }
+    }
   });
 
   it("builds project query parameters and returns a generated project list", async () => {

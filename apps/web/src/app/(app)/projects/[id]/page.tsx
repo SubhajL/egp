@@ -14,6 +14,7 @@ import {
   ApiError,
   fetchDocumentDownloadLink,
   localizeApiError,
+  resolveDocumentDownloadHref,
   type ProjectCrawlEvidence,
 } from "@/lib/api";
 import { useProjectDetail, useDocuments, useProjectCrawlEvidence, useRules } from "@/lib/hooks";
@@ -189,7 +190,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       // ignored, but the file still downloads; opening in a new tab keeps the
       // current page intact.
       const anchor = document.createElement("a");
-      anchor.href = link.url;
+      anchor.href = resolveDocumentDownloadHref(link);
       anchor.download = link.filename;
       anchor.rel = "noopener";
       if (link.direct) {

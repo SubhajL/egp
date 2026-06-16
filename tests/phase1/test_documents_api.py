@@ -1334,6 +1334,40 @@ def test_document_download_link_falls_back_to_proxy_url_for_local_store(
     assert body["url"].endswith(f"/v1/documents/{document_id}/download")
 
 
+def test_document_download_link_uses_forwarded_https_proxy_url(
+    tmp_path,
+) -> None:
+    client = create_test_client(tmp_path)
+    project_id = seed_project(client)
+    ingest_response = client.post(
+        "/v1/documents/ingest",
+        json={
+            "tenant_id": TENANT_ID,
+            "project_id": project_id,
+            "file_name": "tor.pdf",
+            "content_base64": base64.b64encode(b"tor-bytes").decode("ascii"),
+            "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "ประกาศเชิญชวน",
+        },
+    )
+    document = ingest_response.json()["document"]
+    document_id = document["id"]
+
+    response = client.get(
+        f"/v1/documents/{document_id}/download-link",
+        params={"tenant_id": TENANT_ID},
+        headers={
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "api.egptracker.com",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["direct"] is False
+    assert body["url"] == f"https://api.egptracker.com/v1/documents/{document_id}/download"
+
+
 def test_document_download_link_returns_proxy_url_for_managed_supabase_store(
     tmp_path,
 ) -> None:
