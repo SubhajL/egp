@@ -18,6 +18,7 @@ from egp_worker.browser_close_check import (
 from egp_worker.browser_discovery import (
     BrowserClosedDuringKeyword,
     BrowserDiscoverySettings,
+    CLOUDFLARE_VERIFICATION_REQUIRED_MESSAGE,
     EXPECTED_RESULTS_HEADER_SIGNATURE,
     KeywordScanAccumulator,
     LiveDiscoveryPartialError,
@@ -49,6 +50,7 @@ from egp_worker.browser_discovery import (
     restore_results_page,
     search_keyword,
     wait_for_cloudflare,
+    wait_for_cloudflare_or_operator,
     wait_for_results_ready,
     _wait_for_search_results_stable,
     _wait_for_search_controls_ready,
@@ -534,6 +536,61 @@ def test_wait_for_cloudflare_reloads_once_and_then_passes(monkeypatch) -> None:
 
     assert wait_for_cloudflare(page, timeout_ms=500, reload_retries=1) is True
     assert page.reload_calls == 1
+
+
+def test_operator_cloudflare_wait_emits_status_and_invalidates_profile_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    page = FakeCloudflarePage(enabled_after_reload=False)
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    state_path = profile_dir / ".egp-profile-state.json"
+    state_path.write_text('{"last_success_at":"2026-06-16T00:00:00+00:00"}', encoding="utf-8")
+    settings = BrowserDiscoverySettings(
+        browser_profile_dir=profile_dir,
+        cloudflare_timeout_ms=500,
+        cloudflare_reload_retries=0,
+        cloudflare_operator_wait_timeout_ms=10_000,
+    )
+    progress_events: list[dict[str, object]] = []
+    ready_states = iter([False, True, True, True, True, True, True, True, True, True])
+    current_time = [0.0]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare",
+        lambda page, timeout_ms, reload_retries=1: False,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._search_controls_ready",
+        lambda page: next(ready_states),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.time.monotonic",
+        lambda: current_time[0],
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep",
+        lambda seconds: current_time.__setitem__(0, current_time[0] + seconds),
+    )
+    token = _LIVE_PROGRESS_CALLBACK.set(progress_events.append)
+    try:
+        assert wait_for_cloudflare_or_operator(
+            page,
+            settings,
+            require_search_controls=True,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    assert not state_path.exists()
+    assert progress_events == [
+        {
+            "stage": "cloudflare_verification_required",
+            "keyword": "",
+            "message": CLOUDFLARE_VERIFICATION_REQUIRED_MESSAGE,
+        }
+    ]
 
 
 def test_wait_for_search_controls_ready_requires_stable_window(monkeypatch) -> None:
@@ -2747,7 +2804,8 @@ def test_close_check_document_revisit_collects_documents_after_prelim_status(
         ),
     )
     monkeypatch.setattr(
-        "egp_worker.browser_close_check.wait_for_cloudflare", lambda *args, **kwargs: None
+        "egp_worker.browser_close_check.wait_for_cloudflare_or_operator",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         "egp_worker.browser_close_check._logged_sleep", lambda *args, **kwargs: None

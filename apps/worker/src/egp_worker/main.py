@@ -39,6 +39,7 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         "browser_nav_timeout_ms": "nav_timeout_ms",
         "browser_cloudflare_timeout_ms": "cloudflare_timeout_ms",
         "browser_cloudflare_reload_retries": "cloudflare_reload_retries",
+        "browser_cloudflare_operator_wait_timeout_ms": "cloudflare_operator_wait_timeout_ms",
         "browser_search_page_recovery_retries": "search_page_recovery_retries",
         "browser_max_pages_per_keyword": "max_pages_per_keyword",
         "browser_project_detail_timeout_s": "project_detail_timeout_s",
@@ -60,6 +61,7 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         "nav_timeout_ms",
         "cloudflare_timeout_ms",
         "cloudflare_reload_retries",
+        "cloudflare_operator_wait_timeout_ms",
         "search_page_recovery_retries",
         "max_pages_per_keyword",
     }

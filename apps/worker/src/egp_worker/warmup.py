@@ -28,10 +28,11 @@ from .browser_discovery import (
     MAIN_PAGE_URL,
     SEARCH_URL,
     BrowserDiscoverySettings,
+    _wait_for_search_controls_ready,
     connect_playwright_to_chrome,
     launch_real_chrome,
     safe_shutdown,
-    wait_for_cloudflare,
+    wait_for_cloudflare_or_operator,
 )
 
 
@@ -62,6 +63,9 @@ def warmup_settings_from_env(env: Mapping[str, str] | None = None) -> BrowserDis
         cloudflare_timeout_ms=int(
             str(env.get("EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS", "120000")).strip()
         ),
+        cloudflare_operator_wait_timeout_ms=int(
+            str(env.get("EGP_BROWSER_CLOUDFLARE_OPERATOR_TIMEOUT_MS", "600000")).strip()
+        ),
     )
 
 
@@ -86,6 +90,14 @@ def warmup_settings_from_browser_settings(
         cloudflare_reload_retries=int(
             str(browser_settings.get("browser_cloudflare_reload_retries", "1")).strip()
         ),
+        cloudflare_operator_wait_timeout_ms=int(
+            str(
+                browser_settings.get(
+                    "browser_cloudflare_operator_wait_timeout_ms",
+                    "600000",
+                )
+            ).strip()
+        ),
     )
 
 
@@ -96,7 +108,13 @@ def _optional_string(value: object) -> str | None:
     return text or None
 
 
-def warm_page(page, settings: BrowserDiscoverySettings, *, wait=wait_for_cloudflare) -> None:
+def warm_page(
+    page,
+    settings: BrowserDiscoverySettings,
+    *,
+    wait=wait_for_cloudflare_or_operator,
+    controls_ready=_wait_for_search_controls_ready,
+) -> None:
     """Navigate e-GP and REQUIRE Cloudflare clearance at each step.
 
     Raises ``RuntimeError`` if the search controls never become ready, so an
@@ -104,8 +122,10 @@ def warm_page(page, settings: BrowserDiscoverySettings, *, wait=wait_for_cloudfl
     """
     for url in (MAIN_PAGE_URL, SEARCH_URL):
         page.goto(url, timeout=settings.nav_timeout_ms, wait_until="domcontentloaded")
-        if not wait(page, settings.cloudflare_timeout_ms, settings.cloudflare_reload_retries):
+        if not wait(page, settings, require_search_controls=url == SEARCH_URL):
             raise RuntimeError(f"warm-up failed: Cloudflare not cleared on {url}")
+        if url == SEARCH_URL and not controls_ready(page, settings.nav_timeout_ms):
+            raise RuntimeError("warm-up failed: search controls not enabled")
 
 
 def run_profile_warmup(

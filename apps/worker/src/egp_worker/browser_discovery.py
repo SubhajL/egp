@@ -80,6 +80,8 @@ SEARCH_CONTROLS_STABLE_SECONDS = 2.0
 SEARCH_CONTROLS_SETTLE_TIMEOUT_S = 10.0
 NO_RESULTS_MARKERS = ("ไม่พบข้อมูล", "จำนวนโครงการที่พบ : 0")
 NO_RESULTS_STABLE_POLLS = 3
+CLOUDFLARE_VERIFICATION_REQUIRED_MESSAGE = "Cloudflare verification required."
+PROFILE_STATE_FILENAME = ".egp-profile-state.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,7 @@ class BrowserDiscoverySettings:
     nav_timeout_ms: int = 60_000
     cloudflare_timeout_ms: int = 120_000
     cloudflare_reload_retries: int = 1
+    cloudflare_operator_wait_timeout_ms: int = 600_000
     search_page_recovery_retries: int = 1
     max_pages_per_keyword: int = 15
     project_detail_timeout_s: float = 240.0
@@ -229,10 +232,10 @@ def crawl_live_discovery(
         browser, page = connect_playwright_to_chrome(pw, resolved_settings)
         _goto_with_recovery(page, MAIN_PAGE_URL, resolved_settings)
         _logged_sleep(3)
-        wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, resolved_settings)
         _goto_with_recovery(page, SEARCH_URL, resolved_settings)
         _logged_sleep(5)
-        wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, resolved_settings, require_search_controls=True)
 
         keyword_index = 0
         resume_state: DiscoveryResumeState | None = None
@@ -308,10 +311,14 @@ def crawl_live_discovery(
                 browser, page = connect_playwright_to_chrome(pw, resolved_settings)
                 _goto_with_recovery(page, MAIN_PAGE_URL, resolved_settings)
                 _logged_sleep(3)
-                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+                wait_for_cloudflare_or_operator(page, resolved_settings)
                 _goto_with_recovery(page, SEARCH_URL, resolved_settings)
                 _logged_sleep(5)
-                wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+                wait_for_cloudflare_or_operator(
+                    page,
+                    resolved_settings,
+                    require_search_controls=True,
+                )
         return discovered
     finally:
         _LIVE_PROGRESS_CALLBACK.reset(progress_token)
@@ -1755,6 +1762,119 @@ def wait_for_cloudflare(page, timeout_ms: int, reload_retries: int = 1) -> bool:
     return False
 
 
+def cloudflare_verification_required(page) -> bool:
+    selectors = (
+        "iframe[src*='challenges.cloudflare.com']",
+        ".cf-turnstile",
+        "[name='cf-turnstile-response']",
+    )
+    for selector in selectors:
+        try:
+            if page.query_selector(selector) is not None:
+                return True
+        except Exception:
+            continue
+    try:
+        text = str(page.inner_text("body") or "").casefold()
+    except Exception:
+        text = ""
+    return any(
+        marker in text
+        for marker in (
+            "cloudflare",
+            "verify you are human",
+            "verification required",
+            "turnstile",
+        )
+    )
+
+
+def _profile_state_path(profile_dir: Path) -> Path:
+    return profile_dir / PROFILE_STATE_FILENAME
+
+
+def invalidate_profile_freshness(profile_dir: Path, *, reason: str) -> None:
+    state_path = _profile_state_path(profile_dir)
+    try:
+        state_path.unlink()
+    except FileNotFoundError:
+        return
+    except Exception:
+        _logger.warning(
+            "Failed to invalidate browser profile freshness (profile_dir=%s reason=%s)",
+            profile_dir,
+            reason,
+            exc_info=True,
+        )
+        return
+    _logger.info(
+        "Invalidated browser profile freshness (profile_dir=%s reason=%s)",
+        profile_dir,
+        reason,
+    )
+
+
+def _emit_cloudflare_verification_required() -> None:
+    _logger.warning(CLOUDFLARE_VERIFICATION_REQUIRED_MESSAGE)
+    _log_live_progress(
+        "cloudflare_verification_required",
+        keyword="",
+        extra={"message": CLOUDFLARE_VERIFICATION_REQUIRED_MESSAGE},
+    )
+
+
+def _wait_for_operator_cloudflare_clearance(
+    page,
+    settings: BrowserDiscoverySettings,
+    *,
+    require_search_controls: bool,
+) -> bool:
+    timeout_s = max(0.0, settings.cloudflare_operator_wait_timeout_ms / 1000)
+    if timeout_s <= 0:
+        return False
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if require_search_controls:
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            if _wait_for_search_controls_ready(
+                page,
+                min(settings.nav_timeout_ms, remaining_ms),
+            ):
+                return True
+        elif not cloudflare_verification_required(page):
+            return True
+        _logged_sleep(2)
+    return False
+
+
+def wait_for_cloudflare_or_operator(
+    page,
+    settings: BrowserDiscoverySettings,
+    *,
+    require_search_controls: bool = False,
+) -> bool:
+    if wait_for_cloudflare(
+        page,
+        settings.cloudflare_timeout_ms,
+        reload_retries=settings.cloudflare_reload_retries,
+    ):
+        if not require_search_controls:
+            return True
+        return _wait_for_search_controls_ready(page, settings.nav_timeout_ms)
+    if not cloudflare_verification_required(page):
+        return False
+    invalidate_profile_freshness(
+        settings.browser_profile_dir,
+        reason="cloudflare_verification_required",
+    )
+    _emit_cloudflare_verification_required()
+    return _wait_for_operator_cloudflare_clearance(
+        page,
+        settings,
+        require_search_controls=require_search_controls,
+    )
+
+
 def _raise_on_site_error_toast(page, *, action: str) -> None:
     if not has_site_error_toast(page):
         return
@@ -2120,7 +2240,7 @@ def _search_controls_ready(page) -> bool:
     return True
 
 
-def _wait_for_search_controls_ready(page, timeout_ms: int) -> None:
+def _wait_for_search_controls_ready(page, timeout_ms: int) -> bool:
     settle_timeout_s = min(timeout_ms / 1000, SEARCH_CONTROLS_SETTLE_TIMEOUT_S)
     deadline = time.monotonic() + max(1.0, settle_timeout_s)
     stable_since: float | None = None
@@ -2129,10 +2249,11 @@ def _wait_for_search_controls_ready(page, timeout_ms: int) -> None:
             if stable_since is None:
                 stable_since = time.monotonic()
             elif time.monotonic() - stable_since >= SEARCH_CONTROLS_STABLE_SECONDS:
-                return
+                return True
         else:
             stable_since = None
         _logged_sleep(0.5)
+    return False
 
 
 def get_results_page_marker(page) -> dict[str, str | int]:
@@ -2229,10 +2350,9 @@ def search_keyword(
         if _page_recovery_retries_remaining is None
         else max(0, int(_page_recovery_retries_remaining))
     )
-    cloudflare_ok = wait_for_cloudflare(
+    cloudflare_ok = wait_for_cloudflare_or_operator(
         page,
-        settings.cloudflare_timeout_ms,
-        reload_retries=settings.cloudflare_reload_retries,
+        settings,
     )
     search_btn = page.query_selector("button:has-text('ค้นหา'):not(:has-text('ค้นหาขั้นสูง'))")
     if (not cloudflare_ok or not search_btn) and page_recovery_retries_remaining > 0:
@@ -2308,7 +2428,7 @@ def clear_search(page, settings: BrowserDiscoverySettings) -> None:
             timeout=settings.nav_timeout_ms,
         )
         _logged_sleep(3)
-        wait_for_cloudflare(page, settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, settings, require_search_controls=True)
 
 
 def navigate_to_project_by_row(page, row_index: int) -> bool:

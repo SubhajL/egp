@@ -12,6 +12,7 @@ import pytest
 
 from egp_api.config import (
     get_browser_chrome_path,
+    get_browser_cloudflare_operator_timeout_ms,
     get_browser_cloudflare_reload_retries,
     get_browser_cloudflare_timeout_ms,
     get_browser_nav_timeout_ms,
@@ -132,6 +133,23 @@ def test_get_browser_cloudflare_reload_retries_rejects_negative(
     monkeypatch.setenv("EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES", "-1")
     with pytest.raises(RuntimeError):
         get_browser_cloudflare_reload_retries()
+
+
+def test_get_browser_cloudflare_operator_timeout_defaults_and_allows_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_BROWSER_CLOUDFLARE_OPERATOR_TIMEOUT_MS", raising=False)
+    assert get_browser_cloudflare_operator_timeout_ms() == 600_000
+    monkeypatch.setenv("EGP_BROWSER_CLOUDFLARE_OPERATOR_TIMEOUT_MS", "0")
+    assert get_browser_cloudflare_operator_timeout_ms() == 0
+
+
+def test_get_browser_cloudflare_operator_timeout_rejects_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_BROWSER_CLOUDFLARE_OPERATOR_TIMEOUT_MS", "-1")
+    with pytest.raises(RuntimeError):
+        get_browser_cloudflare_operator_timeout_ms()
 
 
 def test_get_browser_project_detail_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

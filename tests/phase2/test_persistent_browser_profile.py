@@ -373,4 +373,5 @@ def test_dispatch_payload_includes_timeout_defaults(
     assert bs["browser_nav_timeout_ms"] == 60000
     assert bs["browser_cloudflare_timeout_ms"] == 120000
     assert bs["browser_cloudflare_reload_retries"] == 1
+    assert bs["browser_cloudflare_operator_wait_timeout_ms"] == 600000
     assert bs["browser_project_detail_timeout_s"] == 240.0

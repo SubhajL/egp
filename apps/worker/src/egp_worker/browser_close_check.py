@@ -32,7 +32,7 @@ from .browser_discovery import (
     launch_real_chrome,
     pagination_button_is_disabled,
     safe_shutdown,
-    wait_for_cloudflare,
+    wait_for_cloudflare_or_operator,
     wait_for_results_page_change,
     wait_for_results_ready,
 )
@@ -62,12 +62,12 @@ def crawl_live_close_check(
             MAIN_PAGE_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
         )
         _logged_sleep(3)
-        wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, resolved_settings)
         page.goto(
             SEARCH_URL, wait_until="domcontentloaded", timeout=resolved_settings.nav_timeout_ms
         )
         _logged_sleep(5)
-        wait_for_cloudflare(page, resolved_settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, resolved_settings, require_search_controls=True)
 
         for index, project in enumerate(projects):
             if index > 0:
@@ -273,4 +273,4 @@ def _collect_documents_for_observation(
     finally:
         page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=settings.nav_timeout_ms)
         _logged_sleep(1)
-        wait_for_cloudflare(page, settings.cloudflare_timeout_ms)
+        wait_for_cloudflare_or_operator(page, settings, require_search_controls=True)
