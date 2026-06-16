@@ -13,9 +13,11 @@ EGP_BROWSER_*_TIMEOUT_MS knobs. See docs/CRAWLER_PROXY_RUNBOOK.md.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 
 from egp_crawler_core.profile_lock import (
@@ -34,6 +36,9 @@ from .browser_discovery import (
     safe_shutdown,
     wait_for_cloudflare_or_operator,
 )
+
+
+PROFILE_STATE_FILENAME = ".egp-profile-state.json"
 
 
 def _truthy(value: str) -> bool:
@@ -108,6 +113,28 @@ def _optional_string(value: object) -> str | None:
     return text or None
 
 
+def _write_profile_success_state(
+    profile_dir: Path,
+    *,
+    source: str,
+    now: datetime | None = None,
+) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    resolved_now = now or datetime.now(UTC)
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    payload = {
+        "consecutive_warm_failures": 0,
+        "last_success_at": resolved_now.astimezone(UTC).isoformat(),
+        "operator_action_required": False,
+        "source": source,
+    }
+    (profile_dir / PROFILE_STATE_FILENAME).write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def warm_page(
     page,
     settings: BrowserDiscoverySettings,
@@ -171,6 +198,7 @@ def run_profile_warmup(
         warm_page(page, settings)
         if warm_seconds > 0:
             time.sleep(warm_seconds)
+        _write_profile_success_state(settings.browser_profile_dir, source="warm")
         print(f"{status_prefix}_OK profile={settings.browser_profile_dir}", flush=True)
         return True
     finally:

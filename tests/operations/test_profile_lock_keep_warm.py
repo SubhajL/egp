@@ -166,6 +166,52 @@ def test_warmup_runs_and_releases_when_profile_free(
     release_profile_lock(handle)
 
 
+def test_warmup_success_resets_operator_action_required_state(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A successful manual warm must clear dispatcher pause state."""
+    import json
+
+    import egp_worker.warmup as warmup
+
+    monkeypatch.setenv("EGP_BROWSER_PERSISTENT_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setenv("EGP_BROWSER_WARMUP_SECONDS", "0")
+    (tmp_path / ".egp-profile-state.json").write_text(
+        json.dumps(
+            {
+                "consecutive_warm_failures": 2,
+                "last_failure_error": "warm-up failed: Cloudflare not cleared",
+                "operator_action_required": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakePlaywright:
+        def start(self):
+            return self
+
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright", lambda: _FakePlaywright()
+    )
+    monkeypatch.setattr(warmup, "launch_real_chrome", lambda *a, **k: object())
+    monkeypatch.setattr(
+        warmup, "connect_playwright_to_chrome", lambda *a, **k: (object(), object())
+    )
+    monkeypatch.setattr(warmup, "warm_page", lambda *a, **k: None)
+    monkeypatch.setattr(warmup, "safe_shutdown", lambda **kwargs: None)
+
+    assert warmup.main() == 0
+
+    state = json.loads(
+        (tmp_path / ".egp-profile-state.json").read_text(encoding="utf-8")
+    )
+    assert state["consecutive_warm_failures"] == 0
+    assert state["operator_action_required"] is False
+    assert state["source"] == "warm"
+    assert "WARMUP_OK" in capsys.readouterr().out
+
+
 def test_warmup_releases_lock_when_launch_fails(tmp_path, monkeypatch) -> None:
     """If Chrome launch raises, warm-up must still clean up AND release the lock."""
     import egp_worker.warmup as warmup

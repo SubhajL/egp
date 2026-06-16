@@ -190,6 +190,15 @@ successful warm or crawl is older than
 crawl refreshes that timestamp, so back-to-back jobs do not relaunch a warm
 browser.
 
+If pre-dispatch warming fails repeatedly, the dispatcher records the failure in
+`<profile>/.egp-profile-state.json` and pauses unattended warming after
+`EGP_BROWSER_WARMUP_FAILURE_PAUSE_THRESHOLD` consecutive failures (default 2).
+That fail-closed pause prevents the watcher from looping through Cloudflare
+challenges. Recovery is operator-assisted: keep `com.egp.remote-crawl` stopped,
+run `scripts/run_remote_crawl.sh warm-profile` in foreground, clear Cloudflare in
+the visible browser, then run one bounded `scripts/run_remote_crawl.sh crawl 1`
+before re-enabling the watcher.
+
 When explicitly installed with `scripts/install_launchd.sh install --with-warm`,
 `com.egp.pg-warm` runs `run_remote_crawl.sh warm-profile` every 15 minutes to
 refresh that clearance, so scheduled/triggered crawls are less likely to hit a cold profile.

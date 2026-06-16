@@ -32,6 +32,7 @@ from egp_api.config import (
     get_browser_project_detail_timeout_s,
     get_browser_proxy_server,
     get_browser_use_xvfb,
+    get_browser_warmup_failure_pause_threshold,
     get_browser_warmup_stale_after_seconds,
 )
 from egp_api.services.discovery_dispatch import (
@@ -149,6 +150,13 @@ def _parse_profile_timestamp(value: object) -> datetime | None:
 
 
 def _read_profile_last_success_at(profile_dir: Path) -> datetime | None:
+    payload = _read_profile_state(profile_dir)
+    if payload is None:
+        return None
+    return _parse_profile_timestamp(payload.get("last_success_at"))
+
+
+def _read_profile_state(profile_dir: Path) -> dict[str, object] | None:
     state_path = _profile_state_path(profile_dir)
     if not state_path.is_file():
         return None
@@ -158,7 +166,7 @@ def _read_profile_last_success_at(profile_dir: Path) -> datetime | None:
         return None
     if not isinstance(payload, dict):
         return None
-    return _parse_profile_timestamp(payload.get("last_success_at"))
+    return payload
 
 
 def _profile_warm_needed(
@@ -191,13 +199,66 @@ def _write_profile_success_state(
     if resolved_now.tzinfo is None:
         resolved_now = resolved_now.replace(tzinfo=UTC)
     payload = {
+        "consecutive_warm_failures": 0,
         "last_success_at": resolved_now.astimezone(UTC).isoformat(),
+        "operator_action_required": False,
         "source": source,
     }
     _profile_state_path(profile_dir).write_text(
         json.dumps(payload, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def _write_profile_warm_failure_state(
+    profile_dir: Path,
+    *,
+    error: BaseException,
+    pause_threshold: int,
+    now: datetime | None = None,
+) -> int:
+    state = _read_profile_state(profile_dir) or {}
+    try:
+        previous_failures = int(state.get("consecutive_warm_failures", 0))
+    except (TypeError, ValueError):
+        previous_failures = 0
+    consecutive_failures = previous_failures + 1
+    resolved_now = now or datetime.now(UTC)
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    payload = {
+        **state,
+        "consecutive_warm_failures": consecutive_failures,
+        "last_failure_at": resolved_now.astimezone(UTC).isoformat(),
+        "last_failure_error": _stderr_preview(str(error), limit=300),
+        "operator_action_required": (
+            pause_threshold > 0 and consecutive_failures >= pause_threshold
+        ),
+    }
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _profile_state_path(profile_dir).write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+    return consecutive_failures
+
+
+def _profile_warm_operator_action_required(
+    profile_dir: Path,
+    *,
+    pause_threshold: int,
+) -> bool:
+    if pause_threshold <= 0:
+        return False
+    state = _read_profile_state(profile_dir)
+    if state is None:
+        return False
+    if state.get("operator_action_required") is True:
+        return True
+    try:
+        return int(state.get("consecutive_warm_failures", 0)) >= pause_threshold
+    except (TypeError, ValueError):
+        return False
 
 
 def _acquire_profile_lock(profile_dir: Path):
@@ -402,13 +463,12 @@ class SubprocessDiscoveryDispatcher:
         browser_cloudflare_operator_timeout_ms: int | str | None = None,
         browser_project_detail_timeout_s: float | str | None = None,
         browser_warmup_stale_after_seconds: float | str | None = None,
+        browser_warmup_failure_pause_threshold: int | str | None = None,
         browser_predispatch_warm_seconds: float | str | None = None,
     ) -> None:
         self._database_url = database_url
         self._artifact_root = (artifact_root or Path("artifacts")).expanduser().resolve()
-        self._artifact_storage_backend = get_artifact_storage_backend(
-            artifact_storage_backend
-        )
+        self._artifact_storage_backend = get_artifact_storage_backend(artifact_storage_backend)
         self._artifact_bucket = get_artifact_bucket(artifact_bucket)
         self._artifact_prefix = get_artifact_prefix(artifact_prefix)
         self._supabase_url = supabase_url.strip() if supabase_url else None
@@ -447,6 +507,9 @@ class SubprocessDiscoveryDispatcher:
         )
         self._browser_warmup_stale_after_seconds = get_browser_warmup_stale_after_seconds(
             browser_warmup_stale_after_seconds
+        )
+        self._browser_warmup_failure_pause_threshold = get_browser_warmup_failure_pause_threshold(
+            browser_warmup_failure_pause_threshold
         )
         self._browser_predispatch_warm_seconds = get_browser_predispatch_warm_seconds(
             browser_predispatch_warm_seconds
@@ -506,6 +569,14 @@ class SubprocessDiscoveryDispatcher:
                 browser_settings=self._build_persistent_warm_browser_settings(),
             )
             return True
+        except DiscoverySpawnError as exc:
+            _logger.warning(
+                "Persistent browser profile is not ready; deferring discovery job claim "
+                "(profile_dir=%s error=%s)",
+                self._browser_persistent_profile_dir,
+                exc,
+            )
+            return False
         finally:
             _release_profile_lock(profile_lock)
 
@@ -725,6 +796,15 @@ class SubprocessDiscoveryDispatcher:
         ):
             _logger.info("Persistent browser profile is fresh; skipping pre-dispatch warm")
             return
+        if _profile_warm_operator_action_required(
+            profile_dir,
+            pause_threshold=self._browser_warmup_failure_pause_threshold,
+        ):
+            raise DiscoverySpawnError(
+                "persistent browser profile Cloudflare warm-up paused; "
+                "operator action required: run scripts/run_remote_crawl.sh warm-profile "
+                "in foreground and clear Cloudflare"
+            )
 
         from egp_worker.warmup import (
             run_profile_warmup,
@@ -736,12 +816,40 @@ class SubprocessDiscoveryDispatcher:
             profile_dir,
         )
         settings = warmup_settings_from_browser_settings(browser_settings)
-        run_profile_warmup(
-            settings,
-            warm_seconds=self._browser_predispatch_warm_seconds,
-            acquire_lock=False,
-            status_prefix="PREDISPATCH_WARMUP",
-        )
+        try:
+            run_profile_warmup(
+                settings,
+                warm_seconds=self._browser_predispatch_warm_seconds,
+                acquire_lock=False,
+                status_prefix="PREDISPATCH_WARMUP",
+            )
+        except Exception as exc:
+            consecutive_failures = _write_profile_warm_failure_state(
+                profile_dir,
+                error=exc,
+                pause_threshold=self._browser_warmup_failure_pause_threshold,
+            )
+            _logger.warning(
+                "Persistent browser profile pre-dispatch warm failed "
+                "(profile_dir=%s consecutive_failures=%s pause_threshold=%s)",
+                profile_dir,
+                consecutive_failures,
+                self._browser_warmup_failure_pause_threshold,
+                exc_info=True,
+            )
+            if (
+                self._browser_warmup_failure_pause_threshold > 0
+                and consecutive_failures >= self._browser_warmup_failure_pause_threshold
+            ):
+                raise DiscoverySpawnError(
+                    "persistent browser profile Cloudflare warm-up paused; "
+                    "operator action required: run scripts/run_remote_crawl.sh warm-profile "
+                    "in foreground and clear Cloudflare"
+                ) from exc
+            raise DiscoverySpawnError(
+                "persistent browser profile pre-dispatch warm failed; "
+                "deferring discovery until the next poll"
+            ) from exc
         self._record_persistent_profile_success(profile_dir=profile_dir, source="warm")
 
     def _record_persistent_profile_success(self, *, profile_dir: Path, source: str) -> None:
@@ -764,9 +872,7 @@ class SubprocessDiscoveryDispatcher:
         the WS2 anomaly/eligibility metrics. Must never fail dispatch.
         """
         try:
-            detail = self._run_repository.get_run_detail(
-                tenant_id=tenant_id, run_id=run_id
-            )
+            detail = self._run_repository.get_run_detail(tenant_id=tenant_id, run_id=run_id)
         except Exception:
             _logger.warning(
                 "Failed to read run detail for discovery metrics (run_id=%s)",

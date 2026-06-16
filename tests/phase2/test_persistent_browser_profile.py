@@ -66,7 +66,9 @@ def _request() -> DiscoveryDispatchRequest:
 def _make_dispatcher(tmp_path: Path, warm_dir: Path) -> SubprocessDiscoveryDispatcher:
     warm_dir.mkdir(parents=True, exist_ok=True)
     (warm_dir / ".egp-profile-state.json").write_text(
-        json.dumps({"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}),
+        json.dumps(
+            {"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}
+        ),
         encoding="utf-8",
     )
     return SubprocessDiscoveryDispatcher(
@@ -189,7 +191,9 @@ def test_persistent_mode_records_successful_crawl_as_recent_use(
     dispatcher.dispatch(_request())
     dispatcher.dispatch(_request())
 
-    state = json.loads((warm_dir / ".egp-profile-state.json").read_text(encoding="utf-8"))
+    state = json.loads(
+        (warm_dir / ".egp-profile-state.json").read_text(encoding="utf-8")
+    )
     assert warm_calls["count"] == 1
     assert state["source"] == "crawl"
 
@@ -277,6 +281,86 @@ def test_prepare_for_dispatch_defers_when_profile_already_locked(
     finally:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
+
+
+def test_prepare_for_dispatch_pauses_after_repeated_warm_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_calls = {"count": 0}
+
+    def fail_warm(*args, **kwargs) -> bool:
+        del args, kwargs
+        warm_calls["count"] += 1
+        raise RuntimeError("warm-up failed: Cloudflare not cleared on announcement")
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", fail_warm)
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+        browser_profile_mode="persistent",
+        browser_persistent_profile_dir=warm_dir,
+        browser_warmup_stale_after_seconds=1_800,
+        browser_warmup_failure_pause_threshold=2,
+    )
+
+    assert dispatcher.prepare_for_dispatch() is False
+    assert dispatcher.prepare_for_dispatch() is False
+    assert dispatcher.prepare_for_dispatch() is False
+
+    state = json.loads(
+        (warm_dir / ".egp-profile-state.json").read_text(encoding="utf-8")
+    )
+    assert warm_calls["count"] == 2
+    assert state["consecutive_warm_failures"] == 2
+    assert state["operator_action_required"] is True
+    assert "Cloudflare not cleared" in state["last_failure_error"]
+
+
+def test_dispatch_fails_fast_when_cloudflare_operator_action_required(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_dir.mkdir(parents=True)
+    (warm_dir / ".egp-profile-state.json").write_text(
+        json.dumps(
+            {
+                "consecutive_warm_failures": 2,
+                "last_failure_at": datetime.now(UTC).isoformat(),
+                "last_failure_error": "warm-up failed: Cloudflare not cleared",
+                "operator_action_required": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def must_not_warm(*args, **kwargs) -> bool:
+        del args, kwargs
+        raise AssertionError("paused profile should not launch Chrome")
+
+    monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", must_not_warm)
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("worker should not spawn")
+        ),
+    )
+
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+        browser_profile_mode="persistent",
+        browser_persistent_profile_dir=warm_dir,
+        browser_warmup_stale_after_seconds=1_800,
+        browser_warmup_failure_pause_threshold=2,
+    )
+
+    with pytest.raises(DiscoverySpawnError, match="operator action required"):
+        dispatcher.dispatch(_request())
 
 
 def test_persistent_mode_rejects_synced_folder(tmp_path: Path) -> None:
