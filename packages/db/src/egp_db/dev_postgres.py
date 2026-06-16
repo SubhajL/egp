@@ -12,6 +12,7 @@ import socket
 import subprocess
 import tempfile
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from psycopg import connect
 
@@ -28,6 +29,9 @@ DEFAULT_LOCAL_DEV_POSTGRES_HOST = "127.0.0.1"
 DEFAULT_LOCAL_DEV_POSTGRES_PORT = 55_432
 DEFAULT_LOCAL_DEV_POSTGRES_USER = "egp"
 DEFAULT_LOCAL_DEV_POSTGRES_DATABASE = "egp"
+LOCAL_PHASE1_SMOKE_PAYMENT_CALLBACK_SECRET = (
+    "local-phase1-postgres-smoke-callback-secret"
+)
 
 
 def _find_binary(name: str) -> Path | None:
@@ -41,6 +45,15 @@ def postgres_binaries_available() -> bool:
 
 def postgres_backup_binaries_available() -> bool:
     return all(_find_binary(name) is not None for name in ("pg_dump", "pg_restore"))
+
+
+def _create_phase1_smoke_app(*, artifact_root: Path, database_url: str) -> FastAPI:
+    return create_app(
+        artifact_root=artifact_root,
+        database_url=database_url,
+        auth_required=False,
+        payment_callback_secret=LOCAL_PHASE1_SMOKE_PAYMENT_CALLBACK_SECRET,
+    )
 
 
 def _find_free_port() -> int:
@@ -553,10 +566,9 @@ def run_phase1_postgres_smoke(
             connection.commit()
 
         client = TestClient(
-            create_app(
+            _create_phase1_smoke_app(
                 artifact_root=artifact_root,
                 database_url=database_url,
-                auth_required=False,
             )
         )
         ingest_response = client.post(

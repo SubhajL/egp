@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { getSiteBaseUrl } from "@/lib/site-url";
+
 /* ─────────────────────────────────────────────
    Site base URL — set NEXT_PUBLIC_SITE_URL in
    your environment; falls back to placeholder.
 ───────────────────────────────────────────── */
-const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://egp.example.com";
+const BASE_URL = getSiteBaseUrl();
 
 const OG_DESCRIPTION =
   "ติดตามการประกวดราคาภาครัฐ อัตโนมัติ — รับแจ้งเตือน TOR และโครงการใหม่ก่อนใคร";

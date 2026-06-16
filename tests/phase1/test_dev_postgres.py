@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from egp_db.dev_postgres import (
+    _create_phase1_smoke_app,
     build_local_dev_postgres_config,
     get_local_dev_postgres_status,
     postgres_binaries_available,
@@ -45,6 +46,32 @@ def test_run_phase1_postgres_project_and_run_smoke_round_trips_repositories() ->
     assert result["status_event_count"] == 1
     assert result["run_status"] == "succeeded"
     assert result["task_count"] == 1
+
+
+def test_create_phase1_smoke_app_uses_local_callback_secret(
+    monkeypatch, tmp_path
+) -> None:
+    captured: dict[str, object] = {}
+    app = object()
+
+    def fake_create_app(**kwargs):
+        captured.update(kwargs)
+        return app
+
+    monkeypatch.setattr("egp_db.dev_postgres.create_app", fake_create_app)
+
+    assert (
+        _create_phase1_smoke_app(
+            artifact_root=tmp_path / "artifacts",
+            database_url="postgresql://egp@127.0.0.1:55432/egp_smoke",
+        )
+        is app
+    )
+    assert captured["auth_required"] is False
+    assert (
+        captured["payment_callback_secret"]
+        == "local-phase1-postgres-smoke-callback-secret"
+    )
 
 
 def test_build_local_dev_postgres_config_uses_repo_data_dir_defaults(tmp_path) -> None:

@@ -1,6 +1,8 @@
 import type { MetadataRoute } from "next";
 
-const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "https://egp.example.com";
+import { getSiteBaseUrl } from "@/lib/site-url";
+
+const BASE_URL = getSiteBaseUrl();
 
 export default function sitemap(): MetadataRoute.Sitemap {
   return [

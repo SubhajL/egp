@@ -15,6 +15,8 @@ from egp_worker.browser_downloads import (
     _download_to_document,
     _handle_direct_or_page_download,
     _download_documents_from_current_view,
+    _document_from_browser_fetch,
+    _document_from_response,
     _infer_document_url_from_page,
     _save_from_content_page,
     _save_from_new_tab,
@@ -32,9 +34,10 @@ class FakeTextElement:
 
 
 class FakeCell:
-    def __init__(self, text: str = "", clickable=None) -> None:
+    def __init__(self, text: str = "", clickable=None, generic_clickable=None) -> None:
         self._text = text
         self._clickable = clickable
+        self._generic_clickable = generic_clickable
 
     def inner_text(self) -> str:
         return self._text
@@ -45,7 +48,15 @@ class FakeCell:
             for key in ("a", "button", "[role='button']", '[role="button"]')
         ):
             return self._clickable
+        if self._generic_clickable and "[onclick]" in selector:
+            return self._generic_clickable
         return None
+
+    def click(self) -> None:
+        if self._clickable and hasattr(self._clickable, "click"):
+            self._clickable.click()
+        if self._generic_clickable and hasattr(self._generic_clickable, "click"):
+            self._generic_clickable.click()
 
 
 class FakeRow:
@@ -95,6 +106,8 @@ class FakePage:
     def query_selector_all(self, selector: str):
         if selector == ".modal.show, .modal.fade.show, .swal2-popup, [role='dialog']":
             return [self._modal] if self._modal is not None else []
+        if selector == ".modal.show, .modal.fade.show":
+            return [self._modal] if self._modal is not None else []
         if selector == "table":
             return self._tables
         if selector in {
@@ -110,6 +123,11 @@ class FakePage:
         if arg is not None and hasattr(arg, "click"):
             arg.click()
         return None
+
+    def wait_for_selector(self, selector: str, timeout=None) -> None:
+        if ".modal" in selector and self._modal is not None:
+            return None
+        raise PlaywrightTimeout("selector not found")
 
 
 class FakeDelayedTablePage(FakePage):
@@ -145,6 +163,19 @@ class FakeResponse:
 
     def body(self):
         return self._body
+
+
+class FakeUrlResponse(FakeResponse):
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        url: str,
+        headers: dict[str, str] | None = None,
+        ok: bool = True,
+    ) -> None:
+        super().__init__(body, headers=headers, ok=ok)
+        self.url = url
 
 
 class FakeRequestClient:
@@ -789,6 +820,130 @@ def test_final_tor_target_does_not_match_draft_tor_row(monkeypatch) -> None:
             "file_name": "final-tor.zip",
             "file_bytes": b"zip",
             "source_label": "เอกสารประกวดราคา",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_download_one_document_uses_generic_onclick_icon_in_last_column(
+    monkeypatch,
+) -> None:
+    icon_clickable = FakeClickable(
+        {
+            "href": None,
+            "onclick": "openDocument('invite')",
+            "dataToggle": None,
+            "tag": "span",
+            "textContent": "",
+        }
+    )
+    page = FakePage(
+        [
+            FakeTable(
+                ["ลำดับ", "เอกสาร", "วันที่ประกาศ", "ดูข้อมูล"],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("1"),
+                            FakeCell("ประกาศเชิญชวน"),
+                            FakeCell("22/01/2569"),
+                            FakeCell("", generic_clickable=icon_clickable),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        lambda page, btn, doc_name, document_context=None: (
+            [
+                {
+                    "file_name": "invite.pdf",
+                    "file_bytes": b"pdf",
+                    "source_label": doc_name,
+                    "source_status_text": "",
+                    "source_page_text": "",
+                }
+            ]
+            if btn is icon_clickable
+            else (_ for _ in ()).throw(AssertionError("expected generic onclick icon"))
+        ),
+    )
+
+    downloaded = _download_one_document(page, "ประกาศเชิญชวน")
+
+    assert downloaded == [
+        {
+            "file_name": "invite.pdf",
+            "file_bytes": b"pdf",
+            "source_label": "ประกาศเชิญชวน",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_draft_tor_modal_accepts_egp_zip_filename_without_tor_text(monkeypatch) -> None:
+    clickable = FakeClickable()
+    page = FakePage(
+        [
+            FakeTable(
+                ["ลำดับ", "ประกาศที่เกี่ยวข้อง", "วันที่ประกาศ", "ดูข้อมูล"],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("2"),
+                            FakeCell("ร่างเอกสารประกวดราคา(e-Bidding)"),
+                            FakeCell("15/06/2569"),
+                            FakeCell("", clickable=clickable),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    include_results: list[bool] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_download_documents_from_current_view(
+        page,
+        include_label,
+        source_doc_label="",
+        document_context=None,
+        current_modal_signature=None,
+    ):
+        include_results.append(include_label("ฉบับแรก 69069247778_15062569.zip"))
+        return [
+            {
+                "file_name": "69069247778_15062569.zip",
+                "file_bytes": b"zip",
+                "source_label": source_doc_label,
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._download_documents_from_current_view",
+        fake_download_documents_from_current_view,
+    )
+
+    downloaded = _download_one_document(page, "ร่างเอกสารประกวดราคา")
+
+    assert include_results == [True]
+    assert downloaded == [
+        {
+            "file_name": "69069247778_15062569.zip",
+            "file_bytes": b"zip",
+            "source_label": "ร่างเอกสารประกวดราคา(e-Bidding)",
             "source_status_text": "",
             "source_page_text": "",
         }
@@ -1564,6 +1719,137 @@ def test_invitation_popup_preserves_provenance_for_nested_downloads(
     ]
 
 
+def test_invitation_row_opens_modal_before_direct_download_timeout(monkeypatch) -> None:
+    page = FakePage([])
+    modal = FakeModal(
+        [
+            FakeRow(
+                [
+                    FakeCell("1"),
+                    FakeCell("ฉบับแรก 69069247778_15062569.zip"),
+                    FakeCell("15/06/2569"),
+                    FakeCell("", clickable=FakeClickable()),
+                ]
+            )
+        ]
+    )
+    opener = FakeOpensModalClickable(
+        page,
+        modal,
+        {
+            "href": None,
+            "onclick": None,
+            "tag": "td",
+            "dataToggle": None,
+            "className": "",
+            "textContent": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+        },
+    )
+    page._tables = [
+        FakeTable(
+            ["ลำดับ", "ประกาศที่เกี่ยวข้อง", "วันที่ประกาศ", "ดูข้อมูล"],
+            [
+                FakeRow(
+                    [
+                        FakeCell("1"),
+                        FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
+                        FakeCell("15/06/2569"),
+                        FakeCell("", generic_clickable=opener),
+                    ]
+                )
+            ],
+        )
+    ]
+    include_results: list[bool] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invitation modal path should avoid direct-download timeout")
+        ),
+    )
+
+    def fake_download_documents_from_current_view(
+        page,
+        include_label,
+        source_doc_label="",
+        document_context=None,
+        current_modal_signature=None,
+    ):
+        include_results.append(include_label("ฉบับแรก 69069247778_15062569.zip"))
+        return [
+            {
+                "file_name": "69069247778_15062569.zip",
+                "file_bytes": b"zip",
+                "source_label": source_doc_label,
+                "source_status_text": "",
+                "source_page_text": "",
+            }
+        ]
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._download_documents_from_current_view",
+        fake_download_documents_from_current_view,
+    )
+
+    downloaded = _download_one_document(page, "ประกาศเชิญชวน")
+
+    assert opener.click_calls == 1
+    assert include_results == [True]
+    assert downloaded == [
+        {
+            "file_name": "69069247778_15062569.zip",
+            "file_bytes": b"zip",
+            "source_label": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_download_one_document_ignores_project_status_metadata_row_in_clickable_table(
+    monkeypatch,
+) -> None:
+    page = FakePage(
+        [
+            FakeTable(
+                [],
+                [
+                    FakeRow(
+                        [
+                            FakeCell("สถานะโครงการ"),
+                            FakeCell("หนังสือเชิญชวน/ประกาศเชิญชวน"),
+                        ]
+                    ),
+                    FakeRow(
+                        [
+                            FakeCell("แผนการจัดซื้อจัดจ้าง"),
+                            FakeCell("P69040007415", clickable=FakeClickable()),
+                        ]
+                    ),
+                ],
+            )
+        ]
+    )
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_direct_or_page_download",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("metadata status row is not a document row")
+        ),
+    )
+
+    assert _download_one_document(page, "ประกาศเชิญชวน") == []
+
+
 def test_save_from_new_tab_uses_request_for_blob_viewer(monkeypatch) -> None:
     viewer_page = FakeViewerPage(
         url="blob:https://process5.gprocurement.go.th/example-blob",
@@ -1850,6 +2136,110 @@ def test_download_documents_from_current_view_handles_modal_button_popup_without
             "source_page_text": "",
         }
     ]
+
+
+def test_download_documents_from_current_view_captures_zip_fetch_response_first(
+    monkeypatch,
+) -> None:
+    page = FakeModalPage(None)
+    download_button = FakeClickable(
+        {
+            "href": None,
+            "onclick": None,
+            "tag": "a",
+            "dataToggle": "modal",
+            "className": "btn btn-light btn-icon",
+            "textContent": "file_download",
+        }
+    )
+    page._modal = FakeModal(
+        [
+            FakeRow(
+                [
+                    FakeCell("1"),
+                    FakeCell("ฉบับแรก 69069247778_15062569.zip"),
+                    FakeCell("15/06/2569"),
+                    FakeCell("18/06/2569"),
+                    FakeCell("แสดงความคิดเห็น"),
+                    FakeCell("ดาวน์โหลดการตอบข้อคิดเห็น"),
+                    FakeCell("", clickable=download_button),
+                ]
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._handle_modal_download_action",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "zip fetch response should be captured before modal fallback"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._click_and_capture_response_document",
+        lambda page, click_action, file_label, document_context=None: {
+            "file_name": "69069247778_15062569.zip",
+            "file_bytes": b"PK\x03\x04zip",
+            "source_label": file_label,
+            "source_status_text": "",
+            "source_page_text": "",
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._click_back_or_exit", lambda page: None
+    )
+
+    downloaded = _download_documents_from_current_view(
+        page,
+        include_label=lambda label: True,
+    )
+
+    assert downloaded == [
+        {
+            "file_name": "69069247778_15062569.zip",
+            "file_bytes": b"PK\x03\x04zip",
+            "source_label": "ฉบับแรก 69069247778_15062569.zip",
+            "source_status_text": "",
+            "source_page_text": "",
+        }
+    ]
+
+
+def test_empty_fetch_response_is_rejected_before_browser_fetch_fallback() -> None:
+    empty_response = FakeUrlResponse(
+        b"",
+        url="https://process5.gprocurement.go.th/egp-upload-service/v1/downloadFileTest?fileId=abc",
+        headers={"content-type": "application/zip"},
+    )
+
+    class FetchPage:
+        def evaluate(self, script: str, url: str):
+            assert "credentials: 'include'" in script
+            assert url == empty_response.url
+            return {
+                "ok": True,
+                "status": 200,
+                "contentType": "application/zip",
+                "contentDisposition": "",
+                "base64": "UEsDBHppcA==",
+            }
+
+    assert _document_from_response(empty_response, "69069247778_15062569.zip") is None
+    assert _document_from_browser_fetch(
+        FetchPage(),
+        empty_response.url,
+        "69069247778_15062569.zip",
+    ) == {
+        "file_name": "69069247778_15062569.zip",
+        "file_bytes": b"PK\x03\x04zip",
+        "source_label": "69069247778_15062569.zip",
+        "source_status_text": "",
+        "source_page_text": "",
+    }
 
 
 def test_capture_followup_skips_known_missing_file_modal(monkeypatch, caplog) -> None:
@@ -2485,6 +2875,65 @@ def test_handle_direct_or_page_download_uses_longer_followup_for_consulting_invi
     assert captured_timeouts == [4.0]
 
 
+def test_handle_direct_or_page_download_open_invitation_anchor_without_href_uses_followup(
+    monkeypatch,
+) -> None:
+    page = FakePage([])
+    clickable = FakeClickable(
+        {
+            "href": None,
+            "onclick": None,
+            "tag": "a",
+            "textContent": "P69040007415 - เหมาโครงการระบบบริหารจัดการโรงเรียนฝึกอาชีพกรุงเทพมหานคร (ประกาศเมื่อ 09/04/2569)",
+        }
+    )
+    captured_timeouts: list[float] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_immediate(page, click_action, **kwargs):
+        click_action()
+        return None
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._click_and_capture_immediate_download_or_missing_modal",
+        fake_immediate,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.run_with_toast_recovery",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(
+                "plain anchor without href should probe before expect_download"
+            )
+        ),
+    )
+
+    def fake_followup(page, **kwargs):
+        captured_timeouts.append(float(kwargs["timeout_s"]))
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._capture_followup_after_click", fake_followup
+    )
+
+    downloaded = _handle_direct_or_page_download(
+        page,
+        clickable,
+        "P69040007415 - เหมาโครงการระบบบริหารจัดการโรงเรียนฝึกอาชีพกรุงเทพมหานคร (ประกาศเมื่อ 09/04/2569)",
+        document_context={"project_state": "open_invitation"},
+    )
+
+    assert downloaded == []
+    assert clickable.click_calls == 1
+    assert captured_timeouts == [2.0]
+
+
 def test_handle_direct_or_page_download_standard_invitation_skips_probe_click(
     monkeypatch,
 ) -> None:
@@ -2550,6 +2999,63 @@ def test_handle_direct_or_page_download_standard_invitation_skips_probe_click(
             "source_page_text": "",
         }
     ]
+
+
+def test_handle_direct_or_page_download_td_invitation_prefers_probe_followup(
+    monkeypatch,
+) -> None:
+    page = FakePage([])
+    clickable = FakeClickable(
+        {
+            "href": None,
+            "onclick": None,
+            "tag": "td",
+            "textContent": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+        }
+    )
+    captured_timeouts: list[float] = []
+
+    monkeypatch.setattr("egp_worker.browser_downloads.dismiss_modal", lambda page: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.clear_site_error_toast", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._sleep", lambda *args, **kwargs: None
+    )
+
+    def fake_immediate(page, click_action, **kwargs):
+        click_action()
+        return None
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._click_and_capture_immediate_download_or_missing_modal",
+        fake_immediate,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads.run_with_toast_recovery",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("td invitation path should probe before expect_download")
+        ),
+    )
+
+    def fake_followup(page, **kwargs):
+        captured_timeouts.append(float(kwargs["timeout_s"]))
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.browser_downloads._capture_followup_after_click", fake_followup
+    )
+
+    downloaded = _handle_direct_or_page_download(
+        page,
+        clickable,
+        "ประกาศเชิญชวน",
+        document_context={"project_state": "open_invitation"},
+    )
+
+    assert downloaded == []
+    assert clickable.click_calls == 1
+    assert captured_timeouts == [2.0]
 
 
 def test_handle_direct_or_page_download_waits_for_delayed_online_viewer_after_timeout(
