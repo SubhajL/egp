@@ -917,3 +917,34 @@ LOW
 ### Rollout Notes
 - No schema or runtime code changes.
 - Lightsail backend deployment is still required after merge; Vercel/frontend auto-deploy does not update API/executor containers.
+
+## Production Validation (2026-06-16 12:26:00 +0700) - PR 160 and Lightsail
+
+### PR and landing
+- Created PR: https://github.com/SubhajL/egp/pull/160
+- Admin-merged PR #160 to `origin/main` with merge commit `8f738a6c09fcb03b48d727339f246be03a89cb25`.
+- Fast-forwarded local `main`; `git status --short --branch` showed `## main...origin/main`.
+- GitHub Actions failed before job steps/logs were available; local gates and formal g-check were clean, and admin merge was explicitly requested.
+
+### Lightsail deployment
+- Updated `/home/ubuntu/egp` on the Lightsail host to include `origin/main` while preserving host-local overrides.
+- Built production images for `api`, `webhook-executor`, and `discovery-executor`.
+- Ran production migrations with `sudo docker compose ... run --rm migrate`; result: `Applied 0 migration(s): none`.
+- Recreated `egp-api-1` and `egp-webhook-executor-1`; `discovery-executor` remains disabled by the host override as expected for Track C.
+- Verified `egp-api-1` healthy and `https://api.egptracker.com/health` returned `{"status":"ok"}`.
+
+### Targeted project validation
+- Inserted and drained exact backfill job `bd5ad48a-00b1-490b-9b16-fee8601f1021` for project `69039416683`.
+- The first manual drain saw the launchd watcher hold the persistent profile; paused only `com.egp.remote-crawl`, cleared the stale processing marker for that job, drained one bounded crawl, and restarted `com.egp.remote-crawl`.
+- Final job row: `job_status=dispatched`, `attempt_count=1`, `dispatched_at=2026-06-16 05:25:29.665404+00`, no `last_error`.
+- Capture attempts for project `69039416683` included a new successful attempt at `2026-06-16 05:22:28.729196+00` with `doc_count=1`.
+- Production documents were already present and deduplicated, including `de752ddf-b7da-4e50-a6f2-a00d345f8839` / `69039416683_15052569.zip`.
+
+### R2 and API download validation
+- R2 `head_object` succeeded for `tenants/c717b262-07a8-477d-bb78-f36a4a814eb7/projects/f6379d59-1cc5-4437-9729-5894d6b50a6e/artifacts/be756aa7091c7b4bb3ae2171fdf3e0ab8eaec0f3f5f86ad7b79df28ffe954efa/69039416683_15052569.zip`.
+- R2 result: `content_length=1805061`, ETag `"0149073a65642ce76faf80ac02fad71e"`.
+- Authenticated production API download for document `de752ddf-b7da-4e50-a6f2-a00d345f8839` returned HTTP `200`.
+- API download headers/body matched: `Content-Length: 1805061`, ETag `"be756aa7091c7b4bb3ae2171fdf3e0ab8eaec0f3f5f86ad7b79df28ffe954efa"`, downloaded bytes `1805061`.
+
+### Remaining gap
+- Task Master 4.6 remains pending until a real backup/restore drill is run and recorded.
