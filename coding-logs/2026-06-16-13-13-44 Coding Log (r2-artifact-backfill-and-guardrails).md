@@ -698,3 +698,40 @@ LOW
 
 - Backend side is already live and verified on Lightsail.
 - Frontend defensive side becomes live after the `origin/main` push triggers Vercel production deployment.
+
+## Production Diagnosis: Project 69069247778 Missing Documents (2026-06-16 16:50:45 +0700)
+
+### Goal
+
+Explain why project `8e645ef7-a063-45b9-a8bb-cec61d6983fa` / `69069247778`
+shows no documents in production even though e-GP has document links.
+
+### Findings
+
+- The project exists for tenant `c717b262-07a8-477d-bb78-f36a4a814eb7`.
+- It was first discovered on `2026-06-07` under alias project number `69049163846`.
+- It later gained current project number alias `69069247778` on `2026-06-15`.
+- Production `documents` has zero rows for this project and no matching rows under the old alias.
+- Production `document_capture_attempts` has zero rows for this project.
+- There are no `discovery_jobs` with keyword `69049163846` or `69069247778`.
+- The original `project_status_events.raw_snapshot` has `downloaded_documents: []`,
+  `document_collection_status: no_documents`, and
+  `document_collection_reason: document_collection_empty`.
+- `list_due_backfill_candidates()` currently includes this project as a due candidate:
+  `project_state=open_invitation`, `attempt_count=0`, `target_document_count=0`,
+  `project_number=69069247778`.
+- The backfill systemd unit files exist in `/home/ubuntu/egp/deploy/systemd`, but
+  `egp-document-backfill-enqueue.timer` and `.service` are not installed on Lightsail.
+
+### Conclusion
+
+This is not a frontend display bug and not another R2 missing-object bug. The API
+has no document metadata to return. The crawler once saw the project but collected
+zero documents, and the durable backfill/retry timer that should enqueue this due
+candidate is not installed/running on Lightsail.
+
+### Recommended Next Step
+
+Run the document backfill enqueue path for production, then let the remote crawler
+process the `69069247778` backfill job and verify `document_capture_attempts` plus
+`documents` rows for this project.

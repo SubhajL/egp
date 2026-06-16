@@ -417,6 +417,15 @@ def _download_one_document(
                 source_doc_label=doc_name,
                 document_context=document_context,
             )
+        if target_doc == "ประกาศเชิญชวน":
+            modal_documents = _handle_invitation_modal_download(
+                page,
+                clickable,
+                doc_name,
+                document_context=document_context,
+            )
+            if modal_documents is not None:
+                return modal_documents
         downloaded = _handle_direct_or_page_download(
             page,
             clickable,
@@ -471,17 +480,24 @@ def _iter_downloadable_detail_rows(page) -> list[object]:
     downloadable_rows: list[object] = []
     for table in tables:
         rows = _detail_page_table_rows(table)
-        if not _table_has_downloadable_document_rows(table, rows):
+        if _table_has_download_table_header(table):
+            downloadable_rows.extend(rows)
             continue
-        downloadable_rows.extend(rows)
+        downloadable_rows.extend(
+            row for row in rows if _row_download_clickable(row, row.query_selector_all("td"))
+        )
     return downloadable_rows
 
 
-def _table_has_downloadable_document_rows(table, rows: list[object]) -> bool:
+def _table_has_download_table_header(table) -> bool:
     header_combined = " ".join(
         header.inner_text().strip() for header in table.query_selector_all("th")
     )
-    if "ดูข้อมูล" in header_combined or "ดาวน์โหลด" in header_combined:
+    return "ดูข้อมูล" in header_combined or "ดาวน์โหลด" in header_combined
+
+
+def _table_has_downloadable_document_rows(table, rows: list[object]) -> bool:
+    if _table_has_download_table_header(table):
         return True
     return any(
         _row_download_clickable(row, row.query_selector_all("td")) is not None for row in rows
@@ -491,14 +507,14 @@ def _table_has_downloadable_document_rows(table, rows: list[object]) -> bool:
 def _row_download_clickable(row, cells: list[object]) -> object | None:
     for cell in reversed(cells):
         clickable = cell.query_selector(
-            "a[href], a[onclick], button:not([disabled]), [role='button']"
-        ) or cell.query_selector("a, button, [role='button']")
+            "a[href], a[onclick], button:not([disabled]), [role='button'], [onclick]"
+        ) or cell.query_selector("a, button, [role='button'], [onclick]")
         if clickable is not None:
             return clickable
     try:
         return row.query_selector(
-            "a[href], a[onclick], button:not([disabled]), [role='button']"
-        ) or row.query_selector("a, button, [role='button']")
+            "a[href], a[onclick], button:not([disabled]), [role='button'], [onclick]"
+        ) or row.query_selector("a, button, [role='button'], [onclick]")
     except Exception:
         return None
 
@@ -517,6 +533,91 @@ def _downloaded_document_matches_target(
         fallback_label,
     )
     return any(is_final_tor_doc_label(candidate) for candidate in candidates)
+
+
+def _should_probe_invitation_modal(
+    doc_name: str,
+    click_meta: dict[str, object] | None,
+) -> bool:
+    if "เชิญชวน" not in str(doc_name or ""):
+        return False
+    href = str((click_meta or {}).get("href") or "").strip()
+    if href:
+        return False
+    tag = str((click_meta or {}).get("tag") or "").strip().casefold()
+    text_content = str((click_meta or {}).get("textContent") or "").strip()
+    return tag in {"", "td", "tr", "span", "div", "i"} or "เชิญชวน" in text_content
+
+
+def _handle_invitation_modal_download(
+    page,
+    btn,
+    doc_name: str,
+    *,
+    document_context: dict[str, object] | None = None,
+) -> list[dict[str, object]] | None:
+    click_meta = _extract_click_metadata(btn)
+    if not _should_probe_invitation_modal(doc_name, click_meta):
+        return None
+
+    clear_site_error_toast(page)
+    url_before_click = _get_page_url(page)
+    pages_before_click = len(getattr(page.context, "pages", []))
+    try:
+        _trace_document_progress("invitation_modal_click_start", source_label=doc_name)
+        try:
+            _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", btn))
+        except Exception:
+            _run_egp_limited_action(lambda: btn.click())
+    except Exception:
+        return None
+    _trace_document_progress("invitation_modal_click_finished", source_label=doc_name)
+    _sleep(1)
+
+    if _skip_known_missing_file_modal(
+        page,
+        file_label=doc_name,
+        click_context="invitation_modal_probe",
+        source_doc_label=doc_name,
+    ):
+        return []
+
+    modal = _find_modal_with_downloads(page)
+    if modal is not None:
+        _trace_document_progress("invitation_modal_found", source_label=doc_name)
+        return _download_documents_from_current_view(
+            page,
+            include_label=lambda label: True,
+            source_doc_label=doc_name,
+            document_context=document_context,
+            current_modal_signature=_download_modal_signature(modal),
+        )
+
+    if _page_has_inline_document_view(page, url_before_click=url_before_click):
+        _trace_document_progress("invitation_inline_content", source_label=doc_name)
+        return _save_from_content_page(page, doc_name, document_context=document_context)
+    if _get_page_url(page) != url_before_click:
+        _trace_document_progress("invitation_content_page", source_label=doc_name)
+        return _save_from_content_page(page, doc_name, document_context=document_context)
+    new_page = _wait_for_actionable_new_page(
+        page,
+        pages_before_count=pages_before_click,
+        timeout_s=NEW_PAGE_ACTIONABLE_TIMEOUT_S,
+    )
+    if new_page is not None:
+        try:
+            _trace_document_progress("invitation_new_tab", source_label=doc_name)
+            return _save_from_new_tab(
+                new_page,
+                doc_name,
+                document_context=document_context,
+            )
+        finally:
+            try:
+                new_page.close()
+            except Exception:
+                pass
+    return None
 
 
 def _collect_detail_page_link_documents(
@@ -576,8 +677,8 @@ def _iter_detail_page_fallback_candidates(page) -> list[tuple[str, object]]:
             download_button = None
             for cell in reversed(cells):
                 download_button = cell.query_selector(
-                    "a[href], a[onclick], button:not([disabled]), [role='button']"
-                ) or cell.query_selector("a, button, [role='button']")
+                    "a[href], a[onclick], button:not([disabled]), [role='button'], [onclick]"
+                ) or cell.query_selector("a, button, [role='button'], [onclick]")
                 if download_button is not None:
                     break
             if download_button is None:
@@ -1186,6 +1287,17 @@ def _download_documents_from_current_view(
         url_before_click = page.url
         pages_before_click = len(page.context.pages)
         click_meta = _extract_click_metadata(download_button)
+        if _label_looks_like_download_file(file_label):
+            response_document = _click_and_capture_response_document(
+                page,
+                lambda: page.evaluate("(el) => el.click()", download_button),
+                file_label=file_label,
+                document_context=document_context,
+            )
+            if response_document is not None:
+                _trace_document_progress("nested_response_download", source_label=file_label)
+                downloaded_documents.append(response_document)
+                continue
         if _looks_like_modal_open_action(click_meta):
             follow_up_documents = _handle_modal_download_action(
                 page,
@@ -1323,6 +1435,184 @@ def _download_documents_from_current_view(
                         pass
     _click_back_or_exit(page)
     return downloaded_documents
+
+
+def _label_looks_like_download_file(file_label: str) -> bool:
+    return bool(re.search(r"\.(?:zip|pdf|docx?|xlsx?)\b", str(file_label or ""), re.IGNORECASE))
+
+
+def _response_looks_like_document(response) -> bool:
+    try:
+        status = int(getattr(response, "status", 0) or 0)
+    except Exception:
+        status = 0
+    if status and not (200 <= status < 300):
+        return False
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("content-type") or "").lower()
+    content_disposition = str(headers.get("content-disposition") or "").lower()
+    url = str(getattr(response, "url", "") or "").lower()
+    if "text/html" in content_type or "application/json" in content_type:
+        return False
+    if any(
+        marker in content_type
+        for marker in (
+            "application/zip",
+            "application/pdf",
+            "application/octet-stream",
+            "application/vnd.openxmlformats",
+            "application/msword",
+            "application/vnd.ms-excel",
+        )
+    ):
+        return True
+    if "attachment" in content_disposition:
+        return True
+    return bool(
+        re.search(r"\.(?:zip|pdf|docx?|xlsx?)(?:[?#]|$)", url, flags=re.IGNORECASE)
+        or "downloadfile" in url
+    )
+
+
+def _document_from_response(
+    response,
+    file_label: str,
+    *,
+    document_context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    try:
+        data = response.body()
+    except Exception:
+        return None
+    if not data:
+        return None
+    headers = getattr(response, "headers", {}) or {}
+    content_type = headers.get("content-type")
+    if looks_like_html_bytes(data) or (content_type and "text/html" in content_type.lower()):
+        return None
+    guessed = filename_from_content_disposition(headers.get("content-disposition"))
+    sniffed_ext = sniff_extension_from_bytes(data)
+    ext = (
+        sniffed_ext
+        or guess_extension_from_content_type(content_type)
+        or (Path(file_label).suffix or None)
+        or (Path(urlparse(str(getattr(response, "url", "") or "")).path).suffix or None)
+    )
+    if guessed:
+        filename = sanitize_filename_preserve_suffix(guessed, max_len=100)
+        if sniffed_ext and not filename.lower().endswith(sniffed_ext):
+            filename = build_safe_filename(Path(filename).stem, sniffed_ext, max_len=100)
+    else:
+        filename = _filename_from_label_and_ext(file_label, ext)
+    return _apply_document_context(
+        {
+            "file_name": filename,
+            "file_bytes": data,
+            "source_label": file_label,
+            "source_status_text": "",
+            "source_page_text": "",
+        },
+        document_context,
+    )
+
+
+def _document_from_browser_fetch(
+    page,
+    url: str,
+    file_label: str,
+    *,
+    document_context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    if not url or not is_allowed_download_url(url):
+        return None
+    try:
+        payload = page.evaluate(
+            """async (url) => {
+                const response = await fetch(url, { credentials: 'include' });
+                const buffer = await response.arrayBuffer();
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                for (let i = 0; i < bytes.length; i += 1) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return {
+                    ok: response.ok,
+                    status: response.status,
+                    contentType: response.headers.get('content-type'),
+                    contentDisposition: response.headers.get('content-disposition'),
+                    base64: btoa(binary),
+                };
+            }""",
+            url,
+        )
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        return None
+    try:
+        data = base64.b64decode(str(payload.get("base64") or ""), validate=True)
+    except Exception:
+        return None
+    if not data:
+        return None
+    content_type = str(payload.get("contentType") or "")
+    if looks_like_html_bytes(data) or "text/html" in content_type.lower():
+        return None
+    guessed = filename_from_content_disposition(str(payload.get("contentDisposition") or ""))
+    sniffed_ext = sniff_extension_from_bytes(data)
+    ext = sniffed_ext or guess_extension_from_content_type(content_type) or Path(file_label).suffix
+    filename = (
+        sanitize_filename_preserve_suffix(guessed, max_len=100)
+        if guessed
+        else _filename_from_label_and_ext(file_label, ext)
+    )
+    return _apply_document_context(
+        {
+            "file_name": filename,
+            "file_bytes": data,
+            "source_label": file_label,
+            "source_status_text": "",
+            "source_page_text": "",
+        },
+        document_context,
+    )
+
+
+def _filename_from_label_and_ext(file_label: str, ext: str | None) -> str:
+    label_suffix = Path(str(file_label or "")).suffix
+    if label_suffix:
+        if not ext or label_suffix.casefold() == str(ext).casefold():
+            return sanitize_filename_preserve_suffix(file_label, max_len=100)
+    return build_safe_filename(file_label, ext, max_len=100)
+
+
+def _click_and_capture_response_document(
+    page,
+    click_action,
+    *,
+    file_label: str,
+    document_context: dict[str, object] | None = None,
+) -> dict[str, object] | None:
+    if not hasattr(page, "expect_response"):
+        return None
+    try:
+        with page.expect_response(
+            _response_looks_like_document,
+            timeout=DOWNLOAD_EVENT_TIMEOUT,
+        ) as response_info:
+            _run_egp_limited_action(click_action)
+    except Exception:
+        return None
+    response = getattr(response_info, "value", None)
+    document = _document_from_response(response, file_label, document_context=document_context)
+    if document is not None:
+        return document
+    return _document_from_browser_fetch(
+        page,
+        str(getattr(response, "url", "") or ""),
+        file_label,
+        document_context=document_context,
+    )
 
 
 def _handle_modal_download_action(
@@ -1581,13 +1871,24 @@ def _should_prefer_followup_capture(
     lowered_name = str(doc_name or "").strip().casefold()
     href = str((click_meta or {}).get("href") or "").strip()
     tag = str((click_meta or {}).get("tag") or "").strip().casefold()
+    class_name = str((click_meta or {}).get("className") or "").strip().casefold()
+    text_content = str((click_meta or {}).get("textContent") or "").strip().casefold()
     if "แผนการจัดซื้อ" in lowered_name or "procurement plan" in lowered_name:
+        return True
+    if tag in {"td", "tr"}:
+        return True
+    if (
+        not href
+        and tag == "a"
+        and "btn" not in class_name
+        and text_content not in {"download", "ดาวน์โหลด"}
+    ):
         return True
     if document_type is DocumentType.INVITATION and _is_consulting_document_context(
         document_context
     ):
         return True
-    return not href and tag == "a" and _is_consulting_document_context(document_context)
+    return False
 
 
 def _should_probe_before_expect_download(

@@ -11,6 +11,6 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/docker compose --env-file /etc/egp/egp.env \
-  run --rm --no-deps discovery-executor \
+  exec -T api \
   python -m egp_api.executors.document_backfill_enqueue
-WorkingDirectory=/srv/egp
+WorkingDirectory=/home/ubuntu/egp

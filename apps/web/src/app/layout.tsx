@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Inter } from "next/font/google";
 
 import { Providers } from "@/components/layout/providers";
+import { getSiteBaseUrl } from "@/lib/site-url";
 import "./globals.css";
 
 const inter = Inter({
@@ -12,7 +13,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://egp.example.com"),
+  metadataBase: new URL(getSiteBaseUrl()),
   title: "e-GP Intelligence Platform",
   description: "ระบบติดตามการจัดซื้อจัดจ้างภาครัฐอัจฉริยะ",
 };
