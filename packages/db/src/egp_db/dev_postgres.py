@@ -686,9 +686,10 @@ def run_pg_backup_restore_smoke(
 ) -> dict[str, object]:
     """Round-trip a Postgres dump through pg_backup/pg_restore primitives.
 
-    Seeds a single tenant row, dumps the database with ``pg_dump -Fc -Z0``,
-    gzips and sha256-sidecars the archive, drops/recreates the target,
-    restores via ``pg_restore``, and re-reads the tenant count.
+    Seeds two tenants plus project, document, and billing rows for one tenant,
+    dumps the database with ``pg_dump -Fc -Z0``, gzips and sha256-sidecars the
+    archive, drops/recreates the target, restores via ``pg_restore``, and
+    verifies restored tenant isolation, document identity, and billing state.
     """
     import gzip
     import hashlib
@@ -711,14 +712,132 @@ def run_pg_backup_restore_smoke(
         database_url = cluster.database_url(database_name)
         apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
 
+        document_digest = "a" * 64
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
                     INSERT INTO tenants (name, slug, plan_code)
                     VALUES (%s, %s, %s)
+                    RETURNING id
                     """,
                     ("Backup Smoke Tenant", "backup-smoke-tenant", "dev"),
+                )
+                primary_tenant_id = str(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (name, slug, plan_code)
+                    VALUES (%s, %s, %s)
+                    RETURNING id
+                    """,
+                    ("Backup Other Tenant", "backup-other-tenant", "dev"),
+                )
+                other_tenant_id = str(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    INSERT INTO projects (
+                        tenant_id,
+                        canonical_project_id,
+                        project_number,
+                        project_name,
+                        organization_name,
+                        procurement_type,
+                        budget_amount,
+                        project_state
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        primary_tenant_id,
+                        "drill-project-primary",
+                        "DRILL-69039416683",
+                        "Restore drill project",
+                        "Restore drill organization",
+                        "goods",
+                        "123456.78",
+                        "tor_downloaded",
+                    ),
+                )
+                project_id = str(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    INSERT INTO projects (
+                        tenant_id,
+                        canonical_project_id,
+                        project_number,
+                        project_name,
+                        organization_name,
+                        procurement_type,
+                        budget_amount,
+                        project_state
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        other_tenant_id,
+                        "drill-project-other",
+                        "DRILL-OTHER",
+                        "Other tenant restore drill project",
+                        "Other tenant organization",
+                        "goods",
+                        "1000.00",
+                        "discovered",
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO documents (
+                        tenant_id,
+                        project_id,
+                        document_type,
+                        document_phase,
+                        source_label,
+                        file_name,
+                        mime_type,
+                        size_bytes,
+                        sha256,
+                        storage_key
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        primary_tenant_id,
+                        project_id,
+                        "tor",
+                        "final",
+                        "restore drill",
+                        "restore-drill.pdf",
+                        "application/pdf",
+                        4096,
+                        document_digest,
+                        f"tenants/{primary_tenant_id}/restore-drill.pdf",
+                    ),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO billing_records (
+                        tenant_id,
+                        record_number,
+                        plan_code,
+                        status,
+                        billing_period_start,
+                        billing_period_end,
+                        amount_due,
+                        notes
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        primary_tenant_id,
+                        "DRILL-BILL-001",
+                        "dev",
+                        "awaiting_payment",
+                        date(2026, 6, 1),
+                        date(2026, 6, 30),
+                        "1999.00",
+                        "backup restore drill",
+                    ),
                 )
                 cursor.execute("SELECT COUNT(*) FROM tenants")
                 seeded_count = int(cursor.fetchone()[0])
@@ -757,6 +876,60 @@ def run_pg_backup_restore_smoke(
             with connection.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) FROM tenants")
                 restored_count = int(cursor.fetchone()[0])
+                cursor.execute(
+                    "SELECT COUNT(*) FROM projects WHERE tenant_id = %s",
+                    (primary_tenant_id,),
+                )
+                restored_project_count = int(cursor.fetchone()[0])
+                cursor.execute(
+                    "SELECT COUNT(*) FROM documents WHERE tenant_id = %s",
+                    (primary_tenant_id,),
+                )
+                restored_document_count = int(cursor.fetchone()[0])
+                cursor.execute(
+                    "SELECT COUNT(*) FROM billing_records WHERE tenant_id = %s",
+                    (primary_tenant_id,),
+                )
+                restored_billing_record_count = int(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM projects p
+                    JOIN documents d ON d.project_id = p.id
+                    WHERE p.tenant_id <> d.tenant_id
+                    """
+                )
+                cross_tenant_document_links = int(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    SELECT sha256 = %s
+                    FROM documents
+                    WHERE tenant_id = %s
+                      AND project_id = %s
+                      AND file_name = %s
+                    """,
+                    (
+                        document_digest,
+                        primary_tenant_id,
+                        project_id,
+                        "restore-drill.pdf",
+                    ),
+                )
+                document_sha256_preserved = bool(cursor.fetchone()[0])
+                cursor.execute(
+                    """
+                    SELECT status = %s
+                    FROM billing_records
+                    WHERE tenant_id = %s
+                      AND record_number = %s
+                    """,
+                    (
+                        "awaiting_payment",
+                        primary_tenant_id,
+                        "DRILL-BILL-001",
+                    ),
+                )
+                billing_status_preserved = bool(cursor.fetchone()[0])
 
         # Sanity check digest of the raw bytes too
         archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
@@ -764,6 +937,12 @@ def run_pg_backup_restore_smoke(
         return {
             "seeded_tenant_count": seeded_count,
             "restored_tenant_count": restored_count,
+            "restored_project_count": restored_project_count,
+            "restored_document_count": restored_document_count,
+            "restored_billing_record_count": restored_billing_record_count,
+            "tenant_isolation_preserved": cross_tenant_document_links == 0,
+            "document_sha256_preserved": document_sha256_preserved,
+            "billing_status_preserved": billing_status_preserved,
             "sha256_verified": digest == archive_digest,
             "archive_path": str(archive_path),
             "sidecar_path": str(sidecar_path),

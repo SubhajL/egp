@@ -948,3 +948,87 @@ LOW
 
 ### Remaining gap
 - Task Master 4.6 remains pending until a real backup/restore drill is run and recorded.
+
+## Implementation Summary (2026-06-16 12:37:19 +0700) - Task 4.6 DR restore drill
+
+### Goal
+- Close the final Task Master gap by proving backup/restore behavior with a real non-production restore drill and recording durable evidence.
+
+### What changed
+- `packages/db/src/egp_db/dev_postgres.py`
+  - Broadened `run_pg_backup_restore_smoke` from a tenant-count smoke into a restore drill that seeds two tenants plus project, document, and billing rows.
+  - The restored database now verifies tenant isolation, document SHA preservation, billing status preservation, restored row counts, and backup sidecar SHA verification.
+- `tests/operations/test_pg_backup_restore.py`
+  - Strengthened the restore test to assert restored project, document, billing, tenant-isolation, document-integrity, billing-state, and sidecar-integrity outcomes.
+- `docs/DR_RESTORE_DRILL_EVIDENCE.md`
+  - Added the 2026-06-16 restore-drill evidence record with exact command and restored outcome markers.
+  - Recorded the Lightsail artifact-backup caveat: `EGP_ARTIFACT_BACKUP_SRC_REMOTE` and `EGP_ARTIFACT_BACKUP_DEST_REMOTE` existed but were empty, and `rclone` was not installed on the host.
+- `docs/BACKUP_AND_RESTORE.md`
+  - Linked the quarterly restore-drill procedure to the evidence ledger.
+- `.taskmaster/tasks/tasks.json`, `.taskmaster/tasks/task_004.md`
+  - Reconciled Task Master 4.6 and Phase 4 to `done`.
+
+### TDD evidence
+- RED: `./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres -q`
+  - Result: failed with `KeyError: 'restored_project_count'`, proving the previous drill did not expose the required DR evidence.
+- RED: `./.venv/bin/python -m pytest tests/operations/test_restore_drill_evidence.py -q`
+  - Result: failed because `docs/DR_RESTORE_DRILL_EVIDENCE.md` did not exist.
+- GREEN: `./.venv/bin/python -m pytest tests/operations/test_restore_drill_evidence.py tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres -q`
+  - Result: `2 passed`.
+
+### Tests run
+- `for i in 1 2 3; do ./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres tests/operations/test_restore_drill_evidence.py -q || exit 1; done` - passed three consecutive runs.
+- `./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py tests/operations/test_backup_scripts_cli.py tests/operations/test_artifact_backup_script.py -q` - `20 passed`.
+- `./.venv/bin/ruff check packages/db/src/egp_db/dev_postgres.py tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py` - passed.
+- `./.venv/bin/python -m compileall packages/db/src/egp_db/dev_postgres.py tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py` - passed.
+- `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --check` - passed.
+
+### Wiring verification evidence
+- `tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres` calls `run_pg_backup_restore_smoke`, applies all DB migrations, creates a throwaway Postgres database, dumps it with `pg_dump`, restores it with `pg_restore`, and reads back restored database state.
+- `tests/operations/test_restore_drill_evidence.py` keeps the drill evidence ledger from drifting away from the required DR outcomes.
+- Task Master status was verified with `get_tasks`: 4 top-level tasks done, 24/24 subtasks done, 100% completion.
+
+### Behavior changes and risk notes
+- No production runtime path changed.
+- The restore helper now exercises more realistic data and will catch regressions that only affect projects, documents, billing records, tenant scoping, or SHA sidecar validation.
+- Lightsail Postgres backup env keys exist, but host-level PostgreSQL client tools were not on PATH; the running Postgres container has PostgreSQL 15 tools.
+- Artifact backup scheduling should not be considered live until `rclone` is installed and `EGP_ARTIFACT_BACKUP_SRC_REMOTE` / `EGP_ARTIFACT_BACKUP_DEST_REMOTE` are non-empty and verified with a recorded mirror run.
+
+### Follow-ups / known gaps
+- No Task Master items remain pending.
+- Provision and record an artifact mirror run when the production artifact backup remotes are ready.
+
+## Review (2026-06-16 12:37:55 +0700) - working-tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: staged working tree before commit
+- Commit reviewed: staged changes on `bf5b771d`
+- Commands Run: interrupted Auggie retrieval for backup/restore context, then direct inspection of `docs/BACKUP_AND_RESTORE.md`, `scripts/pg_backup.sh`, `scripts/pg_restore.sh`, `packages/db/src/egp_db/dev_postgres.py`, `tests/operations/test_pg_backup_restore.py`, `tests/operations/test_artifact_backup_script.py`, `deploy/systemd/*`; Task Master `get_task 4.6`, `set_task_status 4.6 done`, `get_task 4`, `get_tasks --withSubtasks`; `./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres -q` (RED then GREEN); `./.venv/bin/python -m pytest tests/operations/test_restore_drill_evidence.py -q` (RED); `for i in 1 2 3; do ./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py::test_pg_backup_restore_round_trips_temp_postgres tests/operations/test_restore_drill_evidence.py -q || exit 1; done`; `./.venv/bin/python -m pytest tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py tests/operations/test_backup_scripts_cli.py tests/operations/test_artifact_backup_script.py -q`; `./.venv/bin/ruff check packages/db/src/egp_db/dev_postgres.py tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py`; `./.venv/bin/python -m compileall packages/db/src/egp_db/dev_postgres.py tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --check`; targeted staged diff inspection and `nl -ba` line checks.
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: Task Master 4.6 can be marked done because the requested non-production restore drill now verifies tenants, projects, documents, billing, tenant isolation, document SHA integrity, and backup sidecar integrity.
+- Assumption: artifact mirror runtime can remain a recorded production-readiness caveat because the current Lightsail env had empty `EGP_ARTIFACT_BACKUP_SRC_REMOTE` / `EGP_ARTIFACT_BACKUP_DEST_REMOTE` values and no `rclone` binary; the change does not falsely mark artifact mirroring as live.
+
+### Recommended Tests / Validation
+- Already passed: restore drill/evidence tests three consecutive times, full targeted operations backup/artifact script suite, ruff, compileall, and staged whitespace check.
+- Before treating artifact backups as live: install/configure `rclone`, set non-empty source/destination remotes, run `scripts/artifact_backup.sh --dry-run`, then a real mirror run, and append the result to `docs/DR_RESTORE_DRILL_EVIDENCE.md`.
+
+### Rollout Notes
+- No production runtime code changed.
+- Deploying to Lightsail only needs repository sync for docs/tests/helper code; API and executor containers do not need a restart for this change.
+- Task Master now reports 4/4 top-level tasks done and 24/24 subtasks done.

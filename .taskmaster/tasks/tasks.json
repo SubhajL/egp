@@ -235,7 +235,7 @@
         "id": "4",
         "title": "Phase 4: Commercial Hardening",
         "description": "Harden the platform for production readiness as described in PRD phase 4.",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           "3"
         ],
@@ -302,11 +302,12 @@
             "id": 6,
             "title": "Validate disaster recovery and backup workflows",
             "description": "Prove backups and restores work for the platform’s critical state and artifacts.",
-            "status": "pending",
+            "status": "done",
             "dependencies": [],
             "details": "Define backup coverage for the database and artifact storage, then run restore validation against realistic data. Ensure restores preserve tenant isolation and document integrity.",
             "testStrategy": "Perform backup/restore drills in a non-production environment and verify restored projects, documents, and billing state are intact.",
-            "parentId": "undefined"
+            "parentId": "undefined",
+            "updatedAt": "2026-06-16T05:35:08.392Z"
           },
           {
             "id": 7,
@@ -320,14 +321,14 @@
             "updatedAt": "2026-04-05T10:59:02.309Z"
           }
         ],
-        "updatedAt": "2026-06-16T05:12:47.239Z"
+        "updatedAt": "2026-06-16T05:35:08.392Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-06-16T05:12:47.239Z",
+      "lastModified": "2026-06-16T05:35:08.392Z",
       "taskCount": 4,
-      "completedCount": 3,
+      "completedCount": 4,
       "tags": [
         "master"
       ]

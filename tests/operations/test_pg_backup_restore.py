@@ -35,8 +35,14 @@ def test_pg_backup_restore_round_trips_temp_postgres(
         repo_root=repo_root,
         backup_root=tmp_backup_root,
     )
-    assert result["seeded_tenant_count"] == 1
-    assert result["restored_tenant_count"] == 1
+    assert result["seeded_tenant_count"] == 2
+    assert result["restored_tenant_count"] == 2
+    assert result["restored_project_count"] == 1
+    assert result["restored_document_count"] == 1
+    assert result["restored_billing_record_count"] == 1
+    assert result["tenant_isolation_preserved"] is True
+    assert result["document_sha256_preserved"] is True
+    assert result["billing_status_preserved"] is True
     assert result["sha256_verified"] is True
     assert result["archive_path"]
     assert result["sidecar_path"]

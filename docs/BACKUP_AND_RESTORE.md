@@ -162,6 +162,11 @@ sudo systemctl list-timers | grep egp
 **Goal**: prove a fresh restore actually works against a recent backup,
 without touching production.
 
+Record each completed drill in
+[`docs/DR_RESTORE_DRILL_EVIDENCE.md`](./DR_RESTORE_DRILL_EVIDENCE.md),
+including the command, restored counts, integrity checks, and unresolved
+production-readiness caveats.
+
 ```bash
 # 1. Pick a recent backup
 ./.venv/bin/python -m egp_db.backup_targets download \
