@@ -186,6 +186,15 @@ def get_browser_warmup_stale_after_seconds(override: float | str | None = None) 
     )
 
 
+def get_browser_warmup_failure_pause_threshold(override: int | str | None = None) -> int:
+    """Return consecutive failed warmups before pre-dispatch warming pauses."""
+    return _get_nonnegative_int_env(
+        name="EGP_BROWSER_WARMUP_FAILURE_PAUSE_THRESHOLD",
+        default=2,
+        override=override,
+    )
+
+
 def get_browser_predispatch_warm_seconds(override: float | str | None = None) -> float:
     """Return the post-preflight hold time for on-demand dispatch warmups."""
     return _get_nonnegative_float_env(
