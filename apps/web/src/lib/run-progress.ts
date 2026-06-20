@@ -13,6 +13,13 @@ export type RecentKeywordRunSummary = {
   failedKeywords: string[];
 };
 
+const ACTIVE_RUN_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
+
+type RunFreshnessOptions = {
+  nowMs?: number;
+  staleAfterMs?: number;
+};
+
 function readRecordSummary(
   summary: Record<string, unknown> | null,
   key: string,
@@ -45,6 +52,36 @@ function parseTimestamp(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getRunActivityTimestamp(runDetail: RunDetailResponse): number {
+  const progress = readRecordSummary(
+    runDetail.run.summary_json,
+    "live_progress",
+  );
+  const progressUpdatedAt =
+    typeof progress?.updated_at === "string" ? progress.updated_at : null;
+  return Math.max(
+    parseTimestamp(progressUpdatedAt),
+    parseTimestamp(runDetail.run.started_at),
+    parseTimestamp(runDetail.run.created_at),
+  );
+}
+
+export function isStaleActiveRun(
+  runDetail: RunDetailResponse,
+  options: RunFreshnessOptions = {},
+): boolean {
+  if (!isActiveRunStatus(runDetail.run.status)) {
+    return false;
+  }
+  const activityTimestamp = getRunActivityTimestamp(runDetail);
+  if (activityTimestamp <= 0) {
+    return false;
+  }
+  const nowMs = options.nowMs ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? ACTIVE_RUN_STALE_AFTER_MS;
+  return nowMs - activityTimestamp > staleAfterMs;
 }
 
 export function formatProgressStage(stage: string): string {
@@ -85,21 +122,29 @@ export function formatRunProgress(
   if (!progress) return { detail: null, updatedAt: null };
   const stage = typeof progress.stage === "string" ? progress.stage : "";
   const keyword = typeof progress.keyword === "string" ? progress.keyword : "";
-  const projectName = typeof progress.project_name === "string" ? progress.project_name : "";
-  const pageNum = typeof progress.page_num === "number" ? progress.page_num : null;
+  const projectName =
+    typeof progress.project_name === "string" ? progress.project_name : "";
+  const pageNum =
+    typeof progress.page_num === "number" ? progress.page_num : null;
   const eligibleCount =
-    typeof progress.eligible_count === "number" ? progress.eligible_count : null;
+    typeof progress.eligible_count === "number"
+      ? progress.eligible_count
+      : null;
   const documentCount =
-    typeof progress.document_count === "number" ? progress.document_count : null;
+    typeof progress.document_count === "number"
+      ? progress.document_count
+      : null;
   const parts = [stage ? formatProgressStage(stage) : "กำลัง crawl"];
   if (keyword) parts.push(`คำค้น "${keyword}"`);
   if (pageNum !== null) parts.push(`หน้า ${pageNum}`);
-  if (eligibleCount !== null) parts.push(`พบ ${eligibleCount} โครงการที่เข้าเงื่อนไข`);
+  if (eligibleCount !== null)
+    parts.push(`พบ ${eligibleCount} โครงการที่เข้าเงื่อนไข`);
   if (documentCount !== null) parts.push(`เอกสาร ${documentCount} ไฟล์`);
   if (projectName) parts.push(projectName);
   return {
     detail: parts.join(" · "),
-    updatedAt: typeof progress.updated_at === "string" ? progress.updated_at : null,
+    updatedAt:
+      typeof progress.updated_at === "string" ? progress.updated_at : null,
   };
 }
 
@@ -109,7 +154,10 @@ export function isActiveRunStatus(status: string): boolean {
 
 export function getActiveRuns(runs: RunDetailResponse[]): RunDetailResponse[] {
   return [...runs]
-    .filter((detail) => isActiveRunStatus(detail.run.status))
+    .filter(
+      (detail) =>
+        isActiveRunStatus(detail.run.status) && !isStaleActiveRun(detail),
+    )
     .sort((left, right) => {
       if (left.run.status !== right.run.status) {
         return left.run.status === "running" ? -1 : 1;
@@ -121,16 +169,36 @@ export function getActiveRuns(runs: RunDetailResponse[]): RunDetailResponse[] {
     });
 }
 
-export function getRunPrimaryKeyword(runDetail: RunDetailResponse): string | null {
-  const progress = readRecordSummary(runDetail.run.summary_json, "live_progress");
+export function getStaleActiveRuns(
+  runs: RunDetailResponse[],
+): RunDetailResponse[] {
+  return [...runs]
+    .filter((detail) => isStaleActiveRun(detail))
+    .sort(
+      (left, right) =>
+        getRunActivityTimestamp(right) - getRunActivityTimestamp(left),
+    );
+}
+
+export function getRunPrimaryKeyword(
+  runDetail: RunDetailResponse,
+): string | null {
+  const progress = readRecordSummary(
+    runDetail.run.summary_json,
+    "live_progress",
+  );
   if (typeof progress?.keyword === "string" && progress.keyword.trim() !== "") {
     return progress.keyword.trim();
   }
-  const taskKeyword = runDetail.tasks.find((task) => typeof task.keyword === "string" && task.keyword);
+  const taskKeyword = runDetail.tasks.find(
+    (task) => typeof task.keyword === "string" && task.keyword,
+  );
   return taskKeyword?.keyword ?? null;
 }
 
-export function getRunActivitySnapshot(runDetail: RunDetailResponse): RunProgressSnapshot {
+export function getRunActivitySnapshot(
+  runDetail: RunDetailResponse,
+): RunProgressSnapshot {
   const progress = formatRunProgress(runDetail.run.summary_json);
   if (progress.detail) {
     return progress;
@@ -169,7 +237,9 @@ export function getRunDiscoveredCount(run: RunSummary): number {
 export function summarizeRecentKeywordRuns(
   runs: RunDetailResponse[],
 ): RecentKeywordRunSummary | null {
-  const completedRuns = runs.filter((detail) => !isActiveRunStatus(detail.run.status));
+  const completedRuns = runs.filter(
+    (detail) => !isActiveRunStatus(detail.run.status),
+  );
   if (completedRuns.length < 2) {
     return null;
   }
@@ -177,14 +247,21 @@ export function summarizeRecentKeywordRuns(
   const failedRuns = completedRuns.filter(
     (detail) => detail.run.status === "failed" || detail.run.error_count > 0,
   );
-  const succeededRuns = completedRuns.filter((detail) => detail.run.status === "succeeded");
+  const succeededRuns = completedRuns.filter(
+    (detail) => detail.run.status === "succeeded",
+  );
   return {
     processedCount: completedRuns.length,
     succeededCount: succeededRuns.length,
-    zeroResultCount: succeededRuns.filter((detail) => getRunDiscoveredCount(detail.run) === 0).length,
+    zeroResultCount: succeededRuns.filter(
+      (detail) => getRunDiscoveredCount(detail.run) === 0,
+    ).length,
     failedCount: failedRuns.length,
     failedKeywords: failedRuns
       .map(getRunPrimaryKeyword)
-      .filter((keyword): keyword is string => typeof keyword === "string" && keyword.trim() !== ""),
+      .filter(
+        (keyword): keyword is string =>
+          typeof keyword === "string" && keyword.trim() !== "",
+      ),
   };
 }

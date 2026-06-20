@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import os
 from uuid import uuid4
 
@@ -18,6 +18,7 @@ from sqlalchemy import (
     and_,
     desc,
     func,
+    or_,
 )
 from sqlalchemy import Column, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
@@ -187,6 +188,7 @@ def _dt_to_iso(value: datetime | None) -> str | None:
 
 _VALID_RUN_TRIGGER_TYPES = {"schedule", "manual", "retry", "backfill"}
 _VALID_TASK_STATUSES = {"queued", "running", "succeeded", "failed", "skipped"}
+ACTIVE_RUN_STALE_AFTER_SECONDS = 3 * 60 * 60
 
 
 def _validate_run_trigger_type(value: str) -> str:
@@ -772,8 +774,16 @@ class SqlRunRepository:
             offset=normalized_offset,
         )
 
-    def count_active_runs(self, *, tenant_id: str) -> int:
+    def count_active_runs(
+        self,
+        *,
+        tenant_id: str,
+        stale_after_seconds: float = ACTIVE_RUN_STALE_AFTER_SECONDS,
+    ) -> int:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
+        active_since = _now() - timedelta(
+            seconds=max(1.0, float(stale_after_seconds))
+        )
         with self._engine.connect() as connection:
             return int(
                 connection.execute(
@@ -787,6 +797,13 @@ class SqlRunRepository:
                                     CrawlRunStatus.QUEUED.value,
                                     CrawlRunStatus.RUNNING.value,
                                 ]
+                            ),
+                            or_(
+                                CRAWL_RUNS_TABLE.c.started_at >= active_since,
+                                and_(
+                                    CRAWL_RUNS_TABLE.c.started_at.is_(None),
+                                    CRAWL_RUNS_TABLE.c.created_at >= active_since,
+                                ),
                             ),
                         )
                     )
