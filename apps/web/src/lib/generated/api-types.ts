@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/worker/projects/status-update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingest Project Status Update */
+        post: operations["ingest_project_status_update_internal_worker_projects_status_update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin": {
         parameters: {
             query?: never;
@@ -986,11 +1003,10 @@ export interface paths {
          * Get Document Download Link
          * @description Resolve the URL the browser should hit to download a document.
          *
-         *     For artifact stores that can mint signed URLs (Supabase, S3, Drive,
-         *     OneDrive) the response carries a direct, time-limited URL so the browser
-         *     can stream the bytes from origin storage without proxying through the
-         *     API. For local-filesystem stores (and any store that cannot produce an
-         *     HTTP URL) the response falls back to the API's own ``/download`` route.
+         *     Managed stores (local, Supabase, S3/R2) fall back to the API's own
+         *     ``/download`` route so missing artifacts surface as structured API errors
+         *     instead of raw object-store XML. Prefixed external tenant providers may
+         *     still return direct, time-limited URLs when the repository can mint them.
          *
          *     The response shape lets the frontend always do the same thing: navigate
          *     to ``url`` (e.g. via ``<a href={url} download>``) and let the browser
@@ -2771,6 +2787,27 @@ export interface components {
             /** Run Id */
             run_id: string | null;
         };
+        /** ProjectStatusUpdateRequest */
+        ProjectStatusUpdateRequest: {
+            /** Project Id */
+            project_id: string;
+            /** Project State */
+            project_state: components["schemas"]["ProjectState"] | string;
+            /** Raw Snapshot */
+            raw_snapshot?: {
+                [key: string]: unknown;
+            } | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Source Status Text */
+            source_status_text: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** ProjectStatusUpdateResponse */
+        ProjectStatusUpdateResponse: {
+            project: components["schemas"]["ProjectResponse"];
+        };
         /** ReconcileBillingPaymentRequest */
         ReconcileBillingPaymentRequest: {
             /** Note */
@@ -3392,6 +3429,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DiscoverProjectIngestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_project_status_update_internal_worker_projects_status_update_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectStatusUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectStatusUpdateResponse"];
                 };
             };
             /** @description Validation Error */

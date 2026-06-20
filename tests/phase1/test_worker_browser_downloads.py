@@ -483,6 +483,10 @@ def test_doc_targets_include_final_tor() -> None:
     assert "เอกสารประกวดราคา" in DOCS_TO_DOWNLOAD
 
 
+def test_doc_targets_include_preliminary_bid_summary() -> None:
+    assert "สรุปข้อมูลการเสนอราคา" in DOCS_TO_DOWNLOAD
+
+
 def test_consulting_document_label_counts_as_final_tor() -> None:
     assert is_final_tor_doc_label("เอกสารจ้างที่ปรึกษา") is True
 

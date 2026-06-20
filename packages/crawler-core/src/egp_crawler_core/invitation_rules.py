@@ -23,6 +23,10 @@ _DISCOVERABLE_STAGE_MARKERS = (
     "จัดทำทีโออาร์",  # drafting TOR (Thai spelling)
     "ราคากลาง",  # median price announcement
 )
+_PRELIMINARY_PRICING_STATUS_MARKERS = (
+    "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+    "สรุปข้อมูลการเสนอราคา",
+)
 
 
 def _compact_visible_text(value: str | None) -> str:
@@ -46,4 +50,14 @@ def is_discoverable_stage_status(source_status_text: str | None) -> bool:
     return any(
         _compact_visible_text(marker).casefold() in compact
         for marker in _DISCOVERABLE_STAGE_MARKERS
+    )
+
+
+def is_preliminary_pricing_status(source_status_text: str | None) -> bool:
+    """Return True when an observed status is the preliminary bid summary stage."""
+
+    compact = _compact_visible_text(source_status_text).casefold()
+    return any(
+        _compact_visible_text(marker).casefold() in compact
+        for marker in _PRELIMINARY_PRICING_STATUS_MARKERS
     )

@@ -34,7 +34,12 @@ _TOR_MARKERS = (
     "terms of reference",
 )
 _INVITATION_MARKERS = ("ประกาศเชิญชวน", "หนังสือเชิญชวน")
-_MID_PRICE_MARKERS = ("ประกาศราคากลาง", "ราคากลาง")
+_MID_PRICE_MARKERS = (
+    "ประกาศราคากลาง",
+    "ราคากลาง",
+    "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+    "สรุปข้อมูลการเสนอราคา",
+)
 _TOR_TOKEN_PATTERN = re.compile(r"(?<![a-z0-9])tor(?![a-z0-9])", re.IGNORECASE)
 
 

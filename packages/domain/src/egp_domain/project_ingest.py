@@ -18,6 +18,7 @@ from egp_shared_types.enums import ClosedReason, NotificationType, ProjectState
 from egp_shared_types.project_events import (
     CloseCheckProjectEvent,
     DiscoveredProjectEvent,
+    ProjectStatusUpdateEvent,
 )
 
 
@@ -119,6 +120,21 @@ class ProjectIngestService:
                 },
             )
         return project
+
+    def ingest_status_update_event(
+        self,
+        *,
+        event: ProjectStatusUpdateEvent,
+    ) -> ProjectRecord:
+        return self._repository.transition_project(
+            tenant_id=event.tenant_id,
+            project_id=event.project_id,
+            next_state=event.project_state,
+            closed_reason=None,
+            source_status_text=event.source_status_text,
+            run_id=event.run_id,
+            raw_snapshot=event.raw_snapshot,
+        )
 
 
 def _preserve_existing_state_for_rediscovery(

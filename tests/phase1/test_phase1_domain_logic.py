@@ -271,6 +271,14 @@ def test_classify_document_handles_non_tor_labels() -> None:
     assert document_phase is DocumentPhase.UNKNOWN
 
 
+def test_classify_document_treats_preliminary_bid_summary_as_mid_price() -> None:
+    for label in ("สรุปข้อมูลการเสนอราคาเบื้องต้น", "สรุปข้อมูลการเสนอราคา"):
+        document_type, document_phase = classify_document(label=label)
+
+        assert document_type is DocumentType.MID_PRICE
+        assert document_phase is DocumentPhase.UNKNOWN
+
+
 def test_derive_artifact_bucket_detects_pricing_only() -> None:
     bucket = derive_artifact_bucket(labels=["ประกาศราคากลาง"])
 

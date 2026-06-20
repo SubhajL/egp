@@ -13,7 +13,11 @@ from egp_domain.project_ingest import (
 )
 from egp_db.db_utils import normalize_uuid_string
 from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
-from egp_shared_types.project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
+from egp_shared_types.project_events import (
+    CloseCheckProjectEvent,
+    DiscoveredProjectEvent,
+    ProjectStatusUpdateEvent,
+)
 
 
 router = APIRouter(prefix="/internal/worker/projects", tags=["internal-worker"])
@@ -45,12 +49,25 @@ class CloseCheckProjectIngestRequest(BaseModel):
     raw_snapshot: dict[str, object] | None = None
 
 
+class ProjectStatusUpdateRequest(BaseModel):
+    tenant_id: str = Field(min_length=1)
+    run_id: str | None = None
+    project_id: str = Field(min_length=1)
+    project_state: ProjectState | str
+    source_status_text: str = Field(min_length=1)
+    raw_snapshot: dict[str, object] | None = None
+
+
 class DiscoverProjectIngestResponse(BaseModel):
     created: bool
     project: ProjectResponse
 
 
 class CloseCheckProjectIngestResponse(BaseModel):
+    project: ProjectResponse
+
+
+class ProjectStatusUpdateResponse(BaseModel):
     project: ProjectResponse
 
 
@@ -125,3 +142,29 @@ def ingest_close_check_project(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="project not found") from exc
     return CloseCheckProjectIngestResponse(project=_serialize_project(project))
+
+
+@router.post("/status-update", response_model=ProjectStatusUpdateResponse)
+def ingest_project_status_update(
+    payload: ProjectStatusUpdateRequest,
+    request: Request,
+) -> ProjectStatusUpdateResponse:
+    service = _service_from_request(request)
+    require_internal_worker_token(request)
+    resolved_tenant_id = normalize_uuid_string(payload.tenant_id)
+    try:
+        project = service.ingest_status_update_event(
+            event=ProjectStatusUpdateEvent(
+                tenant_id=resolved_tenant_id,
+                run_id=payload.run_id,
+                project_id=payload.project_id,
+                project_state=payload.project_state,
+                source_status_text=payload.source_status_text,
+                raw_snapshot=payload.raw_snapshot,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
+    return ProjectStatusUpdateResponse(project=_serialize_project(project))

@@ -20,6 +20,7 @@ from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
 from egp_shared_types.project_events import (
     CloseCheckProjectEvent,
     DiscoveredProjectEvent,
+    ProjectStatusUpdateEvent,
 )
 from egp_worker.main import run_worker_job
 from egp_worker.project_event_sink import ApiProjectEventSink
@@ -207,6 +208,7 @@ class FakeProjectEventSink:
     def __init__(self) -> None:
         self.discovery_events: list[DiscoveredProjectEvent] = []
         self.close_check_events: list[CloseCheckProjectEvent] = []
+        self.status_update_events: list[ProjectStatusUpdateEvent] = []
 
     def record_discovery(self, event: DiscoveredProjectEvent):
         self.discovery_events.append(event)
@@ -222,6 +224,13 @@ class FakeProjectEventSink:
             project_state=ProjectState.WINNER_ANNOUNCED
             if event.closed_reason is ClosedReason.WINNER_ANNOUNCED
             else ProjectState.CONTRACT_SIGNED,
+        )
+
+    def record_status_update(self, event: ProjectStatusUpdateEvent):
+        self.status_update_events.append(event)
+        return SimpleNamespace(
+            id=event.project_id,
+            project_state=ProjectState(event.project_state),
         )
 
 
@@ -374,13 +383,13 @@ def test_close_check_workflow_ingests_revisited_documents_without_close_match(
         observations=[
             {
                 "project_id": "11111111-1111-1111-1111-111111111112",
-                "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+                "source_status_text": "ยังเปิดรับข้อเสนอ",
                 "downloaded_documents": [
                     {
                         "file_name": "mid-price.pdf",
                         "file_bytes": b"mid-price",
                         "source_label": "ประกาศราคากลาง",
-                        "source_status_text": "สรุปข้อมูลการเสนอราคาเบื้องต้น",
+                        "source_status_text": "ยังเปิดรับข้อเสนอ",
                     }
                 ],
             }
@@ -393,6 +402,7 @@ def test_close_check_workflow_ingests_revisited_documents_without_close_match(
     )
 
     assert sink.close_check_events == []
+    assert sink.status_update_events == []
     assert captured["tenant_id"] == TENANT_ID
     assert captured["project_id"] == "11111111-1111-1111-1111-111111111112"
     assert captured["downloaded_documents"][0]["source_label"] == "ประกาศราคากลาง"
@@ -400,6 +410,60 @@ def test_close_check_workflow_ingests_revisited_documents_without_close_match(
     assert run_detail.tasks[0].status == "skipped"
     assert run_detail.tasks[0].result_json == {
         "matched": False,
+        "document_count": 1,
+    }
+
+
+def test_close_check_workflow_updates_prelim_pricing_status_with_revisited_documents(
+    monkeypatch, tmp_path
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-prelim.sqlite3'}"
+    sink = FakeProjectEventSink()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.close_check.ingest_downloaded_documents",
+        lambda **kwargs: captured.update(kwargs) or [],
+    )
+
+    result = run_close_check_workflow(
+        database_url=database_url,
+        tenant_id=TENANT_ID,
+        project_event_sink=sink,
+        artifact_root=tmp_path / "artifacts",
+        observations=[
+            {
+                "project_id": "11111111-1111-1111-1111-111111111112",
+                "source_status_text": "สรุปข้อมูลการเสนอราคา",
+                "downloaded_documents": [
+                    {
+                        "file_name": "bid-summary.pdf",
+                        "file_bytes": b"bid-summary",
+                        "source_label": "สรุปข้อมูลการเสนอราคา",
+                        "source_status_text": "สรุปข้อมูลการเสนอราคา",
+                    }
+                ],
+            }
+        ],
+    )
+
+    run_repository = SqlRunRepository(database_url=database_url, bootstrap_schema=False)
+    run_detail = run_repository.get_run_detail(
+        tenant_id=TENANT_ID, run_id=result.run.run.id
+    )
+
+    assert sink.close_check_events == []
+    assert len(sink.status_update_events) == 1
+    status_event = sink.status_update_events[0]
+    assert status_event.project_id == "11111111-1111-1111-1111-111111111112"
+    assert status_event.project_state is ProjectState.PRELIM_PRICING_SEEN
+    assert status_event.source_status_text == "สรุปข้อมูลการเสนอราคา"
+    assert captured["downloaded_documents"][0]["source_label"] == "สรุปข้อมูลการเสนอราคา"
+    assert run_detail is not None
+    assert run_detail.tasks[0].status == "succeeded"
+    assert run_detail.tasks[0].result_json == {
+        "project_id": "11111111-1111-1111-1111-111111111112",
+        "next_state": ProjectState.PRELIM_PRICING_SEEN.value,
         "document_count": 1,
     }
 
