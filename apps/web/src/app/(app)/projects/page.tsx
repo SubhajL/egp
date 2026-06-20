@@ -13,6 +13,7 @@ import {
   getActiveRuns,
   getRunActivitySnapshot,
   getRunDiscoveredCount,
+  getStaleActiveRuns,
   summarizeRecentKeywordRuns,
 } from "@/lib/run-progress";
 import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
@@ -139,7 +140,9 @@ function getEffectiveStates(
     return selectedStates;
   }
 
-  const intersection = selectedStates.filter((state) => tabStates.includes(state));
+  const intersection = selectedStates.filter((state) =>
+    tabStates.includes(state),
+  );
   return intersection.length > 0 ? intersection : ["__no_match__"];
 }
 
@@ -227,7 +230,9 @@ function latestCompletedRunBadgeClass(status: string): string {
 export default function ProjectsPage() {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "active" | "closed">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "active" | "closed">(
+    "all",
+  );
   const [statusFilters, setStatusFilters] = useState(INITIAL_STATUS_FILTERS);
   const [typeFilters, setTypeFilters] = useState(INITIAL_TYPE_FILTERS);
   const [budgetMin, setBudgetMin] = useState("");
@@ -240,11 +245,15 @@ export default function ProjectsPage() {
   const [isRecrawling, setIsRecrawling] = useState(false);
   const [recrawlError, setRecrawlError] = useState<string | null>(null);
   const [recrawlNotice, setRecrawlNotice] = useState<string | null>(null);
-  const [recrawlQueuedNotice, setRecrawlQueuedNotice] = useState<string | null>(null);
+  const [recrawlQueuedNotice, setRecrawlQueuedNotice] = useState<string | null>(
+    null,
+  );
   const [isKeywordPromptOpen, setIsKeywordPromptOpen] = useState(false);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [isSavingKeyword, setIsSavingKeyword] = useState(false);
-  const [keywordPromptError, setKeywordPromptError] = useState<string | null>(null);
+  const [keywordPromptError, setKeywordPromptError] = useState<string | null>(
+    null,
+  );
   const [manualRecrawlTracking, setManualRecrawlTracking] =
     useState<ManualRecrawlTracking | null>(null);
   const refreshedCompletedRunIdRef = useRef<string | null>(null);
@@ -252,8 +261,12 @@ export default function ProjectsPage() {
   const { data: rulesData, isLoading: isRulesLoading } = useRules();
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const selectedStatusKeys = statusFilters.filter((filter) => filter.checked).map((filter) => filter.key);
-  const selectedTypeKeys = typeFilters.filter((filter) => filter.checked).map((filter) => filter.key);
+  const selectedStatusKeys = statusFilters
+    .filter((filter) => filter.checked)
+    .map((filter) => filter.key);
+  const selectedTypeKeys = typeFilters
+    .filter((filter) => filter.checked)
+    .map((filter) => filter.key);
   const selectedStatusSignature = selectedStatusKeys.join(",");
   const selectedTypeSignature = selectedTypeKeys.join(",");
   const effectiveStates = getEffectiveStates(activeTab, selectedStatusKeys);
@@ -275,7 +288,8 @@ export default function ProjectsPage() {
 
   const exportQuery: ExportProjectsParams = {
     project_state: effectiveStates,
-    procurement_type: selectedTypeKeys.length > 0 ? selectedTypeKeys : undefined,
+    procurement_type:
+      selectedTypeKeys.length > 0 ? selectedTypeKeys : undefined,
     keyword: deferredSearchQuery.trim() || undefined,
     budget_min: normalizedBudgetMin,
     budget_max: normalizedBudgetMax,
@@ -289,7 +303,13 @@ export default function ProjectsPage() {
     offset: (currentPage - 1) * rowsPerPage,
   };
 
-  const { data, isLoading, isError, error, refetch: refetchProjects } = useProjects(projectQuery);
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch: refetchProjects,
+  } = useProjects(projectQuery);
   const {
     data: runsData,
     error: runsError,
@@ -298,13 +318,24 @@ export default function ProjectsPage() {
   } = useRuns({ limit: 10, offset: 0 });
   const apiProjects = data?.projects ?? [];
   const totalProjects = data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(Math.max(totalProjects, 1) / rowsPerPage));
+  const totalPages = Math.max(
+    1,
+    Math.ceil(Math.max(totalProjects, 1) / rowsPerPage),
+  );
   const displayProjects = buildProjectRows(apiProjects);
-  const rangeStart = totalProjects === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
-  const rangeEnd = totalProjects === 0 ? 0 : rangeStart + displayProjects.length - 1;
+  const rangeStart =
+    totalProjects === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1;
+  const rangeEnd =
+    totalProjects === 0 ? 0 : rangeStart + displayProjects.length - 1;
   const activeRuns = getActiveRuns(runsData?.runs ?? []);
   const activeRunCards = activeRuns.slice(0, 3).map(buildRunActivityCard);
-  const recentKeywordRunSummary = summarizeRecentKeywordRuns(runsData?.runs ?? []);
+  const staleActiveRuns = getStaleActiveRuns(runsData?.runs ?? []);
+  const staleActiveRunCards = staleActiveRuns
+    .slice(0, 3)
+    .map(buildRunActivityCard);
+  const recentKeywordRunSummary = summarizeRecentKeywordRuns(
+    runsData?.runs ?? [],
+  );
   const latestRun = runsData?.runs[0] ?? null;
   const latestRunStartedAfterManualRequest =
     latestRun !== null &&
@@ -316,14 +347,19 @@ export default function ProjectsPage() {
     (manualRecrawlTracking === null || latestRunStartedAfterManualRequest)
       ? buildRunActivityCard(latestRun)
       : null;
-  const runningRunCount = activeRuns.filter((detail) => detail.run.status === "running").length;
-  const queuedRunCount = activeRuns.filter((detail) => detail.run.status === "queued").length;
+  const runningRunCount = activeRuns.filter(
+    (detail) => detail.run.status === "running",
+  ).length;
+  const queuedRunCount = activeRuns.filter(
+    (detail) => detail.run.status === "queued",
+  ).length;
   const waitingForManualRun =
     manualRecrawlTracking !== null &&
     !manualRecrawlTracking.timedOut &&
     activeRuns.length === 0;
   const shouldShowRunActivity =
     activeRuns.length > 0 ||
+    staleActiveRuns.length > 0 ||
     manualRecrawlTracking !== null ||
     latestCompletedRunCard !== null ||
     recrawlQueuedNotice !== null ||
@@ -370,7 +406,8 @@ export default function ProjectsPage() {
       return;
     }
     const remainingMs =
-      MANUAL_RECRAWL_RUN_WAIT_MS - (Date.now() - manualRecrawlTracking.requestedAt);
+      MANUAL_RECRAWL_RUN_WAIT_MS -
+      (Date.now() - manualRecrawlTracking.requestedAt);
     if (remainingMs <= 0) {
       setManualRecrawlTracking((current) =>
         current ? { ...current, timedOut: true } : current,
@@ -402,8 +439,12 @@ export default function ProjectsPage() {
   }
 
   function clearAllFilters() {
-    setStatusFilters((previous) => previous.map((filter) => ({ ...filter, checked: false })));
-    setTypeFilters((previous) => previous.map((filter) => ({ ...filter, checked: false })));
+    setStatusFilters((previous) =>
+      previous.map((filter) => ({ ...filter, checked: false })),
+    );
+    setTypeFilters((previous) =>
+      previous.map((filter) => ({ ...filter, checked: false })),
+    );
     setBudgetMin("");
     setBudgetMax("");
     setTorChangedOnly(false);
@@ -426,9 +467,7 @@ export default function ProjectsPage() {
       link.remove();
       URL.revokeObjectURL(downloadUrl);
     } catch (error) {
-      setExportError(
-        localizeApiError(error, "ไม่สามารถส่งออกไฟล์ Excel ได้"),
-      );
+      setExportError(localizeApiError(error, "ไม่สามารถส่งออกไฟล์ Excel ได้"));
     } finally {
       setIsExporting(false);
     }
@@ -449,7 +488,9 @@ export default function ProjectsPage() {
       const result = await triggerManualRecrawl();
       const keywordCount = result.queued_keywords.length;
       setRecrawlNotice(
-        `เริ่ม crawl ${result.queued_job_count} งานจาก ${keywordCount} คำค้นแล้ว`,
+        result.queued_job_count > 0
+          ? `เริ่ม crawl ${result.queued_job_count} งานจาก ${keywordCount} คำค้นแล้ว`
+          : "รับคำสั่งแล้ว แต่ไม่มีคำค้นใหม่ที่ต้องเพิ่มเข้าคิว",
       );
       if (result.queued_job_count > 0) {
         setManualRecrawlTracking({
@@ -518,7 +559,9 @@ export default function ProjectsPage() {
       ]);
       await refetchRuns();
     } catch (error) {
-      setKeywordPromptError(localizeApiError(error, "ยังไม่สามารถเพิ่มคำค้นใหม่ได้"));
+      setKeywordPromptError(
+        localizeApiError(error, "ยังไม่สามารถเพิ่มคำค้นใหม่ได้"),
+      );
     } finally {
       setIsSavingKeyword(false);
     }
@@ -545,7 +588,12 @@ export default function ProjectsPage() {
             <button
               type="button"
               onClick={() => void handleRecrawl()}
-              disabled={isRecrawling || isLoading || isRulesLoading || !canRequestRecrawl}
+              disabled={
+                isRecrawling ||
+                isLoading ||
+                isRulesLoading ||
+                !canRequestRecrawl
+              }
               className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isRecrawling ? "กำลังเริ่ม crawl..." : "Crawl ใหม่"}
@@ -588,7 +636,8 @@ export default function ProjectsPage() {
               เพิ่มคำค้นก่อนเริ่ม crawl
             </h2>
             <p className="mt-2 text-sm text-[var(--text-muted)]">
-              รอบสิทธิ์ใหม่นี้ยังไม่มีคำค้นที่ใช้งานอยู่ กรุณาใส่ 1 คำค้นใหม่ก่อนเริ่มค้นหา
+              รอบสิทธิ์ใหม่นี้ยังไม่มีคำค้นที่ใช้งานอยู่ กรุณาใส่ 1
+              คำค้นใหม่ก่อนเริ่มค้นหา
             </p>
             <label
               htmlFor="first-cycle-keyword"
@@ -638,8 +687,8 @@ export default function ProjectsPage() {
                 สถานะการ crawl ล่าสุด
               </h2>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
-                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิว กำลังทำอะไรอยู่
-                หรือจบลงอย่างไร
+                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิว
+                กำลังทำอะไรอยู่ หรือจบลงอย่างไร
               </p>
             </div>
             <Link
@@ -656,8 +705,8 @@ export default function ProjectsPage() {
                 สรุปล่าสุด {recentKeywordRunSummary.processedCount} คำค้น
               </p>
               <p className="mt-2">
-                เสร็จแล้ว {recentKeywordRunSummary.succeededCount} · ไม่พบโครงการ{" "}
-                {recentKeywordRunSummary.zeroResultCount} · ล้มเหลว{" "}
+                เสร็จแล้ว {recentKeywordRunSummary.succeededCount} ·
+                ไม่พบโครงการ {recentKeywordRunSummary.zeroResultCount} · ล้มเหลว{" "}
                 {recentKeywordRunSummary.failedCount}
               </p>
               {recentKeywordRunSummary.failedKeywords.length > 0 ? (
@@ -698,7 +747,51 @@ export default function ProjectsPage() {
                         ค้นพบแล้ว {run.discoveredCount} โครงการ
                       </span>
                     </div>
-                    <p className="mt-3 text-sm text-[var(--text-secondary)]">{run.detail}</p>
+                    <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                      {run.detail}
+                    </p>
+                    {run.updatedAt ? (
+                      <p className="mt-2 text-xs text-[var(--text-muted)]">
+                        อัปเดตล่าสุด {formatThaiDate(run.updatedAt)}
+                      </p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </>
+          ) : staleActiveRuns.length > 0 ? (
+            <>
+              <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                <span className="rounded-full bg-[var(--badge-amber-bg)] px-3 py-1 font-medium text-[var(--badge-amber-text)]">
+                  ต้องตรวจสอบ {staleActiveRuns.length} งาน
+                </span>
+              </div>
+              <div className="mt-4 space-y-3">
+                {staleActiveRunCards.map((run) => (
+                  <article
+                    key={run.id}
+                    className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4"
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full bg-[var(--badge-amber-bg)] px-3 py-1 text-xs font-medium text-[var(--badge-amber-text)]">
+                          สถานะค้าง
+                        </span>
+                        <span className="font-mono text-sm text-[var(--text-primary)]">
+                          {run.displayId}
+                        </span>
+                        <span className="text-sm text-[var(--text-muted)]">
+                          ทริกเกอร์: {run.triggerLabel}
+                        </span>
+                      </div>
+                      <span className="text-sm text-[var(--text-muted)]">
+                        ค้นพบแล้ว {run.discoveredCount} โครงการ
+                      </span>
+                    </div>
+                    <p className="mt-3 text-sm text-[var(--text-secondary)]">
+                      run นี้ไม่มี progress ใหม่เกินเวลาที่ worker ควรทำงานแล้ว
+                      จึงไม่ถูกนับเป็นงานที่กำลังทำงานจริง
+                    </p>
                     {run.updatedAt ? (
                       <p className="mt-2 text-xs text-[var(--text-muted)]">
                         อัปเดตล่าสุด {formatThaiDate(run.updatedAt)}
@@ -721,12 +814,14 @@ export default function ProjectsPage() {
               </p>
               {manualRecrawlTracking.queuedKeywords.length > 0 ? (
                 <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  คำค้นที่ส่งแล้ว: {manualRecrawlTracking.queuedKeywords.join(", ")}
+                  คำค้นที่ส่งแล้ว:{" "}
+                  {manualRecrawlTracking.queuedKeywords.join(", ")}
                 </p>
               ) : null}
               {manualRecrawlTracking.timedOut ? (
                 <p className="mt-2 text-xs text-[var(--badge-amber-text)]">
-                  หาก worker เริ่มช้ากว่านี้ ให้รีเฟรชอีกครั้งหรือเปิดหน้าการทำงานเพื่อตรวจสอบ
+                  หาก worker เริ่มช้ากว่านี้
+                  ให้รีเฟรชอีกครั้งหรือเปิดหน้าการทำงานเพื่อตรวจสอบ
                 </p>
               ) : (
                 <p className="mt-2 text-xs text-[var(--text-muted)]">
@@ -749,7 +844,10 @@ export default function ProjectsPage() {
                 <article className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-wrap items-center gap-2">
-                      <StatusBadge state={latestCompletedRunCard.status} variant="run" />
+                      <StatusBadge
+                        state={latestCompletedRunCard.status}
+                        variant="run"
+                      />
                       <span className="font-mono text-sm text-[var(--text-primary)]">
                         {latestCompletedRunCard.displayId}
                       </span>
@@ -766,7 +864,8 @@ export default function ProjectsPage() {
                   </p>
                   {latestCompletedRunCard.updatedAt ? (
                     <p className="mt-2 text-xs text-[var(--text-muted)]">
-                      อัปเดตล่าสุด {formatThaiDate(latestCompletedRunCard.updatedAt)}
+                      อัปเดตล่าสุด{" "}
+                      {formatThaiDate(latestCompletedRunCard.updatedAt)}
                     </p>
                   ) : null}
                 </article>
@@ -774,7 +873,10 @@ export default function ProjectsPage() {
             </>
           ) : isRunsError ? (
             <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {localizeApiError(runsError, "ไม่สามารถโหลดสถานะการ crawl ล่าสุดได้")}
+              {localizeApiError(
+                runsError,
+                "ไม่สามารถโหลดสถานะการ crawl ล่าสุดได้",
+              )}
             </div>
           ) : null}
         </section>
@@ -789,7 +891,9 @@ export default function ProjectsPage() {
       <div className="flex gap-0">
         <aside className="sticky top-0 h-[calc(100vh-140px)] w-[280px] shrink-0 overflow-y-auto border-r border-[var(--border-default)] bg-[var(--bg-surface)] p-5">
           <div className="mb-5 flex items-center justify-between">
-            <span className="text-sm font-bold text-[var(--text-primary)]">ตัวกรอง</span>
+            <span className="text-sm font-bold text-[var(--text-primary)]">
+              ตัวกรอง
+            </span>
             <button
               type="button"
               onClick={clearAllFilters}
@@ -816,7 +920,10 @@ export default function ProjectsPage() {
                     className="h-4 w-4 rounded border-[var(--border-default)] text-[var(--color-primary)] focus:ring-[var(--color-primary)]"
                   />
                   <span className="flex-1">{filter.label}</span>
-                  <StatusBadge state={filter.key} className="px-1.5 py-0 text-[10px]" />
+                  <StatusBadge
+                    state={filter.key}
+                    className="px-1.5 py-0 text-[10px]"
+                  />
                 </label>
               ))}
             </div>
@@ -850,7 +957,9 @@ export default function ProjectsPage() {
             </h3>
             <div className="space-y-2">
               <div>
-                <label className="mb-1 block text-xs text-[var(--text-muted)]">ขั้นต่ำ (บาท)</label>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  ขั้นต่ำ (บาท)
+                </label>
                 <input
                   type="text"
                   value={budgetMin}
@@ -860,7 +969,9 @@ export default function ProjectsPage() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-[var(--text-muted)]">สูงสุด (บาท)</label>
+                <label className="mb-1 block text-xs text-[var(--text-muted)]">
+                  สูงสุด (บาท)
+                </label>
                 <input
                   type="text"
                   value={budgetMax}
@@ -888,7 +999,9 @@ export default function ProjectsPage() {
           </div>
 
           <div className="mb-6">
-            <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">มีผู้ชนะ</h3>
+            <h3 className="mb-3 text-sm font-semibold text-[var(--text-primary)]">
+              มีผู้ชนะ
+            </h3>
             <label className="flex cursor-pointer items-center gap-2 text-sm text-[var(--text-secondary)]">
               <input
                 type="checkbox"
@@ -1019,7 +1132,8 @@ export default function ProjectsPage() {
                           {project.projectNumber}
                         </td>
                         <td className="px-3 py-2 text-[13px] text-[var(--text-secondary)]">
-                          {PROCUREMENT_TYPE_LABELS[project.type] ?? project.type}
+                          {PROCUREMENT_TYPE_LABELS[project.type] ??
+                            project.type}
                         </td>
                         <td className="px-3 py-2">
                           <StatusBadge state={project.state} />
@@ -1034,7 +1148,9 @@ export default function ProjectsPage() {
                           className="px-3 py-2 text-[13px] text-[var(--text-secondary)]"
                           title={project.latestStatus}
                         >
-                          <span className="line-clamp-2">{project.latestStatus}</span>
+                          <span className="line-clamp-2">
+                            {project.latestStatus}
+                          </span>
                         </td>
                         <td className="px-3 py-2 text-[13px] text-[var(--text-muted)]">
                           {project.lastSeen}
@@ -1043,14 +1159,20 @@ export default function ProjectsPage() {
                           {project.hasWinner ? (
                             <span className="text-green-600">&#10003;</span>
                           ) : (
-                            <span className="text-[var(--text-disabled)]">&mdash;</span>
+                            <span className="text-[var(--text-disabled)]">
+                              &mdash;
+                            </span>
                           )}
                         </td>
                         <td className="px-3 py-2 text-center text-[13px]">
                           {project.hasChangedTor ? (
-                            <span className="text-amber-500">&#9888;&#65039;</span>
+                            <span className="text-amber-500">
+                              &#9888;&#65039;
+                            </span>
                           ) : (
-                            <span className="text-[var(--text-disabled)]">&mdash;</span>
+                            <span className="text-[var(--text-disabled)]">
+                              &mdash;
+                            </span>
                           )}
                         </td>
                       </tr>
@@ -1063,14 +1185,19 @@ export default function ProjectsPage() {
                 <button
                   type="button"
                   disabled={currentPage <= 1}
-                  onClick={() => setCurrentPage((page) => Math.max(page - 1, 1))}
+                  onClick={() =>
+                    setCurrentPage((page) => Math.max(page - 1, 1))
+                  }
                   className="rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-sm text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   ก่อนหน้า
                 </button>
 
                 <div className="flex items-center gap-1">
-                  {Array.from({ length: totalPages }, (_, index) => index + 1).map((page) => (
+                  {Array.from(
+                    { length: totalPages },
+                    (_, index) => index + 1,
+                  ).map((page) => (
                     <button
                       key={page}
                       type="button"
@@ -1097,7 +1224,9 @@ export default function ProjectsPage() {
                   >
                     ถัดไป
                   </button>
-                  <span className="text-xs text-[var(--text-muted)]">{rowsPerPage} แถว/หน้า</span>
+                  <span className="text-xs text-[var(--text-muted)]">
+                    {rowsPerPage} แถว/หน้า
+                  </span>
                 </div>
               </div>
             </div>

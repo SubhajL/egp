@@ -387,3 +387,166 @@ LOW
 - Deploying API code is sufficient for the pre-dispatch pause because the production Mac watcher runs `egp_api.executors.discovery_dispatch`.
 - The Mac crawler launchd watcher should stay stopped until a human foreground warm clears Cloudflare and a bounded crawl succeeds.
 - No database migration is required for this change; state is stored in the existing persistent profile state JSON.
+
+## Implementation (2026-06-20 10:50:38 +07) - stale crawl run admission and progress display
+
+### Goal
+
+Fix the projects page symptom where old `running` crawl rows were shown as live worker jobs and blocked the `Crawl ใหม่` action even though no worker was actually running.
+
+### What Changed
+
+- `packages/db/src/egp_db/repositories/run_repo.py`
+  - Added `ACTIVE_RUN_STALE_AFTER_SECONDS = 3 * 60 * 60`.
+  - Updated `SqlRunRepository.count_active_runs()` to count only queued/running rows whose `started_at` or, for never-started queued rows, `created_at` is within the active window.
+  - This keeps stale rows in history but stops them from blocking run admission.
+- `tests/phase2/test_rules_api.py`
+  - Added `test_manual_recrawl_ignores_stale_inflight_run_for_admission`, reproducing a four-day-old running row and proving `/v1/rules/recrawl` accepts a new request.
+- `apps/web/src/lib/run-progress.ts`
+  - Added stale active-run classification using `live_progress.updated_at`, `started_at`, and `created_at`.
+  - `getActiveRuns()` now excludes stale active rows.
+  - Added `getStaleActiveRuns()` for UI diagnostics.
+- `apps/web/tests/unit/run-progress.test.ts`
+  - Added Vitest coverage for stale active rows and recent `live_progress.updated_at` keeping a run active.
+- `apps/web/src/app/(app)/projects/page.tsx`
+  - Uses `getStaleActiveRuns()` so stale rows are shown as `สถานะค้าง` / `ต้องตรวจสอบ` instead of counted as `กำลังทำงาน`.
+  - Updates the manual recrawl success notice for the zero-new-jobs path so clicks produce visible feedback.
+
+### TDD Evidence
+
+- RED:
+  - Not captured as a separate command. Auggie was unavailable with `HTTP 402`, and the fix was implemented directly from source inspection and the user-provided production screenshot.
+  - The regression covered by `test_manual_recrawl_ignores_stale_inflight_run_for_admission` would fail against the previous `count_active_runs()` implementation because any `running` row counted as inflight regardless of age.
+  - The regression covered by `apps/web/tests/unit/run-progress.test.ts` would fail against the previous `getActiveRuns()` implementation because stale `running` rows were included.
+- GREEN:
+  - `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -k 'manual_recrawl_ignores_stale_inflight_run_for_admission or manual_recrawl_denies_second_request_until_inflight_run_finishes' -q`
+  - `npm run test:unit -- run-progress.test.ts` from `apps/web`
+
+### Tests Run
+
+- `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -k 'manual_recrawl_ignores_stale_inflight_run_for_admission or manual_recrawl_denies_second_request_until_inflight_run_finishes' -q` - passed, run 3 consecutive times.
+- `npm run test:unit -- run-progress.test.ts` from `apps/web` - passed, run 3 consecutive times.
+- `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -q` - passed, 16 tests.
+- `npm run test:unit` from `apps/web` - passed, 11 files / 46 tests.
+- `./.venv/bin/ruff check packages/db/src/egp_db/repositories/run_repo.py tests/phase2/test_rules_api.py` - passed.
+- `./.venv/bin/python -m compileall packages/db/src apps/api/src` - passed.
+- `npm run typecheck` from `apps/web` - passed.
+- `npx prettier --check src/lib/run-progress.ts 'src/app/(app)/projects/page.tsx' tests/unit/run-progress.test.ts` from `apps/web` - passed.
+
+### Wiring Verification
+
+| Component | Wiring Verified? | Evidence |
+|-----------|------------------|----------|
+| `SqlRunRepository.count_active_runs()` stale cutoff | YES | Existing `TenantEntitlementService.evaluate_run_admission()` calls `self._run_repository.count_active_runs(tenant_id=tenant_id)` before `/v1/rules/recrawl` queues jobs. Regression test exercises the route end to end. |
+| `getActiveRuns()` stale exclusion | YES | `apps/web/src/app/(app)/projects/page.tsx` computes `activeRuns = getActiveRuns(runsData?.runs ?? [])`; Vitest covers stale exclusion. |
+| `getStaleActiveRuns()` stale diagnostics | YES | `apps/web/src/app/(app)/projects/page.tsx` imports and renders stale run cards when no live active rows remain. |
+
+### Behavior Changes And Risk Notes
+
+- Stale queued/running crawl rows older than 3 hours no longer block manual recrawl admission.
+- Stale active rows still remain visible as diagnostic history, but they are no longer counted as live running work on the project explorer.
+- Risk: if the production worker timeout is intentionally raised above 3 hours without updating this repository constant and the frontend constant, a legitimate long-running crawl could be treated as stale. Current source defines the dispatcher timeout as 3 hours.
+- Operational follow-up: existing production stale rows may still need a one-time mark-failed cleanup if operators want historical status corrected, not just live/admission behavior fixed.
+
+## Review (2026-06-20 10:50:38 +07) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: staged working tree
+- Base SHA: `bf0889de`
+- Commands Run:
+  - Auggie semantic retrieval attempted and failed with `HTTP error: 402`; review used direct source inspection.
+  - `git status --short`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- packages/db/src/egp_db/repositories/run_repo.py tests/phase2/test_rules_api.py`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- apps/web/src/lib/run-progress.ts apps/web/tests/unit/run-progress.test.ts`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff -- apps/web/src/app/\(app\)/projects/page.tsx`
+  - `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -q`
+  - `npm run test:unit`
+  - `./.venv/bin/ruff check packages/db/src/egp_db/repositories/run_repo.py tests/phase2/test_rules_api.py`
+  - `./.venv/bin/python -m compileall packages/db/src apps/api/src`
+  - `npm run typecheck`
+  - `npx prettier --check src/lib/run-progress.ts 'src/app/(app)/projects/page.tsx' tests/unit/run-progress.test.ts`
+
+### Findings
+
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+
+- Assumption: the active-run freshness contract should match the current 3-hour worker timeout.
+- Assumption: preserving stale rows as history is preferable to silently mutating them from the list/read path.
+
+### Recommended Tests / Validation
+
+- Already run: targeted stale admission regression, targeted run-progress regression 3 consecutive times, full rules API file, full web unit suite, web typecheck, ruff, compileall, Prettier check.
+- Production validation after deploy: click `Crawl ใหม่` once and verify the project explorer no longer reports the June 16 rows as `กำลังทำงาน`, then verify `/runs` shows any new run or the zero-new-jobs notice.
+
+### Rollout Notes
+
+- No database migration is required.
+- Deploy both API and web. API fixes admission blocking; web fixes the false live-progress count and visible click feedback.
+- If operators want old production `running` rows to become historical failures, run a separate one-time cleanup rather than doing it implicitly in read paths.
+
+## Review (2026-06-20 11:00:07 +07) - working-tree g-check before PR
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `main`
+- Scope: staged working tree before Graphite branch creation
+- Base SHA: `bf0889de`
+- Commands Run:
+  - Auggie semantic retrieval attempted and failed with `HTTP error: 402`; review used direct staged diff inspection.
+  - `git status -sb`
+  - `gt ls`
+  - `gt status`
+  - `gt log long`
+  - `gh auth status`
+  - `gh repo view --json nameWithOwner,defaultBranchRef`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged -- packages/db/src/egp_db/repositories/run_repo.py tests/phase2/test_rules_api.py`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged -- apps/web/src/lib/run-progress.ts apps/web/tests/unit/run-progress.test.ts`
+  - `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged -- apps/web/src/app/\(app\)/projects/page.tsx`
+
+### Findings
+
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+
+- Assumption: the three-hour stale cutoff intentionally matches the current discovery worker timeout and should be kept aligned if the worker timeout changes later.
+- Assumption: this release should stop stale rows from blocking or being shown as live, while leaving historical row mutation to a separate explicit cleanup.
+
+### Recommended Tests / Validation
+
+- Re-run the focused Python rules API regression, web unit tests, web typecheck, ruff, compileall, and Prettier check before PR submission.
+- After deploy, verify `https://api.egptracker.com/health` and the project explorer behavior in production.
+
+### Rollout Notes
+
+- No migration required.
+- Requires backend Lightsail deployment for admission behavior and web deployment for the project explorer display.
+- Vercel should auto-deploy the web app after merge to `main`; Lightsail API remains manual.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import text
@@ -1099,6 +1099,57 @@ def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(
 
     assert third.status_code == 202
     assert third.json() == {
+        "queued_job_count": 1,
+        "queued_keywords": ["แพลตฟอร์ม"],
+    }
+
+
+def test_manual_recrawl_ignores_stale_inflight_run_for_admission(tmp_path) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-stale-admission.sqlite3'}"
+    )
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        name="Admission Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+    stale_started_at = datetime.now(UTC) - timedelta(days=4)
+    stale_run = client.app.state.run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+    )
+    client.app.state.run_repository.mark_run_started(stale_run.id)
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE crawl_runs
+                SET started_at = :stale_started_at,
+                    created_at = :stale_started_at
+                WHERE id = :run_id
+                """
+            ),
+            {"stale_started_at": stale_started_at, "run_id": stale_run.id},
+        )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 202
+    assert response.json() == {
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
