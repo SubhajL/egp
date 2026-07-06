@@ -9,7 +9,10 @@ from uuid import uuid4
 from sqlalchemy import insert, select, update
 
 from egp_db.db_utils import normalize_uuid_string
-from egp_shared_types.billing_plans import get_billing_plan_definition
+from egp_shared_types.billing_plans import (
+    get_billing_plan_definition,
+    is_recurring_membership_plan,
+)
 from egp_shared_types.enums import (
     BillingEventType,
     BillingPaymentMethod,
@@ -35,7 +38,7 @@ from .billing_utils import (
     _subscription_status_for_period,
 )
 from .admin_repo import TENANTS_TABLE
-from .profile_repo import CRAWL_PROFILES_TABLE
+from .profile_repo import CRAWL_PROFILE_KEYWORDS_TABLE, CRAWL_PROFILES_TABLE
 
 
 class BillingPaymentMixin:
@@ -96,6 +99,50 @@ class BillingPaymentMixin:
                 CRAWL_PROFILES_TABLE.c.is_active.is_(True),
             )
             .values(is_active=False, updated_at=now)
+        )
+
+    def _reactivate_profiles_for_membership_activation(
+        self,
+        *,
+        connection,
+        tenant_id: str,
+        target_plan_code: str,
+        new_subscription_status: BillingSubscriptionStatus,
+        now,
+    ) -> None:
+        """Restore expiry-deactivated keyword profiles when a membership activates.
+
+        Recurring memberships treat keywords as a persistent asset: on
+        (re)activation every profile that was deactivated by expiry — i.e. still
+        holds at least one keyword — is switched back on. Profiles the operator
+        emptied in the UI (no keywords) are left off, and one-time/trial plans do
+        not reactivate at all. Runs on the caller's transaction for atomicity.
+        """
+        if new_subscription_status is not BillingSubscriptionStatus.ACTIVE:
+            return
+        if not is_recurring_membership_plan(target_plan_code):
+            return
+        # "is_active=False AND has >=1 keyword" is the discriminator for
+        # expiry-deactivated profiles: the expiry sweep
+        # (deactivate_active_profiles_created_before) keeps keyword rows, whereas
+        # operator deactivation via the rules UI empties them. If a future flow
+        # ever pauses a populated profile deliberately, add a deactivated_reason
+        # column and reactivate only expiry-deactivated rows.
+        has_keyword = (
+            select(CRAWL_PROFILE_KEYWORDS_TABLE.c.id)
+            .where(
+                CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == CRAWL_PROFILES_TABLE.c.id
+            )
+            .exists()
+        )
+        connection.execute(
+            update(CRAWL_PROFILES_TABLE)
+            .where(
+                CRAWL_PROFILES_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                CRAWL_PROFILES_TABLE.c.is_active.is_(False),
+                has_keyword,
+            )
+            .values(is_active=True, updated_at=now)
         )
 
     def _load_payments_for_records(
@@ -402,6 +449,13 @@ class BillingPaymentMixin:
                         connection=connection,
                         tenant_id=tenant_id,
                         source_subscription_id=record_before.upgrade_from_subscription_id,
+                        target_plan_code=record_before.plan_code,
+                        new_subscription_status=subscription_status,
+                        now=now,
+                    )
+                    self._reactivate_profiles_for_membership_activation(
+                        connection=connection,
+                        tenant_id=tenant_id,
                         target_plan_code=record_before.plan_code,
                         new_subscription_status=subscription_status,
                         now=now,

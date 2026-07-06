@@ -550,3 +550,146 @@ LOW
 - No migration required.
 - Requires backend Lightsail deployment for admission behavior and web deployment for the project explorer display.
 - Vercel should auto-deploy the web app after merge to `main`; Lightsail API remains manual.
+
+## Debug Update (2026-06-20 15:35:52 +0700) - local crawler bridge restored
+
+### Goal
+
+Restore the production recrawl path after the Projects page accepted recrawl requests but showed stale/no-progress crawl status.
+
+### What Changed
+
+- Operational state only; no application source files changed.
+- Verified Track C architecture again: API/web enqueue production jobs, but this Mac must run the native crawler watcher against the production queue.
+- Found `com.egp.pg-tunnel` running but `com.egp.remote-crawl` not loaded, so production `discovery_jobs` could queue without a local worker draining them.
+- Ran `scripts/run_remote_crawl.sh warm-profile`; the persistent Chrome profile warmed successfully.
+- Ran `scripts/run_remote_crawl.sh crawl 1`; one production backfill job completed successfully and created run `7eaf26f3-89d4-4d7c-a873-ed75a2bf0893`.
+- Ran `scripts/install_launchd.sh install`; reloaded `com.egp.pg-tunnel` and `com.egp.remote-crawl`.
+
+### TDD Evidence
+
+- No RED test was produced because this was an operational/runtime restoration, not a code change.
+- Failure evidence:
+  - `scripts/install_launchd.sh status` showed `com.egp.remote-crawl` as `not loaded`.
+  - `tail -n 120 ~/Library/Logs/egp/crawl.log` showed the last crawler failures were Cloudflare pre-dispatch warm-up failures, and the file timestamp was still June 16.
+  - Production DB query showed pending discovery jobs while the local crawler was not loaded.
+- GREEN evidence:
+  - `scripts/run_remote_crawl.sh check` returned `OK - safe to crawl production.`
+  - `scripts/run_remote_crawl.sh warm-profile` returned `WARMUP_OK profile=/Users/subhajlimanond/.egp/profiles/prod`.
+  - `scripts/run_remote_crawl.sh crawl 1` returned `INFO:__main__:Processed 1 pending discovery dispatch jobs`.
+  - `scripts/install_launchd.sh status` showed both `com.egp.pg-tunnel` and `com.egp.remote-crawl` running after reload.
+
+### Tests / Checks Run
+
+- `scripts/install_launchd.sh status`
+- `scripts/run_remote_crawl.sh check`
+- `scripts/run_remote_crawl.sh warm-profile`
+- `scripts/run_remote_crawl.sh crawl 1`
+- Production DB checks through the local SSH tunnel:
+  - discovery job counts by status and trigger type
+  - latest crawl runs and live progress
+  - `select 1` after launchd reload to confirm the tunnel accepted Postgres traffic
+
+### Wiring Verification
+
+- Queue source: `/v1/rules/recrawl` writes `discovery_jobs`.
+- Local worker bridge: `deploy/launchd/com.egp.remote-crawl.plist` runs `scripts/run_remote_crawl.sh watch`.
+- Runtime proof: launchd watcher PID `10194` spawned worker PID `10207`, and production run `f774f951-5a1b-4da3-b469-01236bbe89b9` was running with live progress after reload.
+
+### Behavior / Risk Notes
+
+- The immediate blocker was operational: the local production crawler watcher was not loaded.
+- A secondary startup race exists: reloading both launchd agents can start `remote-crawl` before the SSH tunnel accepts DB connections; launchd KeepAlive restarted it and the second start connected.
+- The UI still cannot directly show pending `discovery_jobs`; it only shows `crawl_runs`, so queued-but-not-drained jobs can look like "accepted but no run" unless the local watcher is healthy.
+
+### Follow-ups
+
+- Consider adding a tunnel-readiness wait to `scripts/run_remote_crawl.sh watch` or the launchd wrapper to avoid noisy startup crashes.
+- Consider exposing discovery outbox status in the API/UI so recrawl acceptance can show "queued on local crawler bridge" separately from worker-created `crawl_runs`.
+
+## Implementation Update (2026-06-20 17:18:58 +0700) - preliminary bid summary status/artifacts
+
+### Goal
+
+Fix preliminary bid-summary handling so first-time late-stage discoveries stay out of the project list, while existing tracked projects that move to `สรุปข้อมูลการเสนอราคา` / `สรุปข้อมูลการเสนอราคาเบื้องต้น` update both project status columns and ingest the pricing artifact.
+
+### What Changed
+
+- `packages/crawler-core/src/egp_crawler_core/invitation_rules.py`: added `is_preliminary_pricing_status()` for both Thai preliminary bid-summary labels without adding them to first-discovery eligibility.
+- `apps/worker/src/egp_worker/browser_discovery.py`: routed the browser preliminary-status check through the shared helper, preserving first-discovery skip behavior.
+- `apps/worker/src/egp_worker/browser_downloads.py` and `packages/document-classifier/src/egp_document_classifier/classifier.py`: added preliminary bid-summary documents to targeted downloads and classified them as `mid_price`.
+- `packages/shared-types/src/egp_shared_types/project_events.py`, `packages/domain/src/egp_domain/project_ingest.py`, `apps/api/src/egp_api/routes/project_ingest.py`, and `apps/worker/src/egp_worker/project_event_sink.py`: added a worker-only project status update event/route/service path.
+- `apps/worker/src/egp_worker/workflows/close_check.py`: existing-project close-check now ingests any downloaded documents, then advances preliminary bid-summary observations to `prelim_pricing_seen` while preserving `source_status_text`.
+- `apps/web/src/lib/generated/openapi.json` and `apps/web/src/lib/generated/api-types.ts`: regenerated API contracts for the new internal status-update route.
+- Tests updated for classifier, download-target, close-check workflow, and internal API status-update behavior.
+
+### TDD Evidence
+
+- RED: `./.venv/bin/python -m pytest tests/phase1/test_phase1_domain_logic.py::test_classify_document_treats_preliminary_bid_summary_as_mid_price tests/phase1/test_worker_browser_downloads.py::test_doc_targets_include_preliminary_bid_summary tests/phase1/test_worker_workflows.py::test_close_check_workflow_updates_prelim_pricing_status_with_revisited_documents tests/phase1/test_projects_and_runs_api.py::test_project_ingest_status_update_endpoint_marks_prelim_pricing_seen -q`
+  - Failed during collection because `ProjectStatusUpdateEvent` did not exist.
+- GREEN: same focused command passed with `4 passed`.
+- Broader GREEN: `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py tests/phase1/test_projects_and_runs_api.py tests/phase1/test_phase1_domain_logic.py tests/phase1/test_worker_browser_downloads.py tests/phase1/test_worker_browser_discovery.py tests/phase1/test_worker_live_discovery.py -q` passed with `255 passed`.
+
+### Tests / Checks Run
+
+- `./.venv/bin/python -m pytest tests/phase1/test_worker_workflows.py -q` -> `14 passed`.
+- Affected-file suite above -> first rerun found one expected obsolete assertion; after test correction, final rerun passed with `255 passed`.
+- Focused new-behavior command -> passed 3 consecutive GREEN runs after implementation.
+- `./.venv/bin/ruff check apps/api/src/egp_api/routes/project_ingest.py apps/worker/src/egp_worker/project_event_sink.py apps/worker/src/egp_worker/workflows/close_check.py apps/worker/src/egp_worker/browser_discovery.py apps/worker/src/egp_worker/browser_downloads.py packages/crawler-core/src/egp_crawler_core/invitation_rules.py packages/document-classifier/src/egp_document_classifier/classifier.py packages/domain/src/egp_domain/project_ingest.py packages/shared-types/src/egp_shared_types/project_events.py tests/phase1/test_worker_workflows.py tests/phase1/test_projects_and_runs_api.py tests/phase1/test_phase1_domain_logic.py tests/phase1/test_worker_browser_downloads.py` -> passed.
+- `./.venv/bin/python -m compileall apps/api/src apps/worker/src packages/crawler-core/src packages/document-classifier/src packages/domain/src packages/shared-types/src` -> passed.
+- `cd apps/web && npm run generate:api-types` -> regenerated OpenAPI/types.
+- `cd apps/web && npm run check:api-types` -> OpenAPI schema and generated API types are current.
+
+### Wiring Verification
+
+- Browser status detection: `status_indicates_preliminary_pricing()` -> `is_preliminary_pricing_status()`.
+- Artifact capture: `DOCS_TO_DOWNLOAD` includes `สรุปข้อมูลการเสนอราคา`; classifier maps both summary labels to `DocumentType.MID_PRICE`.
+- Existing-project runtime path: `run_close_check_workflow()` -> `ProjectEventSink.record_status_update()` -> API `/internal/worker/projects/status-update` or service-backed sink -> `ProjectIngestService.ingest_status_update_event()` -> `SqlProjectRepository.transition_project()`.
+- First-discovery gate remains fail-closed: `ProjectIngestService.ingest_discovered_project()` still requires `is_discoverable_stage_status()`, which does not include preliminary bid-summary labels.
+
+### Behavior / Risk Notes
+
+- Preliminary bid-summary is now a tracked lifecycle advancement for existing projects, not a winner/contract close event.
+- Internal status-update route can only be called with the worker token and still goes through lifecycle transition validation.
+- Live close-check candidate selection still determines which existing projects are revisited; this change fixes the handling once an existing project is observed at the preliminary bid-summary stage.
+
+### Follow-ups
+
+- Consider a separate product decision on whether live close-check should revisit tracked projects that currently have no invitation/TOR document evidence, instead of only projects selected by the existing close-check query.
+
+
+## Review (2026-06-20 17:19:53 +0700) - working-tree
+
+### Reviewed
+- Repo: /Users/subhajlimanond/dev/egp
+- Branch: main
+- Scope: staged working tree for preliminary bid-summary status/artifact fix
+- Commit Reviewed: working tree based on 99f54b31
+- Commands Run: `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --stat`; `CODEX_ALLOW_LARGE_OUTPUT=1 git diff --staged --name-only`; targeted line inspection with `nl -ba`; focused pytest RED/GREEN; affected-file pytest suite; ruff; compileall; `npm run generate:api-types`; `npm run check:api-types`
+
+### Findings
+CRITICAL
+- No findings.
+
+HIGH
+- No findings.
+
+MEDIUM
+- No findings.
+
+LOW
+- No findings.
+
+### Open Questions / Assumptions
+- Assumption: preliminary bid-summary should advance existing projects to `prelim_pricing_seen`, but should remain excluded from first-discovery ingest so late-stage first sightings do not appear in the project list.
+- Assumption: a preliminary bid-summary status is not a winner/contract closure event, so no winner/contract notification should fire from this path.
+
+### Recommended Tests / Validation
+- Already run: focused new-behavior tests passed 3 consecutive times.
+- Already run: affected-file suite passed with `255 passed`.
+- Already run: ruff, compileall, generated OpenAPI/type check.
+
+### Rollout Notes
+- No database migration required; existing `project_state` enum/check constraint already includes `prelim_pricing_seen`.
+- Requires API and worker deployment together because the API-backed worker sink now calls `/internal/worker/projects/status-update`.
+- Existing live close-check candidate selection still controls which projects are revisited; this change fixes preliminary-price handling once an existing tracked project is observed.

@@ -661,6 +661,67 @@ def test_project_ingest_discover_endpoint_rejects_late_stage_first_discovery(
     )
 
 
+def test_project_ingest_status_update_endpoint_marks_prelim_pricing_seen(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase1-project-status-update.sqlite3'}"
+    )
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+            internal_worker_token=INTERNAL_WORKER_TOKEN,
+        )
+    )
+    _seed_active_subscription(client)
+    repository = client.app.state.project_repository
+    project = repository.upsert_project(
+        build_project_upsert_record(
+            tenant_id=TENANT_ID,
+            project_number="EGP-2026-3101",
+            search_name="ประกวดราคาไอที",
+            detail_name="ประกวดราคาไอที",
+            project_name="ประกวดราคาไอที",
+            organization_name="กรมตัวอย่าง",
+            proposal_submission_date="2026-05-02",
+            budget_amount="2500000.00",
+            procurement_type=ProcurementType.SERVICES,
+            project_state=ProjectState.OPEN_INVITATION,
+        ),
+        source_status_text="ประกาศเชิญชวน",
+    )
+
+    updated = client.post(
+        "/internal/worker/projects/status-update",
+        headers=_internal_worker_headers(),
+        json={
+            "tenant_id": TENANT_ID,
+            "run_id": str(uuid4()),
+            "project_id": project.id,
+            "project_state": ProjectState.PRELIM_PRICING_SEEN.value,
+            "source_status_text": "สรุปข้อมูลการเสนอราคา",
+            "raw_snapshot": {"page": 2},
+        },
+    )
+
+    detail = client.get(f"/v1/projects/{project.id}", params={"tenant_id": TENANT_ID})
+
+    assert updated.status_code == 200
+    assert (
+        updated.json()["project"]["project_state"]
+        == ProjectState.PRELIM_PRICING_SEEN.value
+    )
+    assert updated.json()["project"]["source_status_text"] == "สรุปข้อมูลการเสนอราคา"
+    assert detail.status_code == 200
+    assert (
+        detail.json()["project"]["project_state"]
+        == ProjectState.PRELIM_PRICING_SEEN.value
+    )
+    assert detail.json()["project"]["source_status_text"] == "สรุปข้อมูลการเสนอราคา"
+
+
 def test_project_ingest_close_check_endpoint_transitions_project_state(
     tmp_path,
 ) -> None:

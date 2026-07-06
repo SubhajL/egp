@@ -22,7 +22,10 @@ from egp_crawler_core.rate_limiter import (
     exponential_backoff_delay,
     get_default_rate_limiter,
 )
-from egp_crawler_core.invitation_rules import is_discoverable_stage_status
+from egp_crawler_core.invitation_rules import (
+    is_discoverable_stage_status,
+    is_preliminary_pricing_status,
+)
 from egp_document_classifier import derive_artifact_bucket
 
 try:
@@ -1891,7 +1894,7 @@ def status_matches_target(status_text: str) -> bool:
 
 
 def status_indicates_preliminary_pricing(status_text: str) -> bool:
-    return _compact_visible_text("สรุปข้อมูลการเสนอราคาเบื้องต้น") in _compact_visible_text(status_text)
+    return is_preliminary_pricing_status(status_text)
 
 
 def _table_matches_results_headers(table) -> bool:

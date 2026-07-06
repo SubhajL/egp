@@ -33,3 +33,13 @@ class CloseCheckProjectEvent:
     source_status_text: str
     run_id: str | None = None
     raw_snapshot: dict[str, object] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectStatusUpdateEvent:
+    tenant_id: str
+    project_id: str
+    project_state: ProjectState | str
+    source_status_text: str
+    run_id: str | None = None
+    raw_snapshot: dict[str, object] | None = None

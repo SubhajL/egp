@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from egp_shared_types.enums import ClosedReason, ProcurementType, ProjectState
-from egp_shared_types.project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
+from egp_shared_types.project_events import (
+    CloseCheckProjectEvent,
+    DiscoveredProjectEvent,
+    ProjectStatusUpdateEvent,
+)
 from egp_worker.config import (
     get_internal_api_base_url,
     get_internal_api_timeout_seconds,
@@ -26,6 +30,8 @@ class ProjectEventSink(Protocol):
     def record_discovery(self, event: DiscoveredProjectEvent) -> "ProjectRecord": ...
 
     def record_close_check(self, event: CloseCheckProjectEvent) -> "ProjectRecord": ...
+
+    def record_status_update(self, event: ProjectStatusUpdateEvent) -> "ProjectRecord": ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +53,9 @@ class ServiceBackedProjectEventSink:
 
     def record_close_check(self, event: CloseCheckProjectEvent):
         return self._service.ingest_close_check_event(event=event)
+
+    def record_status_update(self, event: ProjectStatusUpdateEvent):
+        return self._service.ingest_status_update_event(event=event)
 
 
 class ApiProjectEventSink:
@@ -105,6 +114,20 @@ class ApiProjectEventSink:
                 "run_id": event.run_id,
                 "project_id": event.project_id,
                 "closed_reason": _enum_value(event.closed_reason),
+                "source_status_text": event.source_status_text,
+                "raw_snapshot": event.raw_snapshot,
+            },
+        )
+        return _project_from_response(response)
+
+    def record_status_update(self, event: ProjectStatusUpdateEvent):
+        response = self._post(
+            "/internal/worker/projects/status-update",
+            {
+                "tenant_id": event.tenant_id,
+                "run_id": event.run_id,
+                "project_id": event.project_id,
+                "project_state": _enum_value(event.project_state),
                 "source_status_text": event.source_status_text,
                 "raw_snapshot": event.raw_snapshot,
             },

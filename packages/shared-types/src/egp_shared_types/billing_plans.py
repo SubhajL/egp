@@ -66,6 +66,17 @@ def get_billing_plan_definition(plan_code: str) -> BillingPlanDefinition | None:
     return None
 
 
+def is_recurring_membership_plan(plan_code: str) -> bool:
+    """Return True for recurring membership plans (billing_interval == "monthly").
+
+    Recurring memberships treat keywords as a persistent asset: reactivating one
+    restores every previously-deactivated keyword profile. One-time and trial
+    plans deliberately do NOT, so they are excluded.
+    """
+    plan = get_billing_plan_definition(plan_code)
+    return plan is not None and plan.billing_interval == "monthly"
+
+
 def derive_plan_period_end(
     plan: BillingPlanDefinition, *, billing_period_start: date
 ) -> date:

@@ -4757,6 +4757,79 @@
         "title": "ProjectStatusEventResponse",
         "type": "object"
       },
+      "ProjectStatusUpdateRequest": {
+        "properties": {
+          "project_id": {
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "project_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProjectState"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Project State"
+          },
+          "raw_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Snapshot"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "source_status_text": {
+            "minLength": 1,
+            "title": "Source Status Text",
+            "type": "string"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "project_id",
+          "project_state",
+          "source_status_text"
+        ],
+        "title": "ProjectStatusUpdateRequest",
+        "type": "object"
+      },
+      "ProjectStatusUpdateResponse": {
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/ProjectResponse"
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "title": "ProjectStatusUpdateResponse",
+        "type": "object"
+      },
       "ReconcileBillingPaymentRequest": {
         "properties": {
           "note": {
@@ -6761,6 +6834,47 @@
           }
         },
         "summary": "Ingest Discovered Project",
+        "tags": [
+          "internal-worker"
+        ]
+      }
+    },
+    "/internal/worker/projects/status-update": {
+      "post": {
+        "operationId": "ingest_project_status_update_internal_worker_projects_status_update_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectStatusUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectStatusUpdateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Project Status Update",
         "tags": [
           "internal-worker"
         ]
@@ -9386,7 +9500,7 @@
     },
     "/v1/documents/{document_id}/download-link": {
       "get": {
-        "description": "Resolve the URL the browser should hit to download a document.\n\nFor artifact stores that can mint signed URLs (Supabase, S3, Drive,\nOneDrive) the response carries a direct, time-limited URL so the browser\ncan stream the bytes from origin storage without proxying through the\nAPI. For local-filesystem stores (and any store that cannot produce an\nHTTP URL) the response falls back to the API's own ``/download`` route.\n\nThe response shape lets the frontend always do the same thing: navigate\nto ``url`` (e.g. via ``<a href={url} download>``) and let the browser\nhandle streaming + native progress UI, instead of buffering the entire\nfile in JavaScript.",
+        "description": "Resolve the URL the browser should hit to download a document.\n\nManaged stores (local, Supabase, S3/R2) fall back to the API's own\n``/download`` route so missing artifacts surface as structured API errors\ninstead of raw object-store XML. Prefixed external tenant providers may\nstill return direct, time-limited URLs when the repository can mint them.\n\nThe response shape lets the frontend always do the same thing: navigate\nto ``url`` (e.g. via ``<a href={url} download>``) and let the browser\nhandle streaming + native progress UI, instead of buffering the entire\nfile in JavaScript.",
         "operationId": "get_document_download_link_v1_documents__document_id__download_link_get",
         "parameters": [
           {

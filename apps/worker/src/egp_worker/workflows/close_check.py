@@ -7,12 +7,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import check_winner_closure
+from egp_crawler_core.invitation_rules import is_preliminary_pricing_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.enums import ProjectState
-from egp_shared_types.project_events import CloseCheckProjectEvent
+from egp_shared_types.project_events import CloseCheckProjectEvent, ProjectStatusUpdateEvent
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_close_check import crawl_live_close_check
 from egp_worker.json_safety import make_json_safe
@@ -169,8 +170,31 @@ def run_close_check_workflow(
                         project_id=str(observation["project_id"]),
                         downloaded_documents=downloaded_documents,
                     )
+                source_status_text = str(observation.get("source_status_text") or "")
+                if is_preliminary_pricing_status(source_status_text):
+                    project = project_event_sink.record_status_update(
+                        ProjectStatusUpdateEvent(
+                            tenant_id=tenant_id,
+                            project_id=str(observation["project_id"]),
+                            project_state=ProjectState.PRELIM_PRICING_SEEN,
+                            source_status_text=source_status_text,
+                            run_id=run.id,
+                            raw_snapshot=safe_observation,
+                        )
+                    )
+                    result_json: dict[str, object] = {
+                        "project_id": project.id,
+                        "next_state": project.project_state.value,
+                    }
+                    if downloaded_documents:
+                        result_json["document_count"] = len(downloaded_documents)
+                    run_repository.mark_task_finished(
+                        task.id, status="succeeded", result_json=result_json
+                    )
+                    updated_projects.append(project)
+                    continue
                 closed_reason = check_winner_closure(
-                    str(observation.get("source_status_text") or "")
+                    source_status_text
                 )
                 if closed_reason is None:
                     result_json: dict[str, object] = {"matched": False}
@@ -185,7 +209,7 @@ def run_close_check_workflow(
                         tenant_id=tenant_id,
                         project_id=str(observation["project_id"]),
                         closed_reason=closed_reason,
-                        source_status_text=str(observation.get("source_status_text") or ""),
+                        source_status_text=source_status_text,
                         run_id=run.id,
                         raw_snapshot=safe_observation,
                     )
