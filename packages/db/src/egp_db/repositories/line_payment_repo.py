@@ -399,6 +399,30 @@ class LinePaymentRepository:
             rows = connection.execute(query).mappings().all()
         return [_slip_from_mapping(row) for row in rows]
 
+    def latest_line_user_id_for_tenant(self, tenant_id: str) -> str | None:
+        """Return the tenant's most recently seen LINE contact, or None.
+
+        The durable LINE identity for a paying tenant is learned from their
+        payment-slip history (each slip carries the sender's ``line_user_id``
+        once matched to the tenant). This lets non-slip activations — e.g. an
+        admin reconciling a bank transfer — still notify the customer over LINE.
+        """
+        query = (
+            select(PAYMENT_SLIPS_TABLE.c.line_user_id)
+            .where(PAYMENT_SLIPS_TABLE.c.tenant_id == normalize_uuid_string(tenant_id))
+            .order_by(
+                desc(PAYMENT_SLIPS_TABLE.c.received_at),
+                desc(PAYMENT_SLIPS_TABLE.c.created_at),
+            )
+            .limit(1)
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(query).mappings().one_or_none()
+        if row is None:
+            return None
+        line_user_id = row["line_user_id"]
+        return str(line_user_id) if line_user_id else None
+
     # --------------------------------------------------------------- contexts
     def record_context(
         self,

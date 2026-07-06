@@ -367,6 +367,31 @@ class LineSlipService:
         )
         return rejected
 
+    def notify_subscription_activated(
+        self, tenant_id: str, *, plan_label: str | None = None
+    ) -> bool:
+        """Push a LINE activation confirmation to the tenant's known contact.
+
+        Covers activations that do NOT flow through the slip pipeline — e.g. an
+        admin reconciling a bank transfer in the console — which would otherwise
+        leave the customer un-notified. Reuses the LINE contact learned from the
+        tenant's payment-slip history. Returns True iff a message was sent; a
+        no-op (False) when messaging is unconfigured or no contact is known.
+        """
+        if self._messaging is None:
+            return False
+        line_user_id = self._line_repo.latest_line_user_id_for_tenant(tenant_id)
+        if not line_user_id:
+            return False
+        plan_line = f"\nแพ็กเกจ: {plan_label}" if plan_label else ""
+        message = f"🎉 เปิดใช้งานสมาชิกเรียบร้อยแล้ว{plan_line}\nระบบพร้อมติดตามคำค้นของคุณแล้ว ขอบคุณครับ"
+        try:
+            self._messaging.push_message(to=line_user_id, text=message)
+        except Exception:  # pragma: no cover - network failure path
+            logger.exception("failed to push LINE activation notice to %s", line_user_id)
+            return False
+        return True
+
     def _push_customer(self, line_user_id: str, text: str) -> None:
         if self._messaging is None:
             return
