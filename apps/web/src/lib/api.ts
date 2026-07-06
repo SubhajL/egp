@@ -259,6 +259,7 @@ const API_ERROR_CODE_TRANSLATIONS: Record<string, string> = {
   profile_name_required: "กรุณาระบุชื่อโปรไฟล์",
   registration_required: "ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน",
   run_admission_queued: "รอคิว: งานก่อนหน้ายังทำงานอยู่",
+  run_operator_required: "คุณไม่มีสิทธิ์เริ่ม crawl ใหม่",
   unsupported_profile_type: "ประเภทโปรไฟล์ไม่รองรับ",
   validation_company_name_required: "กรุณาระบุชื่อบริษัท / องค์กร",
   validation_email_required: "กรุณาระบุอีเมล",
@@ -347,6 +348,7 @@ const API_ERROR_TRANSLATIONS: Array<{ pattern: string; thai: string }> = [
   { pattern: "discover keyword is not entitled", thai: "แพ็กเกจปัจจุบันไม่รองรับคำค้นแบบ discover" },
   { pattern: "queued — previous run still in progress", thai: "รอคิว: งานก่อนหน้ายังทำงานอยู่" },
   { pattern: "queued keyword limit exceeded", thai: "จำนวนคำค้นที่รอคิวเกินสิทธิ์ขององค์กร" },
+  { pattern: "run operator role required", thai: "คุณไม่มีสิทธิ์เริ่ม crawl ใหม่" },
 
   // Generic API errors
   { pattern: "api request failed", thai: "เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },

@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from egp_api.auth import require_admin_role, resolve_request_tenant_id
+from egp_api.auth import require_admin_role, require_run_operator_role, resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError, RunAdmissionError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
 
@@ -283,7 +283,7 @@ def recrawl_active_keywords(
     request: Request,
     response: Response,
 ) -> ManualRecrawlResponse:
-    require_admin_role(request)
+    require_run_operator_role(request)
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     try:

@@ -693,3 +693,56 @@ LOW
 - No database migration required; existing `project_state` enum/check constraint already includes `prelim_pricing_seen`.
 - Requires API and worker deployment together because the API-backed worker sink now calls `/internal/worker/projects/status-update`.
 - Existing live close-check candidate selection still controls which projects are revisited; this change fixes preliminary-price handling once an existing tracked project is observed.
+
+## 2026-06-26 07:31:11 +07 - Manual Recrawl Role Fix
+
+### Goal
+
+Fix the web-app manual recrawl path so subscribed analyst/operator users can trigger `POST /v1/rules/recrawl` without being blocked by the admin-only API guard, while preventing viewer sessions from seeing a clickable control that can only fail.
+
+### What Changed
+
+- `apps/api/src/egp_api/auth.py`: added `require_run_operator_role()` for `owner`, `admin`, `support`, and `analyst`.
+- `apps/api/src/egp_api/routes/rules.py`: changed only the manual recrawl endpoint to use the run-operator guard; keyword profile create/update remains admin-only.
+- `apps/web/src/lib/authorization.ts`: added matching `hasRunOperatorRole()` for frontend role checks.
+- `apps/web/src/app/(app)/projects/page.tsx`: disabled the `Crawl ใหม่` button while session data is loading or when the user lacks run-operator role, and added a viewer-facing explanation.
+- `apps/web/src/lib/api.ts`: added Thai localization for `run operator role required`.
+- `tests/phase2/test_rules_api.py`: added production-style JWT tests proving analyst recrawl succeeds without a body `tenant_id` and viewer recrawl is denied.
+- `apps/web/tests/e2e/projects-page.spec.ts`: added a viewer regression test and made the active-run fixture timestamp dynamic so it does not age into stale-run UI.
+
+### TDD Evidence
+
+- RED: `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -k "manual_recrawl_allows_analyst or manual_recrawl_denies_viewer" -q`
+  - Failed with analyst receiving `403` instead of `202`, and viewer receiving the old `admin role required` detail.
+- GREEN: `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -k "manual_recrawl_allows_analyst or manual_recrawl_denies_viewer" -q`
+  - Passed with `2 passed, 16 deselected`.
+- Frontend regression: `npm test -- projects-page.spec.ts`
+  - Initial run exposed a stale test fixture dated April 2026; after making active-run timestamps dynamic, the spec passed.
+
+### Tests / Checks Run
+
+- `./.venv/bin/python -m pytest tests/phase2/test_rules_api.py -k "manual_recrawl" -q` -> passed 3 consecutive runs with `8 passed, 10 deselected` each time.
+- `cd apps/web && npm test -- projects-page.spec.ts` -> passed 3 consecutive runs with `8 passed` each time after fixture correction.
+- `./.venv/bin/ruff check apps/api/src/egp_api/auth.py apps/api/src/egp_api/routes/rules.py tests/phase2/test_rules_api.py` -> passed.
+- `cd apps/web && npm run typecheck` -> passed.
+- `cd apps/web && npm run lint` -> passed with the existing Next.js deprecation warning for `next lint`.
+
+### Wiring Verification
+
+- Web button path: `ProjectsPage.handleRecrawl()` -> `triggerManualRecrawl()` -> `POST /v1/rules/recrawl`.
+- Backend route: `recrawl_active_keywords()` now calls `require_run_operator_role()` before `resolve_request_tenant_id()`.
+- Tenant isolation is preserved: authenticated requests still derive tenant scope through `resolve_request_tenant_id(request, payload.tenant_id)`.
+- Queue behavior remains unchanged: successful recrawl still calls `RulesService.queue_active_discovery_jobs()` and `_wake_discovery_dispatch()`.
+
+### Behavior / Risk Notes
+
+- Analysts with active run entitlement can now trigger manual recrawl from the web app.
+- Viewers with active subscription entitlements see a disabled recrawl button with a clear role message instead of a failing request.
+- Keyword profile creation/update remains admin-only. An analyst with zero active keywords may still need an admin/operator to configure the first keyword; that is a separate permission/product decision.
+- Auggie semantic retrieval was attempted first and failed with `HTTP error: 402`, so implementation used direct file inspection and exact-string search fallback.
+
+### QCHECK Review
+
+- No critical/high findings.
+- Medium/known gap: first-keyword creation still uses admin-only profile APIs, so this fix is intentionally scoped to manual recrawl for already configured active keywords.
+- Low: `POST /v1/rules/recrawl` still returns runtime `202` while the generated OpenAPI/client type models the default success response; existing frontend runtime handling accepts any `response.ok`, so this did not block the fix.

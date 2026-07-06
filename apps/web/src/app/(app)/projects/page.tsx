@@ -7,8 +7,9 @@ import { Download, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
+import { hasRunOperatorRole } from "@/lib/authorization";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { useProjects, useRules, useRuns } from "@/lib/hooks";
+import { useMe, useProjects, useRules, useRuns } from "@/lib/hooks";
 import {
   getActiveRuns,
   getRunActivitySnapshot,
@@ -259,6 +260,7 @@ export default function ProjectsPage() {
   const refreshedCompletedRunIdRef = useRef<string | null>(null);
   const rowsPerPage = 50;
   const { data: rulesData, isLoading: isRulesLoading } = useRules();
+  const { data: currentSession, isLoading: isSessionLoading } = useMe();
 
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const selectedStatusKeys = statusFilters
@@ -567,7 +569,9 @@ export default function ProjectsPage() {
     }
   }
 
-  const canRequestRecrawl = !!rulesData?.entitlements.runs_allowed;
+  const canOperateRuns = hasRunOperatorRole(currentSession?.user.role);
+  const hasRunsEntitlement = !!rulesData?.entitlements.runs_allowed;
+  const canRequestRecrawl = hasRunsEntitlement && canOperateRuns;
 
   return (
     <>
@@ -592,6 +596,7 @@ export default function ProjectsPage() {
                 isRecrawling ||
                 isLoading ||
                 isRulesLoading ||
+                isSessionLoading ||
                 !canRequestRecrawl
               }
               className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
@@ -601,6 +606,13 @@ export default function ProjectsPage() {
           </div>
         }
       />
+
+      {!isRulesLoading && !isSessionLoading && hasRunsEntitlement && !canOperateRuns ? (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          บัญชีนี้ดูข้อมูลได้ แต่การเริ่ม crawl ใหม่ต้องใช้สิทธิ์ analyst, admin,
+          owner, หรือ support
+        </div>
+      ) : null}
 
       {recrawlError ? (
         <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
