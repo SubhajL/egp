@@ -43,6 +43,7 @@ from egp_api.services.export_service import ExportService
 from egp_api.services.line_integration import HttpLineMessagingClient
 from egp_api.services.line_slip_service import LineSlipService
 from egp_api.services.payment_provider import PaymentProvider, build_payment_provider
+from egp_shared_types.billing_plans import get_billing_plan_definition
 from egp_domain.document_ingest import DocumentIngestService
 from egp_domain.project_ingest import ProjectIngestService
 from egp_api.services.project_service import ProjectService
@@ -178,6 +179,22 @@ def configure_services(
         admin_user_ids=get_line_admin_user_ids(None),
         admin_console_base_url=get_admin_console_base_url(None) or resolved_web_base_url,
     )
+
+    # Late-bind so an admin/manual reconciliation (not a LINE slip) still pushes a
+    # subscription-activated notice to the customer's known LINE contact. Resolve
+    # line_slip_service from app.state at CALL time (not captured here) so it stays
+    # correct if the service is swapped later, and because LineSlipService itself
+    # depends on BillingService (construction-order cycle).
+    def _notify_subscription_activated(*, tenant_id: str, plan_code: str) -> None:
+        slip_service = getattr(app.state, "line_slip_service", None)
+        if slip_service is None:
+            return
+        plan = get_billing_plan_definition(plan_code)
+        slip_service.notify_subscription_activated(
+            tenant_id, plan_label=plan.label if plan is not None else plan_code
+        )
+
+    app.state.billing_service.set_subscription_activated_notifier(_notify_subscription_activated)
     app.state.entitlement_service = entitlement_service
     app.state.document_capture_attempt_repository = (
         bundle.document_capture_attempt_repository

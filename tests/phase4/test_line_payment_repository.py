@@ -232,3 +232,48 @@ def test_admin_subscribers_add_and_list(repo) -> None:
     repo.add_admin_subscriber(line_user_id="Uadmin", tenant_id=None, display_name="Owner-dup")
     subs = repo.list_admin_subscribers()
     assert [s.line_user_id for s in subs] == ["Uadmin"]
+
+
+def test_latest_line_user_id_for_tenant_resolves_and_scopes(repo, billing) -> None:
+    assert repo.latest_line_user_id_for_tenant(TENANT_A) is None
+
+    record_a = _make_record(billing, tenant_id=TENANT_A, record_number="INV-A-1")
+    record_b = _make_record(billing, tenant_id=TENANT_B, record_number="INV-B-1")
+
+    older, _ = repo.create_slip(
+        line_user_id="Uold",
+        line_message_id="s-old",
+        received_at="2026-05-01T10:00:00+00:00",
+    )
+    repo.match_slip(
+        slip_id=older.id,
+        tenant_id=TENANT_A,
+        billing_record_id=record_a,
+        reference_code_match="INV-A-1",
+    )
+    newer, _ = repo.create_slip(
+        line_user_id="Unew",
+        line_message_id="s-new",
+        received_at="2026-06-01T10:00:00+00:00",
+    )
+    repo.match_slip(
+        slip_id=newer.id,
+        tenant_id=TENANT_A,
+        billing_record_id=record_a,
+        reference_code_match="INV-A-1",
+    )
+    other, _ = repo.create_slip(
+        line_user_id="Uother",
+        line_message_id="s-other",
+        received_at="2026-06-15T10:00:00+00:00",
+    )
+    repo.match_slip(
+        slip_id=other.id,
+        tenant_id=TENANT_B,
+        billing_record_id=record_b,
+        reference_code_match="INV-B-1",
+    )
+
+    # Most recent slip for the tenant wins; other tenants are excluded.
+    assert repo.latest_line_user_id_for_tenant(TENANT_A) == "Unew"
+    assert repo.latest_line_user_id_for_tenant(TENANT_B) == "Uother"

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
+from egp_db.db_utils import normalize_uuid_string
 from egp_db.repositories.billing_repo import (
     BillingPage,
     BillingPaymentRecord,
@@ -24,7 +27,10 @@ from egp_shared_types.enums import (
     BillingPaymentRequestStatus,
     BillingPaymentStatus,
     BillingRecordStatus,
+    BillingSubscriptionStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _TEST_CHARGED_PLAN_AMOUNTS = {
@@ -39,9 +45,16 @@ class BillingService:
         repository: SqlBillingRepository,
         *,
         payment_provider: PaymentProvider | None = None,
+        subscription_activated_notifier: Callable[..., object] | None = None,
     ) -> None:
         self._repository = repository
         self._payment_provider = payment_provider
+        self._subscription_activated_notifier = subscription_activated_notifier
+
+    def set_subscription_activated_notifier(self, notifier: Callable[..., object] | None) -> None:
+        """Late-bind the activation notifier (avoids a construction-order cycle
+        with LineSlipService, which itself depends on this service)."""
+        self._subscription_activated_notifier = notifier
 
     def list_plans(self) -> list[BillingPlanDefinition]:
         return list_billing_plan_definitions()
@@ -450,13 +463,59 @@ class BillingService:
         note: str | None = None,
         actor_subject: str | None = None,
     ) -> BillingRecordDetail:
-        return self._repository.reconcile_payment(
+        # Capture the pre-state so we notify ONLY on the real pending->reconciled
+        # transition — an idempotent re-reconcile of an already-settled payment
+        # must not push a second activation message to the customer.
+        was_pending = self._payment_pending_reconciliation(
+            tenant_id=tenant_id, payment_id=payment_id
+        )
+        detail = self._repository.reconcile_payment(
             tenant_id=tenant_id,
             payment_id=payment_id,
             status=status,
             note=note,
             actor_subject=actor_subject,
         )
+        if was_pending:
+            self._notify_if_subscription_activated(
+                tenant_id=tenant_id, payment_id=payment_id, detail=detail
+            )
+        return detail
+
+    def _payment_pending_reconciliation(self, *, tenant_id: str, payment_id: str) -> bool:
+        try:
+            payment = self._repository.get_billing_payment(
+                tenant_id=tenant_id, payment_id=payment_id
+            )
+        except Exception:
+            return False
+        return payment.payment_status is BillingPaymentStatus.PENDING_RECONCILIATION
+
+    def _notify_if_subscription_activated(
+        self, *, tenant_id: str, payment_id: str, detail: BillingRecordDetail
+    ) -> None:
+        notifier = self._subscription_activated_notifier
+        if notifier is None:
+            return
+        subscription = detail.subscription
+        if (
+            subscription is None
+            or subscription.subscription_status is not BillingSubscriptionStatus.ACTIVE
+        ):
+            return
+        # Notify ONLY when THIS payment is the one that activated the subscription.
+        # A second payment reconciled on an already-active record (e.g. a duplicate
+        # bank transfer) leaves the existing subscription untouched — it must stay
+        # silent rather than push a second activation notice.
+        activated_by = subscription.activated_by_payment_id
+        if activated_by is None or normalize_uuid_string(activated_by) != normalize_uuid_string(
+            payment_id
+        ):
+            return
+        try:
+            notifier(tenant_id=tenant_id, plan_code=subscription.plan_code)
+        except Exception:  # pragma: no cover - notifier is best-effort
+            logger.exception("subscription-activated notifier failed for tenant %s", tenant_id)
 
     def verify_manual_payment(
         self,

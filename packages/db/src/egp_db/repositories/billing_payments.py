@@ -189,6 +189,14 @@ class BillingPaymentMixin:
             raise PermissionError(payment_id)
         return payment
 
+    def get_billing_payment(
+        self, *, tenant_id: str, payment_id: str
+    ) -> BillingPaymentRecord:
+        """Public, tenant-scoped fetch of a single payment (raises if absent)."""
+        return self._require_payment_for_tenant(
+            tenant_id=tenant_id, payment_id=payment_id
+        )
+
     def record_payment(
         self,
         *,
