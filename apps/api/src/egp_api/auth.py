@@ -182,6 +182,15 @@ def require_admin_role(request: Request) -> None:
         raise HTTPException(status_code=403, detail="admin role required")
 
 
+def require_run_operator_role(request: Request) -> None:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is None:
+        return
+    role = extract_request_role(request)
+    if role not in {"owner", "admin", "support", "analyst"}:
+        raise HTTPException(status_code=403, detail="run operator role required")
+
+
 def require_support_role(request: Request) -> None:
     auth_context = getattr(request.state, "auth_context", None)
     if auth_context is None:

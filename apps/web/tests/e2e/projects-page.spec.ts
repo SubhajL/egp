@@ -130,6 +130,8 @@ const EMPTY_RUNS_RESPONSE = {
 const NO_RESULTS_RUN_FINISHED_AT = new Date(Date.now() + 60_000).toISOString();
 const NO_RESULTS_RUN_STARTED_AT = new Date(Date.now() + 30_000).toISOString();
 const NO_RESULTS_RUN_CREATED_AT = new Date(Date.now() + 15_000).toISOString();
+const ACTIVE_RUN_STARTED_AT = new Date(Date.now() - 60_000).toISOString();
+const ACTIVE_RUN_PROGRESS_AT = new Date(Date.now() - 30_000).toISOString();
 
 const ACTIVE_RUNS_RESPONSE = {
   runs: [
@@ -140,7 +142,7 @@ const ACTIVE_RUNS_RESPONSE = {
         trigger_type: "manual",
         status: "running",
         profile_id: "profile-1",
-        started_at: "2026-04-24T02:00:00Z",
+        started_at: ACTIVE_RUN_STARTED_AT,
         finished_at: null,
         summary_json: {
           projects_seen: 2,
@@ -149,11 +151,11 @@ const ACTIVE_RUNS_RESPONSE = {
             keyword: "analytics",
             page_num: 2,
             eligible_count: 3,
-            updated_at: "2026-04-24T02:00:05Z",
+            updated_at: ACTIVE_RUN_PROGRESS_AT,
           },
         },
         error_count: 0,
-        created_at: "2026-04-24T02:00:00Z",
+        created_at: ACTIVE_RUN_STARTED_AT,
       },
       tasks: [
         {
@@ -164,11 +166,11 @@ const ACTIVE_RUNS_RESPONSE = {
           keyword: "analytics",
           status: "running",
           attempts: 1,
-          started_at: "2026-04-24T02:00:00Z",
+          started_at: ACTIVE_RUN_STARTED_AT,
           finished_at: null,
           payload: null,
           result_json: null,
-          created_at: "2026-04-24T02:00:00Z",
+          created_at: ACTIVE_RUN_STARTED_AT,
         },
       ],
     },
@@ -400,6 +402,48 @@ test("projects page shows worker-backed crawl activity after manual recrawl", as
   ).toBeVisible();
   await expect(page.getByText("ค้นพบแล้ว 2 โครงการ")).toBeVisible();
   await expect(page.getByRole("link", { name: "ดูหน้าการทำงานทั้งหมด" })).toBeVisible();
+});
+
+test("projects page disables manual recrawl for viewer sessions", async ({
+  page,
+}) => {
+  await page.route("**/v1/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const key = `${request.method()} ${url.pathname}`;
+
+    switch (key) {
+      case "GET /v1/me":
+        await fulfillJson(route, 200, {
+          ...CURRENT_SESSION,
+          user: {
+            ...CURRENT_SESSION.user,
+            role: "viewer",
+          },
+        });
+        return;
+      case "GET /v1/rules":
+        await fulfillJson(route, 200, RULES_RESPONSE);
+        return;
+      case "GET /v1/projects":
+        await fulfillJson(route, 200, PROJECTS_RESPONSE);
+        return;
+      case "GET /v1/runs":
+        await fulfillJson(route, 200, EMPTY_RUNS_RESPONSE);
+        return;
+      case "POST /v1/rules/recrawl":
+        throw new Error("viewer sessions must not submit manual recrawl");
+      default:
+        await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
+    }
+  });
+
+  await page.goto("/projects");
+
+  await expect(page.getByRole("button", { name: "Crawl ใหม่" })).toBeDisabled();
+  await expect(
+    page.getByText("บัญชีนี้ดูข้อมูลได้ แต่การเริ่ม crawl ใหม่ต้องใช้สิทธิ์ analyst"),
+  ).toBeVisible();
 });
 
 test("projects page prompts for a new keyword before crawling an empty cycle", async ({

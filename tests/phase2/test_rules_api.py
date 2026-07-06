@@ -5,10 +5,12 @@ from uuid import uuid4
 
 from sqlalchemy import text
 from fastapi.testclient import TestClient
+from jose import jwt
 
 from egp_api.main import create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
+JWT_SECRET = "phase2-rules-secret"
 
 
 class RecordingWakeSignal:
@@ -22,6 +24,19 @@ class RecordingWakeSignal:
 class FailingDiscoveryProcessor:
     def process_pending(self, *, limit: int | None = None) -> int:
         raise AssertionError("route handlers must not execute discovery dispatch")
+
+
+def _auth_headers(*, role: str, tenant_id: str = TENANT_ID) -> dict[str, str]:
+    token = jwt.encode(
+        {
+            "sub": "user-123",
+            "tenant_id": tenant_id,
+            "role": role,
+        },
+        JWT_SECRET,
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _seed_profile(
@@ -949,6 +964,72 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
             text("SELECT COUNT(*) FROM discovery_jobs")
         ).scalar_one()
     assert count == 1
+
+
+def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-analyst.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=True,
+            jwt_secret=JWT_SECRET,
+        )
+    )
+    wake_signal = RecordingWakeSignal()
+    client.app.state.discovery_dispatch_route_kick_enabled = True
+    client.app.state.discovery_dispatch_wake_signal = wake_signal
+    client.app.state.discovery_dispatch_processor = FailingDiscoveryProcessor()
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Analyst Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+
+    response = client.post("/v1/rules/recrawl", headers=_auth_headers(role="analyst"), json={})
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "queued_job_count": 1,
+        "queued_keywords": ["แพลตฟอร์ม"],
+    }
+    assert wake_signal.wake_count == 1
+
+
+def test_manual_recrawl_denies_viewer_role(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-viewer.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=True,
+            jwt_secret=JWT_SECRET,
+        )
+    )
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_profile(
+        client,
+        profile_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        name="Viewer Trial",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("แพลตฟอร์ม", 1)],
+    )
+
+    response = client.post("/v1/rules/recrawl", headers=_auth_headers(role="viewer"), json={})
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "run operator role required"
 
 
 def test_manual_recrawl_requires_at_least_one_active_keyword(tmp_path) -> None:
