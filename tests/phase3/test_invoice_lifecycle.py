@@ -1063,3 +1063,196 @@ def test_repository_rejects_duplicate_open_upgrade_insert_even_without_precheck(
         assert str(exc) == "upgrade already in progress for subscription"
     else:
         raise AssertionError("expected duplicate open upgrade insert to be rejected")
+
+
+def _seed_deactivated_profile_with_keyword(
+    client: TestClient, *, keyword: str, tenant_id: str = TENANT_ID
+) -> str:
+    """Seed a profile deactivated by expiry (is_active=0) that KEEPS its keyword."""
+    profile_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profiles (
+                    id, tenant_id, name, profile_type, is_active,
+                    max_pages_per_keyword, close_consulting_after_days,
+                    close_stale_after_days, created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, 'TOR', 'tor', 0,
+                    15, 30, 45, :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": profile_id,
+                "tenant_id": tenant_id,
+                "created_at": "2026-04-08T00:00:00+00:00",
+                "updated_at": "2026-04-08T00:00:00+00:00",
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profile_keywords (
+                    id, profile_id, keyword, position, created_at
+                ) VALUES (
+                    :id, :profile_id, :keyword, 1, :created_at
+                )
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "profile_id": profile_id,
+                "keyword": keyword,
+                "created_at": "2026-04-08T00:00:00+00:00",
+            },
+        )
+    return profile_id
+
+
+def _seed_inactive_profile_without_keywords(client: TestClient) -> str:
+    """Seed a profile the operator emptied in the UI (is_active=0, no keywords)."""
+    profile_id = str(uuid4())
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO crawl_profiles (
+                    id, tenant_id, name, profile_type, is_active,
+                    max_pages_per_keyword, close_consulting_after_days,
+                    close_stale_after_days, created_at, updated_at
+                ) VALUES (
+                    :id, :tenant_id, 'EMPTY', 'tor', 0,
+                    15, 30, 45, :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "id": profile_id,
+                "tenant_id": TENANT_ID,
+                "created_at": "2026-04-08T00:00:00+00:00",
+                "updated_at": "2026-04-08T00:00:00+00:00",
+            },
+        )
+    return profile_id
+
+
+def _profile_is_active(client: TestClient, profile_id: str) -> bool:
+    with client.app.state.db_engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT is_active FROM crawl_profiles WHERE id = :id"),
+            {"id": profile_id},
+        ).one()
+    return bool(row[0])
+
+
+def _activate_fresh_plan(
+    client: TestClient, *, plan_code: str, record_number: str
+) -> dict:
+    """Create a billing record starting today and drive it to a paid+active subscription."""
+    today = _utc_today()
+    created = client.post(
+        "/v1/billing/records",
+        json={
+            "tenant_id": TENANT_ID,
+            "record_number": record_number,
+            "plan_code": plan_code,
+            "status": "draft",
+            "billing_period_start": today.isoformat(),
+        },
+    )
+    assert created.status_code == 201, created.text
+    record = created.json()["record"]
+    record_id = record["id"]
+    amount_due = record["amount_due"]
+
+    for status_step in ("issued", "awaiting_payment"):
+        transition = client.post(
+            f"/v1/billing/records/{record_id}/transition",
+            json={"tenant_id": TENANT_ID, "status": status_step, "note": status_step},
+        )
+        assert transition.status_code == 200, transition.text
+
+    payment = client.post(
+        f"/v1/billing/records/{record_id}/payments",
+        json={
+            "tenant_id": TENANT_ID,
+            "payment_method": "bank_transfer",
+            "amount": amount_due,
+            "currency": "THB",
+            "reference_code": f"REF-{record_number}",
+            "received_at": f"{today.isoformat()}T03:30:00+00:00",
+            "note": "Customer transfer",
+        },
+    )
+    assert payment.status_code == 201, payment.text
+
+    reconciled = client.post(
+        f"/v1/billing/payments/{payment.json()['id']}/reconcile",
+        json={"tenant_id": TENANT_ID, "status": "reconciled", "note": "matched"},
+    )
+    assert reconciled.status_code == 200, reconciled.text
+    return reconciled.json()
+
+
+def test_monthly_membership_activation_reactivates_deactivated_profiles_with_keywords(
+    tmp_path,
+) -> None:
+    client = _create_client(tmp_path)
+    restored = _seed_deactivated_profile_with_keyword(client, keyword="ระบบสารสนเทศ")
+    emptied = _seed_inactive_profile_without_keywords(client)
+
+    reconciled = _activate_fresh_plan(
+        client, plan_code="monthly_membership", record_number="INV-REACT-1"
+    )
+
+    assert reconciled["subscription"]["subscription_status"] == "active"
+    assert reconciled["subscription"]["plan_code"] == "monthly_membership"
+    # All keywords come back: the expiry-deactivated profile is reactivated.
+    assert _profile_is_active(client, restored) is True
+    # A profile the operator emptied in the UI (no keywords) stays inactive.
+    assert _profile_is_active(client, emptied) is False
+
+    # End-to-end: the restored keyword is entitled again (back in active_keywords),
+    # not merely flagged is_active in the row.
+    rules_after = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    assert rules_after.status_code == 200
+    rules_body = rules_after.json()
+    assert rules_body["entitlements"]["has_active_subscription"] is True
+    assert rules_body["entitlements"]["plan_code"] == "monthly_membership"
+    assert rules_body["entitlements"]["active_keyword_count"] == 1
+    restored_profile = next(
+        profile for profile in rules_body["profiles"] if profile["id"] == restored
+    )
+    assert restored_profile["is_active"] is True
+    assert "ระบบสารสนเทศ" in restored_profile["keywords"]
+
+
+def test_membership_reactivation_is_tenant_scoped(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    other_tenant_profile = _seed_deactivated_profile_with_keyword(
+        client, keyword="ระบบสารสนเทศ", tenant_id=OTHER_TENANT_ID
+    )
+
+    reconciled = _activate_fresh_plan(
+        client, plan_code="monthly_membership", record_number="INV-TEN-1"
+    )
+    assert reconciled["subscription"]["subscription_status"] == "active"
+
+    # Another tenant's deactivated profile must NOT be touched by this activation.
+    assert _profile_is_active(client, other_tenant_profile) is False
+
+
+def test_one_time_activation_does_not_reactivate_deactivated_profiles(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    restored = _seed_deactivated_profile_with_keyword(client, keyword="ระบบสารสนเทศ")
+
+    reconciled = _activate_fresh_plan(
+        client, plan_code="one_time_search_pack", record_number="INV-OT-1"
+    )
+
+    assert reconciled["subscription"]["subscription_status"] == "active"
+    assert reconciled["subscription"]["plan_code"] == "one_time_search_pack"
+    # One-time packs keep fresh-slate semantics: no automatic reactivation.
+    assert _profile_is_active(client, restored) is False
