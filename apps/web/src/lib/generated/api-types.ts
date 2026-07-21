@@ -2002,13 +2002,12 @@ export interface components {
              * @default 45
              */
             close_stale_after_days: number;
-            /**
-             * Is Active
-             * @default true
-             */
-            is_active: boolean;
+            /** Enabled By User */
+            enabled_by_user?: boolean | null;
+            /** Is Active */
+            is_active?: boolean | null;
             /** Keywords */
-            keywords: string[];
+            keywords?: string[];
             /**
              * Max Pages Per Keyword
              * @default 15
@@ -2395,6 +2394,8 @@ export interface components {
             active_keywords: string[];
             /** Document Download Allowed */
             document_download_allowed: boolean;
+            /** Enabled Keyword Count */
+            enabled_keyword_count: number;
             /** Exports Allowed */
             exports_allowed: boolean;
             /** Has Active Subscription */
@@ -2411,8 +2412,14 @@ export interface components {
             plan_label: string | null;
             /** Remaining Keyword Slots */
             remaining_keyword_slots: number | null;
+            /** Runnable Keyword Count */
+            runnable_keyword_count: number;
+            /** Runnable Keywords */
+            runnable_keywords: string[];
             /** Runs Allowed */
             runs_allowed: boolean;
+            /** Saved Keyword Count */
+            saved_keyword_count: number;
             /** Source */
             source: string;
             /** Subscription Status */
@@ -2840,6 +2847,10 @@ export interface components {
             close_stale_after_days: number;
             /** Created At */
             created_at: string;
+            /** Effective Status */
+            effective_status: string;
+            /** Enabled By User */
+            enabled_by_user: boolean;
             /** Id */
             id: string;
             /** Is Active */
@@ -2852,6 +2863,8 @@ export interface components {
             name: string;
             /** Profile Type */
             profile_type: string;
+            /** Status Reason */
+            status_reason: string | null;
             /** Updated At */
             updated_at: string;
         };
@@ -3233,6 +3246,8 @@ export interface components {
             close_consulting_after_days?: number | null;
             /** Close Stale After Days */
             close_stale_after_days?: number | null;
+            /** Enabled By User */
+            enabled_by_user?: boolean | null;
             /** Is Active */
             is_active?: boolean | null;
             /** Keywords */

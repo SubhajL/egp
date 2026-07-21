@@ -86,7 +86,10 @@ function buildRulesResponse(
         id: "profile-1",
         name: "Keyword Watchlist",
         profile_type: "custom",
+        enabled_by_user: true,
         is_active: true,
+        effective_status: "running",
+        status_reason: null,
         max_pages_per_keyword: 15,
         close_consulting_after_days: 30,
         close_stale_after_days: 45,
@@ -108,6 +111,10 @@ function buildRulesResponse(
       subscription_status: "active",
       has_active_subscription: true,
       keyword_limit: keywordLimit,
+      saved_keyword_count: 1,
+      enabled_keyword_count: 1,
+      runnable_keyword_count: 1,
+      runnable_keywords: ["analytics"],
       active_keyword_count: 1,
       remaining_keyword_slots: keywordLimit === null ? null : Math.max(keywordLimit - 1, 0),
       active_keywords: ["analytics"],
@@ -116,7 +123,7 @@ function buildRulesResponse(
       exports_allowed: planCode !== "free_trial",
       document_download_allowed: planCode !== "free_trial",
       notifications_allowed: planCode !== "free_trial",
-      source: "billing_subscriptions + crawl_profile_keywords",
+      source: "billing_subscriptions + crawl_profiles + crawl_profile_keywords",
     },
     closure_rules: {
       close_on_winner_status: true,
@@ -159,6 +166,60 @@ async function mockApp(page: Page, rulesBody: ReturnType<typeof buildRulesRespon
       case "GET /v1/rules":
         await fulfillJson(route, 200, rulesBody);
         return;
+      case "POST /v1/rules/profiles": {
+        const payload = request.postDataJSON() as {
+          name: string;
+          keywords: string[];
+          enabled_by_user?: boolean;
+        };
+        if (
+          rulesBody.profiles.some(
+            (profile) => profile.name.trim().toLocaleLowerCase() === payload.name.trim().toLocaleLowerCase(),
+          )
+        ) {
+          await fulfillJson(route, 409, {
+            detail: "profile name already exists",
+            code: "profile_name_conflict",
+          });
+          return;
+        }
+        const profile = {
+          id: `profile-${rulesBody.profiles.length + 1}`,
+          name: payload.name.trim(),
+          profile_type: "custom",
+          enabled_by_user: payload.enabled_by_user ?? true,
+          is_active: payload.enabled_by_user ?? true,
+          effective_status: "running",
+          status_reason: null,
+          max_pages_per_keyword: 15,
+          close_consulting_after_days: 30,
+          close_stale_after_days: 45,
+          keywords: payload.keywords,
+          created_at: "2026-07-21T00:00:00Z",
+          updated_at: "2026-07-21T00:00:00Z",
+        };
+        rulesBody.profiles.push(profile);
+        await fulfillJson(route, 201, profile);
+        return;
+      }
+      case "PATCH /v1/rules/profiles/profile-1": {
+        const payload = request.postDataJSON() as {
+          name?: string;
+          keywords?: string[];
+          enabled_by_user?: boolean;
+        };
+        const profile = rulesBody.profiles[0];
+        if (payload.name !== undefined) profile.name = payload.name;
+        if (payload.keywords !== undefined) profile.keywords = payload.keywords;
+        if (payload.enabled_by_user !== undefined) {
+          profile.enabled_by_user = payload.enabled_by_user;
+          profile.is_active = payload.enabled_by_user;
+          profile.effective_status = payload.enabled_by_user ? "running" : "paused_by_user";
+          profile.status_reason = null;
+        }
+        await fulfillJson(route, 200, profile);
+        return;
+      }
       case "GET /v1/dashboard/summary":
         await fulfillJson(route, 200, EMPTY_DASHBOARD_SUMMARY);
         return;
@@ -173,7 +234,7 @@ test("free trial rules page shows limited tabs and upgrade copy", async ({ page 
 
   await page.goto("/rules");
 
-  await expect(page.getByRole("heading", { name: "คำค้นติดตาม" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "กลุ่มคำค้น" })).toBeVisible();
   await expect(page.getByText("ทดลองใช้ฟรี", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "คำค้นของฉัน" })).toBeVisible();
   await expect(page.getByRole("button", { name: "ความถี่การติดตาม" })).toBeVisible();
@@ -216,4 +277,56 @@ test("unknown plan rules page renders explicit fallback copy instead of free-tri
   await expect(page.getByRole("button", { name: "คำค้นของฉัน" })).toBeVisible();
   await expect(page.getByRole("button", { name: "ความถี่การติดตาม" })).toBeVisible();
   await expect(page.getByRole("button", { name: "สิทธิ์และการใช้งาน" })).toBeVisible();
+});
+
+test("rules page creates two named keyword groups", async ({ page }) => {
+  const rules = buildRulesResponse("monthly_membership");
+  rules.profiles.splice(0, rules.profiles.length);
+  rules.entitlements.saved_keyword_count = 0;
+  rules.entitlements.enabled_keyword_count = 0;
+  rules.entitlements.runnable_keyword_count = 0;
+  rules.entitlements.runnable_keywords = [];
+  rules.entitlements.active_keyword_count = 0;
+  rules.entitlements.active_keywords = [];
+  await mockApp(page, rules);
+  await page.goto("/rules");
+
+  for (const [name, keyword] of [
+    ["Infrastructure", "cloud"],
+    ["Analytics", "data"],
+  ]) {
+    await page.getByRole("button", { name: "สร้างกลุ่มคำค้น" }).click();
+    await page.getByLabel("ชื่อกลุ่มคำค้น").fill(name);
+    await page.getByRole("textbox", { name: /^คำค้น/ }).fill(keyword);
+    await page.getByRole("button", { name: "สร้างกลุ่ม", exact: true }).click();
+  }
+
+  await expect(page.getByRole("heading", { name: "Infrastructure" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Analytics" })).toBeVisible();
+});
+
+test("rules page pauses group without removing keywords", async ({ page }) => {
+  await mockApp(page, buildRulesResponse("monthly_membership"));
+  await page.goto("/rules");
+
+  await page.getByRole("button", { name: "หยุดติดตาม" }).click();
+
+  await expect(page.getByText("หยุดโดยคุณ", { exact: true })).toBeVisible();
+  await expect(page.getByText("analytics", { exact: true })).toBeVisible();
+});
+
+test("rules page shows saved groups after monthly reinstatement", async ({ page }) => {
+  const rules = buildRulesResponse("monthly_membership");
+  rules.profiles.push({
+    ...rules.profiles[0],
+    id: "profile-2",
+    name: "Historical group",
+    keywords: ["platform"],
+  });
+  await mockApp(page, rules);
+  await page.goto("/rules");
+
+  await expect(page.getByRole("heading", { name: "Keyword Watchlist" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Historical group" })).toBeVisible();
+  await expect(page.getByText("กำลังติดตาม", { exact: true })).toHaveCount(2);
 });

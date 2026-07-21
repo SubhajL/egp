@@ -5,11 +5,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   Clock3,
   Mail,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
   Search,
   ShieldCheck,
   Sparkles,
   Tag,
-  Trash2,
   X,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
@@ -38,7 +41,12 @@ import {
   CRAWL_INTERVAL_OPTIONS,
   ensureActiveTab,
   formatCrawlInterval,
+  keywordGroupStatusPresentation,
   parseKeywordDraft,
+  suggestKeywordGroupName,
+  validateKeywordGroupName,
+  type KeywordGroupEffectiveStatus,
+  type KeywordGroupStatusReason,
 } from "./page-helpers";
 
 function StatusChip({
@@ -88,7 +96,7 @@ function formatKeywordLimit(limit: number | null): string {
 }
 
 function formatKeywordQuota(entitlements: EntitlementSummary): string {
-  return `${entitlements.active_keyword_count} / ${formatKeywordLimit(
+  return `${entitlements.runnable_keyword_count} / ${formatKeywordLimit(
     entitlements.keyword_limit,
   )}`;
 }
@@ -105,17 +113,27 @@ function formatRemainingKeywordSlots(entitlements: EntitlementSummary): string {
 
 function WatchlistCard({
   profile,
-  entitlements,
+  existingNames,
   busy,
-  onRemoveKeyword,
-  onDeactivateProfile,
+  onRename,
+  onUpdateKeywords,
+  onToggle,
 }: {
   profile: RuleProfile;
-  entitlements: EntitlementSummary;
+  existingNames: string[];
   busy: boolean;
-  onRemoveKeyword: (profile: RuleProfile, keyword: string) => Promise<void>;
-  onDeactivateProfile: (profile: RuleProfile) => Promise<void>;
+  onRename: (profile: RuleProfile, name: string) => Promise<void>;
+  onUpdateKeywords: (profile: RuleProfile, keywords: string[]) => Promise<void>;
+  onToggle: (profile: RuleProfile) => Promise<void>;
 }) {
+  const [editMode, setEditMode] = useState<"name" | "keywords" | null>(null);
+  const [nameDraft, setNameDraft] = useState(profile.name);
+  const [keywordsDraft, setKeywordsDraft] = useState(profile.keywords.join("\n"));
+  const [nameError, setNameError] = useState<string | null>(null);
+  const presentation = keywordGroupStatusPresentation(
+    profile.effective_status as KeywordGroupEffectiveStatus,
+    profile.status_reason as KeywordGroupStatusReason,
+  );
   const updatedAt = profile.updated_at
     ? new Date(profile.updated_at).toLocaleDateString("th-TH", {
         year: "numeric",
@@ -123,28 +141,90 @@ function WatchlistCard({
         day: "numeric",
       })
     : null;
-  const canEdit = entitlements.has_active_subscription && profile.is_active;
+  const uniqueKeywordCount = new Set(
+    profile.keywords.map((keyword) => keyword.trim().toLocaleLowerCase()),
+  ).size;
+
+  async function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const validationError = validateKeywordGroupName(
+      nameDraft,
+      existingNames,
+      profile.name,
+    );
+    setNameError(validationError);
+    if (validationError) return;
+    await onRename(profile, nameDraft.trim());
+    setEditMode(null);
+  }
+
+  async function submitKeywords(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await onUpdateKeywords(profile, parseKeywordDraft(keywordsDraft));
+    setEditMode(null);
+  }
 
   return (
-    <div
-      className={`rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] ${
-        !profile.is_active ? "opacity-70" : ""
-      }`}
-    >
+    <div className="rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <h3 className="text-lg font-bold text-[var(--text-primary)]">{profile.name}</h3>
-          <StatusChip active={profile.is_active} activeLabel="ใช้งาน" inactiveLabel="ปิดใช้งาน" />
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${presentation.className}`}>
+            {presentation.label}
+          </span>
         </div>
         {updatedAt ? (
           <p className="text-xs text-[var(--text-muted)]">อัปเดตล่าสุด {updatedAt}</p>
         ) : null}
       </div>
 
-      {/* Keyword list */}
+      {presentation.guidance ? (
+        <p className="mb-4 rounded-xl bg-[var(--bg-surface-secondary)] px-3 py-2 text-xs text-[var(--text-muted)]">
+          {presentation.guidance}
+        </p>
+      ) : null}
+
+      {editMode === "name" ? (
+        <form className="mb-4 flex flex-col gap-2" onSubmit={submitRename}>
+          <label className="text-sm text-[var(--text-secondary)]" htmlFor={`rename-${profile.id}`}>
+            ชื่อกลุ่มคำค้น
+          </label>
+          <div className="flex gap-2">
+            <input
+              id={`rename-${profile.id}`}
+              value={nameDraft}
+              onChange={(event) => setNameDraft(event.target.value)}
+              className="min-w-0 flex-1 rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm"
+            />
+            <button type="submit" disabled={busy} className="rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-white">
+              บันทึกชื่อ
+            </button>
+          </div>
+          {nameError ? <p className="text-xs text-[var(--badge-red-text)]">{nameError}</p> : null}
+        </form>
+      ) : null}
+
+      {editMode === "keywords" ? (
+        <form className="mb-4 flex flex-col gap-2" onSubmit={submitKeywords}>
+          <label className="text-sm text-[var(--text-secondary)]" htmlFor={`keywords-${profile.id}`}>
+            แก้ไขคำค้น
+          </label>
+          <textarea
+            id={`keywords-${profile.id}`}
+            value={keywordsDraft}
+            onChange={(event) => setKeywordsDraft(event.target.value)}
+            rows={4}
+            className="rounded-xl border border-[var(--border-default)] px-3 py-2 text-sm"
+          />
+          <button type="submit" disabled={busy} className="self-end rounded-xl bg-primary px-3 py-2 text-sm font-semibold text-white">
+            บันทึกคำค้น
+          </button>
+        </form>
+      ) : null}
+
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-          คำค้นที่ติดตาม ({profile.keywords.length})
+          คำค้นที่บันทึก ({uniqueKeywordCount})
         </p>
         {profile.keywords.length === 0 ? (
           <div className="rounded-xl border border-dashed border-[var(--border-default)] px-4 py-5 text-sm text-[var(--text-muted)]">
@@ -155,43 +235,32 @@ function WatchlistCard({
             {profile.keywords.map((keyword) => (
               <span
                 key={keyword}
-                className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
+                className="inline-flex items-center rounded-full border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-medium text-primary"
               >
                 {keyword}
-                {canEdit ? (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void onRemoveKeyword(profile, keyword)}
-                    className="rounded-full p-0.5 text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
-                    aria-label={`ลบคำค้น ${keyword}`}
-                  >
-                    <X className="size-3" aria-hidden="true" />
-                  </button>
-                ) : null}
               </span>
             ))}
           </div>
         )}
       </div>
 
-      {/* Quota usage summary */}
-      <div className="mt-4 flex items-center gap-4 text-sm text-[var(--text-muted)]">
+      <div className="mt-5 flex flex-wrap items-center gap-2 text-sm text-[var(--text-muted)]">
         <span className="inline-flex items-center gap-1">
           <Tag className="size-3.5" />
-          {profile.keywords.length} / {entitlements.keyword_limit ?? "ไม่จำกัด"} คำค้น
+          {uniqueKeywordCount} คำค้นไม่ซ้ำ
         </span>
-        {canEdit ? (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void onDeactivateProfile(profile)}
-            className="ml-auto inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--badge-red-text)] transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Trash2 className="size-3.5" aria-hidden="true" />
-            ปิดใช้งาน
+        <div className="ml-auto flex flex-wrap gap-2">
+          <button type="button" disabled={busy} onClick={() => setEditMode("name")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-primary">
+            <Pencil className="size-3.5" /> เปลี่ยนชื่อ
           </button>
-        ) : null}
+          <button type="button" disabled={busy} onClick={() => setEditMode("keywords")} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-primary">
+            <Pencil className="size-3.5" /> แก้ไขคำค้น
+          </button>
+          <button type="button" disabled={busy} onClick={() => void onToggle(profile)} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+            {profile.enabled_by_user ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
+            {profile.enabled_by_user ? "หยุดติดตาม" : "เริ่มติดตาม"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -318,62 +387,52 @@ function PlanSummaryCard({
 /* ------------------------------------------------------------------ */
 
 function KeywordComposer({
-  entitlements,
   name,
   keywordDraft,
+  suggestedName,
   busy,
   error,
   notice,
+  onClose,
   onNameChange,
   onKeywordDraftChange,
   onSubmit,
 }: {
-  entitlements: EntitlementSummary;
   name: string;
   keywordDraft: string;
+  suggestedName: string;
   busy: boolean;
   error: string | null;
   notice: string | null;
+  onClose: () => void;
   onNameChange: (value: string) => void;
   onKeywordDraftChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
 }) {
   const parsedKeywords = parseKeywordDraft(keywordDraft);
-  const slotsLeft = entitlements.remaining_keyword_slots;
-  const atLimit = slotsLeft !== null && slotsLeft <= 0;
 
   return (
     <div className="mb-6 rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)]">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h3 className="text-lg font-bold text-[var(--text-primary)]">
-            เพิ่มคำค้นที่ต้องการติดตาม
-          </h3>
+          <h3 className="text-lg font-bold text-[var(--text-primary)]">สร้างกลุ่มคำค้น</h3>
           <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
-            ใส่คำค้นที่ต้องการให้ระบบติดตามจาก e-GP โดยอัตโนมัติ ระบบจะตรวจสอบโควต้าตามแพ็กเกจปัจจุบัน
-          </p>
-          <p className="mt-1 flex items-center gap-1.5 text-xs text-primary">
-            <Clock3 className="size-3.5" />
-            ระบบจะเริ่มค้นหาทันทีเมื่อเพิ่มคำค้นใหม่ หลังจากนั้นจะค้นหาซ้ำตามความถี่ที่ตั้งไว้
+            ตั้งชื่อที่สื่อความหมายและใส่คำค้นเริ่มต้น กลุ่มจะถูกเก็บไว้แม้สิทธิ์ค้นหาจะพักอยู่
           </p>
         </div>
-        <div className="rounded-2xl bg-[var(--bg-surface-secondary)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-          เหลือโควต้าเพิ่มได้อีก {slotsLeft ?? "ไม่จำกัด"} คำค้น
-        </div>
+        <button type="button" onClick={onClose} aria-label="ปิดแบบฟอร์มสร้างกลุ่ม" className="rounded-lg p-2 text-[var(--text-muted)] hover:bg-[var(--bg-surface-secondary)]">
+          <X className="size-4" />
+        </button>
       </div>
 
-      {atLimit ? (
-        <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          คำค้นครบโควต้าแล้ว — อัปเกรดแพ็กเกจเพื่อเพิ่มคำค้นเพิ่มเติม
-        </div>
-      ) : (
-        <form className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-[1fr,1.4fr]" onSubmit={onSubmit}>
+      <form className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-[1fr,1.4fr]" onSubmit={onSubmit}>
           <label className="flex flex-col gap-2 text-sm text-[var(--text-secondary)]">
             ชื่อกลุ่มคำค้น
             <input
+              required
               value={name}
               onChange={(event) => onNameChange(event.target.value)}
-              placeholder="เช่น คำค้นหลัก"
+              placeholder={suggestedName}
               className="rounded-xl border border-[var(--border-default)] bg-transparent px-3 py-2 text-sm text-[var(--text-primary)] outline-none ring-0 transition focus:border-primary"
             />
           </label>
@@ -381,6 +440,7 @@ function KeywordComposer({
           <label className="flex flex-col gap-2 text-sm text-[var(--text-secondary)]">
             คำค้น
             <textarea
+              required
               value={keywordDraft}
               onChange={(event) => onKeywordDraftChange(event.target.value)}
               placeholder="ใส่ทีละบรรทัด หรือคั่นด้วย comma"
@@ -402,11 +462,13 @@ function KeywordComposer({
               disabled={busy}
               className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {busy ? "กำลังบันทึก..." : "เพิ่มคำค้น"}
+              {busy ? "กำลังบันทึก..." : "สร้างกลุ่ม"}
             </button>
           </div>
-        </form>
-      )}
+      </form>
+      <p className="mt-3 text-xs text-[var(--text-muted)]">
+        คำค้นเดียวกันอยู่ได้หลายกลุ่มเพื่อการจัดระเบียบ แต่โควต้าและการค้นหาจะนับเพียงครั้งเดียว
+      </p>
     </div>
   );
 }
@@ -522,7 +584,8 @@ export default function RulesPage() {
   const tabs = useMemo(() => tabsForPlan(tier), [tier]);
 
   const [activeTab, setActiveTab] = useState<string>("keywords");
-  const [profileName, setProfileName] = useState("คำค้นหลัก");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [profileName, setProfileName] = useState("");
   const [keywordDraft, setKeywordDraft] = useState("");
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileActionBusyId, setProfileActionBusyId] = useState<string | null>(null);
@@ -562,6 +625,14 @@ export default function RulesPage() {
     setProfileNotice(null);
 
     const keywords = parseKeywordDraft(keywordDraft);
+    const nameError = validateKeywordGroupName(
+      profileName,
+      data?.profiles.map((profile) => profile.name) ?? [],
+    );
+    if (nameError) {
+      setProfileError(nameError);
+      return;
+    }
     if (keywords.length === 0) {
       setProfileError("กรุณาใส่อย่างน้อย 1 คำค้น");
       return;
@@ -570,13 +641,15 @@ export default function RulesPage() {
     setProfileBusy(true);
     try {
       await createRuleProfile({
-        name: profileName.trim() || "คำค้นหลัก",
+        name: profileName.trim(),
         profile_type: "custom",
-        is_active: true,
+        enabled_by_user: true,
         keywords,
       });
+      setProfileName("");
       setKeywordDraft("");
-      setProfileNotice(`บันทึกคำค้น ${keywords.length} รายการเรียบร้อยแล้ว`);
+      setComposerOpen(false);
+      setProfileNotice(`สร้างกลุ่มคำค้นพร้อม ${keywords.length} คำค้นแล้ว`);
       await refreshRules();
     } catch (mutationError) {
       setProfileError(
@@ -587,17 +660,13 @@ export default function RulesPage() {
     }
   }
 
-  async function handleRemoveKeyword(profile: RuleProfile, keyword: string) {
-    const remainingKeywords = profile.keywords.filter((entry) => entry !== keyword);
+  async function handleRenameProfile(profile: RuleProfile, name: string) {
     setProfileError(null);
     setProfileNotice(null);
     setProfileActionBusyId(profile.id);
     try {
-      await updateRuleProfile(profile.id, {
-        keywords: remainingKeywords,
-        is_active: remainingKeywords.length > 0 ? profile.is_active : false,
-      });
-      setProfileNotice("อัปเดตคำค้นเรียบร้อยแล้ว");
+      await updateRuleProfile(profile.id, { name });
+      setProfileNotice("เปลี่ยนชื่อกลุ่มคำค้นแล้ว");
       await refreshRules();
     } catch (mutationError) {
       setProfileError(localizeApiError(mutationError, "ไม่สามารถอัปเดตคำค้นได้"));
@@ -606,19 +675,35 @@ export default function RulesPage() {
     }
   }
 
-  async function handleDeactivateProfile(profile: RuleProfile) {
+  async function handleUpdateKeywords(profile: RuleProfile, keywords: string[]) {
+    setProfileError(null);
+    setProfileNotice(null);
+    setProfileActionBusyId(profile.id);
+    try {
+      await updateRuleProfile(profile.id, { keywords });
+      setProfileNotice("อัปเดตคำค้นแล้ว");
+      await refreshRules();
+    } catch (mutationError) {
+      setProfileError(localizeApiError(mutationError, "ไม่สามารถอัปเดตคำค้นได้"));
+    } finally {
+      setProfileActionBusyId(null);
+    }
+  }
+
+  async function handleToggleProfile(profile: RuleProfile) {
     setProfileError(null);
     setProfileNotice(null);
     setProfileActionBusyId(profile.id);
     try {
       await updateRuleProfile(profile.id, {
-        is_active: false,
-        keywords: [],
+        enabled_by_user: !profile.enabled_by_user,
       });
-      setProfileNotice("ปิดใช้งานกลุ่มคำค้นแล้ว");
+      setProfileNotice(
+        profile.enabled_by_user ? "หยุดติดตามกลุ่มแล้ว โดยคำค้นยังอยู่ครบ" : "เริ่มติดตามกลุ่มแล้ว",
+      );
       await refreshRules();
     } catch (mutationError) {
-      setProfileError(localizeApiError(mutationError, "ไม่สามารถปิดใช้งานคำค้นได้"));
+      setProfileError(localizeApiError(mutationError, "ไม่สามารถเปลี่ยนสถานะกลุ่มได้"));
     } finally {
       setProfileActionBusyId(null);
     }
@@ -650,17 +735,48 @@ export default function RulesPage() {
     if (activeTab === "keywords") {
       return (
         <>
-          <KeywordComposer
-            entitlements={data.entitlements}
-            name={profileName}
-            keywordDraft={keywordDraft}
-            busy={profileBusy}
-            error={profileError}
-            notice={profileNotice}
-            onNameChange={setProfileName}
-            onKeywordDraftChange={setKeywordDraft}
-            onSubmit={handleCreateProfile}
-          />
+          <div className="mb-6 flex flex-col gap-4 rounded-2xl bg-[var(--bg-surface)] p-6 shadow-[var(--shadow-soft)] sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-xl font-bold text-[var(--text-primary)]">กลุ่มคำค้น</h2>
+              <p className="mt-1 text-sm text-[var(--text-muted)]">
+                จัดคำค้นเป็นหลายกลุ่ม เปลี่ยนชื่อ และหยุดหรือเริ่มติดตามได้โดยไม่สูญเสียคำค้น
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setComposerOpen(true);
+                setProfileError(null);
+              }}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white"
+            >
+              <Plus className="size-4" /> สร้างกลุ่มคำค้น
+            </button>
+          </div>
+
+          {composerOpen ? (
+            <KeywordComposer
+              name={profileName}
+              keywordDraft={keywordDraft}
+              suggestedName={suggestKeywordGroupName(
+                data.profiles.map((profile) => profile.name),
+              )}
+              busy={profileBusy}
+              error={profileError}
+              notice={profileNotice}
+              onClose={() => setComposerOpen(false)}
+              onNameChange={setProfileName}
+              onKeywordDraftChange={setKeywordDraft}
+              onSubmit={handleCreateProfile}
+            />
+          ) : null}
+
+          {!composerOpen && profileError ? (
+            <p className="mb-4 text-sm font-medium text-[var(--badge-red-text)]">{profileError}</p>
+          ) : null}
+          {!composerOpen && profileNotice ? (
+            <p className="mb-4 text-sm font-medium text-primary">{profileNotice}</p>
+          ) : null}
 
           {data.profiles.length === 0 ? (
             <div className="rounded-2xl bg-[var(--bg-surface)] p-10 text-center shadow-[var(--shadow-soft)]">
@@ -669,7 +785,7 @@ export default function RulesPage() {
                 ยังไม่มีคำค้นที่ติดตาม
               </p>
               <p className="mt-2 text-sm text-[var(--text-muted)]">
-                ใช้ฟอร์มด้านบนเพื่อเพิ่มคำค้นที่ต้องการติดตามจาก e-GP
+                สร้างกลุ่มแรกเพื่อจัดเก็บคำค้นที่ต้องการติดตามจาก e-GP
               </p>
             </div>
           ) : (
@@ -678,10 +794,11 @@ export default function RulesPage() {
                 <WatchlistCard
                   key={profile.id}
                   profile={profile}
-                  entitlements={data.entitlements}
+                  existingNames={data.profiles.map((entry) => entry.name)}
                   busy={profileActionBusyId === profile.id}
-                  onRemoveKeyword={handleRemoveKeyword}
-                  onDeactivateProfile={handleDeactivateProfile}
+                  onRename={handleRenameProfile}
+                  onUpdateKeywords={handleUpdateKeywords}
+                  onToggle={handleToggleProfile}
                 />
               ))}
             </div>
@@ -816,7 +933,7 @@ export default function RulesPage() {
   }
 
   /* Page-level header text */
-  const headerTitle = "คำค้นติดตาม";
+  const headerTitle = "กลุ่มคำค้น";
 
   const headerSubtitle = headerSubtitleForPlan(tier);
 

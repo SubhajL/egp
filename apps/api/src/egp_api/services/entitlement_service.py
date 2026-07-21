@@ -7,8 +7,15 @@ from typing import TYPE_CHECKING, Literal
 
 from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
+    ProfileKeywordCandidate,
+    ProfileEffectiveStatus,
+    RunnableProfileKeyword,
+    build_discovery_authorization_snapshot,
+    build_enabled_profile_keywords,
+    build_runnable_profile_keywords,
     normalize_keyword as _normalize_discovery_keyword,
     require_discovery_authorization,
+    resolve_profile_effective_status,
     resolve_effective_discovery_entitlement,
 )
 from egp_db.repositories.tenant_entitlement_repo import (
@@ -28,7 +35,7 @@ if TYPE_CHECKING:
     from egp_notifications.service import Notification
 
 
-ENTITLEMENT_SOURCE = "billing_subscriptions + crawl_profile_keywords"
+ENTITLEMENT_SOURCE = "billing_subscriptions + crawl_profiles + crawl_profile_keywords"
 _PAID_ARCHIVE_PLAN_CODES = {"one_time_search_pack", "monthly_membership"}
 CapabilityKey = Literal["exports", "document_downloads", "notifications"]
 
@@ -52,6 +59,13 @@ class TenantEntitlementSnapshot:
     subscription_status: str | None
     has_active_subscription: bool
     keyword_limit: int | None
+    saved_keyword_count: int
+    enabled_keyword_count: int
+    runnable_keyword_count: int
+    runnable_keywords: list[str]
+    quota_keywords: list[str]
+    runnable_profile_keywords: list[RunnableProfileKeyword]
+    profile_effective_statuses: dict[str, ProfileEffectiveStatus]
     active_keyword_count: int
     remaining_keyword_slots: int | None
     active_keywords: list[str]
@@ -117,13 +131,43 @@ class TenantEntitlementService:
     def get_snapshot(self, *, tenant_id: str) -> TenantEntitlementSnapshot:
         subscriptions = self._billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
         entitlement = resolve_effective_discovery_entitlement(subscriptions=subscriptions)
-        if entitlement.profile_cycle_started_at is not None:
-            self._profile_repository.deactivate_active_profiles_created_before(
-                tenant_id=tenant_id,
-                created_before=entitlement.profile_cycle_started_at,
+        profile_details = self._profile_repository.list_profiles_with_keywords(
+            tenant_id=tenant_id
+        )
+        profiles = _profile_candidates(profile_details)
+        saved_keywords = _unique_keywords(
+            keyword.keyword
+            for detail in profile_details
+            for keyword in detail.keywords
+        )
+        enabled_keywords = build_enabled_profile_keywords(
+            profiles=profiles,
+            entitlement=entitlement,
+            effective_cycle_only=False,
+        )
+        quota_keywords = build_enabled_profile_keywords(
+            profiles=profiles,
+            entitlement=entitlement,
+            effective_cycle_only=True,
+        )
+        authorization = build_discovery_authorization_snapshot(
+            subscriptions=subscriptions,
+            profiles=profiles,
+        )
+        runnable_keywords = authorization.active_keywords
+        runnable_profile_keywords = build_runnable_profile_keywords(
+            profiles=profiles,
+            entitlement=entitlement,
+        )
+        profile_effective_statuses = {
+            profile.profile_id: resolve_profile_effective_status(
+                profile=profile,
+                entitlement=entitlement,
+                over_keyword_limit=authorization.over_keyword_limit,
             )
-        active_keywords = self._profile_repository.list_active_keywords(tenant_id=tenant_id)
-        active_keyword_count = len(active_keywords)
+            for profile in profiles
+        }
+        runnable_keyword_count = len(runnable_keywords)
         has_paid_archive_access = any(
             subscription.plan_code in _PAID_ARCHIVE_PLAN_CODES
             for subscription in subscriptions
@@ -136,9 +180,16 @@ class TenantEntitlementService:
                 subscription_status=None,
                 has_active_subscription=False,
                 keyword_limit=None,
-                active_keyword_count=active_keyword_count,
+                saved_keyword_count=len(saved_keywords),
+                enabled_keyword_count=len(enabled_keywords),
+                runnable_keyword_count=0,
+                runnable_keywords=[],
+                quota_keywords=[],
+                runnable_profile_keywords=[],
+                profile_effective_statuses=profile_effective_statuses,
+                active_keyword_count=0,
                 remaining_keyword_slots=None,
-                active_keywords=active_keywords,
+                active_keywords=[],
                 over_keyword_limit=False,
                 runs_allowed=False,
                 exports_allowed=False,
@@ -149,10 +200,10 @@ class TenantEntitlementService:
         plan_definition = get_billing_plan_definition(entitlement.plan_code)
         keyword_limit = entitlement.keyword_limit
         has_active_subscription = entitlement.has_active_subscription
-        over_keyword_limit = keyword_limit is not None and active_keyword_count > int(keyword_limit)
+        over_keyword_limit = authorization.over_keyword_limit
         remaining_keyword_slots = None
         if keyword_limit is not None:
-            remaining_keyword_slots = max(int(keyword_limit) - active_keyword_count, 0)
+            remaining_keyword_slots = max(int(keyword_limit) - len(quota_keywords), 0)
         runs_allowed = has_active_subscription
         exports_allowed = has_active_subscription
         document_download_allowed = has_active_subscription
@@ -171,9 +222,16 @@ class TenantEntitlementService:
             subscription_status=entitlement.subscription_status,
             has_active_subscription=has_active_subscription,
             keyword_limit=keyword_limit,
-            active_keyword_count=active_keyword_count,
+            saved_keyword_count=len(saved_keywords),
+            enabled_keyword_count=len(enabled_keywords),
+            runnable_keyword_count=runnable_keyword_count,
+            runnable_keywords=runnable_keywords,
+            quota_keywords=quota_keywords,
+            runnable_profile_keywords=runnable_profile_keywords,
+            profile_effective_statuses=profile_effective_statuses,
+            active_keyword_count=runnable_keyword_count,
             remaining_keyword_slots=remaining_keyword_slots,
-            active_keywords=active_keywords,
+            active_keywords=runnable_keywords,
             over_keyword_limit=over_keyword_limit,
             runs_allowed=runs_allowed,
             exports_allowed=exports_allowed,
@@ -290,6 +348,32 @@ class TenantEntitlementService:
         return self._tenant_entitlement_repository.get_run_admission_caps(
             tenant_id=tenant_id
         )
+
+
+def _profile_candidates(details) -> list[ProfileKeywordCandidate]:
+    return [
+        ProfileKeywordCandidate(
+            profile_id=detail.profile.id,
+            profile_type=detail.profile.profile_type,
+            enabled_by_user=detail.profile.enabled_by_user,
+            created_at=detail.profile.created_at,
+            keywords=[keyword.keyword for keyword in detail.keywords],
+        )
+        for detail in details
+    ]
+
+
+def _unique_keywords(values) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_keyword(value)
+        dedupe_key = normalized.casefold()
+        if not normalized or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        ordered.append(normalized)
+    return ordered
 
 
 class EntitlementAwareNotificationDispatcher:

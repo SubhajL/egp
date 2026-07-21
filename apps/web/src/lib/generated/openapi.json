@@ -2345,16 +2345,32 @@
             "title": "Close Stale After Days",
             "type": "integer"
           },
+          "enabled_by_user": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled By User"
+          },
           "is_active": {
-            "default": true,
-            "title": "Is Active",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
           },
           "keywords": {
             "items": {
               "type": "string"
             },
-            "minItems": 1,
             "title": "Keywords",
             "type": "array"
           },
@@ -2389,8 +2405,7 @@
           }
         },
         "required": [
-          "name",
-          "keywords"
+          "name"
         ],
         "title": "CreateRuleProfileRequest",
         "type": "object"
@@ -3513,6 +3528,10 @@
             "title": "Document Download Allowed",
             "type": "boolean"
           },
+          "enabled_keyword_count": {
+            "title": "Enabled Keyword Count",
+            "type": "integer"
+          },
           "exports_allowed": {
             "title": "Exports Allowed",
             "type": "boolean"
@@ -3573,9 +3592,24 @@
             ],
             "title": "Remaining Keyword Slots"
           },
+          "runnable_keyword_count": {
+            "title": "Runnable Keyword Count",
+            "type": "integer"
+          },
+          "runnable_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Runnable Keywords",
+            "type": "array"
+          },
           "runs_allowed": {
             "title": "Runs Allowed",
             "type": "boolean"
+          },
+          "saved_keyword_count": {
+            "title": "Saved Keyword Count",
+            "type": "integer"
           },
           "source": {
             "title": "Source",
@@ -3599,6 +3633,10 @@
           "subscription_status",
           "has_active_subscription",
           "keyword_limit",
+          "saved_keyword_count",
+          "enabled_keyword_count",
+          "runnable_keyword_count",
+          "runnable_keywords",
           "active_keyword_count",
           "remaining_keyword_slots",
           "active_keywords",
@@ -4926,6 +4964,14 @@
             "title": "Created At",
             "type": "string"
           },
+          "effective_status": {
+            "title": "Effective Status",
+            "type": "string"
+          },
+          "enabled_by_user": {
+            "title": "Enabled By User",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -4953,6 +4999,17 @@
             "title": "Profile Type",
             "type": "string"
           },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
           "updated_at": {
             "title": "Updated At",
             "type": "string"
@@ -4962,7 +5019,10 @@
           "id",
           "name",
           "profile_type",
+          "enabled_by_user",
           "is_active",
+          "effective_status",
+          "status_reason",
           "max_pages_per_keyword",
           "close_consulting_after_days",
           "close_stale_after_days",
@@ -6244,6 +6304,17 @@
               }
             ],
             "title": "Close Stale After Days"
+          },
+          "enabled_by_user": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled By User"
           },
           "is_active": {
             "anyOf": [

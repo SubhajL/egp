@@ -91,6 +91,31 @@ Recommended product rule:
 - `document_download_allowed` should be `false`.
 - `notifications_allowed` should be `false` unless the business decides basic email should be allowed.
 
+### Keyword-Group Lifecycle
+- A keyword group has durable user intent in `crawl_profiles.enabled_by_user`. Billing
+  settlement, expiry, and renewal must not rewrite that value or delete its keywords.
+- `is_active` remains a compatibility alias for clients during migration, but it mirrors user
+  intent rather than effective runtime eligibility.
+- Group names are required and unique per tenant after trimming and case normalization. Existing
+  duplicate names are repaired deterministically by migration before the unique index is created.
+- The effective status is derived at read/dispatch time:
+  - `running`: enabled by the user, inside the current plan cycle, and within quota
+  - `paused_by_user`: explicitly paused by the user
+  - `paused_by_plan`: no active subscription, outside a one-time plan cycle, or no keywords yet
+  - `blocked_quota`: enabled configuration exceeds the current plan limit
+- Entitlement counts are intentionally distinct:
+  - saved keywords include every stored group
+  - enabled keywords belong to groups enabled by the user
+  - runnable keywords pass subscription, plan-cycle, and quota policy
+- A monthly renewal makes historical enabled groups runnable again without replaying or mutating
+  them. A user-paused group stays paused. One-time plans only run groups created in their effective
+  cycle.
+- Over-limit configurations fail closed for discovery. Users may still rename, pause, or reduce
+  saved groups; enabling additional over-limit keywords returns a structured conflict.
+- Manual and scheduled discovery authorize the exact `(profile_id, keyword)` pair. Duplicate
+  keywords across groups are queued once, and a stale job for a paused group cannot borrow another
+  group's authorization.
+
 ## Implementation Plan For `free_trial`
 
 This plan assumes the goal is to add a real first-class plan, not just a seeded custom subscription.

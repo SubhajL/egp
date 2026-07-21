@@ -176,6 +176,7 @@ def _seed_active_profile(client: TestClient, *, keyword: str) -> str:
                     tenant_id,
                     name,
                     profile_type,
+                    enabled_by_user,
                     is_active,
                     max_pages_per_keyword,
                     close_consulting_after_days,
@@ -187,6 +188,7 @@ def _seed_active_profile(client: TestClient, *, keyword: str) -> str:
                     :tenant_id,
                     'TOR',
                     'tor',
+                    1,
                     1,
                     15,
                     30,
@@ -787,7 +789,10 @@ def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(tmp_pat
     assert rules_body["entitlements"]["active_keyword_count"] == 0
     assert rules_body["entitlements"]["remaining_keyword_slots"] == 1
     old_profile = next(profile for profile in rules_body["profiles"] if profile["id"] == old_profile_id)
-    assert old_profile["is_active"] is False
+    assert old_profile["enabled_by_user"] is True
+    assert old_profile["is_active"] is True
+    assert old_profile["effective_status"] == "paused_by_plan"
+    assert old_profile["status_reason"] == "outside_current_plan_cycle"
     assert old_profile["keywords"] == ["hospital"]
 
     client.app.state.discovery_dispatch_route_kick_enabled = False
@@ -1075,11 +1080,11 @@ def _seed_deactivated_profile_with_keyword(
             text(
                 """
                 INSERT INTO crawl_profiles (
-                    id, tenant_id, name, profile_type, is_active,
+                    id, tenant_id, name, profile_type, enabled_by_user, is_active,
                     max_pages_per_keyword, close_consulting_after_days,
                     close_stale_after_days, created_at, updated_at
                 ) VALUES (
-                    :id, :tenant_id, 'TOR', 'tor', 0,
+                    :id, :tenant_id, 'TOR', 'tor', 0, 0,
                     15, 30, 45, :created_at, :updated_at
                 )
                 """
@@ -1119,11 +1124,11 @@ def _seed_inactive_profile_without_keywords(client: TestClient) -> str:
             text(
                 """
                 INSERT INTO crawl_profiles (
-                    id, tenant_id, name, profile_type, is_active,
+                    id, tenant_id, name, profile_type, enabled_by_user, is_active,
                     max_pages_per_keyword, close_consulting_after_days,
                     close_stale_after_days, created_at, updated_at
                 ) VALUES (
-                    :id, :tenant_id, 'EMPTY', 'tor', 0,
+                    :id, :tenant_id, 'EMPTY', 'tor', 0, 0,
                     15, 30, 45, :created_at, :updated_at
                 )
                 """
@@ -1196,7 +1201,7 @@ def _activate_fresh_plan(
     return reconciled.json()
 
 
-def test_monthly_membership_activation_reactivates_deactivated_profiles_with_keywords(
+def test_membership_activation_does_not_mutate_profile_intent(
     tmp_path,
 ) -> None:
     client = _create_client(tmp_path)
@@ -1209,9 +1214,7 @@ def test_monthly_membership_activation_reactivates_deactivated_profiles_with_key
 
     assert reconciled["subscription"]["subscription_status"] == "active"
     assert reconciled["subscription"]["plan_code"] == "monthly_membership"
-    # All keywords come back: the expiry-deactivated profile is reactivated.
-    assert _profile_is_active(client, restored) is True
-    # A profile the operator emptied in the UI (no keywords) stays inactive.
+    assert _profile_is_active(client, restored) is False
     assert _profile_is_active(client, emptied) is False
 
     # End-to-end: the restored keyword is entitled again (back in active_keywords),
@@ -1221,11 +1224,13 @@ def test_monthly_membership_activation_reactivates_deactivated_profiles_with_key
     rules_body = rules_after.json()
     assert rules_body["entitlements"]["has_active_subscription"] is True
     assert rules_body["entitlements"]["plan_code"] == "monthly_membership"
-    assert rules_body["entitlements"]["active_keyword_count"] == 1
+    assert rules_body["entitlements"]["active_keyword_count"] == 0
     restored_profile = next(
         profile for profile in rules_body["profiles"] if profile["id"] == restored
     )
-    assert restored_profile["is_active"] is True
+    assert restored_profile["enabled_by_user"] is False
+    assert restored_profile["is_active"] is False
+    assert restored_profile["effective_status"] == "paused_by_user"
     assert "ระบบสารสนเทศ" in restored_profile["keywords"]
 
 

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from egp_api.auth import require_admin_role, require_run_operator_role, resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError, RunAdmissionError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
+from egp_db.repositories.profile_repo import ProfileNameConflictError
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ RULES_ERROR_CODES = {
     "at least one keyword is required": "keywords_required",
     "at least one active keyword is required": "active_keywords_required",
     "active keyword configuration exceeds plan limit": "active_keyword_limit_exceeded",
+    "profile name already exists": "profile_name_conflict",
+    "profile enabled state conflict": "profile_enabled_state_conflict",
 }
 
 
@@ -39,7 +42,10 @@ class RuleProfileResponse(BaseModel):
     id: str
     name: str
     profile_type: str
+    enabled_by_user: bool
     is_active: bool
+    effective_status: str
+    status_reason: str | None
     max_pages_per_keyword: int
     close_consulting_after_days: int
     close_stale_after_days: int
@@ -82,6 +88,10 @@ class EntitlementSummaryResponse(BaseModel):
     subscription_status: str | None
     has_active_subscription: bool
     keyword_limit: int | None
+    saved_keyword_count: int
+    enabled_keyword_count: int
+    runnable_keyword_count: int
+    runnable_keywords: list[str]
     active_keyword_count: int
     remaining_keyword_slots: int | None
     active_keywords: list[str]
@@ -105,8 +115,9 @@ class CreateRuleProfileRequest(BaseModel):
     tenant_id: str | None = None
     name: str = Field(min_length=1)
     profile_type: str = Field(default="custom", min_length=1)
-    is_active: bool = True
-    keywords: list[str] = Field(min_length=1)
+    enabled_by_user: bool | None = None
+    is_active: bool | None = None
+    keywords: list[str] = Field(default_factory=list)
     max_pages_per_keyword: int = Field(default=15, ge=1, le=100)
     close_consulting_after_days: int = Field(default=30, ge=1, le=365)
     close_stale_after_days: int = Field(default=45, ge=1, le=365)
@@ -115,6 +126,7 @@ class CreateRuleProfileRequest(BaseModel):
 class UpdateRuleProfileRequest(BaseModel):
     tenant_id: str | None = None
     name: str | None = None
+    enabled_by_user: bool | None = None
     is_active: bool | None = None
     keywords: list[str] | None = None
     max_pages_per_keyword: int | None = Field(default=None, ge=1, le=100)
@@ -143,6 +155,25 @@ class ManualRecrawlQueuedResponse(BaseModel):
 
 def _service_from_request(request: Request) -> RulesService:
     return request.app.state.rules_service
+
+
+def _resolve_enabled_state(
+    *,
+    enabled_by_user: bool | None,
+    is_active: bool | None,
+    default: bool | None,
+) -> bool | None:
+    if (
+        enabled_by_user is not None
+        and is_active is not None
+        and enabled_by_user != is_active
+    ):
+        raise ValueError("profile enabled state conflict")
+    if enabled_by_user is not None:
+        return enabled_by_user
+    if is_active is not None:
+        return is_active
+    return default
 
 
 def _wake_discovery_dispatch(
@@ -195,6 +226,20 @@ def _run_admission_error(exc: RunAdmissionError) -> JSONResponse:
     )
 
 
+def _entitlement_error(exc: EntitlementError) -> JSONResponse:
+    detail = str(exc)
+    status_code = (
+        status.HTTP_409_CONFLICT
+        if detail == "active keyword configuration exceeds plan limit"
+        else status.HTTP_403_FORBIDDEN
+    )
+    return _json_error(
+        status_code=status_code,
+        detail=detail,
+        code=RULES_ERROR_CODES.get(detail),
+    )
+
+
 @router.get("", response_model=RulesResponse)
 def get_rules(request: Request, tenant_id: str | None = None) -> RulesResponse:
     service = _service_from_request(request)
@@ -213,11 +258,16 @@ def create_rule_profile(
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     try:
+        enabled_by_user = _resolve_enabled_state(
+            enabled_by_user=payload.enabled_by_user,
+            is_active=payload.is_active,
+            default=True,
+        )
         profile = service.create_profile(
             tenant_id=resolved_tenant_id,
             name=payload.name,
             profile_type=payload.profile_type,
-            is_active=payload.is_active,
+            enabled_by_user=bool(enabled_by_user),
             keywords=payload.keywords,
             max_pages_per_keyword=payload.max_pages_per_keyword,
             close_consulting_after_days=payload.close_consulting_after_days,
@@ -225,14 +275,17 @@ def create_rule_profile(
         )
     except RunAdmissionError as exc:
         return _run_admission_error(exc)
-    except EntitlementError as exc:
+    except ProfileNameConflictError as exc:
         detail = str(exc)
-        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
+        return _json_error(status_code=409, detail=detail, code=RULES_ERROR_CODES.get(detail))
+    except EntitlementError as exc:
+        return _entitlement_error(exc)
     except ValueError as exc:
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
-    _wake_discovery_dispatch(request, pending_job_count=len(profile.keywords))
+    if profile.effective_status == "running":
+        _wake_discovery_dispatch(request, pending_job_count=len(profile.keywords))
 
     response.status_code = status.HTTP_201_CREATED
     return RuleProfileResponse(**asdict(profile))
@@ -248,26 +301,35 @@ def update_rule_profile(
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     try:
+        enabled_by_user = _resolve_enabled_state(
+            enabled_by_user=payload.enabled_by_user,
+            is_active=payload.is_active,
+            default=None,
+        )
         profile = service.update_profile(
             tenant_id=resolved_tenant_id,
             profile_id=profile_id,
             name=payload.name,
-            is_active=payload.is_active,
+            enabled_by_user=enabled_by_user,
             keywords=payload.keywords,
             max_pages_per_keyword=payload.max_pages_per_keyword,
             close_consulting_after_days=payload.close_consulting_after_days,
             close_stale_after_days=payload.close_stale_after_days,
         )
+    except RunAdmissionError as exc:
+        return _run_admission_error(exc)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="profile not found") from exc
-    except EntitlementError as exc:
+    except ProfileNameConflictError as exc:
         detail = str(exc)
-        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
+        return _json_error(status_code=409, detail=detail, code=RULES_ERROR_CODES.get(detail))
+    except EntitlementError as exc:
+        return _entitlement_error(exc)
     except ValueError as exc:
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))
 
-    if profile.is_active:
+    if profile.effective_status == "running":
         _wake_discovery_dispatch(request, pending_job_count=len(profile.keywords))
 
     return RuleProfileResponse(**asdict(profile))
@@ -291,8 +353,7 @@ def recrawl_active_keywords(
     except RunAdmissionError as exc:
         return _run_admission_error(exc)
     except EntitlementError as exc:
-        detail = str(exc)
-        return _json_error(status_code=403, detail=detail, code=RULES_ERROR_CODES.get(detail))
+        return _entitlement_error(exc)
     except ValueError as exc:
         detail = str(exc)
         return _json_error(status_code=400, detail=detail, code=RULES_ERROR_CODES.get(detail))

@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import describe_closure_rules
+from egp_crawler_core.discovery_authorization import RunnableProfileKeyword
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
-from egp_shared_types.enums import NotificationType
+from egp_shared_types.enums import (
+    KeywordGroupEffectiveStatus,
+    KeywordGroupStatusReason,
+    NotificationType,
+)
 
 from egp_api.services.entitlement_service import (
     EntitlementError,
@@ -29,7 +34,10 @@ class RuleProfile:
     id: str
     name: str
     profile_type: str
+    enabled_by_user: bool
     is_active: bool
+    effective_status: str
+    status_reason: str | None
     max_pages_per_keyword: int
     close_consulting_after_days: int
     close_stale_after_days: int
@@ -84,12 +92,22 @@ class ManualRecrawlRequest:
     queued_keywords: list[str]
 
 
-def _map_profile(detail: CrawlProfileDetail) -> RuleProfile:
+def _map_profile(
+    detail: CrawlProfileDetail,
+    entitlements: TenantEntitlementSnapshot | None = None,
+) -> RuleProfile:
+    effective_status, status_reason = _resolve_profile_presentation_status(
+        detail=detail,
+        entitlements=entitlements,
+    )
     return RuleProfile(
         id=detail.profile.id,
         name=detail.profile.name,
         profile_type=detail.profile.profile_type,
+        enabled_by_user=detail.profile.enabled_by_user,
         is_active=detail.profile.is_active,
+        effective_status=effective_status,
+        status_reason=status_reason,
         max_pages_per_keyword=detail.profile.max_pages_per_keyword,
         close_consulting_after_days=detail.profile.close_consulting_after_days,
         close_stale_after_days=detail.profile.close_stale_after_days,
@@ -121,7 +139,7 @@ class RulesService:
         tenant_id: str,
         name: str,
         profile_type: str,
-        is_active: bool,
+        enabled_by_user: bool,
         keywords: list[str],
         max_pages_per_keyword: int = 15,
         close_consulting_after_days: int = 30,
@@ -134,39 +152,60 @@ class RulesService:
         if normalized_profile_type not in VALID_PROFILE_TYPES:
             raise ValueError("unsupported profile type")
         normalized_keywords = _normalize_keywords(keywords)
-        if not normalized_keywords:
-            raise ValueError("at least one keyword is required")
-
-        if is_active and self._entitlement_service is not None:
-            snapshot = self._entitlement_service.require_active_subscription(
-                tenant_id=tenant_id,
-                capability="runs",
-            )
-            existing_keywords = snapshot.active_keywords
-            prospective_keywords = _merge_keywords(existing_keywords, normalized_keywords)
+        snapshot = (
+            self._entitlement_service.get_snapshot(tenant_id=tenant_id)
+            if self._entitlement_service is not None
+            else None
+        )
+        if (
+            enabled_by_user
+            and normalized_keywords
+            and snapshot is not None
+            and snapshot.has_active_subscription
+        ):
+            prospective_keywords = _merge_keywords(snapshot.quota_keywords, normalized_keywords)
             if snapshot.keyword_limit is not None and len(prospective_keywords) > int(
                 snapshot.keyword_limit
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
-            self._entitlement_service.check_runs_admission(
-                tenant_id=tenant_id,
-                requested_keyword_count=len(
-                    {keyword.casefold() for keyword in normalized_keywords}
-                ),
+            existing_keyword_keys = {
+                keyword.casefold() for keyword in snapshot.quota_keywords
+            }
+            requested_keyword_count = sum(
+                keyword.casefold() not in existing_keyword_keys
+                for keyword in normalized_keywords
             )
+            if requested_keyword_count:
+                self._entitlement_service.check_runs_admission(
+                    tenant_id=tenant_id,
+                    requested_keyword_count=requested_keyword_count,
+                )
 
         detail = self._repository.create_profile(
             tenant_id=tenant_id,
             name=normalized_name,
             profile_type=normalized_profile_type,
-            is_active=is_active,
+            enabled_by_user=enabled_by_user,
             max_pages_per_keyword=max_pages_per_keyword,
             close_consulting_after_days=close_consulting_after_days,
             close_stale_after_days=close_stale_after_days,
             keywords=normalized_keywords,
         )
-        created = _map_profile(detail)
-        self._queue_profile_created_jobs(tenant_id=tenant_id, created=created)
+        refreshed_snapshot = (
+            self._entitlement_service.get_snapshot(tenant_id=tenant_id)
+            if self._entitlement_service is not None
+            else snapshot
+        )
+        created = _map_profile(detail, refreshed_snapshot)
+        self._queue_profile_created_jobs(
+            tenant_id=tenant_id,
+            created=created,
+            runnable_profile_keywords=(
+                refreshed_snapshot.runnable_profile_keywords
+                if refreshed_snapshot is not None
+                else []
+            ),
+        )
         return created
 
     def update_profile(
@@ -175,7 +214,7 @@ class RulesService:
         tenant_id: str,
         profile_id: str,
         name: str | None = None,
-        is_active: bool | None = None,
+        enabled_by_user: bool | None = None,
         keywords: list[str] | None = None,
         max_pages_per_keyword: int | None = None,
         close_consulting_after_days: int | None = None,
@@ -199,45 +238,84 @@ class RulesService:
         effective_keywords = (
             normalized_keywords if normalized_keywords is not None else current_keywords
         )
-        effective_is_active = existing.profile.is_active if is_active is None else is_active
-        if effective_is_active and not effective_keywords:
-            raise ValueError("at least one keyword is required")
+        effective_enabled = (
+            existing.profile.enabled_by_user
+            if enabled_by_user is None
+            else enabled_by_user
+        )
+        if enabled_by_user is False and normalized_keywords == [] and current_keywords:
+            normalized_keywords = None
+            effective_keywords = current_keywords
 
-        if effective_is_active and self._entitlement_service is not None:
-            snapshot = self._entitlement_service.require_active_subscription(
-                tenant_id=tenant_id,
-                capability="runs",
-            )
+        changes_enabled_keyword_configuration = normalized_keywords is not None or (
+            enabled_by_user is True and not existing.profile.enabled_by_user
+        )
+        if (
+            effective_enabled
+            and changes_enabled_keyword_configuration
+            and self._entitlement_service is not None
+        ):
+            snapshot = self._entitlement_service.get_snapshot(tenant_id=tenant_id)
             existing_active_keywords = _remove_keywords(
-                snapshot.active_keywords,
-                current_keywords if existing.profile.is_active else [],
+                snapshot.quota_keywords,
+                current_keywords if existing.profile.enabled_by_user else [],
             )
             prospective_keywords = _merge_keywords(
                 existing_active_keywords,
                 effective_keywords,
             )
-            if snapshot.keyword_limit is not None and len(prospective_keywords) > int(
+            if (
+                snapshot.has_active_subscription
+                and snapshot.keyword_limit is not None
+                and len(prospective_keywords) > int(
                 snapshot.keyword_limit
+                )
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
+            admission_existing_keywords = _merge_keywords(
+                existing_active_keywords,
+                current_keywords if existing.profile.enabled_by_user else [],
+            )
+            admission_existing_keys = {
+                keyword.casefold() for keyword in admission_existing_keywords
+            }
+            requested_keyword_count = sum(
+                keyword.casefold() not in admission_existing_keys
+                for keyword in effective_keywords
+            )
+            if snapshot.has_active_subscription and requested_keyword_count:
+                self._entitlement_service.check_runs_admission(
+                    tenant_id=tenant_id,
+                    requested_keyword_count=requested_keyword_count,
+                )
 
         detail = self._repository.update_profile(
             tenant_id=tenant_id,
             profile_id=profile_id,
             name=normalized_name,
-            is_active=effective_is_active,
+            enabled_by_user=effective_enabled,
             keywords=normalized_keywords,
             max_pages_per_keyword=max_pages_per_keyword,
             close_consulting_after_days=close_consulting_after_days,
             close_stale_after_days=close_stale_after_days,
         )
-        updated = _map_profile(detail)
+        refreshed_snapshot = (
+            self._entitlement_service.get_snapshot(tenant_id=tenant_id)
+            if self._entitlement_service is not None
+            else None
+        )
+        updated = _map_profile(detail, refreshed_snapshot)
         self._queue_profile_update_jobs(
             tenant_id=tenant_id,
             previous_keywords=current_keywords,
-            previous_is_active=existing.profile.is_active,
+            previous_is_active=existing.profile.enabled_by_user,
             updated=updated,
             keywords_were_replaced=normalized_keywords is not None,
+            runnable_profile_keywords=(
+                refreshed_snapshot.runnable_profile_keywords
+                if refreshed_snapshot is not None
+                else []
+            ),
         )
         return updated
 
@@ -251,6 +329,13 @@ class RulesService:
                 subscription_status=None,
                 has_active_subscription=False,
                 keyword_limit=None,
+                saved_keyword_count=0,
+                enabled_keyword_count=0,
+                runnable_keyword_count=0,
+                runnable_keywords=[],
+                quota_keywords=[],
+                runnable_profile_keywords=[],
+                profile_effective_statuses={},
                 active_keyword_count=0,
                 remaining_keyword_slots=None,
                 active_keywords=[],
@@ -273,7 +358,7 @@ class RulesService:
         )
         effective_crawl_interval_hours = tenant_crawl_interval_hours or DEFAULT_CRAWL_INTERVAL_HOURS
         return RulesSnapshot(
-            profiles=[_map_profile(profile) for profile in profiles],
+            profiles=[_map_profile(profile, entitlements) for profile in profiles],
             entitlements=entitlements,
             closure_rules=ClosureRulesView(
                 close_on_winner_status=bool(closure_metadata["close_on_winner_status"]),
@@ -303,6 +388,7 @@ class RulesService:
         )
 
     def queue_active_discovery_jobs(self, *, tenant_id: str) -> ManualRecrawlRequest:
+        snapshot = None
         if self._entitlement_service is not None:
             snapshot = self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
@@ -317,25 +403,25 @@ class RulesService:
         queued_keywords: list[str] = []
         queued_job_count = 0
         seen_keywords: set[str] = set()
-        for detail in self._repository.list_profiles_with_keywords(tenant_id=tenant_id):
-            if not detail.profile.is_active:
-                continue
-            for keyword in detail.keywords:
-                normalized_keyword = keyword.keyword.strip()
-                if not normalized_keyword:
-                    continue
-                if self._entitlement_service is not None:
-                    self._entitlement_service.require_discover_keyword(
-                        tenant_id=tenant_id,
-                        keyword=normalized_keyword,
-                    )
-                active_jobs.append(
-                    (
-                        detail.profile.id,
-                        detail.profile.profile_type,
-                        normalized_keyword,
-                    )
-                )
+        if snapshot is not None:
+            active_jobs = [
+                (item.profile_id, item.profile_type, item.keyword)
+                for item in snapshot.runnable_profile_keywords
+            ]
+        else:
+            for detail in self._repository.list_enabled_profiles_with_keywords(
+                tenant_id=tenant_id
+            ):
+                for keyword in detail.keywords:
+                    normalized_keyword = keyword.keyword.strip()
+                    if normalized_keyword:
+                        active_jobs.append(
+                            (
+                                detail.profile.id,
+                                detail.profile.profile_type,
+                                normalized_keyword,
+                            )
+                        )
 
         if not active_jobs:
             raise ValueError("at least one active keyword is required")
@@ -376,15 +462,21 @@ class RulesService:
         *,
         tenant_id: str,
         created: RuleProfile,
+        runnable_profile_keywords: list[RunnableProfileKeyword],
     ) -> None:
-        if self._discovery_job_repository is None or not created.is_active:
+        if (
+            self._discovery_job_repository is None
+            or created.effective_status != KeywordGroupEffectiveStatus.RUNNING
+        ):
             return
-        for keyword in created.keywords:
+        for item in runnable_profile_keywords:
+            if item.profile_id != created.id:
+                continue
             self._discovery_job_repository.create_pending_discovery_job_if_absent(
                 tenant_id=tenant_id,
                 profile_id=created.id,
                 profile_type=created.profile_type,
-                keyword=keyword,
+                keyword=item.keyword,
                 trigger_type="profile_created",
                 live=True,
             )
@@ -397,17 +489,25 @@ class RulesService:
         previous_is_active: bool,
         updated: RuleProfile,
         keywords_were_replaced: bool,
+        runnable_profile_keywords: list[RunnableProfileKeyword],
     ) -> None:
-        if self._discovery_job_repository is None or not updated.is_active:
+        if (
+            self._discovery_job_repository is None
+            or updated.effective_status != KeywordGroupEffectiveStatus.RUNNING
+        ):
             return
         if previous_is_active and not keywords_were_replaced:
             return
         previous_keyword_keys = {keyword.casefold() for keyword in previous_keywords}
-        keywords_to_queue = updated.keywords
+        keywords_to_queue = [
+            item.keyword
+            for item in runnable_profile_keywords
+            if item.profile_id == updated.id
+        ]
         if previous_is_active and keywords_were_replaced:
             keywords_to_queue = [
                 keyword
-                for keyword in updated.keywords
+                for keyword in keywords_to_queue
                 if keyword.casefold() not in previous_keyword_keys
             ]
         if not keywords_to_queue:
@@ -438,22 +538,6 @@ def _normalize_keywords(values: list[str]) -> list[str]:
     return ordered
 
 
-def _active_keywords_from_details(details: list[CrawlProfileDetail]) -> list[str]:
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for detail in details:
-        if not detail.profile.is_active:
-            continue
-        for keyword in detail.keywords:
-            normalized = keyword.keyword.strip()
-            dedupe_key = normalized.casefold()
-            if not normalized or dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            ordered.append(normalized)
-    return ordered
-
-
 def _merge_keywords(existing: list[str], new_values: list[str]) -> list[str]:
     ordered = list(existing)
     seen = {value.casefold() for value in existing}
@@ -469,3 +553,42 @@ def _merge_keywords(existing: list[str], new_values: list[str]) -> list[str]:
 def _remove_keywords(values: list[str], values_to_remove: list[str]) -> list[str]:
     removed = {value.casefold() for value in values_to_remove}
     return [value for value in values if value.casefold() not in removed]
+
+
+def _resolve_profile_presentation_status(
+    *,
+    detail: CrawlProfileDetail,
+    entitlements: TenantEntitlementSnapshot | None,
+) -> tuple[str, str | None]:
+    if entitlements is not None:
+        resolved = entitlements.profile_effective_statuses.get(detail.profile.id)
+        if resolved is not None:
+            return (
+                resolved.status.value,
+                resolved.reason.value if resolved.reason is not None else None,
+            )
+    if not detail.profile.enabled_by_user:
+        return KeywordGroupEffectiveStatus.PAUSED_BY_USER, None
+    if entitlements is None or not entitlements.has_active_subscription:
+        return (
+            KeywordGroupEffectiveStatus.PAUSED_BY_PLAN,
+            KeywordGroupStatusReason.SUBSCRIPTION_INACTIVE,
+        )
+    if entitlements.over_keyword_limit:
+        return (
+            KeywordGroupEffectiveStatus.BLOCKED_QUOTA,
+            KeywordGroupStatusReason.KEYWORD_LIMIT_EXCEEDED,
+        )
+    entitled_keyword_keys = {
+        keyword.casefold() for keyword in entitlements.active_keywords
+    }
+    if any(
+        keyword.keyword.strip().casefold() in entitled_keyword_keys
+        for keyword in detail.keywords
+        if keyword.keyword.strip()
+    ):
+        return KeywordGroupEffectiveStatus.RUNNING, None
+    return (
+        KeywordGroupEffectiveStatus.PAUSED_BY_PLAN,
+        KeywordGroupStatusReason.OUTSIDE_CURRENT_PLAN_CYCLE,
+    )

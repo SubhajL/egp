@@ -314,6 +314,7 @@ describe("project, document, and rules wrappers", () => {
       id: "profile-1",
       name: "Daily",
       profile_type: "custom",
+      enabled_by_user: true,
       is_active: true,
       max_pages_per_keyword: 15,
       close_consulting_after_days: 30,
@@ -340,7 +341,7 @@ describe("project, document, and rules wrappers", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string)).toStrictEqual({
       name: "Daily",
       keywords: ["ถนน"],
-      is_active: true,
+      enabled_by_user: true,
       profile_type: "custom",
     });
   });
