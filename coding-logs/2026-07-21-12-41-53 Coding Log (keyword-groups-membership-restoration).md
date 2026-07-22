@@ -952,3 +952,521 @@ LOW
   still pending at the first post-creation check.
 - The working tree after the feature commit contained only the protected untracked
   `docs/TOR KEYWORDS.md`.
+
+---
+
+## Review (2026-07-22 09:28:11 +0700) - system
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `feature/keyword-group-lifecycle` at `f19531af`; `main` / `origin/main` at
+  `8aedaad630c8`.
+- Scope: production recrawl acceptance, local Mac executor supervision, discovery job/run state
+  transitions, worker authorization, failure reconciliation, UI status rendering, tests, and the
+  relationship to PR #170.
+- Commands run: repository/branch/status/history checks; bounded source and test inspection; local
+  launchd/process/tunnel/profile-state inspection; production guard validation; read-only production
+  PostgreSQL queries through the existing SSH tunnel; bounded worker-log inspection; production API
+  health check; focused entitlement-denial regression test.
+- Sources: `docs/REMOTE_LOCAL_CRAWLER.md`, `scripts/run_remote_crawl.sh`,
+  `scripts/install_launchd.sh`, `apps/api/src/egp_api/services/discovery_dispatch.py`,
+  `apps/api/src/egp_api/services/discovery_worker_dispatcher.py`,
+  `apps/api/src/egp_api/executors/discovery_dispatch.py`,
+  `apps/api/src/egp_api/services/rules_service.py`,
+  `apps/worker/src/egp_worker/workflows/discover.py`,
+  `packages/db/src/egp_db/repositories/run_repo.py`, relevant phase 1/2 tests, the Projects page,
+  production queue/run records, local artifact logs, and the 20 June crawler recovery Coding Log.
+- Auggie: unavailable in this session; direct exact-identifier inspection was used.
+
+### High-level assessment
+
+The current recrawl did not fail inside Chrome or the e-GP site. It has not started. Production
+accepted 13 manual jobs for 12 unique keywords at `2026-07-21 23:45:05+00` (06:45 Bangkok on 22
+July), and all 13 remain `pending` with `attempt_count=0`. There is no crawl run newer than 6 July.
+The production SSH tunnel is running and the remote-crawl guard passes, but the sole production
+claimer, launchd service `com.egp.remote-crawl`, is not loaded. The API health endpoint still returns
+`{"status":"ok"}` because it does not represent crawler-plane health.
+
+There is also a recovery safety constraint: the installed launchd plist executes this mutable
+developer checkout directly, and the checkout is currently on PR #170 while production has not
+applied migration 028. Reloading the watcher as-is could run feature code that queries
+`enabled_by_user` against the pre-028 production schema. Recovery must first use a pinned
+production-compatible checkout or complete the feature migration/deployment.
+
+The attached run `f8258b26-d7c0-4b49-b3b3-93be8f67d4b3` is a separate historical run from 6 July,
+not a run created by the current click. Its worker log contains the actual terminal result:
+`{"detail": "discover keyword is not entitled for tenant", "error_type":
+"entitlement_denied"}`. The matching discovery job for `เทคโนโลยีสารสนเทศ` was correctly marked
+failed with that `last_error`, but the crawl run was left active and later rewritten as
+`worker_lost`. Therefore the displayed error is a secondary reconciliation artifact, not the root
+cause.
+
+This is not evidence that the keyword lifecycle work was wasted. PR #167 and the production replay
+restored the paid tenant's two profiles, and PR #170 fixes durable intent plus cross-group keyword
+deduplication. Those changes address entitlement/data correctness. They do not supervise the sole
+Mac executor, expose its health, or guarantee terminal run bookkeeping for every subprocess exit.
+
+### As-is execution path
+
+1. Vercel UI calls `POST /v1/rules/recrawl` on the Lightsail API.
+2. API entitlement/admission checks run and durable `discovery_jobs` rows are inserted in production
+   PostgreSQL.
+3. No server-side executor claims those rows by design. The Mac is the sole claimer.
+4. launchd must keep `scripts/run_remote_crawl.sh watch` running; it reaches PostgreSQL through a
+   separately supervised SSH tunnel.
+5. The dispatcher creates a queued `crawl_run`, spawns `python -m egp_worker.main`, and stores only
+   owner PID, child PID, and worker-log path in the run summary.
+6. The child reloads current entitlement before marking the run started or creating any task.
+7. The parent marks timeouts and signal deaths explicitly, but does not mark ordinary non-zero exits
+   (including parsed entitlement denial) terminal.
+8. The next missing-PID sweep sees the intentionally exited child and labels the still-active run
+   `worker_lost`, overwriting the more useful error field.
+
+### Drift matrix
+
+| Area | Intended behavior | Current production/runtime truth | Impact |
+|---|---|---|---|
+| Durable enqueue | Recrawl survives API/request lifetime | Works: 13 rows are durable and untouched | No data loss, but durability is mistaken for execution availability |
+| Sole executor | launchd watcher continuously drains the queue | Plist exists but service is not loaded; this same state was manually repaired on 20 June | Total crawl outage with no automatic detection or recovery |
+| Tunnel | Tunnel enables worker DB access | Tunnel is independently healthy now | A green tunnel is not evidence of a green crawler |
+| Browser profile | Pre-dispatch warm makes Chrome usable | Last recorded success is 6 July; profile is over two weeks cold | Executor restart may immediately require operator Cloudflare recovery |
+| Run finalization | Every created run reaches a truthful terminal state | Ordinary child exit leaves run active; missing-PID sweep later rewrites it | Root causes are hidden and operators chase the wrong failure |
+| Failure taxonomy | `worker_lost` means unexplained process loss | Sample historical `worker_lost` logs show entitlement denial or PostgreSQL tunnel failures | Metrics and UI cannot distinguish application, transport, or supervision failures |
+| Job/run correlation | One job attempt can be traced to one run | Dispatch request/run metadata omit `discovery_job_id` | Incident reconstruction depends on timestamps/profile/keyword inference |
+| UI status | Operator sees queue, executor, and run stage | UI can show the immediate waiting message, but API exposes no executor heartbeat or durable queue age | Refresh/session loss and old run summaries can obscure the current blocker |
+| API health | Health reflects operability | API reports healthy while production crawling is completely idle | External monitoring cannot detect this outage |
+| Worker code provenance | Production worker runs an immutable deployed revision compatible with its schema | launchd executes the developer checkout's current branch; currently PR #170 code vs pre-028 production DB | A local branch switch can silently change or break the production worker |
+| Duplicate keywords | One normalized keyword should execute once | Deployed `main` enqueued 13 jobs for 12 terms because one term belongs to both profiles | Unnecessary crawl, rate-limit, and Cloudflare exposure; fixed in PR #170 but not deployed |
+| Logs | Logs support bounded diagnosis | `crawl.log` is about 278 MB and has no current watcher output after 6 July | Weak retention/rotation and difficult operations |
+
+### Strengths
+
+- The durable outbox preserved all 13 current jobs without phantom attempts.
+- The guard correctly validates production target, single-flight mode, real Chrome profile, HTTPS
+  event sink, and remote artifact storage.
+- The worker's fail-closed entitlement recheck is correct in principle and prevented stale work.
+- Worker logs preserved the original entitlement and database errors even when run summaries did
+  not.
+- The Projects page now distinguishes “accepted but no worker run yet” during the initiating browser
+  session and polls every five seconds.
+- PR #170 centralizes profile/keyword eligibility and fixes duplicate ownership in tests; it is a
+  necessary data-policy improvement even though it is not an executor-availability fix.
+
+### Findings
+
+CRITICAL
+
+- Production has a total crawler-plane outage: the sole executor is not loaded, 13 current jobs have
+  zero attempts, and neither `/health` nor any heartbeat/alert detects it. This exact operational
+  failure was found and manually repaired on 20 June, proving the prior repair restored an instance
+  rather than eliminating the failure mode. launchd `KeepAlive` only helps after an agent is loaded;
+  it cannot recover an explicitly booted-out/unloaded agent.
+
+HIGH
+
+- Crawl-run terminalization is incomplete. After creating a run, the dispatcher only explicitly
+  finalizes timeout and signal cases. Parsed entitlement denial and generic non-zero child exits are
+  re-raised without `fail_run_if_active`. The next PID sweep then assigns `worker_lost`. The supplied
+  run and several historical tunnel failures demonstrate this path in production.
+- The reconciler overwrites `summary_json.error` and `failure_reason` based only on PID absence. A PID
+  no longer existing after `communicate()` is normal for every completed child; it is not sufficient
+  evidence that the worker was lost. This destroys causal fidelity and contaminates failure metrics.
+- Crawler operability depends simultaneously on a logged-in Mac, a loaded launchd watcher, a separate
+  SSH tunnel, a warm persistent Chrome profile, and an external site/Cloudflare clearance. There is
+  no control-plane representation of worker registration, last heartbeat, lease ownership, or queue
+  age, so each dependency can fail silently while customer-facing control-plane health stays green.
+- Production execution is coupled to whichever Git branch happens to be checked out in the developer
+  repo. The current branch contains a new required database column that production does not yet
+  have. Supervision recovery can therefore introduce a schema/version incident unless the operator
+  notices and pins compatible code first.
+
+MEDIUM
+
+- The current deployed API intentionally queues per profile, while only the response keyword list is
+  deduplicated. This produced 13 jobs for 12 unique terms. PR #170 fixes the selector, but its CI is
+  account-blocked and production migration/deployment remain outstanding.
+- Test coverage validates that entitlement denial raises a non-retriable exception, and separately
+  validates signal failure and missing-PID reconciliation. It does not assert the end-to-end
+  invariant that every created run becomes terminal with the original semantic cause. The focused
+  entitlement test passes while reproducing the blind spot.
+- `DiscoveryDispatchRequest` drops the durable job ID before spawning. There is no direct job-attempt
+  to run foreign key/correlation field, limiting retry, reconciliation, UI, and forensic correctness.
+- The manual Cloudflare recovery playbook requires stopping the watcher, warming, running one bounded
+  crawl, and restarting supervision. There is no enforced final check that the watcher was restored,
+  and no audit trail currently explains when or why this agent became unloaded.
+
+LOW
+
+- The 278 MB combined crawl log lacks bounded rotation and mixes repeated readiness warnings with
+  useful failures, increasing diagnostic cost.
+
+### Why prior reasoning and implementation missed this
+
+1. Work was organized around local symptoms—Cloudflare warming, tunnel recovery, stale-run display,
+   billing restoration, keyword lifecycle—without one end-to-end availability invariant: “a queued
+   production job must be claimed within N minutes or alert.”
+2. A successful bounded crawl was treated as proof of system recovery. It proved Chrome, tunnel, and
+   code could work at that moment, not that supervision would remain installed or observable.
+3. Durable queue safety was conflated with service operability. The queue correctly prevents data
+   loss while still allowing an indefinite silent outage.
+4. Process supervision was modeled through PIDs rather than an explicit attempt state machine. The
+   implementation can tell that a PID is gone, but not whether it exited successfully, was rejected,
+   crashed, lost DB connectivity, or was killed with its parent.
+5. Tests were component-shaped. Each branch—entitlement parsing, signals, PID reconciliation,
+   launchd asset generation—has a test, but the seams between them do not.
+6. The UI consumes `crawl_runs`, which do not exist until the Mac dispatcher acts. It therefore
+   cannot diagnose the most important pre-run failure without a queue/executor API.
+7. PR #170 solves the selected keyword lifecycle domain. It was never scoped to executor heartbeat,
+   subprocess finalization, tunnel resilience, or worker-plane health, so expecting it to cure
+   crawling availability would be a category error.
+
+### Tactical improvements (next 1-3 days)
+
+1. Recover without re-enqueueing, but first pin code/schema compatibility. Leave the 13 pending rows
+   intact and either run from a clean operational worktree pinned to production `main` at
+   `8aedaad630c8`, or complete PR #170 migration/deployment before using PR #170 worker code. Then
+   perform the documented foreground profile warm, drain exactly one bounded job, reload a watcher
+   that points to the pinned operational checkout, and verify a fresh run plus declining queue
+   depth. Do not press recrawl again and do not reload the current feature-checkout plist as-is.
+2. Make dispatcher finalization unconditional after `create_run`: every child return code/exception
+   must call one terminalizer with a structured cause (`entitlement_denied`, `worker_nonzero`,
+   `worker_timeout`, `worker_terminated`, transport error). Preserve the first semantic failure;
+   `worker_lost` must only fill an otherwise unknown cause.
+3. Add regressions for entitlement denial, generic Python exception, database/tunnel failure, and
+   parent/reconciler restart. Each must assert job status, run status, error/failure reason, finished
+   timestamp, and non-overwrite behavior.
+4. Carry `discovery_job_id` and an attempt ID through `DiscoveryDispatchRequest`, crawl-run metadata,
+   worker payload, logs, and API responses.
+5. Add a worker-plane status endpoint sourced from durable heartbeat data: worker ID, last heartbeat,
+   current job/run, oldest pending age, queue depth, and profile readiness. Alert if jobs are pending
+   with no fresh worker heartbeat.
+6. Deploy PR #170 only after CI/review gates are resolved, then apply migration 028 and verify 12
+   unique runnable terms produce 12 jobs, not 13.
+7. Rotate/compress `~/Library/Logs/egp/crawl.log` and retain per-run logs as the detailed source.
+
+### Strategic improvements (1-6 weeks)
+
+1. Replace PID-derived inference with a durable job-attempt state machine: queued, leased, preparing,
+   worker_started, running, succeeded, partial, rejected, failed, cancelled, lease_lost. Store exit
+   code and structured error separately from the human message.
+2. Register crawler agents with renewable leases/heartbeats. Queue admission may remain available,
+   but the UI must say “crawler offline” before accepting or immediately after enqueueing when no
+   eligible agent is live.
+3. Remove the SSH tunnel from the worker's correctness path by moving remaining DB reads/writes behind
+   authenticated worker APIs or an explicit remote queue/event protocol. A tunnel interruption should
+   pause/retry an attempt, not corrupt run finalization.
+4. Add fault-injection acceptance tests covering unloaded watcher, tunnel loss during a crawl, stale
+   Cloudflare profile, worker non-zero exit, parent restart, and delayed reconciliation.
+5. Define and monitor crawler SLOs: enqueue-to-claim latency, oldest pending age, run success/partial
+   rate by true cause, heartbeat freshness, and consecutive warm failures.
+
+### Big architectural change (justified)
+
+- Proposal: operate discovery as an explicit crawler-agent service on dedicated always-on hardware
+  (a managed Mac/desktop worker if real Chrome and Cloudflare behavior require it), registered to the
+  control plane with leases and heartbeats. Keep browser execution outside the API, but replace the
+  implicit “one developer Mac + launchd + SSH tunnel” bridge with a first-class worker protocol.
+- Benefits: customer-visible health, durable ownership, truthful retries, removal of laptop/login
+  dependency, controlled browser/profile lifecycle, and failure isolation from API health.
+- Costs: agent authentication, heartbeat/lease tables or endpoints, event/result APIs, deployment and
+  monitoring work, and a staged migration from direct DB access.
+- Migration: first add job/run correlation and heartbeat without moving execution; then make the UI
+  and alerts consume it; then move writes behind worker APIs; finally place the same tested agent on
+  dedicated always-on hardware and retire the production SSH-tunnel hot path.
+
+### Verification evidence
+
+- `scripts/install_launchd.sh status`: tunnel running at PID 75680; remote crawler not loaded; warm
+  timer not loaded.
+- Installed crawler plist: directly invokes
+  `/Users/subhajlimanond/dev/egp/scripts/run_remote_crawl.sh watch`; that checkout is on PR #170 while
+  a read-only production `information_schema` check returned zero `crawl_profiles.enabled_by_user`
+  columns, confirming migration 028 is not applied.
+- `scripts/run_remote_crawl.sh check`: production guard passed.
+- Local tunnel: listening on `127.0.0.1:15432`; production read-only queries succeeded.
+- Current queue: 13 pending manual jobs, 12 distinct normalized keywords, all zero attempts.
+- Current runs: newest run is the supplied 6 July run; no run was created for the 22 July click.
+- Supplied run log: explicit `entitlement_denied`; matching job has the same true `last_error` and was
+  updated within the same two-second interval.
+- Historical `worker_lost` samples: worker logs end with PostgreSQL tunnel refusal/server-closed
+  errors, confirming that the label is not causally specific.
+- API health: `{"status":"ok"}` during the crawler outage.
+- Focused existing test: entitlement-denial test passed (`1 passed, 12 deselected`) while containing
+  no assertion about the created crawl run's terminal status.
+- Working tree after review: only the protected, unrelated untracked `docs/TOR KEYWORDS.md`; no
+  product code or production state changed.
+
+---
+
+## Operational Recovery Update (2026-07-22 09:57:39 +0700) - pinned crawler runtime
+
+### Goal
+
+Recover the 13 already-pending production discovery jobs without re-enqueueing them or running PR
+#170 worker code against the pre-migration production schema.
+
+### What changed and why
+
+- Created `/Users/subhajlimanond/dev/egp-ops-main` as a detached Git worktree pinned exactly to
+  production-compatible `8aedaad630c8ee688342fa94790bbdcfb1564f75`.
+- Reused the ignored production remote-crawl environment, external browser profile, and artifact
+  directory. Created a worktree-local virtualenv because the original editable virtualenv resolved
+  Python modules back to the PR #170 feature checkout; verified `egp_api`, `egp_worker`, `egp_db`,
+  and `egp_crawler_core` now all resolve under `egp-ops-main`.
+- Warmed the real persistent Chrome profile. The standard warm failed closed on Cloudflare; the
+  existing extended search-controls settle recovery succeeded and reset the profile state to
+  `operator_action_required=false` with a fresh success timestamp.
+- Drained exactly one production job. Run `9c7237e0-ddab-49fa-aa5b-c1e258353843` succeeded with zero
+  errors, one project seen, and an `ok` keyword scan. Its discovery job moved to `dispatched` with
+  attempt count 1; the queue fell from 13 to 12 without a second recrawl request.
+- Reinstalled `com.egp.pg-tunnel` and `com.egp.remote-crawl` from the pinned operational checkout.
+  Both launchd agents are running, and the rendered plists point to `egp-ops-main`, not the mutable
+  feature checkout. The expected tunnel-readiness startup race occurred once; launchd KeepAlive
+  restarted the watcher after the tunnel became available.
+- Verified the watcher claimed the next job and created running production run
+  `33baec6c-0194-439b-8666-5e211b425181`, owned by watcher PID 9419 and progressing through real
+  document collection with zero errors at the final check.
+
+### TDD evidence
+
+- Tests added or changed: none; this was a production operational recovery using the already-reviewed
+  release at `8aedaad630c8`, not a source-code change.
+- RED evidence: the first foreground warm exited non-zero with `warm-up failed: Cloudflare not
+  cleared`; the first launchd watcher start exited because the separately reloaded SSH tunnel was
+  not yet accepting connections.
+- GREEN evidence: extended warm returned `WARMUP_OK`; bounded `crawl 1` returned `Processed 1 pending
+  discovery dispatch jobs`; the canary run succeeded; launchd status then showed both agents running
+  and a subsequent watcher-owned run advancing.
+
+### Commands and results
+
+- `git worktree add --detach /Users/subhajlimanond/dev/egp-ops-main 8aedaad...`: passed.
+- `scripts/bootstrap_python_env.sh` in the operational worktree: passed; isolated editable installs
+  resolve to that worktree.
+- `scripts/run_remote_crawl.sh check`: passed before warm, canary, and launchd installation.
+- Standard warm: failed safely on Cloudflare; extended-settle warm: passed.
+- Read-only production query before claim: exactly 13 pending jobs, 12 normalized terms, zero
+  attempts, one tenant.
+- `scripts/run_remote_crawl.sh crawl 1`: passed; run `9c7237e0...` succeeded.
+- `scripts/install_launchd.sh install` and `status`: passed; tunnel PID 9361 and final watcher PID
+  9419 were running.
+- Production API and queue checks were read-only except for normal worker processing; no manual row
+  mutation or duplicate enqueue was performed.
+
+### Wiring and risk notes
+
+- The production daemon now runs immutable, schema-compatible application code from a detached
+  worktree with its own virtualenv. The feature checkout remains free for PR #170 work.
+- The remaining 12 rows intentionally stay `pending` while the single-flight watcher processes one
+  at a time; a claimed row retains pending status until its attempt finishes.
+- The browser warm timer remains opt-in and unloaded; pre-dispatch freshness logic remains active.
+- The current checked-in installer still permits a mutable checkout. Permanent SHA pin enforcement,
+  heartbeat/leases, queue-age health, truthful run finalization, job/run correlation, UI status, and
+  dedicated-host preparation remain the requested code work.
+
+### Release blocker
+
+- Retried the failed GitHub Actions workflows for PR #170. Every required GitHub job again ended in
+  two seconds without running any step. The check annotation is exact: `The job was not started
+  because your account is locked due to a billing issue.` Vercel remains passed and GitHub reports
+  the PR mergeable.
+- g-coding requires the current PR to land before starting another PR and forbids an unapproved admin
+  override of required checks. The next implementation slice therefore requires either resolving the
+  GitHub billing lock and rerunning checks, or explicit user authorization for a documented merge
+  override based on the already-recorded local gates.
+
+### Protected files
+
+- `docs/TOR KEYWORDS.md` remains untracked and untouched.
+
+---
+
+## Review (2026-07-22 13:27:13 +0700) - crawl result/dispatch semantics
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `feature/keyword-group-lifecycle` at `f19531af`; relevant crawler/UI files are
+  byte-identical to production-compatible `8aedaad630c8`.
+- Scope: Projects-page recent crawl summary, worker result propagation, durable dispatch retry,
+  browser/profile health, and the 22 July production run sequence.
+- Commands Run: targeted source/test inspection; production read-only PostgreSQL queries through the
+  validated SSH tunnel; four focused pytest cases (`4 passed in 7.01s`); bounded worker/supervisor
+  log inspection.
+- Auggie semantic retrieval was attempted first but exceeded the required two-second limit, so this
+  review used direct file inspection and exact-string searches.
+
+### High-Level Assessment
+
+Run `79552403-d4fe-417c-975e-0100a3af89e5` did exactly one targeted document-backfill search for
+project number `69069469196`; its own log states `keyword_count=1`, and it succeeded. The Projects
+page is misleading because it fetches the latest ten run rows and labels that arbitrary window
+"latest 10 keywords." Those ten rows mix triggers, profiles, attempts, and time: one successful
+backfill at 11:47 plus nine preceding failures. The displayed nine failures are not sibling keywords
+inside run `79552403`; they are older, separate crawl runs.
+
+There is nevertheless a serious crawler defect. After manual run `b54a0bf0...` collected 12 projects
+for `ระบบสารสนเทศ`, e-GP returned its generic application-error toast while navigating from page 9
+to page 10. The next ten manual keyword runs and one backfill run all received the same toast at
+search startup. Each crawl run correctly became `failed`, but the worker process returned exit code
+zero with JSON `run_status=failed`. The parent dispatcher interprets only process exit, marks the
+durable job `dispatched`, clears `last_error`, records the persistent browser profile as successful,
+and immediately continues. Thus all ten manual jobs were consumed with no retry. A fresh pre-dispatch
+warm more than an hour later reset the stale session sufficiently for the new backfill job for
+`69069469196` to succeed.
+
+### As-Is Pipeline Diagram
+
+Manual recrawl/backfill enqueue -> one `discovery_jobs` row per keyword/project number -> single-flight
+watcher claims one row -> `SubprocessDiscoveryDispatcher` creates one `crawl_runs` row and launches
+one worker process -> browser workflow retries an e-GP site-error toast once -> workflow stores
+`failed`/`partial` in `crawl_runs` and returns a result object -> worker prints JSON and exits zero ->
+parent treats dispatch as successful, marks the queue row `dispatched`, and marks the browser profile
+fresh -> Projects page fetches the newest ten run rows and aggregates them as though they were one
+keyword batch.
+
+### Strengths
+
+- The successful backfill preserved trustworthy scan evidence: one row, one eligible project, one
+  accepted project, stable seven-column signature, and one downloaded archive.
+- Browser search already performs one clean-page recovery before declaring the site toast terminal.
+- Crawl-run/task records truthfully retain the semantic `failed` status and exact e-GP error.
+- The host-shared file-lock rate limiter safely coordinates ordinary browser actions across worker
+  processes.
+- The pinned operational worktree, tunnel, watcher, and pre-dispatch warm were functioning; this is
+  no longer the earlier unloaded-watcher outage.
+
+### Key Risks / Gaps
+
+CRITICAL
+
+- None identified.
+
+HIGH
+
+- Semantic crawl failure is converted into durable dispatch success. `run_worker_job` returns
+  `run_status`, but `main()` records every returned result as worker outcome `success` and exits zero.
+  The parent checks only `returncode`; `DiscoveryDispatchProcessor` then marks the job `dispatched`.
+  Production proof: the 13 recovered manual jobs ended as 2 succeeded, 1 partial, and 10 failed runs,
+  but all 13 queue rows are `dispatched` with no error and none is pending for retry.
+- Repeated e-GP application errors do not trip a host circuit or pause the queue. The limited click is
+  recorded as `success` before the toast is inspected; the circuit recognizes consecutive HTTP 429
+  outcomes only. The executor therefore burned through ten keywords after the first pagination site
+  error instead of pausing after a small threshold.
+- Failed runs falsely refresh persistent-profile health. Any zero-exit worker result calls
+  `_record_persistent_profile_success(source="crawl")`, so the repeated site-error session remained
+  "fresh" and skipped pre-dispatch warmups. The later backfill succeeded only after the 30-minute
+  freshness window had elapsed and a pre-dispatch warm actually ran.
+
+MEDIUM
+
+- The Projects-page summary has no batch identity. It counts run attempts, not unique keywords, and
+  mixes manual and backfill triggers plus different profiles. The same keyword `69069469196` appears
+  once failed and once succeeded inside the latest-ten window, yet the UI calls them ten keywords.
+- Queue state `dispatched` means only that the subprocess returned normally, not that discovery
+  succeeded. That name and contract prevent operators from distinguishing accepted execution from
+  successful crawl completion.
+- Worker logs for immediate site-error failures contain only `keyword_start` and the final JSON
+  result. The causal error lives in `crawl_runs.summary_json`, making file-based incident diagnosis
+  incomplete.
+- There is no recrawl request/batch ID joining the 13 manual queue rows and their runs. The UI cannot
+  truthfully display progress for the specific click after browser-local tracking is lost.
+
+LOW
+
+- The E2E fixture assumes a curated homogeneous manual-run set and does not test mixed triggers,
+  duplicate keyword attempts, or a latest-N window that slices through a batch.
+
+### Drift Matrix
+
+| Area | Intended | Implemented | Impact | Fix direction |
+|---|---|---|---|---|
+| Run scope | One run/batch explains all requested keywords | One run is one keyword | Successful run appears to omit siblings | Expose batch/request identity |
+| UI summary | Summarize one recrawl request | Aggregate newest ten completed runs | Mixed triggers and duplicate attempts mislabeled as keywords | Batch-scoped API/UI |
+| Dispatch success | Job completes when crawl outcome is accepted | Any zero process exit completes job | Failed keywords are permanently consumed | Return typed worker result and branch on status |
+| Retry | Transient e-GP errors back off and retry | Retry only when dispatcher raises | Semantic failures never retry | Classify failed/partial outcomes explicitly |
+| Circuit breaker | Repeated site rejection pauses host | Only action exceptions/429 affect circuit | Eleven near-identical errors run consecutively | Feed site-toast outcome into shared circuit |
+| Profile health | Fresh means search session is usable | Any zero-exit crawl refreshes freshness | Broken session is continuously trusted | Mark success only for succeeded/acceptable partial runs |
+| Observability | Worker/job/run metrics agree | Worker metric says success while run says failed | Alerts and rates understate failure | Single canonical outcome taxonomy |
+
+### Why Earlier Reasoning Missed This
+
+1. Recovery validation stopped after proving the queue drained and new runs appeared. It did not
+   assert the end-to-end invariant `queue outcome == crawl run outcome`.
+2. The architecture treats subprocess transport success and business crawl success as the same
+   signal. Existing tests mirror those separate layers and never test their composition.
+3. Rate limiting was implemented around browser actions, but e-GP reports this failure as an
+   application toast after an otherwise successful click. The important failure sits outside the
+   limiter's observation boundary.
+4. Profile freshness was designed around Cloudflare/warmup completion, then reused as crawl health.
+   It lacks a semantic rule for a completed process whose crawl result is failed.
+5. The UI created a plausible batch summary from positional history because runs lack request/batch
+   correlation. This worked in a three-run test fixture but is not valid operationally.
+6. The document-backfill retry path later created another job for the same project number, masking
+   the loss by producing a successful newest run. It did not retry the failed manual keyword jobs.
+
+### Tactical Improvements (1-3 days)
+
+1. Make subprocess dispatch parse the final worker JSON and return a typed result containing
+   `run_id`, `run_status`, `error`, and retry classification. Only `succeeded` (and explicitly
+   accepted `partial`) may mark a job `dispatched`. Done when a simulated `run_status=failed` leaves
+   the job pending with backoff and preserved `last_error`.
+2. Stop recording persistent-profile success when `run_status=failed`. Invalidate/pause the profile
+   after a configurable number of consecutive search/pagination site errors. Done when two semantic
+   site failures force a warm or operator-visible pause before another keyword is claimed.
+3. Feed `site_error_toast` into the shared host circuit separately from HTTP 429, with bounded
+   exponential cooldown. Done when repeated toast errors stop queue drain and later recover without
+   losing jobs.
+4. Add seam tests spanning worker result -> subprocess parser -> queue outcome for succeeded,
+   zero-result, partial-after-projects, failed-before-results, timeout, and entitlement denial.
+5. Replace `summarizeRecentKeywordRuns(latest 10)` with a truthful label immediately ("latest 10
+   runs") and display trigger/time. Then add batch scoping once a batch ID exists. Done when mixed
+   backfill/manual duplicate-keyword fixtures cannot claim ten unique keywords.
+6. Re-enqueue the ten failed 22 July manual keywords only after the retry/circuit fix or under a
+   bounded operator run; the original rows are already terminal `dispatched`, and the current queue
+   has no pending jobs.
+
+### Strategic Improvements (1-6 weeks)
+
+1. Add `crawl_batches`/`request_id` and `discovery_job_attempts` correlation. Preserve each attempt
+   and link queue job -> run -> batch; migrate the UI to batch progress with exact requested,
+   succeeded, zero-result, failed, and retrying counts.
+2. Replace `dispatched` as a terminal semantic with explicit queue states such as `leased`,
+   `running`, `succeeded`, `partial`, `retry_wait`, `failed_terminal`, and `cancelled`. Migrate in
+   stages by first adding attempt/result columns, dual-writing, then switching selectors/UI.
+3. Unify worker, run, queue, profile, and metrics outcomes under one typed failure taxonomy. Add
+   alerts for consecutive `egp_site_error`, batch completion below 100%, and jobs whose run failed
+   while the queue says success.
+
+### Big Architectural Changes
+
+- None required for this incident. A typed result contract, retry-aware queue state, site-error
+  circuit, and batch correlation close the demonstrated gaps without replacing the crawler plane.
+
+### Open Questions / Assumptions
+
+- The exact upstream reason for e-GP's generic toast cannot be proven from current artifacts. The
+  sequence strongly supports a transient server/session rejection rather than keyword-specific data:
+  all terms failed identically after page 10, and the same project-number search succeeded after a
+  later warm.
+- Whether `partial` should retry must be a product decision: persisted projects must remain, while a
+  follow-up attempt should resume or deduplicate rather than replay blindly.
+
+### Verification Evidence
+
+- Production latest runs: one successful backfill at 11:47; prior backfill at 10:23 failed; ten
+  manual runs between 10:15 and 10:23 failed with the identical error; preceding manual run was
+  partial after page 9 with 12 persisted projects.
+- Production recent manual outcome count: `succeeded=2`, `partial=1`, `failed=10`.
+- Production queue: no pending rows; relevant manual and backfill jobs are `dispatched` with
+  `attempt_count=1` and cleared `last_error`.
+- Success run log: `keyword_count=1`, stable header, one eligible/accepted project, one document.
+- Failure logs: only keyword start plus JSON `run_status=failed`; semantic error is stored in DB.
+- Supervisor log: repeated "profile is fresh; skipping pre-dispatch warm" during drain; later
+  `PREDISPATCH_WARMUP_OK` before the successful backfill.
+- Focused tests: clean-page site-toast retry, terminal toast error, partial pagination error, and
+  dispatched-job behavior all pass independently (`4 passed`). Their separation demonstrates the
+  missing end-to-end result contract.
+- No product code, queue rows, profile state, or production configuration was modified. The only
+  write was this required `g-review` Coding Log append. `docs/TOR KEYWORDS.md` remains untouched.
