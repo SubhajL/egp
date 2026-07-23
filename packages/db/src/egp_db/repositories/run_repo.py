@@ -25,6 +25,8 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_db.repositories.discovery_job_repo import DISCOVERY_JOBS_TABLE
+from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
 from egp_shared_types.enums import CrawlRunStatus, CrawlTaskType
 
 
@@ -35,6 +37,8 @@ class CrawlRunRecord:
     trigger_type: str
     status: CrawlRunStatus
     profile_id: str | None
+    discovery_job_id: str | None
+    recrawl_request_id: str | None
     started_at: str | None
     finished_at: str | None
     summary_json: dict[str, object] | None
@@ -128,6 +132,18 @@ CRAWL_RUNS_TABLE = Table(
     Column("id", UUID_SQL_TYPE, primary_key=True),
     Column("tenant_id", UUID_SQL_TYPE, nullable=False),
     Column("profile_id", UUID_SQL_TYPE, nullable=True),
+    Column(
+        "discovery_job_id",
+        UUID_SQL_TYPE,
+        ForeignKey(DISCOVERY_JOBS_TABLE.c.id, ondelete="SET NULL"),
+        nullable=True,
+    ),
+    Column(
+        "recrawl_request_id",
+        UUID_SQL_TYPE,
+        ForeignKey(RECRAWL_REQUESTS_TABLE.c.id, ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column("trigger_type", String, nullable=False),
     Column("status", String, nullable=False),
     Column("started_at", DateTime(timezone=True), nullable=True),
@@ -230,6 +246,16 @@ def _run_from_mapping(row: RowMapping) -> CrawlRunRecord:
         trigger_type=str(row["trigger_type"]),
         status=CrawlRunStatus(str(row["status"])),
         profile_id=str(row["profile_id"]) if row["profile_id"] is not None else None,
+        discovery_job_id=(
+            str(row["discovery_job_id"])
+            if row["discovery_job_id"] is not None
+            else None
+        ),
+        recrawl_request_id=(
+            str(row["recrawl_request_id"])
+            if row["recrawl_request_id"] is not None
+            else None
+        ),
         started_at=_dt_to_iso(row["started_at"]),
         finished_at=_dt_to_iso(row["finished_at"]),
         summary_json=row["summary_json"],
@@ -334,6 +360,8 @@ class SqlRunRepository:
         tenant_id: str,
         trigger_type: str,
         profile_id: str | None = None,
+        discovery_job_id: str | None = None,
+        recrawl_request_id: str | None = None,
         summary_json: dict[str, object] | None = None,
         run_id: str | None = None,
     ) -> CrawlRunRecord:
@@ -342,6 +370,12 @@ class SqlRunRepository:
         normalized_profile_id = (
             normalize_uuid_string(profile_id) if profile_id else None
         )
+        normalized_discovery_job_id = (
+            normalize_uuid_string(discovery_job_id) if discovery_job_id else None
+        )
+        normalized_recrawl_request_id = (
+            normalize_uuid_string(recrawl_request_id) if recrawl_request_id else None
+        )
         normalized_trigger_type = _validate_run_trigger_type(trigger_type)
         with self._engine.begin() as connection:
             connection.execute(
@@ -349,6 +383,8 @@ class SqlRunRepository:
                     id=normalized_run_id,
                     tenant_id=normalize_uuid_string(tenant_id),
                     profile_id=normalized_profile_id,
+                    discovery_job_id=normalized_discovery_job_id,
+                    recrawl_request_id=normalized_recrawl_request_id,
                     trigger_type=normalized_trigger_type,
                     status=CrawlRunStatus.QUEUED.value,
                     started_at=None,

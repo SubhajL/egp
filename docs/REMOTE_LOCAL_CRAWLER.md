@@ -18,7 +18,7 @@ exception to the "local tools never touch production" rule.
 
 ```
 Vercel UI ──HTTPS──▶ Lightsail API (Caddy/TLS)
-  click "recrawl"        POST /v1/rules/recrawl → queue_active_discovery_jobs()
+  click "recrawl"        POST /v1/rules/recrawl → durable recrawl request + jobs
                               │
                               ▼
                       discovery_jobs (PRODUCTION Postgres)  ◀── shared durable queue
@@ -218,7 +218,10 @@ crawl is itself keeping the profile warm, so skipping is correct.
 
 From the Vercel UI, click **recrawl** or create/update a keyword profile. That calls
 `POST /v1/rules/recrawl` (or `/v1/rules/profiles`), which enqueues `discovery_jobs`. The
-Mac watcher claims and crawls them. Scheduled crawls are queued by the Lightsail timer.
+response includes a durable `request_id`; the UI polls
+`GET /v1/rules/recrawl/{request_id}` so batch progress is scoped to those exact jobs
+across reloads. The Mac watcher claims and crawls them. Scheduled crawls are queued by
+the Lightsail timer.
 
 ---
 

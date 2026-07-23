@@ -202,6 +202,7 @@ def configure_services(
     app.state.document_repository = bundle.document_repository
     app.state.notification_repository = bundle.notification_repository
     app.state.discovery_job_repository = bundle.discovery_job_repository
+    app.state.recrawl_request_repository = bundle.recrawl_request_repository
     app.state.support_repository = bundle.support_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
@@ -260,6 +261,7 @@ def configure_services(
         notification_event_wiring_complete=True,
         admin_repository=bundle.admin_repository,
         discovery_job_repository=bundle.discovery_job_repository,
+        recrawl_request_repository=bundle.recrawl_request_repository,
     )
     app.state.export_service = ExportService(
         bundle.project_repository,

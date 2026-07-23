@@ -363,8 +363,26 @@ async function mockProjectsApp(page: Page) {
         return;
       case "POST /v1/rules/recrawl":
         await fulfillJson(route, 202, {
+          request_id: "55555555-5555-5555-5555-555555555555",
           queued_job_count: 1,
           queued_keywords: ["analytics"],
+        });
+        return;
+      case "GET /v1/rules/recrawl/55555555-5555-5555-5555-555555555555":
+        await fulfillJson(route, 200, {
+          request_id: "55555555-5555-5555-5555-555555555555",
+          requested_keyword_count: 1,
+          queued_count: 0,
+          running_count: 1,
+          retrying_count: 0,
+          succeeded_count: 0,
+          zero_result_count: 0,
+          partial_count: 0,
+          failed_count: 0,
+          failed_keywords: [],
+          is_terminal: false,
+          created_at: "2026-07-23T00:00:00Z",
+          updated_at: "2026-07-23T00:00:05Z",
         });
         return;
       case "GET /v1/runs":
@@ -525,6 +543,30 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
           updated_at: "2026-05-18T00:00:00Z",
         });
         return;
+      case "POST /v1/rules/recrawl":
+        await fulfillJson(route, 202, {
+          request_id: "66666666-6666-6666-6666-666666666666",
+          queued_job_count: 0,
+          queued_keywords: [],
+        });
+        return;
+      case "GET /v1/rules/recrawl/66666666-6666-6666-6666-666666666666":
+        await fulfillJson(route, 200, {
+          request_id: "66666666-6666-6666-6666-666666666666",
+          requested_keyword_count: 1,
+          queued_count: 0,
+          running_count: 0,
+          retrying_count: 0,
+          succeeded_count: 0,
+          zero_result_count: 1,
+          partial_count: 0,
+          failed_count: 0,
+          failed_keywords: [],
+          is_terminal: true,
+          created_at: "2026-07-23T00:00:00Z",
+          updated_at: "2026-07-23T00:01:00Z",
+        });
+        return;
       default:
         await fulfillJson(route, 500, { detail: `Unhandled mock route: ${key}` });
     }
@@ -545,7 +587,7 @@ test("projects page prompts for a new keyword before crawling an empty cycle", a
   expect(createdKeywordPayload).toMatchObject({
     name: "คำค้นหลัก",
     profile_type: "custom",
-    is_active: true,
+    enabled_by_user: true,
     keywords: ["พลังงาน"],
   });
 });
@@ -586,8 +628,26 @@ test("projects page refreshes table after a completed crawl becomes visible", as
       case "POST /v1/rules/recrawl":
         hasTriggeredRecrawl = true;
         await fulfillJson(route, 202, {
+          request_id: "88888888-8888-8888-8888-888888888888",
           queued_job_count: 1,
           queued_keywords: ["ที่ปรึกษา"],
+        });
+        return;
+      case "GET /v1/rules/recrawl/88888888-8888-8888-8888-888888888888":
+        await fulfillJson(route, 200, {
+          request_id: "88888888-8888-8888-8888-888888888888",
+          requested_keyword_count: 1,
+          queued_count: 0,
+          running_count: 0,
+          retrying_count: 0,
+          succeeded_count: 0,
+          zero_result_count: 1,
+          partial_count: 0,
+          failed_count: 0,
+          failed_keywords: [],
+          is_terminal: true,
+          created_at: "2026-07-23T00:00:00Z",
+          updated_at: "2026-07-23T00:01:00Z",
         });
         return;
       default:
@@ -607,6 +667,7 @@ test("projects page summarizes recent multi-keyword crawl completion", async ({
   page,
 }) => {
   let hasTriggeredRecrawl = false;
+  let statusRequestCount = 0;
 
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -640,8 +701,27 @@ test("projects page summarizes recent multi-keyword crawl completion", async ({
       case "POST /v1/rules/recrawl":
         hasTriggeredRecrawl = true;
         await fulfillJson(route, 202, {
+          request_id: "77777777-7777-7777-7777-777777777777",
           queued_job_count: 3,
           queued_keywords: ["วิเคราะห์ข้อมูล", "ระบบบริหารจัดการ", "ระบบฐานข้อมูลใหญ่"],
+        });
+        return;
+      case "GET /v1/rules/recrawl/77777777-7777-7777-7777-777777777777":
+        statusRequestCount += 1;
+        await fulfillJson(route, 200, {
+          request_id: "77777777-7777-7777-7777-777777777777",
+          requested_keyword_count: 3,
+          queued_count: 0,
+          running_count: 0,
+          retrying_count: 0,
+          succeeded_count: 1,
+          zero_result_count: 1,
+          partial_count: 0,
+          failed_count: 1,
+          failed_keywords: ["ระบบฐานข้อมูลใหญ่"],
+          is_terminal: true,
+          created_at: "2026-07-23T00:00:00Z",
+          updated_at: "2026-07-23T00:02:00Z",
         });
         return;
       default:
@@ -652,11 +732,15 @@ test("projects page summarizes recent multi-keyword crawl completion", async ({
   await page.goto("/projects");
   await page.getByRole("button", { name: "Crawl ใหม่" }).click();
 
-  await expect(page.getByText("สรุปล่าสุด 3 คำค้น")).toBeVisible();
+  await expect(page.getByText("สรุปรอบนี้ 3 คำค้น")).toBeVisible();
   await expect(
-    page.getByText("เสร็จแล้ว 2 · ไม่พบโครงการ 1 · ล้มเหลว 1"),
+    page.getByText("เสร็จแล้ว 1 · ไม่พบโครงการ 1 · บางส่วน 0 · ล้มเหลว 1"),
   ).toBeVisible();
   await expect(page.getByText("ล้มเหลว: ระบบฐานข้อมูลใหญ่")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText("สรุปรอบนี้ 3 คำค้น")).toBeVisible();
+  expect(statusRequestCount).toBeGreaterThanOrEqual(2);
 });
 
 test("project detail links expired document-download failures to billing", async ({ page }) => {

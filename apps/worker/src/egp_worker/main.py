@@ -138,7 +138,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             "project_count": len(result.projects),
             "project_ids": [project.id for project in result.projects],
         }
-        summary = result.run.run.summary_json
+        summary = getattr(result.run.run, "summary_json", None)
         if isinstance(summary, dict):
             error = str(summary.get("error") or "").strip()
             if error:

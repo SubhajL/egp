@@ -139,8 +139,25 @@ class ManualRecrawlRequest(BaseModel):
 
 
 class ManualRecrawlResponse(BaseModel):
+    request_id: str
     queued_job_count: int
     queued_keywords: list[str]
+
+
+class ManualRecrawlStatusResponse(BaseModel):
+    request_id: str
+    requested_keyword_count: int
+    queued_count: int
+    running_count: int
+    retrying_count: int
+    succeeded_count: int
+    zero_result_count: int
+    partial_count: int
+    failed_count: int
+    failed_keywords: list[str]
+    is_terminal: bool
+    created_at: str
+    updated_at: str
 
 
 class ManualRecrawlQueuedResponse(BaseModel):
@@ -338,12 +355,12 @@ def update_rule_profile(
 @router.post(
     "/recrawl",
     response_model=ManualRecrawlResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     responses={429: {"model": ManualRecrawlQueuedResponse}},
 )
 def recrawl_active_keywords(
     payload: ManualRecrawlRequest,
     request: Request,
-    response: Response,
 ) -> ManualRecrawlResponse:
     require_run_operator_role(request)
     service = _service_from_request(request)
@@ -360,5 +377,23 @@ def recrawl_active_keywords(
 
     _wake_discovery_dispatch(request, pending_job_count=queued.queued_job_count)
 
-    response.status_code = status.HTTP_202_ACCEPTED
     return ManualRecrawlResponse(**asdict(queued))
+
+
+@router.get("/recrawl/{request_id}", response_model=ManualRecrawlStatusResponse)
+def get_recrawl_request_status(
+    request_id: str,
+    request: Request,
+    tenant_id: str | None = None,
+) -> ManualRecrawlStatusResponse:
+    require_run_operator_role(request)
+    service = _service_from_request(request)
+    resolved_tenant_id = resolve_request_tenant_id(request, tenant_id)
+    try:
+        request_status = service.get_recrawl_request_status(
+            tenant_id=resolved_tenant_id,
+            request_id=request_id,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="recrawl request not found") from exc
+    return ManualRecrawlStatusResponse(**asdict(request_status))

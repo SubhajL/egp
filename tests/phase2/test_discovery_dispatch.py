@@ -103,6 +103,7 @@ def _job_record(job_id: str, *, keyword: str) -> DiscoveryJobRecord:
         keyword=keyword,
         trigger_type="profile_created",
         live=True,
+        recrawl_request_id=None,
         job_status="pending",
         attempt_count=0,
         last_error=None,
@@ -169,6 +170,8 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
             keyword="analytics",
             trigger_type="profile_created",
             live=True,
+            discovery_job_id=job.id,
+            recrawl_request_id=None,
         )
     ]
     assert stored.job_status == "dispatched"

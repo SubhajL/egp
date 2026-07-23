@@ -55,6 +55,7 @@ from egp_db.repositories.line_payment_repo import create_line_payment_repository
 from egp_db.repositories.notification_repo import create_notification_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import create_project_repository
+from egp_db.repositories.recrawl_request_repo import create_recrawl_request_repository
 from egp_db.repositories.run_repo import create_run_repository
 from egp_db.repositories.support_repo import create_support_repository
 from egp_db.repositories.tenant_entitlement_repo import create_tenant_entitlement_repository
@@ -95,6 +96,7 @@ class RepositoryBundle:
     run_repository: object
     notification_repository: object
     discovery_job_repository: object
+    recrawl_request_repository: object
     tenant_entitlement_repository: object
     support_repository: object
     line_payment_repository: object
@@ -267,6 +269,10 @@ def build_repository_bundle(
             engine=shared_engine,
         ),
         discovery_job_repository=create_discovery_job_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+        ),
+        recrawl_request_repository=create_recrawl_request_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
         ),

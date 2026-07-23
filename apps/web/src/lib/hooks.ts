@@ -13,6 +13,7 @@ import {
   fetchProjectCrawlEvidence,
   fetchProjectDetail,
   fetchProjects,
+  fetchRecrawlRequestStatus,
   fetchDocuments,
   fetchMe,
   fetchRules,
@@ -98,6 +99,16 @@ export function useRuns(params: FetchRunsParams = {}) {
   return useQuery({
     queryKey: ["runs", params],
     queryFn: () => fetchRuns(params),
+  });
+}
+
+export function useRecrawlRequestStatus(requestId: string | null) {
+  return useQuery({
+    queryKey: ["recrawl-request", requestId],
+    queryFn: () => fetchRecrawlRequestStatus(requestId ?? ""),
+    enabled: !!requestId,
+    refetchInterval: (query) =>
+      query.state.data?.is_terminal ? false : 5000,
   });
 }
 

@@ -10,7 +10,10 @@ from types import SimpleNamespace
 import pytest
 
 from egp_api.main import _make_discover_spawner
-from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
+from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchRequest,
+    NonRetriableDiscoveryDispatchError,
+)
 from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
 
 
@@ -127,6 +130,44 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(
     assert popen_kwargs["stdout"] is not subprocess.PIPE
     assert hasattr(popen_kwargs["stdout"], "write")
     assert popen_kwargs["stderr"] is not subprocess.PIPE
+
+
+def test_discover_dispatch_correlates_reserved_run_to_job_and_recrawl_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRunRepository:
+        def create_run(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def update_run_summary(self, run_id: str, *, summary_json) -> None:
+            del run_id, summary_json
+
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: _FakeProcess(),
+    )
+    dispatcher = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=FakeRunRepository(),
+    )
+
+    dispatcher.dispatch(
+        DiscoveryDispatchRequest(
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            profile_id="22222222-2222-2222-2222-222222222222",
+            profile_type="manual",
+            keyword="แพลตฟอร์ม",
+            discovery_job_id="33333333-3333-3333-3333-333333333333",
+            recrawl_request_id="44444444-4444-4444-4444-444444444444",
+        )
+    )
+
+    assert captured["discovery_job_id"] == "33333333-3333-3333-3333-333333333333"
+    assert captured["recrawl_request_id"] == "44444444-4444-4444-4444-444444444444"
 
 
 def test_discover_spawner_retries_semantic_failed_worker_result(

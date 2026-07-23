@@ -3957,13 +3957,94 @@
             },
             "title": "Queued Keywords",
             "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
           }
         },
         "required": [
+          "request_id",
           "queued_job_count",
           "queued_keywords"
         ],
         "title": "ManualRecrawlResponse",
+        "type": "object"
+      },
+      "ManualRecrawlStatusResponse": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "failed_count": {
+            "title": "Failed Count",
+            "type": "integer"
+          },
+          "failed_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Failed Keywords",
+            "type": "array"
+          },
+          "is_terminal": {
+            "title": "Is Terminal",
+            "type": "boolean"
+          },
+          "partial_count": {
+            "title": "Partial Count",
+            "type": "integer"
+          },
+          "queued_count": {
+            "title": "Queued Count",
+            "type": "integer"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "requested_keyword_count": {
+            "title": "Requested Keyword Count",
+            "type": "integer"
+          },
+          "retrying_count": {
+            "title": "Retrying Count",
+            "type": "integer"
+          },
+          "running_count": {
+            "title": "Running Count",
+            "type": "integer"
+          },
+          "succeeded_count": {
+            "title": "Succeeded Count",
+            "type": "integer"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "zero_result_count": {
+            "title": "Zero Result Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "requested_keyword_count",
+          "queued_count",
+          "running_count",
+          "retrying_count",
+          "succeeded_count",
+          "zero_result_count",
+          "partial_count",
+          "failed_count",
+          "failed_keywords",
+          "is_terminal",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ManualRecrawlStatusResponse",
         "type": "object"
       },
       "MfaCodeRequest": {
@@ -10450,7 +10531,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -10482,6 +10563,64 @@
           }
         },
         "summary": "Recrawl Active Keywords",
+        "tags": [
+          "rules"
+        ]
+      }
+    },
+    "/v1/rules/recrawl/{request_id}": {
+      "get": {
+        "operationId": "get_recrawl_request_status_v1_rules_recrawl__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tenant_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManualRecrawlStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Recrawl Request Status",
         "tags": [
           "rules"
         ]

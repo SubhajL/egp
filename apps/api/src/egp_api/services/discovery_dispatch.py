@@ -52,6 +52,8 @@ class DiscoveryDispatchRequest:
     keyword: str
     trigger_type: str = "manual"
     live: bool = True
+    discovery_job_id: str | None = None
+    recrawl_request_id: str | None = None
 
 
 class DiscoveryDispatcher(Protocol):
@@ -132,6 +134,8 @@ class DiscoveryDispatchProcessor:
                     keyword=job.keyword,
                     trigger_type=job.trigger_type,
                     live=job.live,
+                    discovery_job_id=job.id,
+                    recrawl_request_id=job.recrawl_request_id,
                 )
             )
         except NonRetriableDiscoveryDispatchError as exc:
