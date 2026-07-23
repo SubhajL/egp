@@ -283,6 +283,21 @@ def test_recrawl_request_correlation_migration_upgrades_existing_rows(
         assert result.applied_versions == [correlation_migration.name]
 
 
+def test_crawler_runtime_migration_has_no_tenant_or_customer_payload(
+    repo_root: Path,
+) -> None:
+    runtime_migration = (
+        repo_root
+        / "packages/db/src/migrations/033_crawler_runtime_heartbeats.sql"
+    )
+
+    assert runtime_migration.exists()
+    runtime_sql = runtime_migration.read_text(encoding="utf-8")
+    assert "CREATE TABLE crawler_runtime_heartbeats" in runtime_sql
+    assert "tenant_id" not in runtime_sql
+    assert "customer_id" not in runtime_sql
+
+
 def test_operator_recovery_request_migration_is_additive_and_idempotent(
     repo_root: Path,
     tmp_path: Path,

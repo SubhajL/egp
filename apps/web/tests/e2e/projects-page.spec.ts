@@ -345,6 +345,7 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
 
 async function mockProjectsApp(page: Page) {
   let runsRequestCount = 0;
+  let recrawlStatusRequestCount = 0;
 
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -369,17 +370,108 @@ async function mockProjectsApp(page: Page) {
         });
         return;
       case "GET /v1/rules/recrawl/55555555-5555-5555-5555-555555555555":
+        recrawlStatusRequestCount += 1;
+        if (recrawlStatusRequestCount > 1) {
+          await fulfillJson(route, 200, {
+            request_id: "55555555-5555-5555-5555-555555555555",
+            requested_keyword_count: 1,
+            queued_count: 0,
+            running_count: 0,
+            retrying_count: 1,
+            succeeded_count: 0,
+            zero_result_count: 0,
+            partial_count: 0,
+            failed_count: 0,
+            failed_keywords: [],
+            jobs: [
+              {
+                job_id: "job-retrying-1",
+                keyword: "analytics",
+                state: "retrying",
+                attempt_count: 2,
+                last_error_code: "search_page_state_error",
+                last_error: "search page changed",
+                next_attempt_at: "2026-07-23T00:00:35Z",
+                processing_started_at: null,
+                dispatched_at: null,
+                run_id: "run-active",
+                run_status: "failed",
+                run_started_at: "2026-07-23T00:00:00Z",
+                run_finished_at: "2026-07-23T00:00:05Z",
+              },
+            ],
+            correlation_matches: true,
+            runtime: {
+              agent_id: "mac-crawler-1",
+              runtime_mode: "external",
+              heartbeat_status: "online",
+              watcher_status: "running",
+              database_status: "connected",
+              blocker_code: "profile_warm_retry",
+              profile_status: "warm_retry",
+              circuit_state: "closed",
+              circuit_reset_at: null,
+              reported_at: "2026-07-23T00:01:00Z",
+              heartbeat_age_seconds: 0,
+            },
+            recovery_decision: {
+              action: "continue",
+              code: "shared_dependency_retrying",
+              blocker_code: "profile_warm_retry",
+            },
+            is_terminal: false,
+            created_at: "2026-07-23T00:00:00Z",
+            updated_at: "2026-07-23T00:01:00Z",
+          });
+          return;
+        }
         await fulfillJson(route, 200, {
           request_id: "55555555-5555-5555-5555-555555555555",
           requested_keyword_count: 1,
           queued_count: 0,
-          running_count: 1,
-          retrying_count: 0,
+          running_count: 0,
+          retrying_count: 1,
           succeeded_count: 0,
           zero_result_count: 0,
           partial_count: 0,
           failed_count: 0,
           failed_keywords: [],
+          jobs: [
+            {
+              job_id: "job-retrying-1",
+              keyword: "analytics",
+              state: "retrying",
+              attempt_count: 2,
+              last_error_code: "search_page_state_error",
+              last_error: "search page changed",
+              next_attempt_at: "2026-07-23T00:00:35Z",
+              processing_started_at: null,
+              dispatched_at: null,
+              run_id: "run-active",
+              run_status: "failed",
+              run_started_at: "2026-07-23T00:00:00Z",
+              run_finished_at: "2026-07-23T00:00:05Z",
+            },
+          ],
+          correlation_matches: true,
+          runtime: {
+            agent_id: "mac-crawler-1",
+            runtime_mode: "external",
+            heartbeat_status: "online",
+            watcher_status: "running",
+            database_status: "connected",
+            blocker_code: "circuit_open",
+            profile_status: "ready",
+            circuit_state: "open",
+            circuit_reset_at: "2026-07-23T00:05:00Z",
+            reported_at: "2026-07-23T00:00:05Z",
+            heartbeat_age_seconds: 0,
+          },
+          recovery_decision: {
+            action: "stop",
+            code: "circuit_open",
+            blocker_code: "circuit_open",
+          },
           is_terminal: false,
           created_at: "2026-07-23T00:00:00Z",
           updated_at: "2026-07-23T00:00:05Z",
@@ -419,6 +511,21 @@ test("projects page shows worker-backed crawl activity after manual recrawl", as
     page.getByText('สแกนหน้าผลลัพธ์ · คำค้น "analytics" · หน้า 2 · พบ 3 โครงการที่เข้าเงื่อนไข'),
   ).toBeVisible();
   await expect(page.getByText("ค้นพบแล้ว 2 โครงการ")).toBeVisible();
+  await expect(
+    page.getByText(
+      "หยุดติดตามอัตโนมัติ: วงจรป้องกัน e-GP เปิดอยู่ ระบบหยุดเรียกเว็บชั่วคราว",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/เวลาลองใหม่โดยประมาณ:/)).toBeVisible();
+  await expect(
+    page.getByText("กำลังลองใหม่: analytics · ครั้งที่ 2 · search_page_state_error"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "ตรวจสอบสถานะอีกครั้ง" }).click();
+  await expect(
+    page.getByText(
+      "รอระบบพร้อม: โปรไฟล์เบราว์เซอร์ยังอุ่นเครื่องไม่สำเร็จ ระบบจะลองใหม่",
+    ),
+  ).toBeVisible();
   await expect(page.getByRole("link", { name: "ดูหน้าการทำงานทั้งหมด" })).toBeVisible();
 });
 
@@ -719,6 +826,42 @@ test("projects page summarizes recent multi-keyword crawl completion", async ({
           partial_count: 0,
           failed_count: 1,
           failed_keywords: ["ระบบฐานข้อมูลใหญ่"],
+          jobs: [
+            {
+              job_id: "job-failed-database",
+              keyword: "ระบบฐานข้อมูลใหญ่",
+              state: "failed",
+              attempt_count: 3,
+              last_error_code: "project_detail_invalid",
+              last_error: "โครงสร้างหน้ารายละเอียดไม่ถูกต้อง",
+              next_attempt_at: "2026-07-23T00:02:00Z",
+              processing_started_at: null,
+              dispatched_at: null,
+              run_id: "run-failed-keyword",
+              run_status: "failed",
+              run_started_at: "2026-07-23T00:01:00Z",
+              run_finished_at: "2026-07-23T00:02:00Z",
+            },
+          ],
+          correlation_matches: true,
+          runtime: {
+            agent_id: "mac-crawler-1",
+            runtime_mode: "external",
+            heartbeat_status: "online",
+            watcher_status: "running",
+            database_status: "connected",
+            blocker_code: null,
+            profile_status: "ready",
+            circuit_state: "closed",
+            circuit_reset_at: null,
+            reported_at: "2026-07-23T00:02:00Z",
+            heartbeat_age_seconds: 0,
+          },
+          recovery_decision: {
+            action: "complete",
+            code: "request_complete",
+            blocker_code: null,
+          },
           is_terminal: true,
           created_at: "2026-07-23T00:00:00Z",
           updated_at: "2026-07-23T00:02:00Z",
@@ -737,6 +880,11 @@ test("projects page summarizes recent multi-keyword crawl completion", async ({
     page.getByText("เสร็จแล้ว 1 · ไม่พบโครงการ 1 · บางส่วน 0 · ล้มเหลว 1"),
   ).toBeVisible();
   await expect(page.getByText("ล้มเหลว: ระบบฐานข้อมูลใหญ่")).toBeVisible();
+  await expect(
+    page.getByText(
+      "ข้อผิดพลาด: ระบบฐานข้อมูลใหญ่ · project_detail_invalid · โครงสร้างหน้ารายละเอียดไม่ถูกต้อง",
+    ),
+  ).toBeVisible();
 
   await page.reload();
   await expect(page.getByText("สรุปรอบนี้ 3 คำค้น")).toBeVisible();

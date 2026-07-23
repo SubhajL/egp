@@ -16,7 +16,7 @@ from sqlalchemy import (
     String,
     Table,
 )
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import and_, func, insert, or_, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
@@ -86,6 +86,23 @@ class RecrawlRequestCreateResult:
 
 
 @dataclass(frozen=True, slots=True)
+class RecrawlJobStatus:
+    job_id: str
+    keyword: str
+    state: str
+    attempt_count: int
+    last_error_code: str | None
+    last_error: str | None
+    next_attempt_at: str
+    processing_started_at: str | None
+    dispatched_at: str | None
+    run_id: str | None
+    run_status: str | None
+    run_started_at: str | None
+    run_finished_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class RecrawlRequestStatus:
     request_id: str
     requested_keyword_count: int
@@ -97,6 +114,8 @@ class RecrawlRequestStatus:
     partial_count: int
     failed_count: int
     failed_keywords: list[str]
+    jobs: list[RecrawlJobStatus]
+    correlation_matches: bool
     is_terminal: bool
     created_at: str
     updated_at: str
@@ -437,14 +456,21 @@ class SqlRecrawlRequestRepository:
                 .mappings()
                 .all()
             )
+            job_ids = {str(row["id"]) for row in job_rows}
+            run_match_conditions = [
+                CRAWL_RUNS_TABLE.c.recrawl_request_id == normalized_request_id,
+            ]
+            if job_ids:
+                run_match_conditions.append(
+                    CRAWL_RUNS_TABLE.c.discovery_job_id.in_(job_ids)
+                )
             run_rows = (
                 connection.execute(
                     select(CRAWL_RUNS_TABLE)
                     .where(
                         and_(
                             CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
-                            CRAWL_RUNS_TABLE.c.recrawl_request_id
-                            == normalized_request_id,
+                            or_(*run_match_conditions),
                         )
                     )
                     .order_by(CRAWL_RUNS_TABLE.c.created_at, CRAWL_RUNS_TABLE.c.id)
@@ -456,7 +482,12 @@ class SqlRecrawlRequestRepository:
         latest_runs: dict[str, RowMapping] = {}
         for row in run_rows:
             job_id = row["discovery_job_id"]
-            if job_id is not None:
+            if (
+                row["recrawl_request_id"] is not None
+                and str(row["recrawl_request_id"]) == normalized_request_id
+                and job_id is not None
+                and str(job_id) in job_ids
+            ):
                 latest_runs[str(job_id)] = row
 
         counts = {
@@ -469,6 +500,7 @@ class SqlRecrawlRequestRepository:
             "failed": 0,
         }
         failed_keywords: list[str] = []
+        job_statuses: list[RecrawlJobStatus] = []
         latest_timestamp = request_row["updated_at"]
         for job in job_rows:
             latest_timestamp = max(latest_timestamp, job["updated_at"])
@@ -483,8 +515,51 @@ class SqlRecrawlRequestRepository:
             counts[state] += 1
             if state == "failed":
                 failed_keywords.append(str(job["keyword"]))
+            job_statuses.append(
+                RecrawlJobStatus(
+                    job_id=str(job["id"]),
+                    keyword=str(job["keyword"]),
+                    state=state,
+                    attempt_count=int(job["attempt_count"]),
+                    last_error_code=(
+                        str(job["last_error_code"])
+                        if job["last_error_code"] is not None
+                        else None
+                    ),
+                    last_error=(
+                        str(job["last_error"]) if job["last_error"] is not None else None
+                    ),
+                    next_attempt_at=_to_iso(job["next_attempt_at"]) or "",
+                    processing_started_at=_to_iso(job["processing_started_at"]),
+                    dispatched_at=_to_iso(job["dispatched_at"]),
+                    run_id=(
+                        str(latest_run["id"]) if latest_run is not None else None
+                    ),
+                    run_status=(
+                        str(latest_run["status"]) if latest_run is not None else None
+                    ),
+                    run_started_at=(
+                        _to_iso(latest_run["started_at"])
+                        if latest_run is not None
+                        else None
+                    ),
+                    run_finished_at=(
+                        _to_iso(latest_run["finished_at"])
+                        if latest_run is not None
+                        else None
+                    ),
+                )
+            )
 
         requested_count = int(request_row["requested_keyword_count"])
+        correlation_matches = len(job_rows) == requested_count and all(
+            row["recrawl_request_id"] is not None
+            and str(row["recrawl_request_id"]) == normalized_request_id
+            and
+            row["discovery_job_id"] is not None
+            and str(row["discovery_job_id"]) in job_ids
+            for row in run_rows
+        )
         terminal_count = (
             counts["succeeded"]
             + counts["zero_result"]
@@ -502,7 +577,9 @@ class SqlRecrawlRequestRepository:
             partial_count=counts["partial"],
             failed_count=counts["failed"],
             failed_keywords=failed_keywords,
-            is_terminal=terminal_count == requested_count,
+            jobs=job_statuses,
+            correlation_matches=correlation_matches,
+            is_terminal=correlation_matches and terminal_count == requested_count,
             created_at=_to_iso(request_row["created_at"]) or "",
             updated_at=_to_iso(latest_timestamp) or "",
         )

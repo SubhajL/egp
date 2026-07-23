@@ -2017,6 +2017,197 @@
         "title": "ConnectTenantStorageRequest",
         "type": "object"
       },
+      "CrawlerBlockerCode": {
+        "description": "Shared crawler conditions that stop dispatch before a job claim.",
+        "enum": [
+          "agent_offline",
+          "database_unreachable",
+          "correlation_mismatch",
+          "circuit_open",
+          "profile_busy",
+          "profile_warm_retry",
+          "profile_operator_action_required"
+        ],
+        "title": "CrawlerBlockerCode",
+        "type": "string"
+      },
+      "CrawlerRuntimeHeartbeatRequest": {
+        "properties": {
+          "agent_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "blocker_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CrawlerBlockerCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "circuit_reset_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Circuit Reset At"
+          },
+          "circuit_state": {
+            "enum": [
+              "closed",
+              "open",
+              "half_open",
+              "unknown"
+            ],
+            "title": "Circuit State",
+            "type": "string"
+          },
+          "database_status": {
+            "enum": [
+              "connected",
+              "unreachable",
+              "unknown"
+            ],
+            "title": "Database Status",
+            "type": "string"
+          },
+          "profile_status": {
+            "enum": [
+              "ready",
+              "busy",
+              "warm_retry",
+              "operator_action_required",
+              "unknown"
+            ],
+            "title": "Profile Status",
+            "type": "string"
+          },
+          "runtime_mode": {
+            "const": "external",
+            "title": "Runtime Mode",
+            "type": "string"
+          },
+          "watcher_status": {
+            "enum": [
+              "running",
+              "stopping",
+              "error"
+            ],
+            "title": "Watcher Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "runtime_mode",
+          "watcher_status",
+          "database_status",
+          "profile_status",
+          "circuit_state"
+        ],
+        "title": "CrawlerRuntimeHeartbeatRequest",
+        "type": "object"
+      },
+      "CrawlerRuntimeResponse": {
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "circuit_reset_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Circuit Reset At"
+          },
+          "circuit_state": {
+            "title": "Circuit State",
+            "type": "string"
+          },
+          "database_status": {
+            "title": "Database Status",
+            "type": "string"
+          },
+          "heartbeat_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Age Seconds"
+          },
+          "heartbeat_status": {
+            "title": "Heartbeat Status",
+            "type": "string"
+          },
+          "profile_status": {
+            "title": "Profile Status",
+            "type": "string"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "runtime_mode": {
+            "title": "Runtime Mode",
+            "type": "string"
+          },
+          "watcher_status": {
+            "title": "Watcher Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "runtime_mode",
+          "heartbeat_status",
+          "watcher_status",
+          "database_status",
+          "blocker_code",
+          "profile_status",
+          "circuit_state",
+          "circuit_reset_at",
+          "reported_at",
+          "heartbeat_age_seconds"
+        ],
+        "title": "CrawlerRuntimeResponse",
+        "type": "object"
+      },
       "CreateAdminUserRequest": {
         "properties": {
           "email": {
@@ -3885,6 +4076,135 @@
         "title": "LoginRequest",
         "type": "object"
       },
+      "ManualRecrawlJobResponse": {
+        "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dispatched At"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "keyword": {
+            "title": "Keyword",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "next_attempt_at": {
+            "title": "Next Attempt At",
+            "type": "string"
+          },
+          "processing_started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Started At"
+          },
+          "run_finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Finished At"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "run_started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Started At"
+          },
+          "run_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Status"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "keyword",
+          "state",
+          "attempt_count",
+          "last_error_code",
+          "last_error",
+          "next_attempt_at",
+          "processing_started_at",
+          "dispatched_at",
+          "run_id",
+          "run_status",
+          "run_started_at",
+          "run_finished_at"
+        ],
+        "title": "ManualRecrawlJobResponse",
+        "type": "object"
+      },
       "ManualRecrawlQueuedResponse": {
         "properties": {
           "code": {
@@ -3973,6 +4293,10 @@
       },
       "ManualRecrawlStatusResponse": {
         "properties": {
+          "correlation_matches": {
+            "title": "Correlation Matches",
+            "type": "boolean"
+          },
           "created_at": {
             "title": "Created At",
             "type": "string"
@@ -3992,6 +4316,13 @@
             "title": "Is Terminal",
             "type": "boolean"
           },
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/ManualRecrawlJobResponse"
+            },
+            "title": "Jobs",
+            "type": "array"
+          },
           "partial_count": {
             "title": "Partial Count",
             "type": "integer"
@@ -3999,6 +4330,9 @@
           "queued_count": {
             "title": "Queued Count",
             "type": "integer"
+          },
+          "recovery_decision": {
+            "$ref": "#/components/schemas/RecoveryDecisionResponse"
           },
           "request_id": {
             "title": "Request Id",
@@ -4015,6 +4349,9 @@
           "running_count": {
             "title": "Running Count",
             "type": "integer"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/CrawlerRuntimeResponse"
           },
           "succeeded_count": {
             "title": "Succeeded Count",
@@ -4040,6 +4377,10 @@
           "partial_count",
           "failed_count",
           "failed_keywords",
+          "jobs",
+          "correlation_matches",
+          "runtime",
+          "recovery_decision",
           "is_terminal",
           "created_at",
           "updated_at"
@@ -4981,6 +5322,36 @@
           "status"
         ],
         "title": "ReconcileBillingPaymentRequest",
+        "type": "object"
+      },
+      "RecoveryDecisionResponse": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "blocker_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocker Code"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "code",
+          "blocker_code"
+        ],
+        "title": "RecoveryDecisionResponse",
         "type": "object"
       },
       "RegisterRequest": {
@@ -6917,6 +7288,47 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/internal/worker/crawler-runtime/heartbeat": {
+      "post": {
+        "operationId": "record_crawler_runtime_heartbeat_internal_worker_crawler_runtime_heartbeat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrawlerRuntimeHeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlerRuntimeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Crawler Runtime Heartbeat",
+        "tags": [
+          "crawler-runtime"
+        ]
       }
     },
     "/internal/worker/projects/close-check": {
@@ -10431,6 +10843,27 @@
         "summary": "Get Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/v1/rules/crawler-runtime": {
+      "get": {
+        "operationId": "get_crawler_runtime_v1_rules_crawler_runtime_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlerRuntimeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Crawler Runtime",
+        "tags": [
+          "crawler-runtime"
         ]
       }
     },

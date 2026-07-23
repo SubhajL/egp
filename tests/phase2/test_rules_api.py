@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from egp_api.main import create_app
+from egp_shared_types.enums import DiscoveryFailureCode
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 JWT_SECRET = "phase2-rules-secret"
@@ -1157,7 +1158,23 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
     )
     assert status_response.status_code == 200
     status_body = status_response.json()
-    assert status_body == {
+    assert {
+        key: status_body[key]
+        for key in (
+            "request_id",
+            "requested_keyword_count",
+            "queued_count",
+            "running_count",
+            "retrying_count",
+            "succeeded_count",
+            "zero_result_count",
+            "partial_count",
+            "failed_count",
+            "failed_keywords",
+            "correlation_matches",
+            "is_terminal",
+        )
+    } == {
         "request_id": body["request_id"],
         "requested_keyword_count": 1,
         "queued_count": 1,
@@ -1168,10 +1185,14 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
         "partial_count": 0,
         "failed_count": 0,
         "failed_keywords": [],
+        "correlation_matches": True,
         "is_terminal": False,
-        "created_at": status_body["created_at"],
-        "updated_at": status_body["updated_at"],
     }
+    assert len(status_body["jobs"]) == 1
+    assert status_body["jobs"][0]["keyword"] == "แพลตฟอร์ม"
+    assert status_body["jobs"][0]["state"] == "queued"
+    assert status_body["runtime"]["heartbeat_status"] == "embedded_ready"
+    assert status_body["recovery_decision"]["action"] == "continue"
     other_tenant_response = client.get(
         f"/v1/rules/recrawl/{body['request_id']}",
         params={"tenant_id": "22222222-2222-2222-2222-222222222222"},
@@ -1301,6 +1322,7 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
         job_id=jobs["retrying"].id,
         job_status="pending",
         last_error="site error",
+        last_error_code=DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR,
     )
     for keyword, status, projects_seen in (
         ("success", "succeeded", 2),
@@ -1320,6 +1342,7 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
         job_id=jobs["failed"].id,
         job_status="failed",
         last_error="terminal site error",
+        last_error_code=DiscoveryFailureCode.PROJECT_DETAIL_INVALID,
     )
     create_run("recovered", "failed")
     job_repository.record_discovery_job_attempt(
@@ -1354,7 +1377,23 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
     )
     assert status_response.status_code == 200
     body = status_response.json()
-    assert body == {
+    assert {
+        key: body[key]
+        for key in (
+            "request_id",
+            "requested_keyword_count",
+            "queued_count",
+            "running_count",
+            "retrying_count",
+            "succeeded_count",
+            "zero_result_count",
+            "partial_count",
+            "failed_count",
+            "failed_keywords",
+            "correlation_matches",
+            "is_terminal",
+        )
+    } == {
         "request_id": request_id,
         "requested_keyword_count": 8,
         "queued_count": 1,
@@ -1365,10 +1404,100 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
         "partial_count": 1,
         "failed_count": 1,
         "failed_keywords": ["failed"],
+        "correlation_matches": True,
         "is_terminal": False,
-        "created_at": body["created_at"],
-        "updated_at": body["updated_at"],
     }
+    jobs_by_keyword = {job["keyword"]: job for job in body["jobs"]}
+    assert jobs_by_keyword["queued"]["state"] == "queued"
+    assert jobs_by_keyword["running"]["run_id"] == running_run.id
+    assert jobs_by_keyword["running"]["run_status"] == "running"
+    assert jobs_by_keyword["retrying"]["attempt_count"] == 1
+    assert jobs_by_keyword["retrying"]["last_error"] == "site error"
+    assert (
+        jobs_by_keyword["retrying"]["last_error_code"]
+        == "search_page_state_error"
+    )
+    assert jobs_by_keyword["failed"]["state"] == "failed"
+    assert jobs_by_keyword["failed"]["last_error_code"] == "project_detail_invalid"
+    assert jobs_by_keyword["failed"]["run_status"] == "failed"
+    assert body["runtime"]["heartbeat_status"] == "embedded_ready"
+    assert body["runtime"]["blocker_code"] is None
+    assert body["recovery_decision"] == {
+        "action": "continue",
+        "code": "jobs_retrying",
+        "blocker_code": None,
+    }
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE recrawl_requests
+                SET requested_keyword_count = 9
+                WHERE id = :request_id
+                """
+            ),
+            {"request_id": request_id},
+        )
+    mismatch_response = client.get(
+        f"/v1/rules/recrawl/{request_id}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert mismatch_response.status_code == 200
+    mismatch = mismatch_response.json()
+    assert mismatch["correlation_matches"] is False
+    assert mismatch["is_terminal"] is False
+    assert mismatch["recovery_decision"] == {
+        "action": "stop",
+        "code": "correlation_mismatch",
+        "blocker_code": "correlation_mismatch",
+    }
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE recrawl_requests
+                SET requested_keyword_count = 8
+                WHERE id = :request_id
+                """
+            ),
+            {"request_id": request_id},
+        )
+    malformed_run = run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id=profile_id,
+        recrawl_request_id=request_id,
+    )
+    run_repository.mark_run_started(malformed_run.id)
+    malformed_response = client.get(
+        f"/v1/rules/recrawl/{request_id}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert malformed_response.status_code == 200
+    assert malformed_response.json()["correlation_matches"] is False
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE crawl_runs
+                SET recrawl_request_id = NULL
+                WHERE id IN (:malformed_run_id, :running_run_id)
+                """
+            ),
+            {
+                "malformed_run_id": malformed_run.id,
+                "running_run_id": running_run.id,
+            },
+        )
+    inverse_mismatch_response = client.get(
+        f"/v1/rules/recrawl/{request_id}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert inverse_mismatch_response.status_code == 200
+    assert inverse_mismatch_response.json()["correlation_matches"] is False
 
 
 def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:

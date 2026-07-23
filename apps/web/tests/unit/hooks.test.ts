@@ -26,7 +26,11 @@ vi.mock("../../src/lib/auth", async () => {
   };
 });
 
-import { fetchCurrentSession, shouldRetryCurrentSession } from "../../src/lib/hooks";
+import {
+  fetchCurrentSession,
+  shouldPollRecrawlRequest,
+  shouldRetryCurrentSession,
+} from "../../src/lib/hooks";
 
 const SESSION: CurrentSessionResponse = {
   user: {
@@ -93,5 +97,29 @@ describe("shouldRetryCurrentSession", () => {
     expect(shouldRetryCurrentSession(0, new ApiError(500, "server error"))).toBe(true);
     expect(shouldRetryCurrentSession(1, new TypeError("network error"))).toBe(true);
     expect(shouldRetryCurrentSession(2, new ApiError(500, "server error"))).toBe(false);
+  });
+});
+
+describe("shouldPollRecrawlRequest", () => {
+  it("stops polling terminal and typed hard-stop states", () => {
+    expect(shouldPollRecrawlRequest(undefined)).toBe(true);
+    expect(
+      shouldPollRecrawlRequest({
+        is_terminal: false,
+        recovery_decision: { action: "continue" },
+      }),
+    ).toBe(true);
+    expect(
+      shouldPollRecrawlRequest({
+        is_terminal: false,
+        recovery_decision: { action: "stop" },
+      }),
+    ).toBe(false);
+    expect(
+      shouldPollRecrawlRequest({
+        is_terminal: true,
+        recovery_decision: { action: "complete" },
+      }),
+    ).toBe(false);
   });
 });

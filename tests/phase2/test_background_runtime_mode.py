@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from sqlalchemy import text
+import yaml
 
 from egp_api.config import (
     get_background_runtime_mode,
+    get_crawler_heartbeat_interval_seconds,
+    get_crawler_heartbeat_stale_after_seconds,
     get_discovery_lease_heartbeat_seconds,
     get_discovery_lease_seconds,
     get_discovery_worker_count,
@@ -83,6 +88,35 @@ def test_discovery_lease_configuration_requires_heartbeat_before_expiry(
         get_discovery_lease_heartbeat_seconds(
             lease_seconds=get_discovery_lease_seconds()
         )
+
+
+def test_crawler_runtime_heartbeat_configuration_reads_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_CRAWLER_HEARTBEAT_INTERVAL_SECONDS", "25")
+    monkeypatch.setenv("EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS", "75")
+
+    assert get_crawler_heartbeat_interval_seconds() == 25.0
+    assert get_crawler_heartbeat_stale_after_seconds() == 75.0
+
+
+@pytest.mark.parametrize(
+    "compose_name",
+    ["docker-compose.yml", "docker-compose-localdev.yml"],
+)
+def test_discovery_executor_compose_wires_runtime_reporter(
+    compose_name: str,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    compose = yaml.safe_load(
+        (repo_root / compose_name).read_text(encoding="utf-8")
+    )
+    environment = compose["services"]["discovery-executor"]["environment"]
+
+    assert environment["EGP_INTERNAL_API_BASE_URL"] == "http://api:8000"
+    assert "EGP_INTERNAL_WORKER_TOKEN" in environment
+    assert "EGP_CRAWLER_AGENT_ID" in environment
+    assert "EGP_CRAWLER_HEARTBEAT_INTERVAL_SECONDS" in environment
 
 
 def test_create_app_external_background_mode_disables_api_background_work(

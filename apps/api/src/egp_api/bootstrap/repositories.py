@@ -46,6 +46,7 @@ from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.crawler_runtime_repo import create_crawler_runtime_repository
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.document_capture_attempt_repo import (
     create_document_capture_attempt_repository,
@@ -100,6 +101,7 @@ class RepositoryBundle:
     tenant_entitlement_repository: object
     support_repository: object
     line_payment_repository: object
+    crawler_runtime_repository: object
     managed_artifact_store: object
 
 
@@ -285,6 +287,10 @@ def build_repository_bundle(
             engine=shared_engine,
         ),
         line_payment_repository=create_line_payment_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+        ),
+        crawler_runtime_repository=create_crawler_runtime_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
         ),
