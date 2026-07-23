@@ -41,6 +41,43 @@ def get_discovery_worker_count(override: int | str | None = None) -> int:
     return worker_count
 
 
+def get_discovery_lease_seconds(
+    override: float | str | None = None,
+) -> float:
+    """Return the renewable discovery claim duration."""
+
+    return _get_positive_float_env(
+        name="EGP_DISCOVERY_LEASE_SECONDS",
+        default=60.0,
+        override=override,
+    )
+
+
+def get_discovery_lease_heartbeat_seconds(
+    override: float | str | None = None,
+    *,
+    lease_seconds: float | None = None,
+) -> float:
+    """Return the renewal interval, which must stay below lease expiry."""
+
+    heartbeat_seconds = _get_positive_float_env(
+        name="EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS",
+        default=20.0,
+        override=override,
+    )
+    resolved_lease_seconds = (
+        get_discovery_lease_seconds()
+        if lease_seconds is None
+        else float(lease_seconds)
+    )
+    if heartbeat_seconds >= resolved_lease_seconds:
+        raise RuntimeError(
+            "EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS must be less than "
+            "EGP_DISCOVERY_LEASE_SECONDS"
+        )
+    return heartbeat_seconds
+
+
 def _get_positive_int_env(
     *,
     name: str,

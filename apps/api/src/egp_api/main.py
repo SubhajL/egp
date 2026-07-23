@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import threading
 
 from fastapi import FastAPI
 
@@ -23,7 +24,11 @@ from egp_api.config import (
     get_web_allow_origin_regex,
     get_web_allowed_origins,
 )
-from egp_api.services.discovery_dispatch import DiscoveryDispatcher, DiscoveryDispatchRequest
+from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatcher,
+    DiscoveryDispatchRequest,
+    DiscoveryPreDispatchResult,
+)
 from egp_api.services.discovery_worker_dispatcher import (
     DISCOVER_WORKER_TIMEOUT_SECONDS as _DISCOVER_WORKER_TIMEOUT_SECONDS,
     SubprocessDiscoveryDispatcher,
@@ -73,14 +78,22 @@ def _make_discovery_dispatcher(
     app: FastAPI,
 ) -> DiscoveryDispatcher:
     class _AppStateDiscoveryDispatcher:
-        def prepare_for_dispatch(self) -> bool:
+        def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
             spawner = getattr(app.state, "discover_spawner", None)
             prepare = getattr(spawner, "prepare_for_dispatch", None)
             if callable(prepare):
-                return bool(prepare())
-            return True
+                return prepare()
+            return DiscoveryPreDispatchResult.ready()
 
         def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            self.dispatch_cancellable(request, cancellation_event=None)
+
+        def dispatch_cancellable(
+            self,
+            request: DiscoveryDispatchRequest,
+            *,
+            cancellation_event: threading.Event | None,
+        ) -> None:
             spawner = getattr(app.state, "discover_spawner", None)
             if spawner is None:
                 return
@@ -88,6 +101,13 @@ def _make_discovery_dispatcher(
             # embedded mode (a `schedule` job must create a `schedule` run, or
             # the scheduler's due-tenant accounting refires every tick). Fall
             # back to the legacy 4-arg callable only for plain-callable doubles.
+            cancellable_dispatch = getattr(spawner, "dispatch_cancellable", None)
+            if callable(cancellable_dispatch):
+                cancellable_dispatch(
+                    request,
+                    cancellation_event=cancellation_event,
+                )
+                return
             request_dispatch = getattr(spawner, "dispatch", None)
             if callable(request_dispatch):
                 request_dispatch(request)

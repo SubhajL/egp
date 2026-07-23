@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
@@ -148,6 +149,28 @@ def test_site_error_circuit_opens_and_uses_exponential_cooldown(tmp_path: Path) 
     with pytest.raises(CircuitOpenError) as reset_trip:
         limiter.acquire(max_wait_seconds=0.0)
     assert reset_trip.value.reset_in_seconds == 10.0
+
+
+def test_circuit_snapshot_exposes_sanitized_reset_time(tmp_path: Path) -> None:
+    clock = {"now": 1_000.0}
+    limiter = FileLockRateLimiter(
+        RateLimiterConfig(
+            requests_per_second=0.0,
+            circuit_429_threshold=2,
+            circuit_reset_seconds=30.0,
+            state_path=tmp_path / "egp-rate-limit.json",
+        ),
+        now=lambda: clock["now"],
+    )
+
+    limiter.record_outcome("429")
+    limiter.record_outcome("429")
+    snapshot = limiter.get_circuit_snapshot()
+
+    assert snapshot.is_open is True
+    assert snapshot.reset_in_seconds == 30.0
+    assert snapshot.reset_at == datetime.fromtimestamp(1_030.0, UTC).isoformat()
+    assert snapshot.last_outcome == "429"
 
 
 def test_rate_limiter_config_reads_environment(

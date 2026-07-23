@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from shutil import copy2
+from uuid import UUID
 
 from psycopg import connect
-from psycopg.errors import UniqueViolation
+from psycopg.errors import CheckViolation, UniqueViolation
 import pytest
 
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
+from egp_shared_types.enums import DiscoveryFailureCode
 
 
 def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> None:
@@ -445,3 +447,122 @@ def test_crawl_run_activity_migration_backfills_existing_rows(
         assert result.applied_versions == [activity_migration.name]
         assert last_activity_at.astimezone(UTC).isoformat() == "2026-07-23T01:00:00+00:00"
         assert is_nullable == "NO"
+
+
+def test_discovery_job_lease_migration_uses_next_unique_prefix(repo_root: Path) -> None:
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    lease_migration = migrations_dir / "032_discovery_job_leases.sql"
+
+    assert lease_migration.exists()
+    assert [path.name for path in migrations_dir.glob("032_*.sql")] == [
+        lease_migration.name
+    ]
+    migration_sql = lease_migration.read_text(encoding="utf-8")
+    for failure_code in DiscoveryFailureCode:
+        assert f"'{failure_code.value}'" in migration_sql
+
+
+def test_discovery_job_lease_migration_guards_inflight_and_preserves_unstarted_jobs(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        return
+
+    from egp_db.migration_runner import apply_migrations, list_migration_files
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    lease_migration = migrations_dir / "032_discovery_job_leases.sql"
+    staged_migrations = tmp_path / "discovery-job-lease-migrations"
+    staged_migrations.mkdir()
+    for migration in list_migration_files(migrations_dir):
+        if migration.name < lease_migration.name:
+            copy2(migration, staged_migrations / migration.name)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_discovery_job_lease_migration_test")
+        database_url = cluster.database_url("egp_discovery_job_lease_migration_test")
+        apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, slug)
+                    VALUES ('11111111-1111-1111-1111-111111111111', 'Lease', 'lease')
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_profiles (
+                        id, tenant_id, name, profile_type, is_active,
+                        max_pages_per_keyword, close_consulting_after_days,
+                        close_stale_after_days
+                    ) VALUES (
+                        '22222222-2222-2222-2222-222222222222',
+                        '11111111-1111-1111-1111-111111111111',
+                        'Lease Profile', 'custom', TRUE, 15, 30, 45
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO discovery_jobs (
+                        id, tenant_id, profile_id, profile_type, keyword,
+                        trigger_type, live, job_status, attempt_count,
+                        next_attempt_at, processing_started_at
+                    ) VALUES
+                    (
+                        '33333333-3333-3333-3333-333333333333',
+                        '11111111-1111-1111-1111-111111111111',
+                        '22222222-2222-2222-2222-222222222222',
+                        'custom', 'lease', 'manual', TRUE, 'pending', 0,
+                        '2026-07-23T01:00:00+00:00',
+                        '2026-07-23T01:01:00+00:00'
+                    ),
+                    (
+                        '44444444-4444-4444-4444-444444444444',
+                        '11111111-1111-1111-1111-111111111111',
+                        '22222222-2222-2222-2222-222222222222',
+                        'custom', 'unstarted', 'manual', TRUE, 'pending', 0,
+                        '2026-07-23T01:00:00+00:00',
+                        NULL
+                    )
+                    """
+                )
+            connection.commit()
+
+        copy2(lease_migration, staged_migrations / lease_migration.name)
+        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT claim_token, lease_expires_at, lease_heartbeat_at, last_error_code
+                    FROM discovery_jobs
+                    ORDER BY id
+                    """
+                )
+                lease_fields = cursor.fetchall()
+
+        assert result.applied_versions == [lease_migration.name]
+        assert lease_fields == [
+            (
+                UUID("00000000-0000-0000-0000-000000000000"),
+                datetime.fromisoformat("2026-07-23T04:01:00+00:00"),
+                datetime.fromisoformat("2026-07-23T01:01:00+00:00"),
+                None,
+            ),
+            (None, None, None, None),
+        ]
+
+        with connect(database_url) as connection:
+            with pytest.raises(CheckViolation):
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE discovery_jobs
+                        SET last_error_code = 'not-a-real-code'
+                        WHERE id = '44444444-4444-4444-4444-444444444444'
+                        """
+                    )

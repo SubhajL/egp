@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from egp_api.services.discovery_dispatch import (
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+from egp_shared_types.enums import DiscoveryFailureCode
 
 
 class _FakeProcess:
@@ -25,6 +27,7 @@ class _FakeProcess:
         pid: int = 43210,
         run_status: str = "succeeded",
         error: str | None = None,
+        failure_code: str | None = None,
         emit_result: bool = True,
         raw_stdout: bytes = b"",
         run_id_override: str | None = None,
@@ -34,6 +37,7 @@ class _FakeProcess:
         self.payload: bytes | None = None
         self.run_status = run_status
         self.error = error
+        self.failure_code = failure_code
         self.emit_result = emit_result
         self.raw_stdout = raw_stdout
         self.run_id_override = run_id_override
@@ -53,6 +57,8 @@ class _FakeProcess:
         }
         if self.error is not None:
             result["error"] = self.error
+        if self.failure_code is not None:
+            result["failure_code"] = self.failure_code
         return (json.dumps(result).encode("utf-8"), b"")
 
 
@@ -178,6 +184,7 @@ def test_discover_spawner_retries_semantic_failed_worker_result(
         returncode=0,
         run_status="failed",
         error="e-GP site error after search results load",
+        failure_code=DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR,
     )
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
@@ -191,13 +198,97 @@ def test_discover_spawner_retries_semantic_failed_worker_result(
     with pytest.raises(
         DiscoverySpawnError,
         match="e-GP site error after search results load",
-    ):
+    ) as exc_info:
         spawner(
             tenant_id="11111111-1111-1111-1111-111111111111",
             profile_id="22222222-2222-2222-2222-222222222222",
             profile_type="manual",
             keyword="แพลตฟอร์ม",
         )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR
+
+
+def test_discover_spawner_kills_worker_when_lease_cancellation_is_signalled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+    cancellation_event = threading.Event()
+
+    class BlockingProcess:
+        pid = None
+        returncode = None
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        def communicate(self, input=None, timeout=None):
+            del timeout
+            if not self.killed:
+                payload = json.loads((input or b"{}").decode("utf-8"))
+                cancellation_event.set()
+                return (
+                    json.dumps(
+                        {
+                            "command": "discover",
+                            "run_id": payload["run_id"],
+                            "run_status": "succeeded",
+                            "project_count": 0,
+                            "project_ids": [],
+                        }
+                    ).encode("utf-8"),
+                    b"",
+                )
+            return (b"", b"")
+
+        def kill(self) -> None:
+            self.killed = True
+            self.returncode = -signal.SIGKILL
+
+    class FakeRunRepository:
+        def create_run(self, **kwargs) -> None:
+            captured["run_id"] = kwargs["run_id"]
+
+        def update_run_summary(self, run_id: str, *, summary_json) -> None:
+            del run_id, summary_json
+
+        def fail_run_if_active(
+            self,
+            run_id: str,
+            *,
+            error: str,
+            failure_reason: str,
+        ) -> None:
+            captured["failed_run_id"] = run_id
+            captured["error"] = error
+            captured["failure_reason"] = failure_reason
+
+    process = BlockingProcess()
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+    dispatcher = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=FakeRunRepository(),
+    )
+    with pytest.raises(DiscoverySpawnError, match="lease ownership was lost") as exc_info:
+        dispatcher.dispatch_cancellable(
+            DiscoveryDispatchRequest(
+                tenant_id="11111111-1111-1111-1111-111111111111",
+                profile_id="22222222-2222-2222-2222-222222222222",
+                profile_type="manual",
+                keyword="แพลตฟอร์ม",
+            ),
+            cancellation_event=cancellation_event,
+        )
+
+    assert process.killed is True
+    assert exc_info.value.failure_code == DiscoveryFailureCode.LEASE_LOST
+    assert captured["failed_run_id"] == captured["run_id"]
+    assert captured["failure_reason"] == "lease_lost"
 
 
 def test_discover_spawner_accepts_partial_worker_result(

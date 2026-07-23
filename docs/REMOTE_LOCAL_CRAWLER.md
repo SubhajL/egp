@@ -221,7 +221,25 @@ From the Vercel UI, click **recrawl** or create/update a keyword profile. That c
 response includes a durable `request_id`; the UI polls
 `GET /v1/rules/recrawl/{request_id}` so batch progress is scoped to those exact jobs
 across reloads. The Mac watcher claims and crawls them. Scheduled crawls are queued by
-the Lightsail timer.
+the Lightsail timer. A claim is renewable rather than permanent: the watcher refreshes its
+lease while Chrome is working, an expired lease can be reclaimed after a crash, and an old
+watcher cannot finish a job after another watcher has acquired a newer claim token. Transient
+renewal errors are retried while the last confirmed lease remains valid. If ownership is
+confirmed lost, the watcher terminates the worker process group before releasing the persistent
+profile lock.
+
+If no job is claimed, inspect the typed pre-dispatch blocker before changing queue rows:
+
+| Blocker | Meaning | Operator response |
+|---|---|---|
+| `circuit_open` | The shared e-GP failure circuit is cooling down. | Wait until the reported reset time; investigate the preceding failure burst. |
+| `profile_busy` | Another process owns the persistent-profile lock. | Confirm that process is healthy; do not start a second Chrome. |
+| `profile_warm_retry` | Automated profile warming failed but has not reached the pause threshold. | Let the next bounded retry run and inspect the profile state file. |
+| `profile_operator_action_required` | Repeated warming failures paused unattended dispatch. | Run `scripts/run_remote_crawl.sh warm-profile` interactively and clear the challenge. |
+
+These blockers leave the jobs pending and unclaimed. Worker failures instead persist a stable
+`last_error_code` on the job, so a semantic failure such as `keyword_no_results` is not
+mistaken for a launcher crash or an invisible empty batch.
 
 ### Bounded recovery of known failed manual runs
 
@@ -291,8 +309,9 @@ environment can never auto-loop against the wrong database.
 
 - **Two crawlers racing** → verify `discovery-executor` shows 0 replicas; the Mac's
   persistent-profile flock prevents a second local worker.
-- **Mac offline** → jobs sit `pending` (durable queue, no loss). A run left `running` after
-  a mid-job crash can be reconciled manually in `crawl_runs`.
+- **Mac offline** → jobs sit `pending` (durable queue, no loss). A mid-job executor crash
+  leaves a renewable claim that becomes reclaimable at `lease_expires_at`; stale claim tokens
+  cannot later overwrite the recovered job.
 - **Wrong artifact store** → guard requires an API-served store (`s3`/R2 or `supabase`) and
   rejects `local`, so documents always land where the API can serve them.
 - **Rollback** → `scripts/install_launchd.sh uninstall` (or stop `watch`), close the tunnel,

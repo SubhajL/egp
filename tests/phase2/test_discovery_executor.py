@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
 from egp_api.bootstrap import background
 from egp_api.executors import discovery_dispatch
+from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchBatchResult,
+    DiscoveryJobDispatchDisposition,
+)
 
 
 class RecordingDiscoveryProcessor:
@@ -14,11 +19,24 @@ class RecordingDiscoveryProcessor:
         self.stop_event = stop_event
         self.limits: list[int | None] = []
 
-    def process_pending(self, *, limit: int | None = None) -> int:
+    def process_pending(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> DiscoveryDispatchBatchResult:
         self.limits.append(limit)
         if self.stop_event is not None:
             self.stop_event.set()
-        return 3
+        return DiscoveryDispatchBatchResult(
+            requested_limit=limit or 3,
+            dispositions=tuple(
+                DiscoveryJobDispatchDisposition(
+                    job_id=f"job-{index}",
+                    outcome="dispatched",
+                )
+                for index in range(3)
+            ),
+        )
 
 
 class RecordingRunService:
@@ -41,9 +59,15 @@ def test_run_discovery_dispatch_once_passes_limit_and_reconciles_workers() -> No
         limit=5,
     )
 
-    assert processed == 3
+    assert processed.processed_count == 3
     assert processor.limits == [5]
     assert run_service.owner_pids == [1234, 1234]
+
+
+def test_reconcile_missing_discovery_workers_return_annotation_is_integer() -> None:
+    hints = get_type_hints(discovery_dispatch.reconcile_missing_discovery_workers)
+
+    assert hints["return"] is int
 
 
 @pytest.mark.asyncio

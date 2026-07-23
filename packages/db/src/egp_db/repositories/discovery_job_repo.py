@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -28,9 +29,14 @@ from sqlalchemy.engine import Engine, RowMapping
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
+from egp_shared_types.enums import DiscoveryFailureCode
 
 
 METADATA = DB_METADATA
+DISCOVERY_FAILURE_CODE_VALUES = tuple(code.value for code in DiscoveryFailureCode)
+DISCOVERY_FAILURE_CODE_SQL = ", ".join(
+    f"'{value}'" for value in DISCOVERY_FAILURE_CODE_VALUES
+)
 
 DISCOVERY_JOBS_TABLE = Table(
     "discovery_jobs",
@@ -56,18 +62,26 @@ DISCOVERY_JOBS_TABLE = Table(
     Column("job_status", String, nullable=False, default="pending"),
     Column("attempt_count", Integer, nullable=False, default=0),
     Column("last_error", String, nullable=True),
+    Column("last_error_code", String, nullable=True),
     Column("next_attempt_at", DateTime(timezone=True), nullable=False),
     Column("processing_started_at", DateTime(timezone=True), nullable=True),
+    Column("claim_token", UUID_SQL_TYPE, nullable=True),
+    Column("lease_expires_at", DateTime(timezone=True), nullable=True),
+    Column("lease_heartbeat_at", DateTime(timezone=True), nullable=True),
     Column("dispatched_at", DateTime(timezone=True), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        f"last_error_code IS NULL OR last_error_code IN ({DISCOVERY_FAILURE_CODE_SQL})",
+        name="discovery_jobs_last_error_code_check",
+    ),
 )
 
 Index(
     "idx_discovery_jobs_pending_due",
     DISCOVERY_JOBS_TABLE.c.job_status,
     DISCOVERY_JOBS_TABLE.c.next_attempt_at,
-    DISCOVERY_JOBS_TABLE.c.processing_started_at,
+    DISCOVERY_JOBS_TABLE.c.lease_expires_at,
 )
 
 
@@ -83,8 +97,12 @@ class DiscoveryJobRecord:
     job_status: str
     attempt_count: int
     last_error: str | None
+    last_error_code: str | None
     next_attempt_at: str
     processing_started_at: str | None
+    claim_token: str | None
+    lease_expires_at: str | None
+    lease_heartbeat_at: str | None
     dispatched_at: str | None
     created_at: str
     updated_at: str
@@ -97,6 +115,10 @@ class DiscoveryJobEnqueueResult:
     created: bool
 
 
+class StaleDiscoveryJobClaimError(RuntimeError):
+    """Raised when an expired or superseded owner tries to mutate a job."""
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -105,6 +127,12 @@ def _to_iso(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _job_from_mapping(row: RowMapping) -> DiscoveryJobRecord:
@@ -124,8 +152,16 @@ def _job_from_mapping(row: RowMapping) -> DiscoveryJobRecord:
         job_status=str(row["job_status"]),
         attempt_count=int(row["attempt_count"]),
         last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+        last_error_code=(
+            str(row["last_error_code"]) if row["last_error_code"] is not None else None
+        ),
         next_attempt_at=_to_iso(row["next_attempt_at"]) or "",
         processing_started_at=_to_iso(row["processing_started_at"]),
+        claim_token=(
+            str(row["claim_token"]) if row["claim_token"] is not None else None
+        ),
+        lease_expires_at=_to_iso(row["lease_expires_at"]),
+        lease_heartbeat_at=_to_iso(row["lease_heartbeat_at"]),
         dispatched_at=_to_iso(row["dispatched_at"]),
         created_at=_to_iso(row["created_at"]) or "",
         updated_at=_to_iso(row["updated_at"]) or "",
@@ -158,8 +194,12 @@ def build_discovery_job_values(
         "job_status": "pending",
         "attempt_count": 0,
         "last_error": None,
+        "last_error_code": None,
         "next_attempt_at": created_at,
         "processing_started_at": None,
+        "claim_token": None,
+        "lease_expires_at": None,
+        "lease_heartbeat_at": None,
         "dispatched_at": None,
         "created_at": created_at,
         "updated_at": created_at,
@@ -318,13 +358,9 @@ class SqlDiscoveryJobRepository:
     def has_claimable_discovery_jobs(
         self,
         *,
-        stale_after_seconds: float = 60.0,
         exclude_job_ids: Collection[str] | None = None,
     ) -> bool:
         now = _now()
-        stale_started_at = datetime.fromtimestamp(
-            now.timestamp() - max(1.0, float(stale_after_seconds)), UTC
-        )
         excluded_job_ids = {
             normalize_uuid_string(job_id) for job_id in (exclude_job_ids or ())
         }
@@ -332,8 +368,9 @@ class SqlDiscoveryJobRepository:
             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
             or_(
-                DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
-                DISCOVERY_JOBS_TABLE.c.processing_started_at <= stale_started_at,
+                DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= now,
             ),
         ]
         if excluded_job_ids:
@@ -356,12 +393,12 @@ class SqlDiscoveryJobRepository:
         self,
         *,
         limit: int = 10,
-        stale_after_seconds: float = 60.0,
+        lease_seconds: float = 60.0,
         exclude_job_ids: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
-        stale_started_at = datetime.fromtimestamp(
-            now.timestamp() - max(1.0, float(stale_after_seconds)), UTC
+        lease_expires_at = now + timedelta(
+            seconds=max(0.01, float(lease_seconds))
         )
         normalized_limit = max(1, int(limit))
         excluded_job_ids = {
@@ -378,8 +415,9 @@ class SqlDiscoveryJobRepository:
         claimable_conditions = [
             *pending_conditions,
             or_(
-                DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
-                DISCOVERY_JOBS_TABLE.c.processing_started_at <= stale_started_at,
+                DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= now,
             ),
         ]
         tenant_rank = (
@@ -417,9 +455,7 @@ class SqlDiscoveryJobRepository:
             )
             for row in rows:
                 job_id = str(row["id"])
-                started_at = row["processing_started_at"]
-                if started_at is not None and started_at > stale_started_at:
-                    continue
+                claim_token = str(uuid4())
                 updated = connection.execute(
                     update(DISCOVERY_JOBS_TABLE)
                     .where(
@@ -428,13 +464,19 @@ class SqlDiscoveryJobRepository:
                             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
                             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
                             or_(
-                                DISCOVERY_JOBS_TABLE.c.processing_started_at.is_(None),
-                                DISCOVERY_JOBS_TABLE.c.processing_started_at
-                                <= stale_started_at,
+                                DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
+                                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
+                                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= now,
                             ),
                         )
                     )
-                    .values(processing_started_at=now, updated_at=now)
+                    .values(
+                        processing_started_at=now,
+                        claim_token=claim_token,
+                        lease_expires_at=lease_expires_at,
+                        lease_heartbeat_at=now,
+                        updated_at=now,
+                    )
                 )
                 if updated.rowcount:
                     claimed_ids.append(job_id)
@@ -454,13 +496,69 @@ class SqlDiscoveryJobRepository:
             claimed_by_id[job_id] for job_id in claimed_ids if job_id in claimed_by_id
         ]
 
+    def renew_discovery_job_lease(
+        self,
+        *,
+        tenant_id: str,
+        job_id: str,
+        claim_token: str,
+        lease_seconds: float = 60.0,
+    ) -> DiscoveryJobRecord:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_job_id = normalize_uuid_string(job_id)
+        normalized_claim_token = normalize_uuid_string(claim_token)
+        now = _now()
+        lease_expires_at = now + timedelta(
+            seconds=max(0.01, float(lease_seconds))
+        )
+        with self._engine.begin() as connection:
+            renewed = connection.execute(
+                update(DISCOVERY_JOBS_TABLE)
+                .where(
+                    and_(
+                        DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                        DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                        DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                        DISCOVERY_JOBS_TABLE.c.claim_token
+                        == normalized_claim_token,
+                        DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_not(None),
+                        DISCOVERY_JOBS_TABLE.c.lease_expires_at > now,
+                    )
+                )
+                .values(
+                    lease_expires_at=lease_expires_at,
+                    lease_heartbeat_at=now,
+                    updated_at=now,
+                )
+            )
+            if not renewed.rowcount:
+                raise StaleDiscoveryJobClaimError(
+                    f"discovery job lease is stale for job {job_id}"
+                )
+            row = (
+                connection.execute(
+                    select(DISCOVERY_JOBS_TABLE).where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        return _job_from_mapping(row)
+
     def record_discovery_job_attempt(
         self,
         *,
         tenant_id: str,
         job_id: str,
+        claim_token: str | None = None,
         job_status: str,
         last_error: str | None = None,
+        last_error_code: DiscoveryFailureCode | str | None = None,
         next_attempt_at: datetime | None = None,
         processing_started_at: datetime | None = None,
         dispatched: bool = False,
@@ -483,19 +581,68 @@ class SqlDiscoveryJobRepository:
             )
             if row is None:
                 raise KeyError(job_id)
-            connection.execute(
+            current_claim_token = (
+                str(row["claim_token"]) if row["claim_token"] is not None else None
+            )
+            normalized_claim_token = (
+                normalize_uuid_string(claim_token) if claim_token else None
+            )
+            lease_expires_at = row["lease_expires_at"]
+            if current_claim_token is not None and (
+                normalized_claim_token != current_claim_token
+                or lease_expires_at is None
+                or _as_utc(lease_expires_at) <= _as_utc(now)
+            ):
+                raise StaleDiscoveryJobClaimError(
+                    f"discovery job lease is stale for job {job_id}"
+                )
+            if current_claim_token is None and normalized_claim_token is not None:
+                raise StaleDiscoveryJobClaimError(
+                    f"discovery job claim token was superseded for job {job_id}"
+                )
+            normalized_error_code: str | None = None
+            if last_error_code:
+                try:
+                    normalized_error_code = DiscoveryFailureCode(
+                        str(last_error_code).strip()
+                    ).value
+                except ValueError as exc:
+                    raise ValueError(
+                        f"unknown discovery failure code: {last_error_code!r}"
+                    ) from exc
+            attempt_filters = [
+                DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+            ]
+            if current_claim_token is not None:
+                attempt_filters.extend(
+                    [
+                        DISCOVERY_JOBS_TABLE.c.claim_token
+                        == normalized_claim_token,
+                        DISCOVERY_JOBS_TABLE.c.lease_expires_at > now,
+                    ]
+                )
+            updated = connection.execute(
                 update(DISCOVERY_JOBS_TABLE)
-                .where(DISCOVERY_JOBS_TABLE.c.id == normalized_job_id)
+                .where(and_(*attempt_filters))
                 .values(
                     job_status=str(job_status).strip(),
                     attempt_count=int(row["attempt_count"]) + 1,
                     last_error=(str(last_error).strip()[:1000] if last_error else None),
+                    last_error_code=normalized_error_code,
                     next_attempt_at=next_attempt_at or now,
                     processing_started_at=processing_started_at,
+                    claim_token=None,
+                    lease_expires_at=None,
+                    lease_heartbeat_at=None,
                     dispatched_at=now if dispatched else row["dispatched_at"],
                     updated_at=now,
                 )
             )
+            if not updated.rowcount:
+                raise StaleDiscoveryJobClaimError(
+                    f"discovery job lease changed while finishing job {job_id}"
+                )
             updated_row = (
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE).where(

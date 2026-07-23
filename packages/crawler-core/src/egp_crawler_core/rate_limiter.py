@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,17 @@ class RateLimiterConfig:
             state_path=default_state_path
             or Path(tempfile.gettempdir()) / "egp-rate-limiter" / "egp.json",
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimiterCircuitSnapshot:
+    is_open: bool
+    reset_at: str | None
+    reset_in_seconds: float
+    last_outcome: str | None
+    consecutive_429: int
+    consecutive_site_errors: int
+    site_error_trip_count: int
 
 
 class FileLockRateLimiter:
@@ -179,16 +191,42 @@ class FileLockRateLimiter:
             state["last_outcome"] = normalized
 
     def is_circuit_open(self) -> bool:
+        return self.get_circuit_snapshot().is_open
+
+    def get_circuit_snapshot(self) -> RateLimiterCircuitSnapshot:
+        """Return operator-safe circuit state without paths or request data."""
+
         with self._locked_state() as state:
             now = self._now()
             self._normalize_state(state, now=now)
             circuit_open_until = float(state.get("circuit_open_until") or 0.0)
-            if circuit_open_until > now:
-                return True
-            if circuit_open_until:
+            is_open = circuit_open_until > now
+            if circuit_open_until and not is_open:
                 state["circuit_open_until"] = 0.0
                 state["consecutive_429"] = 0
-            return False
+                circuit_open_until = 0.0
+            reset_in_seconds = (
+                max(0.0, circuit_open_until - now) if is_open else 0.0
+            )
+            return RateLimiterCircuitSnapshot(
+                is_open=is_open,
+                reset_at=(
+                    datetime.fromtimestamp(circuit_open_until, UTC).isoformat()
+                    if is_open
+                    else None
+                ),
+                reset_in_seconds=reset_in_seconds,
+                last_outcome=(
+                    str(state["last_outcome"])
+                    if state.get("last_outcome") is not None
+                    else None
+                ),
+                consecutive_429=int(state.get("consecutive_429") or 0),
+                consecutive_site_errors=int(
+                    state.get("consecutive_site_errors") or 0
+                ),
+                site_error_trip_count=int(state.get("site_error_trip_count") or 0),
+            )
 
     def _consume_or_wait(self, state: dict[str, Any], *, now: float) -> float:
         rps = max(0.0, float(self._config.requests_per_second))

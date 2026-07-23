@@ -9,7 +9,7 @@ import pytest
 
 import egp_worker.main as worker_main
 
-from egp_shared_types.enums import CrawlRunStatus
+from egp_shared_types.enums import CrawlRunStatus, DiscoveryFailureCode
 
 
 def test_python_module_worker_entrypoint_executes_main_for_noop() -> None:
@@ -57,7 +57,10 @@ def test_discover_worker_result_includes_persisted_run_error(
                 run=SimpleNamespace(
                     id="run-failed",
                     status=CrawlRunStatus.FAILED,
-                    summary_json={"error": "e-GP site error after search submit"},
+                    summary_json={
+                        "error": "e-GP site error after search submit",
+                        "failure_code": DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR,
+                    },
                 )
             ),
             projects=[],
@@ -75,3 +78,4 @@ def test_discover_worker_result_includes_persisted_run_error(
 
     assert result["run_status"] == CrawlRunStatus.FAILED
     assert result["error"] == "e-GP site error after search submit"
+    assert result["failure_code"] == DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR
