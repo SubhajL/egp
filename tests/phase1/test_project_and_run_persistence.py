@@ -11,6 +11,7 @@ from egp_db.repositories.project_repo import (
     SqlProjectRepository,
     build_project_upsert_record,
 )
+from egp_db.repositories import run_repo as run_repo_module
 from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import CrawlRunStatus, ProcurementType, ProjectState
 
@@ -486,6 +487,102 @@ def test_run_repository_updates_running_summary(tmp_path) -> None:
         "projects_seen": 2,
         "live_progress": {"stage": "page_scan_finished", "keyword": "แพลตฟอร์ม"},
     }
+
+
+def test_run_repository_tracks_canonical_activity_across_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    created_at = datetime(2026, 7, 23, 1, 0, tzinfo=UTC)
+    started_at = created_at + timedelta(minutes=1)
+    progress_at = created_at + timedelta(hours=4)
+    finished_at = progress_at + timedelta(minutes=1)
+    timestamps = iter((created_at, started_at, progress_at, finished_at))
+    monkeypatch.setattr(run_repo_module, "_now", lambda: next(timestamps))
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'run-activity.sqlite3'}",
+        bootstrap_schema=True,
+    )
+
+    created = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    started = repository.mark_run_started(created.id)
+    progressed = repository.update_run_summary(
+        created.id,
+        summary_json={
+            "live_progress": {
+                "stage": "project_documents_start",
+                "updated_at": progress_at.isoformat(),
+            }
+        },
+    )
+    finished = repository.mark_run_finished(created.id, status="succeeded")
+
+    assert datetime.fromisoformat(created.last_activity_at).replace(tzinfo=UTC) == created_at
+    assert datetime.fromisoformat(started.last_activity_at).replace(tzinfo=UTC) == started_at
+    assert (
+        datetime.fromisoformat(progressed.last_activity_at).replace(tzinfo=UTC)
+        == progress_at
+    )
+    assert (
+        datetime.fromisoformat(finished.last_activity_at).replace(tzinfo=UTC)
+        == finished_at
+    )
+
+
+def test_task_lifecycle_refreshes_parent_run_activity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    created_at = datetime(2026, 7, 23, 1, 0, tzinfo=UTC)
+    started_at = created_at + timedelta(minutes=1)
+    task_created_at = created_at + timedelta(hours=4)
+    task_started_at = task_created_at + timedelta(minutes=1)
+    task_finished_at = task_started_at + timedelta(minutes=1)
+    admission_at = task_finished_at + timedelta(minutes=1)
+    timestamps = iter(
+        (
+            created_at,
+            started_at,
+            task_created_at,
+            task_started_at,
+            task_finished_at,
+            admission_at,
+        )
+    )
+    monkeypatch.setattr(run_repo_module, "_now", lambda: next(timestamps))
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'task-run-activity.sqlite3'}",
+        bootstrap_schema=True,
+    )
+
+    run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(run.id)
+    task = repository.create_task(run_id=run.id, task_type="close_check")
+    after_create = repository.find_run_by_id(run.id)
+    repository.mark_task_started(task.id)
+    after_start = repository.find_run_by_id(run.id)
+    repository.mark_task_finished(task.id, status="succeeded")
+    after_finish = repository.find_run_by_id(run.id)
+
+    assert after_create is not None
+    assert after_start is not None
+    assert after_finish is not None
+    assert (
+        datetime.fromisoformat(after_create.last_activity_at).replace(tzinfo=UTC)
+        == task_created_at
+    )
+    assert (
+        datetime.fromisoformat(after_start.last_activity_at).replace(tzinfo=UTC)
+        == task_started_at
+    )
+    assert (
+        datetime.fromisoformat(after_finish.last_activity_at).replace(tzinfo=UTC)
+        == task_finished_at
+    )
+    assert repository.count_active_runs(
+        tenant_id=TENANT_ID,
+        stale_after_seconds=3 * 60 * 60,
+    ) == 1
 
 
 def test_run_repository_fails_running_runs_started_since(tmp_path) -> None:

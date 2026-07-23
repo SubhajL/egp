@@ -5222,6 +5222,14 @@
             "title": "Id",
             "type": "string"
           },
+          "is_stale": {
+            "title": "Is Stale",
+            "type": "boolean"
+          },
+          "last_activity_at": {
+            "title": "Last Activity At",
+            "type": "string"
+          },
           "profile_id": {
             "anyOf": [
               {
@@ -5277,6 +5285,8 @@
           "profile_id",
           "started_at",
           "finished_at",
+          "last_activity_at",
+          "is_stale",
           "summary_json",
           "error_count",
           "created_at"

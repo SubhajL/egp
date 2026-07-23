@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.run_service import RunService
-from egp_db.repositories.run_repo import CrawlRunDetail, CrawlRunRecord, CrawlTaskRecord
+from egp_db.repositories.run_repo import (
+    CrawlRunDetail,
+    CrawlRunRecord,
+    CrawlTaskRecord,
+    is_run_stale,
+)
 
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
@@ -43,6 +48,8 @@ class RunResponse(BaseModel):
     profile_id: str | None
     started_at: str | None
     finished_at: str | None
+    last_activity_at: str
+    is_stale: bool
     summary_json: dict[str, object] | None
     error_count: int
     created_at: str
@@ -88,6 +95,8 @@ def _serialize_run(run: CrawlRunRecord) -> RunResponse:
         profile_id=run.profile_id,
         started_at=run.started_at,
         finished_at=run.finished_at,
+        last_activity_at=run.last_activity_at,
+        is_stale=is_run_stale(run),
         summary_json=run.summary_json,
         error_count=run.error_count,
         created_at=run.created_at,

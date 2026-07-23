@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   getActiveRuns,
@@ -19,6 +19,8 @@ function buildRunDetail(
       profile_id: null,
       started_at: "2026-06-20T00:00:00.000Z",
       finished_at: null,
+      last_activity_at: "2026-06-20T00:00:00.000Z",
+      is_stale: false,
       summary_json: null,
       error_count: 0,
       created_at: "2026-06-20T00:00:00.000Z",
@@ -29,22 +31,20 @@ function buildRunDetail(
 }
 
 describe("run progress freshness", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("does not count stale running runs as active", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
+  it("uses the server stale classification for active runs", () => {
     const staleRun = buildRunDetail({
       id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
       started_at: "2026-06-16T12:00:00.000Z",
       created_at: "2026-06-16T12:00:00.000Z",
+      last_activity_at: "2026-06-16T12:00:00.000Z",
+      is_stale: true,
     });
     const liveRun = buildRunDetail({
       id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-      started_at: "2026-06-20T11:30:00.000Z",
-      created_at: "2026-06-20T11:30:00.000Z",
+      started_at: "2026-06-16T12:00:00.000Z",
+      created_at: "2026-06-16T12:00:00.000Z",
+      last_activity_at: "2026-06-20T11:30:00.000Z",
+      is_stale: false,
     });
 
     expect(isStaleActiveRun(staleRun)).toBe(true);
@@ -56,12 +56,12 @@ describe("run progress freshness", () => {
     ).toEqual(["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"]);
   });
 
-  it("uses live progress updates to keep a running run active", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
+  it("does not recompute freshness from live progress timestamps", () => {
     const run = buildRunDetail({
       started_at: "2026-06-20T06:00:00.000Z",
       created_at: "2026-06-20T06:00:00.000Z",
+      last_activity_at: "2026-06-20T11:45:00.000Z",
+      is_stale: false,
       summary_json: {
         live_progress: {
           stage: "project_documents_start",
