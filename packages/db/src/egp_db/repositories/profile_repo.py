@@ -15,11 +15,14 @@ from sqlalchemy import (
     String,
     Table,
     delete,
+    func,
     insert,
     select,
+    true,
     update,
 )
 from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy.exc import IntegrityError
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
@@ -31,6 +34,7 @@ class CrawlProfileRecord:
     tenant_id: str
     name: str
     profile_type: str
+    enabled_by_user: bool
     is_active: bool
     max_pages_per_keyword: int
     close_consulting_after_days: int
@@ -63,7 +67,8 @@ CRAWL_PROFILES_TABLE = Table(
     Column("tenant_id", UUID_SQL_TYPE, nullable=False),
     Column("name", String, nullable=False),
     Column("profile_type", String, nullable=False),
-    Column("is_active", Boolean, nullable=False, default=True),
+    Column("enabled_by_user", Boolean, nullable=False, default=True, server_default=true()),
+    Column("is_active", Boolean, nullable=False, default=True, server_default=true()),
     Column("max_pages_per_keyword", Integer, nullable=False, default=15),
     Column("close_consulting_after_days", Integer, nullable=False, default=30),
     Column("close_stale_after_days", Integer, nullable=False, default=45),
@@ -103,6 +108,7 @@ def _profile_from_mapping(row: RowMapping) -> CrawlProfileRecord:
         tenant_id=str(row["tenant_id"]),
         name=str(row["name"]),
         profile_type=str(row["profile_type"]),
+        enabled_by_user=bool(row["enabled_by_user"]),
         is_active=bool(row["is_active"]),
         max_pages_per_keyword=int(row["max_pages_per_keyword"]),
         close_consulting_after_days=int(row["close_consulting_after_days"]),
@@ -119,6 +125,25 @@ def _keyword_from_mapping(row: RowMapping) -> CrawlProfileKeywordRecord:
         keyword=str(row["keyword"]),
         position=int(row["position"]),
         created_at=_dt_to_iso(row["created_at"]) or "",
+    )
+
+
+class ProfileNameConflictError(ValueError):
+    """Raised when a tenant already owns the normalized profile name."""
+
+
+def _is_profile_name_conflict(exc: IntegrityError) -> bool:
+    original = getattr(exc, "orig", None)
+    diagnostics = getattr(original, "diag", None)
+    if getattr(diagnostics, "constraint_name", None) == (
+        "crawl_profiles_tenant_normalized_name_uq"
+    ):
+        return True
+    message = str(original).casefold()
+    return (
+        "unique constraint failed" in message
+        and "crawl_profiles.tenant_id" in message
+        and "crawl_profiles.name" in message
     )
 
 
@@ -191,12 +216,10 @@ class SqlProfileRepository:
         ]
 
     def list_active_keywords(self, *, tenant_id: str) -> list[str]:
-        profiles = self.list_profiles_with_keywords(tenant_id=tenant_id)
+        profiles = self.list_enabled_profiles_with_keywords(tenant_id=tenant_id)
         ordered: list[str] = []
         seen: set[str] = set()
         for detail in profiles:
-            if not detail.profile.is_active:
-                continue
             for keyword in detail.keywords:
                 normalized = str(keyword.keyword).strip()
                 if not normalized:
@@ -208,23 +231,51 @@ class SqlProfileRepository:
                 ordered.append(normalized)
         return ordered
 
-    def deactivate_active_profiles_created_before(
+    def list_enabled_profiles_with_keywords(
+        self, *, tenant_id: str
+    ) -> list[CrawlProfileDetail]:
+        return [
+            detail
+            for detail in self.list_profiles_with_keywords(tenant_id=tenant_id)
+            if detail.profile.enabled_by_user
+        ]
+
+    def assert_profile_name_available(
         self,
         *,
         tenant_id: str,
-        created_before: datetime,
-    ) -> int:
-        normalized_tenant_id = normalize_uuid_string(tenant_id)
-        now = _now()
-        with self._engine.begin() as connection:
-            result = connection.execute(
-                update(CRAWL_PROFILES_TABLE)
-                .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
-                .where(CRAWL_PROFILES_TABLE.c.is_active.is_(True))
-                .where(CRAWL_PROFILES_TABLE.c.created_at < created_before)
-                .values(is_active=False, updated_at=now)
+        name: str,
+        exclude_profile_id: str | None = None,
+    ) -> None:
+        with self._engine.connect() as connection:
+            self._assert_profile_name_available(
+                connection=connection,
+                tenant_id=tenant_id,
+                name=name,
+                exclude_profile_id=exclude_profile_id,
             )
-        return int(result.rowcount or 0)
+
+    @staticmethod
+    def _assert_profile_name_available(
+        *,
+        connection,
+        tenant_id: str,
+        name: str,
+        exclude_profile_id: str | None = None,
+    ) -> None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_name = str(name).strip().lower()
+        statement = select(CRAWL_PROFILES_TABLE.c.id).where(
+            CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id,
+            func.lower(func.trim(CRAWL_PROFILES_TABLE.c.name)) == normalized_name,
+        )
+        if exclude_profile_id is not None:
+            statement = statement.where(
+                CRAWL_PROFILES_TABLE.c.id
+                != normalize_uuid_string(exclude_profile_id)
+            )
+        if connection.execute(statement.limit(1)).first() is not None:
+            raise ProfileNameConflictError("profile name already exists")
 
     def get_profile_detail(
         self, *, tenant_id: str, profile_id: str
@@ -269,40 +320,55 @@ class SqlProfileRepository:
         tenant_id: str,
         name: str,
         profile_type: str,
-        is_active: bool,
         max_pages_per_keyword: int,
         close_consulting_after_days: int,
         close_stale_after_days: int,
         keywords: list[str],
+        enabled_by_user: bool | None = None,
+        is_active: bool | None = None,
     ) -> CrawlProfileDetail:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         profile_id = str(uuid4())
         now = _now()
-        with self._engine.begin() as connection:
-            connection.execute(
-                insert(CRAWL_PROFILES_TABLE).values(
-                    id=profile_id,
+        resolved_enabled = (
+            bool(is_active) if enabled_by_user is None else bool(enabled_by_user)
+        )
+        try:
+            with self._engine.begin() as connection:
+                self._assert_profile_name_available(
+                    connection=connection,
                     tenant_id=normalized_tenant_id,
                     name=name,
-                    profile_type=profile_type,
-                    is_active=is_active,
-                    max_pages_per_keyword=max_pages_per_keyword,
-                    close_consulting_after_days=close_consulting_after_days,
-                    close_stale_after_days=close_stale_after_days,
-                    created_at=now,
-                    updated_at=now,
                 )
-            )
-            for position, keyword in enumerate(keywords, start=1):
                 connection.execute(
-                    insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
-                        id=str(uuid4()),
-                        profile_id=profile_id,
-                        keyword=keyword,
-                        position=position,
+                    insert(CRAWL_PROFILES_TABLE).values(
+                        id=profile_id,
+                        tenant_id=normalized_tenant_id,
+                        name=name,
+                        profile_type=profile_type,
+                        enabled_by_user=resolved_enabled,
+                        is_active=resolved_enabled,
+                        max_pages_per_keyword=max_pages_per_keyword,
+                        close_consulting_after_days=close_consulting_after_days,
+                        close_stale_after_days=close_stale_after_days,
                         created_at=now,
+                        updated_at=now,
                     )
                 )
+                for position, keyword in enumerate(keywords, start=1):
+                    connection.execute(
+                        insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
+                            id=str(uuid4()),
+                            profile_id=profile_id,
+                            keyword=keyword,
+                            position=position,
+                            created_at=now,
+                        )
+                    )
+        except IntegrityError as exc:
+            if _is_profile_name_conflict(exc):
+                raise ProfileNameConflictError("profile name already exists") from exc
+            raise
         detail = self.get_profile_detail(
             tenant_id=normalized_tenant_id, profile_id=profile_id
         )
@@ -317,6 +383,7 @@ class SqlProfileRepository:
         profile_id: str,
         name: str | None = None,
         is_active: bool | None = None,
+        enabled_by_user: bool | None = None,
         keywords: list[str] | None = None,
         max_pages_per_keyword: int | None = None,
         close_consulting_after_days: int | None = None,
@@ -325,59 +392,78 @@ class SqlProfileRepository:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_profile_id = normalize_uuid_string(profile_id)
         now = _now()
-        with self._engine.begin() as connection:
-            existing = (
+        try:
+            with self._engine.begin() as connection:
+                existing = (
+                    connection.execute(
+                        select(CRAWL_PROFILES_TABLE)
+                        .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
+                        .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
+                    )
+                    .mappings()
+                    .first()
+                )
+                if existing is None:
+                    raise KeyError(profile_id)
+                if name is not None:
+                    self._assert_profile_name_available(
+                        connection=connection,
+                        tenant_id=normalized_tenant_id,
+                        name=name,
+                        exclude_profile_id=normalized_profile_id,
+                    )
+                resolved_enabled = existing["enabled_by_user"]
+                if enabled_by_user is not None:
+                    resolved_enabled = enabled_by_user
+                elif is_active is not None:
+                    resolved_enabled = is_active
                 connection.execute(
-                    select(CRAWL_PROFILES_TABLE)
+                    update(CRAWL_PROFILES_TABLE)
                     .where(CRAWL_PROFILES_TABLE.c.tenant_id == normalized_tenant_id)
                     .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
-                )
-                .mappings()
-                .first()
-            )
-            if existing is None:
-                raise KeyError(profile_id)
-            connection.execute(
-                update(CRAWL_PROFILES_TABLE)
-                .where(CRAWL_PROFILES_TABLE.c.id == normalized_profile_id)
-                .values(
-                    name=existing["name"] if name is None else name,
-                    is_active=existing["is_active"] if is_active is None else is_active,
-                    max_pages_per_keyword=(
-                        existing["max_pages_per_keyword"]
-                        if max_pages_per_keyword is None
-                        else max_pages_per_keyword
-                    ),
-                    close_consulting_after_days=(
-                        existing["close_consulting_after_days"]
-                        if close_consulting_after_days is None
-                        else close_consulting_after_days
-                    ),
-                    close_stale_after_days=(
-                        existing["close_stale_after_days"]
-                        if close_stale_after_days is None
-                        else close_stale_after_days
-                    ),
-                    updated_at=now,
-                )
-            )
-            if keywords is not None:
-                connection.execute(
-                    delete(CRAWL_PROFILE_KEYWORDS_TABLE).where(
-                        CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id
-                        == normalized_profile_id
+                    .values(
+                        name=existing["name"] if name is None else name,
+                        enabled_by_user=resolved_enabled,
+                        is_active=resolved_enabled,
+                        max_pages_per_keyword=(
+                            existing["max_pages_per_keyword"]
+                            if max_pages_per_keyword is None
+                            else max_pages_per_keyword
+                        ),
+                        close_consulting_after_days=(
+                            existing["close_consulting_after_days"]
+                            if close_consulting_after_days is None
+                            else close_consulting_after_days
+                        ),
+                        close_stale_after_days=(
+                            existing["close_stale_after_days"]
+                            if close_stale_after_days is None
+                            else close_stale_after_days
+                        ),
+                        updated_at=now,
                     )
                 )
-                for position, keyword in enumerate(keywords, start=1):
+                if keywords is not None:
                     connection.execute(
-                        insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
-                            id=str(uuid4()),
-                            profile_id=normalized_profile_id,
-                            keyword=keyword,
-                            position=position,
-                            created_at=now,
+                        delete(CRAWL_PROFILE_KEYWORDS_TABLE).where(
+                            CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id
+                            == normalized_profile_id
                         )
                     )
+                    for position, keyword in enumerate(keywords, start=1):
+                        connection.execute(
+                            insert(CRAWL_PROFILE_KEYWORDS_TABLE).values(
+                                id=str(uuid4()),
+                                profile_id=normalized_profile_id,
+                                keyword=keyword,
+                                position=position,
+                                created_at=now,
+                            )
+                        )
+        except IntegrityError as exc:
+            if _is_profile_name_conflict(exc):
+                raise ProfileNameConflictError("profile name already exists") from exc
+            raise
         detail = self.get_profile_detail(
             tenant_id=normalized_tenant_id,
             profile_id=normalized_profile_id,

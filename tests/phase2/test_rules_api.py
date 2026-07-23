@@ -60,6 +60,7 @@ def _seed_profile(
                     tenant_id,
                     name,
                     profile_type,
+                    enabled_by_user,
                     is_active,
                     max_pages_per_keyword,
                     close_consulting_after_days,
@@ -71,6 +72,7 @@ def _seed_profile(
                     :tenant_id,
                     :name,
                     :profile_type,
+                    :is_active,
                     :is_active,
                     :max_pages_per_keyword,
                     :close_consulting_after_days,
@@ -316,15 +318,19 @@ def test_rules_endpoint_returns_profiles_keywords_and_explicit_platform_settings
         "subscription_status": None,
         "has_active_subscription": False,
         "keyword_limit": None,
-        "active_keyword_count": 2,
+        "saved_keyword_count": 3,
+        "enabled_keyword_count": 2,
+        "runnable_keyword_count": 0,
+        "runnable_keywords": [],
+        "active_keyword_count": 0,
         "remaining_keyword_slots": None,
-        "active_keywords": ["วิเคราะห์ข้อมูล", "ระบบสารสนเทศ"],
+        "active_keywords": [],
         "over_keyword_limit": False,
         "runs_allowed": False,
         "exports_allowed": False,
         "document_download_allowed": False,
         "notifications_allowed": False,
-        "source": "billing_subscriptions + crawl_profile_keywords",
+        "source": "billing_subscriptions + crawl_profiles + crawl_profile_keywords",
     }
 
     assert body["closure_rules"]["close_on_winner_status"] is True
@@ -427,6 +433,10 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
         "subscription_status": None,
         "has_active_subscription": False,
         "keyword_limit": None,
+        "saved_keyword_count": 0,
+        "enabled_keyword_count": 0,
+        "runnable_keyword_count": 0,
+        "runnable_keywords": [],
         "active_keyword_count": 0,
         "remaining_keyword_slots": None,
         "active_keywords": [],
@@ -435,7 +445,7 @@ def test_rules_endpoint_returns_defaults_when_no_profiles_exist(tmp_path) -> Non
         "exports_allowed": False,
         "document_download_allowed": False,
         "notifications_allowed": False,
-        "source": "billing_subscriptions + crawl_profile_keywords",
+        "source": "billing_subscriptions + crawl_profiles + crawl_profile_keywords",
     }
     assert body["closure_rules"]["consulting_timeout_days"] == 30
     assert body["closure_rules"]["stale_no_tor_days"] == 45
@@ -740,11 +750,68 @@ def test_admin_can_update_profile_keywords_and_deactivate_from_rules_api(
 
     assert deactivated.status_code == 200
     assert deactivated.json()["is_active"] is False
-    assert deactivated.json()["keywords"] == []
+    assert deactivated.json()["enabled_by_user"] is False
+    assert deactivated.json()["effective_status"] == "paused_by_user"
+    assert deactivated.json()["keywords"] == ["analytics", "ai procurement"]
     assert wake_signal.wake_count == 1
     listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
     assert listing.status_code == 200
     assert listing.json()["entitlements"]["active_keyword_count"] == 0
+
+
+def test_profile_update_does_not_queue_keyword_owned_by_older_group(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-update-dedupe.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    for profile_id, name, keywords in (
+        (
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "Older Group",
+            [("analytics", 1)],
+        ),
+        (
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "Newer Group",
+            [("procurement", 1)],
+        ),
+    ):
+        _seed_profile(
+            client,
+            profile_id=profile_id,
+            name=name,
+            profile_type="custom",
+            is_active=True,
+            max_pages_per_keyword=15,
+            close_consulting_after_days=30,
+            close_stale_after_days=45,
+            keywords=keywords,
+        )
+
+    response = client.patch(
+        "/v1/rules/profiles/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        json={
+            "tenant_id": TENANT_ID,
+            "keywords": ["procurement", " ANALYTICS "],
+        },
+    )
+
+    assert response.status_code == 200
+    with client.app.state.db_engine.connect() as connection:
+        jobs = connection.execute(
+            text(
+                """
+                SELECT profile_id, keyword
+                FROM discovery_jobs
+                WHERE trigger_type = 'profile_updated'
+                """
+            )
+        ).mappings().all()
+    assert jobs == []
 
 
 def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
@@ -861,11 +928,56 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
         },
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 409
     assert (
         response.json()["detail"] == "active keyword configuration exceeds plan limit"
     )
     assert response.json()["code"] == "active_keyword_limit_exceeded"
+
+
+def test_over_limit_configuration_allows_rename_but_blocks_new_enabled_group(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-over-limit-edit.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    profile_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    _seed_profile(
+        client,
+        profile_id=profile_id,
+        name="Existing Group",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("first keyword", 1), ("second keyword", 2)],
+    )
+
+    renamed = client.patch(
+        f"/v1/rules/profiles/{profile_id}",
+        json={"tenant_id": TENANT_ID, "name": "Renamed Group"},
+    )
+    created = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "New Group",
+            "profile_type": "custom",
+            "enabled_by_user": True,
+            "keywords": ["third keyword"],
+        },
+    )
+
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Renamed Group"
+    assert renamed.json()["effective_status"] == "blocked_quota"
+    assert created.status_code == 409
+    assert created.json()["code"] == "active_keyword_limit_exceeded"
 
 
 def test_profile_creation_denies_before_outbox_insert_when_keyword_queue_cap_exceeded(
@@ -916,6 +1028,77 @@ def test_profile_creation_denies_before_outbox_insert_when_keyword_queue_cap_exc
 
     assert profile_count == 0
     assert job_count == 0
+
+
+def test_duplicate_keyword_group_does_not_consume_another_queue_slot(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-create-dedupe-cap.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
+    _seed_tenant_entitlements(client, max_queued_keywords=1)
+
+    first = client.post(
+        "/v1/rules/profiles",
+        json={"tenant_id": TENANT_ID, "name": "First Group", "keywords": ["analytics"]},
+    )
+    second = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Second Group",
+            "keywords": [" ANALYTICS "],
+        },
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    with client.app.state.db_engine.connect() as connection:
+        profile_count = connection.execute(text("SELECT COUNT(*) FROM crawl_profiles")).scalar_one()
+        job_count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+    assert profile_count == 2
+    assert job_count == 1
+
+
+def test_profile_update_respects_keyword_queue_cap_before_persistence(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-update-cap.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
+    _seed_tenant_entitlements(client, max_queued_keywords=1)
+    created = client.post(
+        "/v1/rules/profiles",
+        json={"tenant_id": TENANT_ID, "name": "First Group", "keywords": ["analytics"]},
+    )
+    profile_id = created.json()["id"]
+
+    updated = client.patch(
+        f"/v1/rules/profiles/{profile_id}",
+        json={
+            "tenant_id": TENANT_ID,
+            "keywords": ["analytics", "procurement"],
+        },
+    )
+
+    assert updated.status_code == 429
+    assert updated.json()["code"] == "queued_keyword_limit_exceeded"
+    detail = client.app.state.profile_repository.get_profile_detail(
+        tenant_id=TENANT_ID,
+        profile_id=profile_id,
+    )
+    assert detail is not None
+    assert [keyword.keyword for keyword in detail.keywords] == ["analytics"]
 
 
 def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> None:
@@ -1307,3 +1490,328 @@ def test_profile_creation_with_blank_name_returns_structured_validation_code(
         "detail": "profile name is required",
         "code": "profile_name_required",
     }
+
+
+def test_duplicate_group_name_returns_structured_conflict(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-name-conflict.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+
+    first = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Infrastructure",
+            "enabled_by_user": True,
+            "keywords": ["analytics"],
+        },
+    )
+    duplicate = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "  INFRASTRUCTURE  ",
+            "enabled_by_user": False,
+            "keywords": ["platform"],
+        },
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {
+        "detail": "profile name already exists",
+        "code": "profile_name_conflict",
+    }
+
+
+def test_pause_group_preserves_keywords_and_user_intent(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-pause.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path,
+            database_url=database_url,
+            auth_required=False,
+        )
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Durable group",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("analytics", 1), ("platform", 2)],
+    )
+
+    response = client.patch(
+        "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        json={
+            "tenant_id": TENANT_ID,
+            "enabled_by_user": False,
+            "keywords": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["enabled_by_user"] is False
+    assert response.json()["is_active"] is False
+    assert response.json()["effective_status"] == "paused_by_user"
+    assert response.json()["keywords"] == ["analytics", "platform"]
+    with client.app.state.db_engine.connect() as connection:
+        keyword_count = connection.execute(
+            text(
+                """
+                SELECT count(*)
+                FROM crawl_profile_keywords
+                WHERE profile_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                """
+            )
+        ).scalar_one()
+    assert keyword_count == 2
+
+
+def test_create_multiple_uniquely_named_keyword_groups(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-multiple-groups.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+
+    first = client.post(
+        "/v1/rules/profiles",
+        json={"tenant_id": TENANT_ID, "name": "Infrastructure", "keywords": ["cloud"]},
+    )
+    second = client.post(
+        "/v1/rules/profiles",
+        json={"tenant_id": TENANT_ID, "name": "Analytics", "keywords": ["data"]},
+    )
+    listing = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert [profile["name"] for profile in listing.json()["profiles"]] == [
+        "Infrastructure",
+        "Analytics",
+    ]
+    assert {profile["effective_status"] for profile in listing.json()["profiles"]} == {
+        "running"
+    }
+
+
+def test_rename_group_preserves_keywords_and_order(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-rename.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Before",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("first", 1), ("second", 2)],
+    )
+    with client.app.state.db_engine.connect() as connection:
+        ids_before = connection.execute(
+            text(
+                """
+                SELECT id FROM crawl_profile_keywords
+                WHERE profile_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                ORDER BY position
+                """
+            )
+        ).scalars().all()
+
+    response = client.patch(
+        "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        json={"tenant_id": TENANT_ID, "name": "After"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "After"
+    assert response.json()["keywords"] == ["first", "second"]
+    with client.app.state.db_engine.connect() as connection:
+        ids_after = connection.execute(
+            text(
+                """
+                SELECT id FROM crawl_profile_keywords
+                WHERE profile_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                ORDER BY position
+                """
+            )
+        ).scalars().all()
+    assert ids_after == ids_before
+
+
+def test_resume_group_queues_only_when_effectively_runnable(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-resume.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Paused",
+        profile_type="custom",
+        is_active=False,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("analytics", 1)],
+    )
+
+    inactive_resume = client.patch(
+        "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        json={"tenant_id": TENANT_ID, "enabled_by_user": True},
+    )
+    client.patch(
+        "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        json={"tenant_id": TENANT_ID, "enabled_by_user": False},
+    )
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    active_resume = client.patch(
+        "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        json={"tenant_id": TENANT_ID, "enabled_by_user": True},
+    )
+
+    assert inactive_resume.status_code == 200
+    assert inactive_resume.json()["effective_status"] == "paused_by_plan"
+    assert active_resume.status_code == 200
+    assert active_resume.json()["effective_status"] == "running"
+    with client.app.state.db_engine.connect() as connection:
+        jobs = connection.execute(
+            text("SELECT keyword FROM discovery_jobs ORDER BY created_at")
+        ).scalars().all()
+    assert jobs == ["analytics"]
+
+
+def test_rules_mutations_remain_tenant_scoped(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-tenant-scope.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    other_tenant_id = "22222222-2222-2222-2222-222222222222"
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenants (id, name, slug, plan_code, is_active, created_at, updated_at)
+                VALUES (:id, 'Other', 'other', 'free', 1, :now, :now)
+                """
+            ),
+            {"id": other_tenant_id, "now": "2026-07-21T00:00:00+00:00"},
+        )
+    other = client.app.state.profile_repository.create_profile(
+        tenant_id=other_tenant_id,
+        name="Other tenant group",
+        profile_type="custom",
+        enabled_by_user=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=["private"],
+    )
+
+    response = client.patch(
+        f"/v1/rules/profiles/{other.profile.id}",
+        json={"tenant_id": TENANT_ID, "name": "Cross-tenant rename"},
+    )
+
+    assert response.status_code == 404
+    unchanged = client.app.state.profile_repository.get_profile_detail(
+        tenant_id=other_tenant_id,
+        profile_id=other.profile.id,
+    )
+    assert unchanged is not None
+    assert unchanged.profile.name == "Other tenant group"
+
+
+def test_profile_enabled_state_conflict_returns_structured_error(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-state-conflict.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Conflict",
+            "enabled_by_user": True,
+            "is_active": False,
+            "keywords": ["analytics"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "profile enabled state conflict",
+        "code": "profile_enabled_state_conflict",
+    }
+
+
+def test_empty_group_is_saved_but_never_runnable(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-empty-group.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+
+    response = client.post(
+        "/v1/rules/profiles",
+        json={"tenant_id": TENANT_ID, "name": "Empty group", "keywords": []},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["enabled_by_user"] is True
+    assert response.json()["effective_status"] == "paused_by_plan"
+    assert response.json()["status_reason"] is None
+    assert response.json()["keywords"] == []
+
+
+def test_manual_recrawl_deduplicates_keyword_across_named_groups(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-groups.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    for profile_id, name, keyword in (
+        ("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "First", "analytics"),
+        ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Second", " ANALYTICS "),
+    ):
+        _seed_profile(
+            client,
+            profile_id=profile_id,
+            name=name,
+            profile_type="custom",
+            is_active=True,
+            max_pages_per_keyword=15,
+            close_consulting_after_days=30,
+            close_stale_after_days=45,
+            keywords=[(keyword, 1)],
+        )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 202
+    assert response.json() == {"queued_job_count": 1, "queued_keywords": ["analytics"]}
+    with client.app.state.db_engine.connect() as connection:
+        jobs = connection.execute(
+            text("SELECT profile_id, keyword FROM discovery_jobs")
+        ).mappings().all()
+    assert jobs == [
+        {"profile_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "keyword": "analytics"}
+    ]

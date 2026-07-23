@@ -134,7 +134,11 @@ def _seed_profile(
     is_active: bool,
     keywords: list[str],
     tenant_id: str = TENANT_ID,
+    enabled_by_user: bool | None = None,
 ) -> None:
+    resolved_enabled_by_user = (
+        is_active if enabled_by_user is None else enabled_by_user
+    )
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
             text(
@@ -144,6 +148,7 @@ def _seed_profile(
                     tenant_id,
                     name,
                     profile_type,
+                    enabled_by_user,
                     is_active,
                     max_pages_per_keyword,
                     close_consulting_after_days,
@@ -155,6 +160,7 @@ def _seed_profile(
                     :tenant_id,
                     :name,
                     'tor',
+                    :enabled_by_user,
                     :is_active,
                     15,
                     30,
@@ -168,6 +174,7 @@ def _seed_profile(
                 "id": profile_id,
                 "tenant_id": tenant_id,
                 "name": name,
+                "enabled_by_user": resolved_enabled_by_user,
                 "is_active": is_active,
                 "created_at": "2026-04-05T00:00:00+00:00",
                 "updated_at": "2026-04-05T00:00:00+00:00",
@@ -299,6 +306,68 @@ def test_rules_snapshot_includes_subscription_and_keyword_usage(tmp_path) -> Non
     assert body["entitlements"]["notifications_allowed"] is True
 
 
+def test_monthly_reinstatement_makes_historical_groups_runnable(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=None,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="Historical group",
+        is_active=True,
+        enabled_by_user=True,
+        keywords=["analytics"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["saved_keyword_count"] == 1
+    assert body["entitlements"]["enabled_keyword_count"] == 1
+    assert body["entitlements"]["runnable_keyword_count"] == 1
+    assert body["entitlements"]["runnable_keywords"] == ["analytics"]
+    assert body["profiles"][0]["effective_status"] == "running"
+    assert body["profiles"][0]["status_reason"] is None
+
+
+def test_user_paused_group_stays_paused_after_reinstatement(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    today = date.today()
+    _seed_subscription(
+        client,
+        plan_code="monthly_membership",
+        keyword_limit=None,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(
+        client,
+        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        name="User paused",
+        is_active=False,
+        enabled_by_user=False,
+        keywords=["analytics"],
+    )
+
+    response = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["entitlements"]["saved_keyword_count"] == 1
+    assert body["entitlements"]["enabled_keyword_count"] == 0
+    assert body["entitlements"]["runnable_keyword_count"] == 0
+    assert body["profiles"][0]["enabled_by_user"] is False
+    assert body["profiles"][0]["effective_status"] == "paused_by_user"
+    assert body["profiles"][0]["status_reason"] is None
+
+
 def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = date.today()
@@ -330,7 +399,7 @@ def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path
     assert body["entitlements"]["notifications_allowed"] is False
 
 
-def test_active_one_time_pack_retires_profiles_from_before_current_cycle(tmp_path) -> None:
+def test_one_time_cycle_excludes_old_groups_without_mutation(tmp_path) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     _seed_subscription(
@@ -364,7 +433,21 @@ def test_active_one_time_pack_retires_profiles_from_before_current_cycle(tmp_pat
     assert body["entitlements"]["active_keyword_count"] == 0
     assert body["entitlements"]["remaining_keyword_slots"] == 1
     assert body["entitlements"]["active_keywords"] == []
-    assert body["profiles"][0]["is_active"] is False
+    assert body["profiles"][0]["enabled_by_user"] is True
+    assert body["profiles"][0]["is_active"] is True
+    assert body["profiles"][0]["effective_status"] == "paused_by_plan"
+    assert body["profiles"][0]["status_reason"] == "outside_current_plan_cycle"
+    with client.app.state.db_engine.connect() as connection:
+        stored_state = connection.execute(
+            text(
+                """
+                SELECT enabled_by_user, is_active
+                FROM crawl_profiles
+                WHERE id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+                """
+            )
+        ).one()
+    assert tuple(stored_state) == (True, True)
 
 
 def test_future_one_time_renewal_does_not_retire_current_cycle_profile(tmp_path) -> None:
@@ -449,7 +532,10 @@ def test_expired_monthly_membership_falls_back_to_free_trial_with_archive_access
     assert body["entitlements"]["exports_allowed"] is True
     assert body["entitlements"]["document_download_allowed"] is True
     assert body["entitlements"]["notifications_allowed"] is False
-    assert body["profiles"][0]["is_active"] is False
+    assert body["profiles"][0]["enabled_by_user"] is True
+    assert body["profiles"][0]["is_active"] is True
+    assert body["profiles"][0]["effective_status"] == "paused_by_plan"
+    assert body["profiles"][0]["status_reason"] == "outside_current_plan_cycle"
     assert export_response.status_code == 200
     assert download_response.status_code == 200
 
@@ -491,7 +577,10 @@ def test_expired_one_time_pack_falls_back_to_free_trial_with_archive_access(
     assert body["entitlements"]["exports_allowed"] is True
     assert body["entitlements"]["document_download_allowed"] is True
     assert body["entitlements"]["notifications_allowed"] is False
-    assert body["profiles"][0]["is_active"] is False
+    assert body["profiles"][0]["enabled_by_user"] is True
+    assert body["profiles"][0]["is_active"] is True
+    assert body["profiles"][0]["effective_status"] == "paused_by_plan"
+    assert body["profiles"][0]["status_reason"] == "outside_current_plan_cycle"
 
 
 def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_path) -> None:
@@ -620,26 +709,29 @@ def test_over_limit_profiles_block_new_discover_tasks(tmp_path) -> None:
         keywords=["kw4", "kw5", "kw6"],
     )
 
+    rules = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
+    assert rules.status_code == 200
+    rules_body = rules.json()
+    assert rules_body["entitlements"]["saved_keyword_count"] == 6
+    assert rules_body["entitlements"]["enabled_keyword_count"] == 6
+    assert rules_body["entitlements"]["runnable_keyword_count"] == 0
+    assert rules_body["entitlements"]["runnable_keywords"] == []
+    assert {
+        profile["effective_status"] for profile in rules_body["profiles"]
+    } == {"blocked_quota"}
+    assert {
+        profile["status_reason"] for profile in rules_body["profiles"]
+    } == {"keyword_limit_exceeded"}
+
     created = client.post(
         "/v1/runs",
         json={"tenant_id": TENANT_ID, "trigger_type": "manual"},
     )
-    assert created.status_code == 201
-    run_id = created.json()["run"]["id"]
-
-    response = client.post(
-        f"/v1/runs/{run_id}/tasks",
-        params={"tenant_id": TENANT_ID},
-        json={"task_type": "discover", "keyword": "kw1", "payload": {"page": 1}},
-    )
-
-    assert response.status_code == 403
-    assert (
-        response.json()["detail"] == "active keyword configuration exceeds plan limit"
-    )
+    assert created.status_code == 403
+    assert created.json()["detail"] == "active keyword configuration exceeds plan limit"
 
 
-def test_active_profile_creation_requires_active_subscription(tmp_path) -> None:
+def test_save_group_without_subscription_queues_no_jobs(tmp_path) -> None:
     client = _create_client(tmp_path)
 
     response = client.post(
@@ -653,8 +745,13 @@ def test_active_profile_creation_requires_active_subscription(tmp_path) -> None:
         },
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "active subscription required for runs"
+    assert response.status_code == 201
+    assert response.json()["enabled_by_user"] is True
+    assert response.json()["effective_status"] == "paused_by_plan"
+    assert response.json()["status_reason"] == "subscription_inactive"
+    with client.app.state.db_engine.connect() as connection:
+        job_count = connection.execute(text("SELECT count(*) FROM discovery_jobs")).scalar_one()
+    assert job_count == 0
 
 
 def test_inactive_profile_creation_is_allowed_without_subscription(tmp_path) -> None:
@@ -676,7 +773,7 @@ def test_inactive_profile_creation_is_allowed_without_subscription(tmp_path) -> 
     assert response.json()["keywords"] == ["analytics"]
 
 
-def test_active_profile_creation_with_pending_activation_subscription_is_denied(
+def test_active_profile_creation_with_pending_activation_is_saved_for_later(
     tmp_path,
 ) -> None:
     client = _create_client(tmp_path)
@@ -701,8 +798,10 @@ def test_active_profile_creation_with_pending_activation_subscription_is_denied(
         },
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "active subscription required for runs"
+    assert response.status_code == 201
+    assert response.json()["enabled_by_user"] is True
+    assert response.json()["effective_status"] == "paused_by_plan"
+    assert response.json()["status_reason"] == "subscription_inactive"
 
 
 def test_export_requires_active_subscription(tmp_path) -> None:

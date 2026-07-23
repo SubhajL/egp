@@ -87,7 +87,27 @@ Expected:
    - document downloads disabled
    - notifications disabled
 
-## Scenario 3: Actual Crawling For 1, 3, 5 Keywords
+## Scenario 3: Durable Keyword Groups
+1. Open `/rules` and click `สร้างกลุ่มคำค้น`.
+2. Enter an explicit unique group name plus at least one initial keyword, then save.
+3. Create a second named group and verify both cards remain independently editable.
+4. Try renaming the second group to the first group's name with different casing/whitespace and
+   verify the UI/API rejects the duplicate.
+5. Pause one group and verify:
+   - the status is `หยุดโดยคุณ`
+   - its keywords remain visible and saved
+   - manual and scheduled discovery do not queue its `(group, keyword)` pairs
+6. Resume the group while the subscription is active and verify its status returns to
+   `กำลังติดตาม`.
+7. Expire the subscription and verify enabled groups show `พักไว้ตามแพ็กเกจ` while names and
+   keywords remain editable.
+8. Renew a monthly subscription and verify historical enabled groups become runnable without a
+   migration/replay action, while the user-paused group remains paused.
+9. Under a limited plan, exceed the configured keyword quota and verify groups show
+   `ต้องจัดการโควต้า`, discovery is blocked, renaming still works, and reducing/pausing groups can
+   restore eligibility.
+
+## Scenario 4: Actual Crawling For 1, 3, 5 Keywords
 Use `/rules` to verify the active keyword count and entitlement state, then trigger runs/tasks via API or worker.
 
 ### 1 Keyword
@@ -117,7 +137,7 @@ Use `/rules` to verify the active keyword count and entitlement state, then trig
    - remaining slots `0`
 5. Negative check: attempt a 6th keyword and verify entitlement rejection.
 
-## Scenario 4: End Of Trial, One-Time Shot, Subscription
+## Scenario 5: End Of Trial, One-Time Shot, Subscription
 
 ### End Of Free Trial
 1. Move the trial subscription end date into the past.

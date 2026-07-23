@@ -192,6 +192,19 @@ class BillingSubscriptionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class KeywordGroupEffectiveStatus(StrEnum):
+    RUNNING = "running"
+    PAUSED_BY_USER = "paused_by_user"
+    PAUSED_BY_PLAN = "paused_by_plan"
+    BLOCKED_QUOTA = "blocked_quota"
+
+
+class KeywordGroupStatusReason(StrEnum):
+    SUBSCRIPTION_INACTIVE = "subscription_inactive"
+    OUTSIDE_CURRENT_PLAN_CYCLE = "outside_current_plan_cycle"
+    KEYWORD_LIMIT_EXCEEDED = "keyword_limit_exceeded"
+
+
 class BillingPaymentProvider(StrEnum):
     MOCK_PROMPTPAY = "mock_promptpay"
     PROMPTPAY_MANUAL = "promptpay_manual"

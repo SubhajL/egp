@@ -837,7 +837,7 @@ export async function createRuleProfile(
       tenant_id: payload.tenant_id,
       name: payload.name,
       profile_type: payload.profile_type ?? "custom",
-      is_active: payload.is_active ?? true,
+      enabled_by_user: payload.enabled_by_user ?? payload.is_active ?? true,
       keywords: payload.keywords,
       max_pages_per_keyword: payload.max_pages_per_keyword,
       close_consulting_after_days: payload.close_consulting_after_days,
@@ -856,7 +856,7 @@ export async function updateRuleProfile(
     body: JSON.stringify({
       tenant_id: payload.tenant_id,
       name: payload.name,
-      is_active: payload.is_active,
+      enabled_by_user: payload.enabled_by_user ?? payload.is_active,
       keywords: payload.keywords,
       max_pages_per_keyword: payload.max_pages_per_keyword,
       close_consulting_after_days: payload.close_consulting_after_days,

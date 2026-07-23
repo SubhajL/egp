@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copy2
 
 from psycopg import connect
+from psycopg.errors import UniqueViolation
+import pytest
 
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 
@@ -37,3 +40,119 @@ def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> N
         assert second_run.applied_versions == []
         assert second_run.pending_versions == []
         assert rows == expected_versions
+
+
+def test_keyword_group_lifecycle_migration_backfills_intent_and_unique_names(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        return
+
+    from egp_db.migration_runner import apply_migrations, list_migration_files
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    lifecycle_migration = migrations_dir / "028_keyword_group_lifecycle.sql"
+    assert lifecycle_migration.exists()
+
+    staged_migrations = tmp_path / "migrations"
+    staged_migrations.mkdir()
+    for migration in list_migration_files(migrations_dir):
+        if migration.name != lifecycle_migration.name:
+            copy2(migration, staged_migrations / migration.name)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_keyword_group_migration_test")
+        database_url = cluster.database_url("egp_keyword_group_migration_test")
+        apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, slug)
+                    VALUES ('11111111-1111-1111-1111-111111111111', 'LLL', 'lll')
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_profiles (
+                        id, tenant_id, name, profile_type, is_active, created_at, updated_at
+                    ) VALUES
+                        (
+                            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                            '11111111-1111-1111-1111-111111111111',
+                            'คำค้นหลัก', 'custom', FALSE,
+                            '2026-07-01T00:00:00+00:00', '2026-07-01T00:00:00+00:00'
+                        ),
+                        (
+                            'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                            '11111111-1111-1111-1111-111111111111',
+                            ' คำค้นหลัก ', 'custom', FALSE,
+                            '2026-07-02T00:00:00+00:00', '2026-07-02T00:00:00+00:00'
+                        ),
+                        (
+                            'cccccccc-cccc-cccc-cccc-cccccccccccc',
+                            '11111111-1111-1111-1111-111111111111',
+                            'Empty paused group', 'custom', FALSE,
+                            '2026-07-03T00:00:00+00:00', '2026-07-03T00:00:00+00:00'
+                        )
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_profile_keywords (id, profile_id, keyword, position)
+                    VALUES
+                        (
+                            'dddddddd-dddd-dddd-dddd-dddddddddddd',
+                            'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                            'analytics', 1
+                        ),
+                        (
+                            'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+                            'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                            'platform', 1
+                        )
+                    """
+                )
+            connection.commit()
+
+        copy2(lifecycle_migration, staged_migrations / lifecycle_migration.name)
+        migration_result = apply_migrations(
+            database_url=database_url,
+            migrations_dir=staged_migrations,
+        )
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT name, enabled_by_user, is_active
+                    FROM crawl_profiles
+                    ORDER BY created_at, id
+                    """
+                )
+                profiles = cursor.fetchall()
+                cursor.execute("SELECT count(*) FROM crawl_profile_keywords")
+                keyword_count = cursor.fetchone()[0]
+
+        assert migration_result.applied_versions == [lifecycle_migration.name]
+        assert profiles == [
+            ("คำค้นหลัก", True, True),
+            ("คำค้นหลัก (2)", True, True),
+            ("Empty paused group", False, False),
+        ]
+        assert keyword_count == 2
+
+        with connect(database_url) as connection:
+            with pytest.raises(UniqueViolation):
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO crawl_profiles (tenant_id, name)
+                        VALUES (
+                            '11111111-1111-1111-1111-111111111111',
+                            '  คำค้นหลัก  '
+                        )
+                        """
+                    )

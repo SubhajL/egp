@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING
 from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationError,
     DiscoveryAuthorizationSnapshot,
+    ProfileKeywordCandidate,
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
-    resolve_effective_discovery_entitlement,
 )
 from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
@@ -98,16 +98,19 @@ def _load_discovery_authorization_snapshot(
         bootstrap_schema=False,
     )
     subscriptions = billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
-    entitlement = resolve_effective_discovery_entitlement(subscriptions=subscriptions)
-    if entitlement.profile_cycle_started_at is not None:
-        profile_repository.deactivate_active_profiles_created_before(
-            tenant_id=tenant_id,
-            created_before=entitlement.profile_cycle_started_at,
-        )
-    active_keywords = profile_repository.list_active_keywords(tenant_id=tenant_id)
+    profile_details = profile_repository.list_profiles_with_keywords(tenant_id=tenant_id)
     return build_discovery_authorization_snapshot(
         subscriptions=subscriptions,
-        active_keywords=active_keywords,
+        profiles=[
+            ProfileKeywordCandidate(
+                profile_id=detail.profile.id,
+                profile_type=detail.profile.profile_type,
+                enabled_by_user=detail.profile.enabled_by_user,
+                created_at=detail.profile.created_at,
+                keywords=[keyword.keyword for keyword in detail.keywords],
+            )
+            for detail in profile_details
+        ],
     )
 
 
@@ -143,6 +146,7 @@ def _authorize_discovery_request(
     snapshot: DiscoveryAuthorizationSnapshot,
     database_url: str | None,
     tenant_id: str,
+    profile_id: str | None,
     keyword: str,
     trigger_type: str,
 ) -> None:
@@ -153,7 +157,11 @@ def _authorize_discovery_request(
     ):
         _require_backfill_authorization(snapshot)
         return
-    require_discovery_authorization(snapshot=snapshot, keyword=keyword)
+    require_discovery_authorization(
+        snapshot=snapshot,
+        keyword=keyword,
+        profile_id=profile_id,
+    )
 
 
 def _task_safe_payload(discovered: dict[str, object]) -> dict[str, object]:
@@ -342,6 +350,7 @@ def run_discover_workflow(
             snapshot=authorization_snapshot,
             database_url=database_url,
             tenant_id=tenant_id,
+            profile_id=profile_id,
             keyword=keyword,
             trigger_type=trigger_type,
         )
@@ -519,6 +528,7 @@ def run_discover_workflow(
                 snapshot=authorization_snapshot,
                 database_url=database_url,
                 tenant_id=tenant_id,
+                profile_id=profile_id,
                 keyword=task_keyword,
                 trigger_type=trigger_type,
             )

@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 
 from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationSnapshot,
+    ProfileKeywordCandidate,
     build_discovery_authorization_snapshot,
+    build_runnable_profile_keywords,
     require_discovery_authorization,
     resolve_effective_discovery_entitlement,
 )
@@ -29,6 +31,7 @@ def build_scheduled_discovery_jobs(
         if not _tenant_is_due(tenant=tenant, now=reference_now):
             continue
         tenant_id = str(tenant["tenant_id"])
+        seen_keywords: set[str] = set()
         for profile in list(tenant.get("profiles") or []):
             if not bool(profile.get("is_active", False)):
                 continue
@@ -38,6 +41,10 @@ def build_scheduled_discovery_jobs(
                 normalized_keyword = str(keyword).strip()
                 if not normalized_keyword:
                     continue
+                dedupe_key = normalized_keyword.casefold()
+                if dedupe_key in seen_keywords:
+                    continue
+                seen_keywords.add(dedupe_key)
                 jobs.append(
                     {
                         "tenant_id": tenant_id,
@@ -89,16 +96,24 @@ def run_scheduled_discovery(
         entitlement = resolve_effective_discovery_entitlement(
             subscriptions=subscriptions,
         )
-        if entitlement.profile_cycle_started_at is not None:
-            resolved_profile_repository.deactivate_active_profiles_created_before(
-                tenant_id=tenant.id,
-                created_before=entitlement.profile_cycle_started_at,
-            )
         profiles = resolved_profile_repository.list_profiles_with_keywords(tenant_id=tenant.id)
-        active_keywords = resolved_profile_repository.list_active_keywords(tenant_id=tenant.id)
+        profile_candidates = [
+            ProfileKeywordCandidate(
+                profile_id=detail.profile.id,
+                profile_type=detail.profile.profile_type,
+                enabled_by_user=detail.profile.enabled_by_user,
+                created_at=detail.profile.created_at,
+                keywords=[keyword.keyword for keyword in detail.keywords],
+            )
+            for detail in profiles
+        ]
+        runnable = build_runnable_profile_keywords(
+            profiles=profile_candidates,
+            entitlement=entitlement,
+        )
         authorization_snapshots[tenant.id] = build_discovery_authorization_snapshot(
             subscriptions=subscriptions,
-            active_keywords=active_keywords,
+            profiles=profile_candidates,
         )
         recent_runs = resolved_run_repository.list_runs(tenant_id=tenant.id, limit=50, offset=0)
         last_scheduled_run_at = _latest_scheduled_run_at(recent_runs.items)
@@ -109,12 +124,12 @@ def run_scheduled_discovery(
                 "last_scheduled_run_at": last_scheduled_run_at,
                 "profiles": [
                     {
-                        "profile_id": detail.profile.id,
-                        "profile_type": detail.profile.profile_type,
-                        "is_active": detail.profile.is_active,
-                        "keywords": [keyword.keyword for keyword in detail.keywords],
+                        "profile_id": item.profile_id,
+                        "profile_type": item.profile_type,
+                        "is_active": True,
+                        "keywords": [item.keyword],
                     }
-                    for detail in profiles
+                    for item in runnable
                 ],
             }
         )
@@ -125,7 +140,11 @@ def run_scheduled_discovery(
         tenant_id = str(job["tenant_id"])
         snapshot = authorization_snapshots[tenant_id]
         try:
-            require_discovery_authorization(snapshot=snapshot, keyword=str(job["keyword"]))
+            require_discovery_authorization(
+                snapshot=snapshot,
+                keyword=str(job["keyword"]),
+                profile_id=str(job["profile_id"]),
+            )
         except PermissionError:
             continue
         filtered_jobs.append(job)

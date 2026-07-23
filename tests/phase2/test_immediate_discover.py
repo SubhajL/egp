@@ -324,7 +324,7 @@ def _seed_subscription(
         )
 
 
-def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispatch(
+def test_enabled_profile_creation_without_subscription_saves_but_does_not_enqueue(
     tmp_path,
 ):
     spawned: list[dict] = []
@@ -352,15 +352,18 @@ def test_active_profile_creation_without_subscription_does_not_enqueue_or_dispat
         },
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "active subscription required for runs"
+    assert response.status_code == 201
+    assert response.json()["enabled_by_user"] is True
+    assert response.json()["effective_status"] == "paused_by_plan"
+    assert response.json()["status_reason"] == "subscription_inactive"
+    assert response.json()["keywords"] == ["analytics"]
     assert spawned == []
 
     with client.app.state.db_engine.connect() as connection:
-        count = connection.execute(
-            text("SELECT COUNT(*) FROM discovery_jobs")
-        ).scalar_one()
-    assert count == 0
+        job_count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        profile_count = connection.execute(text("SELECT COUNT(*) FROM crawl_profiles")).scalar_one()
+    assert job_count == 0
+    assert profile_count == 1
 
 
 def test_active_free_trial_profile_creation_still_enqueues_without_inline_dispatch(

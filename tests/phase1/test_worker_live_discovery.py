@@ -197,14 +197,18 @@ class FakeAdminRepository:
 class FakeProfileRepository:
     def __init__(self) -> None:
         self.active_keyword_calls = 0
+        self.profile_list_calls = 0
 
     def list_profiles_with_keywords(self, *, tenant_id: str):
+        self.profile_list_calls += 1
         return [
             SimpleNamespace(
                 profile=SimpleNamespace(
                     id="profile-1",
                     profile_type="tor",
+                    enabled_by_user=True,
                     is_active=True,
+                    created_at="2026-04-01T00:00:00+00:00",
                 ),
                 keywords=[
                     SimpleNamespace(keyword="analytics"),
@@ -326,21 +330,28 @@ def _seed_subscription(
 
 
 def _seed_profile(
-    *, database_url: str, keywords: list[str], is_active: bool = True
-) -> None:
+    *,
+    database_url: str,
+    keywords: list[str],
+    is_active: bool = True,
+    enabled_by_user: bool | None = None,
+    name: str = "Watchlist",
+) -> str:
     repository = create_profile_repository(
         database_url=database_url, bootstrap_schema=True
     )
-    repository.create_profile(
+    detail = repository.create_profile(
         tenant_id=TENANT_ID,
-        name="Watchlist",
+        name=name,
         profile_type="custom",
         is_active=is_active,
+        enabled_by_user=enabled_by_user,
         max_pages_per_keyword=15,
         close_consulting_after_days=30,
         close_stale_after_days=45,
         keywords=keywords,
     )
+    return detail.profile.id
 
 
 def _seed_backfill_project(
@@ -408,6 +419,47 @@ def test_run_worker_job_discover_denies_when_keyword_not_entitled(tmp_path) -> N
                 "database_url": database_url,
                 "tenant_id": TENANT_ID,
                 "keyword": "cloud",
+                "discovered_projects": [],
+            }
+        )
+
+
+def test_live_discovery_rejects_stale_paused_profile_job(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'worker-paused-profile.sqlite3'}"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    _seed_profile(
+        database_url=database_url,
+        name="Running group",
+        keywords=["analytics"],
+        enabled_by_user=True,
+    )
+    paused_profile_id = _seed_profile(
+        database_url=database_url,
+        name="Paused group",
+        keywords=["analytics"],
+        is_active=False,
+        enabled_by_user=False,
+    )
+
+    with pytest.raises(
+        PermissionError,
+        match="discover profile keyword is not entitled for tenant",
+    ):
+        run_worker_job(
+            {
+                "command": "discover",
+                "database_url": database_url,
+                "tenant_id": TENANT_ID,
+                "profile_id": paused_profile_id,
+                "profile": "custom",
+                "keyword": "analytics",
                 "discovered_projects": [],
             }
         )
@@ -620,7 +672,8 @@ def test_run_discover_workflow_reuses_authorization_snapshot_for_discovered_proj
     )
 
     assert billing_repository.subscription_calls == 1
-    assert profile_repository.active_keyword_calls == 1
+    assert profile_repository.profile_list_calls == 1
+    assert profile_repository.active_keyword_calls == 0
 
 
 def test_run_discover_workflow_denies_per_project_keyword_outside_entitlement(
@@ -2396,6 +2449,12 @@ def test_build_scheduled_discovery_jobs_returns_due_active_profile_keywords() ->
                         "is_active": False,
                         "keywords": ["smart tv"],
                     },
+                    {
+                        "profile_id": "profile-3",
+                        "profile_type": "custom",
+                        "is_active": True,
+                        "keywords": ["  ANALYTICS  "],
+                    },
                 ],
             }
         ]
@@ -2495,7 +2554,8 @@ def test_run_scheduled_discovery_reuses_authorization_snapshot_per_tenant_batch(
     assert result["due_job_count"] == 2
     assert result["executed_job_count"] == 2
     assert billing_repository.subscription_calls == 1
-    assert profile_repository.active_keyword_calls == 1
+    assert profile_repository.profile_list_calls == 1
+    assert profile_repository.active_keyword_calls == 0
 
 
 def test_run_scheduled_discovery_skips_expired_subscription_profiles() -> None:
@@ -2574,6 +2634,106 @@ def test_run_scheduled_discovery_skips_keywords_outside_entitlement() -> None:
     assert result["due_job_count"] == 0
     assert result["executed_job_count"] == 0
     assert executed_jobs == []
+
+
+def test_monthly_reinstatement_schedules_historical_enabled_groups() -> None:
+    class HistoricalProfileRepository(FakeProfileRepository):
+        def list_profiles_with_keywords(self, *, tenant_id: str):
+            self.profile_list_calls += 1
+            return [
+                SimpleNamespace(
+                    profile=SimpleNamespace(
+                        id="historical-profile",
+                        profile_type="custom",
+                        enabled_by_user=True,
+                        is_active=False,
+                        created_at="2026-04-01T00:00:00+00:00",
+                    ),
+                    keywords=[SimpleNamespace(keyword="analytics")],
+                )
+            ]
+
+        def deactivate_active_profiles_created_before(self, **kwargs):
+            raise AssertionError("scheduled discovery must not mutate saved groups")
+
+    today = date.today()
+    executed_jobs: list[dict[str, object]] = []
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        id="monthly-subscription",
+                        plan_code="monthly_membership",
+                        subscription_status=SimpleNamespace(value="active"),
+                        keyword_limit=None,
+                        billing_period_start=(today - timedelta(days=1)).isoformat(),
+                        billing_period_end=(today + timedelta(days=29)).isoformat(),
+                        activated_at=f"{today.isoformat()}T00:00:00+00:00",
+                        created_at=f"{today.isoformat()}T00:00:00+00:00",
+                    )
+                ]
+            }
+        ),
+        profile_repository=HistoricalProfileRepository(),
+        run_repository=FakeScheduledRunRepository(),
+        job_runner=lambda job: executed_jobs.append(job) or {"run_id": "run-1"},
+    )
+
+    assert result["due_job_count"] == 1
+    assert executed_jobs == [
+        {
+            "tenant_id": TENANT_ID,
+            "profile_id": "historical-profile",
+            "profile": "custom",
+            "keyword": "analytics",
+            "trigger_type": "schedule",
+            "live": True,
+        }
+    ]
+
+
+def test_scheduler_skips_paused_group_without_writing_profile() -> None:
+    class PausedProfileRepository(FakeProfileRepository):
+        def list_profiles_with_keywords(self, *, tenant_id: str):
+            self.profile_list_calls += 1
+            return [
+                SimpleNamespace(
+                    profile=SimpleNamespace(
+                        id="paused-profile",
+                        profile_type="custom",
+                        enabled_by_user=False,
+                        is_active=False,
+                        created_at="2026-04-01T00:00:00+00:00",
+                    ),
+                    keywords=[SimpleNamespace(keyword="analytics")],
+                )
+            ]
+
+        def deactivate_active_profiles_created_before(self, **kwargs):
+            raise AssertionError("scheduled discovery must not mutate saved groups")
+
+    result = run_scheduled_discovery(
+        database_url="sqlite+pysqlite:///unused.sqlite3",
+        admin_repository=FakeAdminRepository(),
+        billing_repository=FakeBillingRepository(
+            {
+                TENANT_ID: [
+                    SimpleNamespace(
+                        subscription_status=SimpleNamespace(value="active"),
+                        keyword_limit=5,
+                    )
+                ]
+            }
+        ),
+        profile_repository=PausedProfileRepository(),
+        run_repository=FakeScheduledRunRepository(),
+    )
+
+    assert result["due_job_count"] == 0
+    assert result["executed_job_count"] == 0
 
 
 def test_run_worker_job_executes_scheduled_discovery_jobs_through_worker_runner(
