@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict
+import json
 from pathlib import Path
 import threading
 import time
@@ -15,6 +17,7 @@ from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchBatchResult,
     DiscoveryJobDispatchDisposition,
 )
+from egp_db.repositories.discovery_job_repo import DiscoveryQueueSnapshot
 from egp_shared_types.enums import CrawlerBlockerCode
 
 
@@ -86,6 +89,72 @@ def test_run_discovery_dispatch_once_passes_limit_and_reconciles_workers() -> No
     assert processed.processed_count == 3
     assert processor.limits == [5]
     assert run_service.owner_pids == [1234, 1234]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_reason"),
+    [
+        (
+            DiscoveryDispatchBatchResult(
+                requested_limit=2,
+                dispositions=(
+                    DiscoveryJobDispatchDisposition(
+                        job_id="job-1",
+                        outcome="dispatched",
+                    ),
+                    DiscoveryJobDispatchDisposition(
+                        job_id="job-2",
+                        outcome="retrying",
+                        failure_code="search_page_state_error",
+                    ),
+                ),
+                queue_snapshot=DiscoveryQueueSnapshot(
+                    pending_count=3,
+                    claimable_count=2,
+                    leased_count=0,
+                    retry_scheduled_count=1,
+                ),
+            ),
+            "limit_reached",
+        ),
+        (
+            DiscoveryDispatchBatchResult(
+                requested_limit=5,
+                dispositions=(),
+                blocker=CrawlerBlockerCode.CIRCUIT_OPEN,
+                queue_snapshot=DiscoveryQueueSnapshot(
+                    pending_count=3,
+                    claimable_count=3,
+                    leased_count=0,
+                    retry_scheduled_count=0,
+                ),
+            ),
+            "blocked",
+        ),
+    ],
+)
+def test_once_summary_distinguishes_limit_queue_and_blocker(
+    result: DiscoveryDispatchBatchResult,
+    expected_reason: str,
+) -> None:
+    summary = discovery_dispatch.build_discovery_one_shot_summary(result)
+
+    assert summary.exit_reason == expected_reason
+    assert summary.requested_limit == result.requested_limit
+    assert summary.processed_count == result.processed_count
+    assert summary.remaining_pending_count == result.queue_snapshot.pending_count
+    assert summary.remaining_claimable_count == result.queue_snapshot.claimable_count
+    assert summary.blocker == (
+        result.blocker.value if result.blocker is not None else None
+    )
+    assert asdict(summary)["dispositions"] == [
+        {
+            "job_id": disposition.job_id,
+            "outcome": disposition.outcome,
+            "failure_code": disposition.failure_code,
+        }
+        for disposition in result.dispositions
+    ]
 
 
 def test_reconcile_missing_discovery_workers_return_annotation_is_integer() -> None:
@@ -247,6 +316,7 @@ async def test_dispatch_loop_serializes_periodic_and_batch_heartbeats() -> None:
 
 def test_main_reports_database_unreachable_when_runtime_build_fails(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     reporter = RecordingRuntimeReporter()
     monkeypatch.setattr(
@@ -263,7 +333,10 @@ def test_main_reports_database_unreachable_when_runtime_build_fails(
             ConnectionRefusedError("connection refused"),
         )
 
-    exit_code = discovery_dispatch.main([], runtime_factory=fail_runtime_factory)
+    exit_code = discovery_dispatch.main(
+        ["--once", "--limit", "4"],
+        runtime_factory=fail_runtime_factory,
+    )
 
     assert exit_code == 1
     assert reporter.payloads == [
@@ -275,11 +348,75 @@ def test_main_reports_database_unreachable_when_runtime_build_fails(
             "circuit_state": "unknown",
         }
     ]
+    assert json.loads(capsys.readouterr().out) == {
+        "blocker": CrawlerBlockerCode.DATABASE_UNREACHABLE.value,
+        "circuit_reset_at": None,
+        "dispositions": None,
+        "exit_reason": "error",
+        "processed_count": None,
+        "remaining_claimable_count": None,
+        "remaining_leased_count": None,
+        "remaining_pending_count": None,
+        "remaining_retry_scheduled_count": None,
+        "requested_limit": 4,
+    }
+
+
+def test_main_once_reports_unknown_progress_after_partial_work_then_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FailingProcessor:
+        def __init__(self) -> None:
+            self.dispatched_job_ids: list[str] = []
+
+        def process_pending(
+            self,
+            *,
+            limit: int | None = None,
+        ) -> DiscoveryDispatchBatchResult:
+            del limit
+            self.dispatched_job_ids.append("job-already-dispatched")
+            raise RuntimeError("token=must-never-leak")
+
+    processor = FailingProcessor()
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=processor,
+        run_service=RecordingRunService(),
+    )
+
+    exit_code = discovery_dispatch.main(
+        ["--once", "--limit", "2"],
+        runtime_factory=lambda *args, **kwargs: runtime,
+    )
+
+    encoded = capsys.readouterr().out
+    assert exit_code == 1
+    assert processor.dispatched_job_ids == ["job-already-dispatched"]
+    assert json.loads(encoded) == {
+        "blocker": "runtime_error",
+        "circuit_reset_at": None,
+        "dispositions": None,
+        "exit_reason": "error",
+        "processed_count": None,
+        "remaining_claimable_count": None,
+        "remaining_leased_count": None,
+        "remaining_pending_count": None,
+        "remaining_retry_scheduled_count": None,
+        "requested_limit": 2,
+    }
+    assert "must-never-leak" not in encoded
 
 
 def test_main_once_builds_runtime_and_reports_batch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     built_args: list[tuple[str | None, Path | None, int | None]] = []
     processor = RecordingDiscoveryProcessor()
@@ -332,6 +469,79 @@ def test_main_once_builds_runtime_and_reports_batch(
         "circuit_state": "closed",
         "circuit_reset_at": None,
         "force": True,
+    }
+    summary = json.loads(capsys.readouterr().out)
+    assert summary == {
+        "blocker": None,
+        "circuit_reset_at": None,
+        "dispositions": [
+            {
+                "failure_code": None,
+                "job_id": f"job-{index}",
+                "outcome": "dispatched",
+            }
+            for index in range(3)
+        ],
+        "exit_reason": "queue_drained",
+        "processed_count": 3,
+        "remaining_claimable_count": 0,
+        "remaining_leased_count": 0,
+        "remaining_pending_count": 0,
+        "remaining_retry_scheduled_count": 0,
+        "requested_limit": 7,
+    }
+
+
+def test_main_once_returns_blocked_exit_code_and_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class BlockedProcessor:
+        def process_pending(
+            self,
+            *,
+            limit: int | None = None,
+        ) -> DiscoveryDispatchBatchResult:
+            return DiscoveryDispatchBatchResult(
+                requested_limit=limit or 1,
+                dispositions=(),
+                blocker=CrawlerBlockerCode.CIRCUIT_OPEN,
+                circuit_reset_at="2026-07-23T15:00:00+00:00",
+                queue_snapshot=DiscoveryQueueSnapshot(
+                    pending_count=2,
+                    claimable_count=2,
+                    leased_count=0,
+                    retry_scheduled_count=0,
+                ),
+            )
+
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=BlockedProcessor(),
+        run_service=RecordingRunService(),
+    )
+
+    exit_code = discovery_dispatch.main(
+        ["--once", "--limit", "1"],
+        runtime_factory=lambda *args, **kwargs: runtime,
+    )
+
+    assert exit_code == 3
+    assert json.loads(capsys.readouterr().out) == {
+        "blocker": CrawlerBlockerCode.CIRCUIT_OPEN.value,
+        "circuit_reset_at": "2026-07-23T15:00:00+00:00",
+        "dispositions": [],
+        "exit_reason": "blocked",
+        "processed_count": 0,
+        "remaining_claimable_count": 2,
+        "remaining_leased_count": 0,
+        "remaining_pending_count": 2,
+        "remaining_retry_scheduled_count": 0,
+        "requested_limit": 1,
     }
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import threading
 import time
@@ -12,6 +12,7 @@ from typing import Callable, Protocol
 
 from egp_db.repositories.discovery_job_repo import (
     DiscoveryJobRecord,
+    DiscoveryQueueSnapshot,
     StaleDiscoveryJobClaimError,
 )
 from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
@@ -31,6 +32,8 @@ class NonRetriableDiscoveryDispatchError(RuntimeError):
 
 
 class DiscoveryJobStore(Protocol):
+    def get_discovery_queue_snapshot(self) -> DiscoveryQueueSnapshot: ...
+
     def has_claimable_discovery_jobs(
         self,
         *,
@@ -126,6 +129,9 @@ class DiscoveryDispatchBatchResult:
     dispositions: tuple[DiscoveryJobDispatchDisposition, ...]
     blocker: CrawlerBlockerCode | None = None
     circuit_reset_at: str | None = None
+    queue_snapshot: DiscoveryQueueSnapshot = field(
+        default_factory=DiscoveryQueueSnapshot.empty
+    )
 
     @property
     def processed_count(self) -> int:
@@ -320,6 +326,7 @@ class DiscoveryDispatchProcessor:
             dispositions=tuple(dispositions),
             blocker=blocker,
             circuit_reset_at=circuit_reset_at,
+            queue_snapshot=self.repository.get_discovery_queue_snapshot(),
         )
 
     def _process_claimed_jobs(

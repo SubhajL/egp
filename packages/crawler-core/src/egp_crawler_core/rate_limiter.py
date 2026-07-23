@@ -199,34 +199,67 @@ class FileLockRateLimiter:
         with self._locked_state() as state:
             now = self._now()
             self._normalize_state(state, now=now)
-            circuit_open_until = float(state.get("circuit_open_until") or 0.0)
-            is_open = circuit_open_until > now
-            if circuit_open_until and not is_open:
-                state["circuit_open_until"] = 0.0
-                state["consecutive_429"] = 0
-                circuit_open_until = 0.0
-            reset_in_seconds = (
+            return self._snapshot_from_state(
+                state,
+                now=now,
+                clear_expired=True,
+            )
+
+    def peek_circuit_snapshot(self) -> RateLimiterCircuitSnapshot:
+        """Read sanitized circuit state without creating or rewriting its file."""
+
+        path = self._config.state_path
+        if not path.is_file():
+            return self._snapshot_from_state({}, now=self._now(), clear_expired=False)
+        try:
+            with path.open(encoding="utf-8") as state_file:
+                fcntl.flock(state_file.fileno(), fcntl.LOCK_SH)
+                try:
+                    state = _decode_state(state_file.read())
+                finally:
+                    fcntl.flock(state_file.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            state = {}
+        return self._snapshot_from_state(
+            state,
+            now=self._now(),
+            clear_expired=False,
+        )
+
+    @staticmethod
+    def _snapshot_from_state(
+        state: dict[str, Any],
+        *,
+        now: float,
+        clear_expired: bool,
+    ) -> RateLimiterCircuitSnapshot:
+        circuit_open_until = float(state.get("circuit_open_until") or 0.0)
+        is_open = circuit_open_until > now
+        if circuit_open_until and not is_open and clear_expired:
+            state["circuit_open_until"] = 0.0
+            state["consecutive_429"] = 0
+            circuit_open_until = 0.0
+        return RateLimiterCircuitSnapshot(
+            is_open=is_open,
+            reset_at=(
+                datetime.fromtimestamp(circuit_open_until, UTC).isoformat()
+                if is_open
+                else None
+            ),
+            reset_in_seconds=(
                 max(0.0, circuit_open_until - now) if is_open else 0.0
-            )
-            return RateLimiterCircuitSnapshot(
-                is_open=is_open,
-                reset_at=(
-                    datetime.fromtimestamp(circuit_open_until, UTC).isoformat()
-                    if is_open
-                    else None
-                ),
-                reset_in_seconds=reset_in_seconds,
-                last_outcome=(
-                    str(state["last_outcome"])
-                    if state.get("last_outcome") is not None
-                    else None
-                ),
-                consecutive_429=int(state.get("consecutive_429") or 0),
-                consecutive_site_errors=int(
-                    state.get("consecutive_site_errors") or 0
-                ),
-                site_error_trip_count=int(state.get("site_error_trip_count") or 0),
-            )
+            ),
+            last_outcome=(
+                str(state["last_outcome"])
+                if state.get("last_outcome") is not None
+                else None
+            ),
+            consecutive_429=int(state.get("consecutive_429") or 0),
+            consecutive_site_errors=int(
+                state.get("consecutive_site_errors") or 0
+            ),
+            site_error_trip_count=int(state.get("site_error_trip_count") or 0),
+        )
 
     def _consume_or_wait(self, state: dict[str, Any], *, now: float) -> float:
         rps = max(0.0, float(self._config.requests_per_second))

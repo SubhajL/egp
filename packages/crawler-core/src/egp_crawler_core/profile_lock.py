@@ -21,6 +21,27 @@ class ProfileLockedError(RuntimeError):
     """Raised when the persistent profile is already locked by another process."""
 
 
+def is_profile_locked(profile_dir: Path) -> bool:
+    """Probe an existing profile lock without creating files or directories."""
+
+    lock_path = profile_dir / PROFILE_LOCK_FILENAME
+    if not lock_path.is_file():
+        return False
+    try:
+        handle = lock_path.open("r+")
+    except OSError:
+        return True
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        try:
+            return False
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def acquire_profile_lock(profile_dir: Path) -> IO[str]:
     """Take an exclusive, non-blocking flock on the profile's lock file.
 

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import asdict, dataclass, field
+import json
 import logging
 import os
 from contextlib import suppress
-from dataclasses import dataclass, field
 from pathlib import Path
 import threading
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol
 
 from sqlalchemy.exc import OperationalError
 
@@ -29,6 +30,7 @@ from egp_api.config import (
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchBatchResult,
     DiscoveryDispatchProcessor,
+    DiscoveryJobDispatchDisposition,
 )
 from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
 from egp_api.services.crawler_runtime_reporter import (
@@ -98,6 +100,90 @@ class DiscoveryDispatchWakeSignal:
 class DiscoveryDispatchRuntime:
     processor: PendingDiscoveryProcessor
     run_service: MissingWorkerReconciler
+
+
+OneShotExitReason = Literal[
+    "blocked",
+    "error",
+    "limit_reached",
+    "queue_drained",
+    "waiting_retry_or_lease",
+    "work_remains",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryOneShotSummary:
+    requested_limit: int | None
+    processed_count: int | None
+    dispositions: list[DiscoveryJobDispatchDisposition] | None
+    remaining_pending_count: int | None
+    remaining_claimable_count: int | None
+    remaining_leased_count: int | None
+    remaining_retry_scheduled_count: int | None
+    blocker: str | None
+    circuit_reset_at: str | None
+    exit_reason: OneShotExitReason
+
+
+def build_discovery_one_shot_summary(
+    result: DiscoveryDispatchBatchResult,
+) -> DiscoveryOneShotSummary:
+    """Build the stable, sanitized terminal contract for bounded crawling."""
+
+    queue = result.queue_snapshot
+    if result.blocker is not None:
+        exit_reason: OneShotExitReason = "blocked"
+    elif queue.pending_count == 0:
+        exit_reason = "queue_drained"
+    elif result.processed_count >= result.requested_limit:
+        exit_reason = "limit_reached"
+    elif queue.claimable_count == 0:
+        exit_reason = "waiting_retry_or_lease"
+    else:
+        exit_reason = "work_remains"
+    return DiscoveryOneShotSummary(
+        requested_limit=result.requested_limit,
+        processed_count=result.processed_count,
+        dispositions=list(result.dispositions),
+        remaining_pending_count=queue.pending_count,
+        remaining_claimable_count=queue.claimable_count,
+        remaining_leased_count=queue.leased_count,
+        remaining_retry_scheduled_count=queue.retry_scheduled_count,
+        blocker=result.blocker.value if result.blocker is not None else None,
+        circuit_reset_at=result.circuit_reset_at,
+        exit_reason=exit_reason,
+    )
+
+
+def build_discovery_one_shot_error_summary(
+    *,
+    requested_limit: int | None,
+    exc: BaseException,
+) -> DiscoveryOneShotSummary:
+    """Build a sanitized terminal contract when bounded dispatch cannot complete."""
+
+    blocker = (
+        CrawlerBlockerCode.DATABASE_UNREACHABLE.value
+        if isinstance(exc, OperationalError)
+        else "runtime_error"
+    )
+    return DiscoveryOneShotSummary(
+        requested_limit=requested_limit,
+        processed_count=None,
+        dispositions=None,
+        remaining_pending_count=None,
+        remaining_claimable_count=None,
+        remaining_leased_count=None,
+        remaining_retry_scheduled_count=None,
+        blocker=blocker,
+        circuit_reset_at=None,
+        exit_reason="error",
+    )
+
+
+def _print_discovery_one_shot_summary(summary: DiscoveryOneShotSummary) -> None:
+    print(json.dumps(asdict(summary), sort_keys=True, separators=(",", ":")))
 
 
 @dataclass(slots=True)
@@ -584,6 +670,13 @@ def main(
         )
     except Exception as exc:
         _report_runtime_error(runtime_reporter, exc)
+        if args.once:
+            _print_discovery_one_shot_summary(
+                build_discovery_one_shot_error_summary(
+                    requested_limit=args.limit,
+                    exc=exc,
+                )
+            )
         logger.exception("Failed to build discovery dispatch runtime")
         return 1
     resolved_owner_pid = os.getpid() if owner_pid is None else owner_pid
@@ -591,8 +684,8 @@ def main(
         runtime_state = RuntimeHeartbeatState()
         heartbeat_stop, heartbeat_thread, heartbeat_delivery_lock = (
             _start_runtime_heartbeat_thread(
-            reporter=runtime_reporter,
-            state=runtime_state,
+                reporter=runtime_reporter,
+                state=runtime_state,
             )
         )
         try:
@@ -612,6 +705,12 @@ def main(
                 heartbeat_thread=heartbeat_thread,
                 delivery_lock=heartbeat_delivery_lock,
             )
+            _print_discovery_one_shot_summary(
+                build_discovery_one_shot_error_summary(
+                    requested_limit=args.limit,
+                    exc=exc,
+                )
+            )
             logger.exception("Failed to process pending discovery dispatch jobs")
             return 1
         runtime_state.update_from_batch(processed)
@@ -622,11 +721,13 @@ def main(
             heartbeat_thread=heartbeat_thread,
             delivery_lock=heartbeat_delivery_lock,
         )
+        summary = build_discovery_one_shot_summary(processed)
+        _print_discovery_one_shot_summary(summary)
         logger.info(
             "Processed %d pending discovery dispatch jobs",
             processed.processed_count,
         )
-        return 0
+        return 3 if summary.exit_reason == "blocked" else 0
 
     try:
         asyncio.run(

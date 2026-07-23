@@ -173,6 +173,23 @@ def test_circuit_snapshot_exposes_sanitized_reset_time(tmp_path: Path) -> None:
     assert snapshot.last_outcome == "429"
 
 
+def test_read_only_circuit_snapshot_does_not_create_state_file(tmp_path: Path) -> None:
+    state_path = tmp_path / "missing" / "egp-rate-limit.json"
+    limiter = FileLockRateLimiter(
+        RateLimiterConfig(
+            requests_per_second=0.0,
+            state_path=state_path,
+        )
+    )
+
+    snapshot = limiter.peek_circuit_snapshot()
+
+    assert snapshot.is_open is False
+    assert snapshot.reset_at is None
+    assert state_path.exists() is False
+    assert state_path.parent.exists() is False
+
+
 def test_rate_limiter_config_reads_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

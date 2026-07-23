@@ -1081,3 +1081,153 @@ LOW
   `circuit_open`, profile blockers, and correlation mismatch before changing cadence.
 - Code rollback can leave the additive heartbeat table in place. Stop the new reporter before
   rolling the API back so it does not repeatedly hit a missing endpoint.
+
+## U3 landed (2026-07-23)
+
+- PR `#176` was admin squash-merged to `origin/main`.
+- Exact merge commit: `57c9bb048ef3f3e34a99f96dc3e0181cca6d1843`.
+- GitHub-hosted checks did not start because the account was locked for billing; all equivalent
+  local gates listed above were green before merge.
+- Primary local `main` was fast-forwarded to the exact merge commit.
+- Post-merge verification: affected Python suite `102 passed`; Ruff passed.
+- The user-owned untracked `docs/TOR KEYWORDS.md` remained untouched.
+
+## Implementation update (2026-07-23) - U4 operator diagnostics
+
+### Exploration and RED
+
+- Inspected the remote crawl guard/runner/launchd assets, discovery dispatch executor and
+  repository seams, persistent-profile lock/state helpers, shared circuit state, runtime
+  heartbeat repository, and the operator runbook.
+- Auggie could not be invoked with the skill-mandated two-second timeout, so exploration used
+  bounded direct `rg`/source inspection as the documented fallback.
+- Initial named regressions failed at collection because the doctor module, queue snapshot,
+  database-readiness result, and read-only profile-lock probe did not yet exist.
+
+### Implementation
+
+- Added a stable terminal JSON contract for bounded crawling: requested limit, processed
+  dispositions, aggregate remaining queue state, blocker/reset context, and an explicit exit
+  reason. Typed blockers return status 3; completed/deferred summaries return 0.
+- Added a read-only, sanitized `doctor` command covering database reachability, aggregate queue
+  state, external-agent heartbeat, persistent-profile lock/warm state, and the shared circuit.
+- Added non-mutating circuit and profile-lock inspection helpers so diagnosis does not create,
+  refresh, or overwrite runtime state.
+- Added a bounded `wait-database` guard command. Launchd installation now orders tunnel startup,
+  database readiness, then watcher bootstrap and aborts before the watcher if readiness fails.
+- Expanded the operator runbook with exact daily commands, summary-field semantics, typed
+  decision responses, and explicit stop rules based on correlation and hard-stop blockers.
+
+### Focused verification
+
+- First focused implementation run: `111 passed, 1 failed`; the only failure was the still-missing
+  runbook contract.
+- After the runbook update: `112 passed`.
+- After explicit blocked-crawl and sanitized-doctor CLI exit-code coverage: `114 passed`.
+- Ruff over every changed Python file and `bash -n` over both changed shell scripts passed.
+
+### Independent QCHECK and remediation
+
+QCHECK reported three medium findings and no critical/high findings:
+
+1. exceptional bounded runs returned before emitting the promised JSON contract;
+2. a direct SQLite doctor target could create a local database artifact;
+3. database readiness accepted non-finite waits and could start a retry at the deadline.
+
+All three were reproduced with regressions and fixed:
+
+- bounded runtime-build and dispatch exceptions now emit a sanitized `error` summary with unknown
+  queue counts represented as `null`, then exit 1;
+- doctor rejects non-PostgreSQL targets before engine construction, sanitizes initialization
+  failures, and guarantees disposal of any constructed engine;
+- database readiness requires positive finite timeout/poll values and checks the deadline before
+  every probe.
+
+The remediated affected suite passed `155 tests` on each of three consecutive runs. Focused Ruff
+and `git diff --check` also passed.
+
+The first re-review identified two remaining medium precision gaps: exceptional processing could
+have completed partial work before raising, and a slow successful readiness call could return
+after its deadline. Error summaries now use `null` for both processed count and dispositions
+instead of asserting zero, with a partial-work regression. Database readiness now rechecks the
+clock after a successful probe and rejects deadline overruns. The final affected suite passed
+`156 tests` on each of three consecutive runs.
+
+Final independent QCHECK reported no severity findings. Final repository-wide gates on the
+remediated source:
+
+- Python: `1380 passed`, with 112 existing SQLite deprecation warnings;
+- affected Python: `156 passed` on each of three consecutive runs;
+- web unit: `51 passed`; Playwright: `43 passed`;
+- generated OpenAPI/TypeScript drift, TypeScript typecheck, Next lint, and production build:
+  passed;
+- repository-wide Ruff, Python compileall, shell syntax, and `git diff --check`: passed.
+
+As in U3, an untracked worktree-local `.venv` symlink was used only for the repository backup
+test and removed automatically after pytest.
+
+## Review (2026-07-23 22:16:48 +0700) - U4 staged working tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-review-crawler-hiccups`
+- Branch: `fix/crawler-operator-diagnostics`
+- Scope: staged working tree against
+  `57c9bb048ef3f3e34a99f96dc3e0181cca6d1843`
+- Commands Run: staged status/name/stat/check; bounded production source, shell, runbook, and
+  test inspection; independent QCHECK with two remediation rounds; affected suite three times;
+  repository-wide pytest; OpenAPI drift; TypeScript typecheck; unit/browser tests; build; lint;
+  Ruff; compileall; shell syntax
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No outstanding findings. QCHECK's exceptional-summary accuracy, non-PostgreSQL doctor
+  side-effect, initialization sanitization/disposal, non-finite database wait, deadline retry,
+  partial-progress reporting, and successful-probe overrun findings were reproduced and fixed.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Doctor intentionally reports global aggregate queue counts because the single external Mac
+  executor owns the global discovery queue; it never returns tenant, keyword, URL, path, or raw
+  exception data.
+- Doctor is diagnostic only and returns nonzero for deferred as well as blocked state so operator
+  automation does not mistake “not ready now” for safe dispatch.
+- A bounded error summary uses `null` progress and remaining counts because work may have completed
+  before an exception and the final queue query may itself be the failing operation.
+- PostgreSQL driver connection timeout granularity may let a probe process return after its
+  logical deadline; the command rejects that late success and never starts another probe after
+  the deadline.
+
+### Recommended Tests / Validation
+
+- Complete: affected suite `156 passed` on each of three consecutive runs.
+- Complete: repository-wide `1380 passed` with 112 existing SQLite deprecation warnings.
+- Complete: web unit `51 passed`, Playwright `43 passed`, production build, TypeScript typecheck,
+  Next lint, generated OpenAPI/type drift, Ruff, compileall, shell syntax, and staged diff check.
+- Post-merge: rerun the focused doctor/executor/guard/asset suites and Ruff on exact merged `main`.
+
+### Rollout Notes
+
+- Deploy code and the existing migration/runtime route sequence from U3 before enabling the Mac
+  watcher.
+- `scripts/install_launchd.sh install` now starts the tunnel, waits for a bounded database-ready
+  result, and only then bootstraps the watcher.
+- Use `scripts/run_remote_crawl.sh doctor` before changing queue rows; use the bounded crawl JSON
+  exit reason to distinguish queue drain, cap reached, deferred work, blocker, and execution
+  error.
+- Code rollback does not require a schema rollback for U4; stop the watcher first and leave queue
+  rows intact.

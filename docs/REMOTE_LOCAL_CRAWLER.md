@@ -156,11 +156,34 @@ After a full deploy to #139+, delete the override (the base compose then carries
 
 ```bash
 scripts/run_remote_crawl.sh tunnel        # terminal 1: SSH tunnel to prod Postgres
+scripts/run_remote_crawl.sh wait-database # bounded readiness check; no credentials in output
+scripts/run_remote_crawl.sh doctor        # read-only DB/profile/circuit/queue/heartbeat diagnosis
 scripts/run_remote_crawl.sh warm-profile  # once, until Cloudflare clears
 scripts/run_remote_crawl.sh crawl 5       # drain up to 5 pending prod jobs, then exit
 # …or continuously:
 scripts/run_remote_crawl.sh watch
 ```
+
+`doctor` is read-only and emits a sanitized JSON snapshot. It reports database
+reachability, persistent-profile lock/warm state, the shared circuit state, executor
+heartbeat health, and aggregate queue counts without printing database URLs, credentials,
+profile paths, or raw exception strings.
+
+Every bounded `crawl N` ends with one compact JSON summary. Compare
+`requested_limit` with `processed_count`, then inspect the disposition counts,
+`remaining_pending_count`, `remaining_claimable_count`, `remaining_leased_count`,
+`remaining_retry_scheduled_count`, `blocker`, `circuit_reset_at`, and `exit_reason`.
+`queue_drained` means there is no queued work; `limit_reached` means the requested cap was
+reached and work may remain; `waiting_retry_or_lease` means pending work exists but is not
+currently claimable; `work_remains` means claimable work remains; `blocked` identifies a
+typed hard stop; and `error` means runtime construction or processing failed before queue
+state could be confirmed (`processed_count`, dispositions, and remaining counts are `null`
+rather than falsely reported as zero). An error exits 1, a blocked run exits 3, and the other
+completed summaries exit 0.
+
+The doctor accepts only the configured production PostgreSQL target. It rejects SQLite and
+other backends before creating an engine so a supposedly read-only diagnosis cannot create a
+local database artifact.
 
 The long-running executor sends a sanitized HTTPS heartbeat even when its
 database tunnel is unavailable. Operators can inspect the derived online/offline
@@ -185,6 +208,10 @@ By default two agents are installed: `com.egp.pg-tunnel` (the SSH tunnel) and
 idle-sleeps while actively watching). `com.egp.pg-warm` is optional; install it
 only with `--with-warm` if you deliberately want a browser keep-warm every 15 min.
 Logs: `~/Library/Logs/egp/{tunnel,crawl,warm}.log`.
+
+Installation starts the tunnel, waits for the database with a bounded readiness
+probe, and only then bootstraps the watcher. A readiness timeout aborts installation
+before the watcher starts; fix the tunnel or database connectivity and rerun install.
 
 ### Keeping the profile warm (Cloudflare clearance)
 
@@ -244,10 +271,13 @@ If no job is claimed, inspect the typed pre-dispatch blocker before changing que
 
 | Blocker | Meaning | Operator response |
 |---|---|---|
+| `agent_offline` | The executor heartbeat is stale or absent. | Restore the Mac agent and confirm a fresh heartbeat before changing queue rows. |
+| `database_unreachable` | The database readiness probe failed within its bounded timeout. | Check the SSH tunnel and managed database; rerun `wait-database`, then `doctor`. |
 | `circuit_open` | The shared e-GP failure circuit is cooling down. | Wait until the reported reset time; investigate the preceding failure burst. |
 | `profile_busy` | Another process owns the persistent-profile lock. | Confirm that process is healthy; do not start a second Chrome. |
 | `profile_warm_retry` | Automated profile warming failed but has not reached the pause threshold. | Let the next bounded retry run and inspect the profile state file. |
 | `profile_operator_action_required` | Repeated warming failures paused unattended dispatch. | Run `scripts/run_remote_crawl.sh warm-profile` interactively and clear the challenge. |
+| `correlation_mismatch` | The observed request/run IDs do not match the intended bounded recovery. | Stop, preserve the output, and reconcile the exact request and run IDs before retrying. |
 
 These blockers leave the jobs pending and unclaimed. Worker failures instead persist a stable
 `last_error_code` on the job, so a semantic failure such as `keyword_no_results` is not
@@ -292,10 +322,10 @@ Monitor only the returned request ID:
 curl -fsS "https://api.<domain>/v1/rules/recrawl/<request-id>?tenant_id=<tenant-uuid>"
 ```
 
-Stop immediately without deleting audit rows if the shared circuit opens, the profile pauses,
-the validated count differs from the incident manifest, a matching pending job appears, or a
-new semantic-failure burst begins. Leave pending jobs recoverable and investigate before any
-further execution.
+Stop immediately without deleting audit rows if `doctor` reports a typed hard-stop blocker,
+the validated count differs from the incident manifest, a matching pending job appears, or
+the request/run correlation changes. Leave pending jobs recoverable and investigate before
+any further execution.
 
 ---
 
