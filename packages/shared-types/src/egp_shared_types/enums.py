@@ -134,6 +134,35 @@ class CrawlOutcomeReason(StrEnum):
     PROJECT_DETAIL_MISSING_REQUIRED_FIELDS = "project_detail_missing_required_fields"
 
 
+class DiscoveryFailureCode(StrEnum):
+    """Stable low-cardinality reasons for discovery dispatch failures."""
+
+    KEYWORD_NO_RESULTS = "keyword_no_results"
+    NO_ELIGIBLE_ROWS = "no_eligible_rows"
+    PROJECT_DETAIL_INVALID = "project_detail_invalid"
+    PROJECT_DETAIL_MISSING_REQUIRED_FIELDS = "project_detail_missing_required_fields"
+    LIVE_DISCOVERY_PARTIAL = "live_discovery_partial"
+    SEARCH_PAGE_STATE_ERROR = "search_page_state_error"
+    WORKER_REPORTED_FAILURE = "worker_reported_failure"
+    WORKER_RESULT_INVALID = "worker_result_invalid"
+    WORKER_RESULT_MISSING = "worker_result_missing"
+    WORKER_EXIT_NONZERO = "worker_exit_nonzero"
+    WORKER_TIMEOUT = "worker_timeout"
+    WORKER_TERMINATED = "worker_terminated"
+    ENTITLEMENT_DENIED = "entitlement_denied"
+    DISPATCH_EXCEPTION = "dispatch_exception"
+    LEASE_LOST = "lease_lost"
+
+
+class CrawlerBlockerCode(StrEnum):
+    """Shared crawler conditions that stop dispatch before a job claim."""
+
+    CIRCUIT_OPEN = "circuit_open"
+    PROFILE_BUSY = "profile_busy"
+    PROFILE_WARM_RETRY = "profile_warm_retry"
+    PROFILE_OPERATOR_ACTION_REQUIRED = "profile_operator_action_required"
+
+
 class UserRole(StrEnum):
     OWNER = "owner"
     ADMIN = "admin"

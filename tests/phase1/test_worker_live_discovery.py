@@ -17,6 +17,7 @@ from egp_db.repositories.project_repo import (
 from sqlalchemy import text
 
 from egp_shared_types.enums import (
+    DiscoveryFailureCode,
     DocumentCaptureAttemptStatus,
     ProcurementType,
     ProjectState,
@@ -873,6 +874,7 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
             "keyword_count": 1,
         },
         "error": "live crawl anomaly: keyword_no_results",
+        "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
     }
     assert run_repository.tasks == [
         {
@@ -888,6 +890,7 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
             "result_json": {
                 "projects_seen": 0,
                 "error": "live crawl anomaly: keyword_no_results",
+                "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
             },
         }
     ]
@@ -957,6 +960,7 @@ def test_run_discover_workflow_marks_invalid_live_detail_as_failed(
             "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
         },
         "error": "live crawl anomaly: project_detail_invalid",
+        "failure_code": DiscoveryFailureCode.PROJECT_DETAIL_INVALID,
     }
     assert sink.discovery_events == []
 
@@ -1029,6 +1033,7 @@ def test_run_discover_workflow_marks_no_eligible_canary_as_failed(monkeypatch) -
     assert scans["แพลตฟอร์ม"]["rows_scanned"] == 2
     assert scans["แพลตฟอร์ม"]["status_buckets"] == {"จัดทำสัญญา/บริหารสัญญา": 2}
     assert "no_eligible_rows" in str(summary["error"])
+    assert summary["failure_code"] == DiscoveryFailureCode.NO_ELIGIBLE_ROWS
     assert sink.discovery_events == []
 
 
@@ -1217,6 +1222,7 @@ def test_run_discover_workflow_marks_run_failed_when_live_discovery_crashes() ->
     assert run_repository.finished_summary == {
         "projects_seen": 0,
         "error": "crawl blew up for analytics",
+        "failure_code": DiscoveryFailureCode.WORKER_REPORTED_FAILURE,
     }
     assert run_repository.finished_error_count == 1
 
@@ -1492,6 +1498,7 @@ def test_run_discover_workflow_streams_live_browser_projects_before_later_crawl_
     assert run_repository.finished_summary == {
         "projects_seen": 2,
         "error": "page state drift after streamed projects",
+        "failure_code": DiscoveryFailureCode.WORKER_REPORTED_FAILURE,
     }
 
 
@@ -1539,6 +1546,7 @@ def test_run_discover_workflow_marks_partial_for_live_pagination_site_error(
     assert run_repository.finished_summary == {
         "projects_seen": 1,
         "error": "pagination site error at page 6",
+        "failure_code": DiscoveryFailureCode.LIVE_DISCOVERY_PARTIAL,
     }
 
 
@@ -1586,6 +1594,7 @@ def test_run_discover_workflow_marks_partial_for_live_search_page_state_error(
     assert run_repository.finished_summary == {
         "projects_seen": 1,
         "error": "e-GP site error after search results load",
+        "failure_code": DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR,
     }
 
 
@@ -2075,6 +2084,7 @@ def test_run_discover_workflow_records_run_error_when_task_creation_fails() -> N
     assert run_repository.finished_summary == {
         "projects_seen": 0,
         "error": "Object of type bytes is not JSON serializable",
+        "failure_code": DiscoveryFailureCode.WORKER_REPORTED_FAILURE,
     }
     assert run_repository.finished_error_count == 1
 

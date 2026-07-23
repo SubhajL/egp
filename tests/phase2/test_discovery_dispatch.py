@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from sqlalchemy import text
 
 from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchBatchResult,
     DiscoveryDispatchRequest,
     DiscoveryDispatchProcessor,
+    DiscoveryPreDispatchResult,
     NonRetriableDiscoveryDispatchError,
 )
-from egp_db.repositories.discovery_job_repo import DiscoveryJobRecord, SqlDiscoveryJobRepository
+from egp_db.repositories.discovery_job_repo import (
+    DiscoveryJobRecord,
+    SqlDiscoveryJobRepository,
+    StaleDiscoveryJobClaimError,
+)
+from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROFILE_ID = "22222222-2222-2222-2222-222222222222"
@@ -24,13 +32,20 @@ class RecordingDiscoveryDispatcher:
 
 
 class RecordingPreDispatchPreparer:
-    def __init__(self, events: list[str], *, should_continue: bool = True) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        blocker: CrawlerBlockerCode | None = None,
+    ) -> None:
         self.events = events
-        self.should_continue = should_continue
+        self.blocker = blocker
 
-    def prepare_for_dispatch(self) -> bool:
+    def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
         self.events.append("prepare")
-        return self.should_continue
+        if self.blocker is not None:
+            return DiscoveryPreDispatchResult.blocked(self.blocker)
+        return DiscoveryPreDispatchResult.ready()
 
 
 class RaisingDiscoveryDispatcher:
@@ -53,10 +68,8 @@ class RecordingClaimStore:
     def has_claimable_discovery_jobs(
         self,
         *,
-        stale_after_seconds: float = 60.0,
         exclude_job_ids=None,
     ) -> bool:
-        del stale_after_seconds
         excluded = set(exclude_job_ids or ())
         self.events.append("probe")
         return any(job.id not in excluded for job in self._jobs)
@@ -65,10 +78,10 @@ class RecordingClaimStore:
         self,
         *,
         limit: int = 10,
-        stale_after_seconds: float = 60.0,
+        lease_seconds: float = 60.0,
         exclude_job_ids=None,
     ) -> list[DiscoveryJobRecord]:
-        del stale_after_seconds
+        del lease_seconds
         excluded = set(exclude_job_ids or ())
         self.events.append("claim")
         self.claim_limits.append(limit)
@@ -83,13 +96,24 @@ class RecordingClaimStore:
         *,
         tenant_id: str,
         job_id: str,
+        claim_token: str | None = None,
         job_status: str,
         last_error: str | None = None,
+        last_error_code=None,
         next_attempt_at=None,
         processing_started_at=None,
         dispatched: bool = False,
     ) -> DiscoveryJobRecord:
-        del tenant_id, job_status, last_error, next_attempt_at, processing_started_at, dispatched
+        del (
+            tenant_id,
+            claim_token,
+            job_status,
+            last_error,
+            last_error_code,
+            next_attempt_at,
+            processing_started_at,
+            dispatched,
+        )
         self.recorded_job_ids.append(job_id)
         return self._jobs_by_id[job_id]
 
@@ -107,8 +131,12 @@ def _job_record(job_id: str, *, keyword: str) -> DiscoveryJobRecord:
         job_status="pending",
         attempt_count=0,
         last_error=None,
+        last_error_code=None,
         next_attempt_at="2026-04-07T00:00:00+00:00",
         processing_started_at=None,
+        claim_token="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        lease_expires_at="2099-04-07T00:00:00+00:00",
+        lease_heartbeat_at="2026-04-07T00:00:00+00:00",
         dispatched_at=None,
         created_at="2026-04-07T00:00:00+00:00",
         updated_at="2026-04-07T00:00:00+00:00",
@@ -160,7 +188,7 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
 
     processor = DiscoveryDispatchProcessor(repository=repo, dispatcher=dispatcher)
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert dispatcher.requests == [
         DiscoveryDispatchRequest(
@@ -219,7 +247,7 @@ def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(tmp_pat
         dispatcher=dispatcher,
         worker_count=2,
     )
-    processed: list[int] = []
+    processed: list[DiscoveryDispatchBatchResult] = []
     worker = threading.Thread(
         target=lambda: processed.append(processor.process_pending()),
         daemon=True,
@@ -231,7 +259,7 @@ def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(tmp_pat
     worker.join(timeout=2.0)
 
     assert overlapped is True
-    assert processed == [2]
+    assert [result.processed_count for result in processed] == [2]
     assert worker.is_alive() is False
     stored = repo.list_discovery_jobs(tenant_id=TENANT_ID)
     assert {job.keyword: job.job_status for job in stored} == {
@@ -261,7 +289,7 @@ def test_discovery_dispatch_processor_preserves_serial_mode_with_one_worker(tmp_
         worker_count=1,
     )
 
-    assert processor.process_pending() == 2
+    assert processor.process_pending().processed_count == 2
     assert [request.keyword for request in dispatcher.requests] == [
         "analytics",
         "procurement",
@@ -286,7 +314,7 @@ def test_discovery_dispatch_processor_claims_only_worker_capacity_per_batch() ->
         worker_count=2,
     )
 
-    assert processor.process_pending() == 5
+    assert processor.process_pending().processed_count == 5
     assert store.claim_limits == [2, 2, 1]
     assert {request.keyword for request in dispatcher.requests} == {
         "one",
@@ -309,7 +337,7 @@ def test_discovery_dispatch_processor_prepares_before_claiming_jobs() -> None:
         pre_dispatch_preparer=preparer,
     )
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
 
     assert store.events[:3] == ["probe", "prepare", "claim"]
     assert [request.keyword for request in dispatcher.requests] == ["one"]
@@ -325,7 +353,7 @@ def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimabl
         pre_dispatch_preparer=preparer,
     )
 
-    assert processor.process_pending() == 0
+    assert processor.process_pending().processed_count == 0
 
     assert store.events == ["probe"]
     assert dispatcher.requests == []
@@ -336,15 +364,20 @@ def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false()
         [_job_record("11111111-1111-1111-1111-111111111111", keyword="one")]
     )
     dispatcher = RecordingDiscoveryDispatcher()
-    preparer = RecordingPreDispatchPreparer(store.events, should_continue=False)
+    preparer = RecordingPreDispatchPreparer(
+        store.events,
+        blocker=CrawlerBlockerCode.PROFILE_BUSY,
+    )
     processor = DiscoveryDispatchProcessor(
         repository=store,
         dispatcher=dispatcher,
         pre_dispatch_preparer=preparer,
     )
 
-    assert processor.process_pending() == 0
+    result = processor.process_pending()
 
+    assert result.processed_count == 0
+    assert result.blocker == CrawlerBlockerCode.PROFILE_BUSY
     assert store.events == ["probe", "prepare"]
     assert store.claim_limits == []
     assert dispatcher.requests == []
@@ -376,18 +409,20 @@ def test_discovery_dispatch_processor_retries_and_then_fails(tmp_path) -> None:
         retry_delay_seconds=0.0,
     )
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     first = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert first.job_status == "pending"
     assert first.attempt_count == 1
     assert first.last_error == "spawn failed"
+    assert first.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     second = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert attempts == ["analytics", "analytics"]
     assert second.job_status == "failed"
     assert second.attempt_count == 2
     assert second.last_error == "spawn failed"
+    assert second.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
 
 
 def test_discovery_dispatch_processor_retries_when_worker_exits_non_zero(
@@ -412,17 +447,19 @@ def test_discovery_dispatch_processor_retries_when_worker_exits_non_zero(
         retry_delay_seconds=0.0,
     )
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     first = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert first.job_status == "pending"
     assert first.attempt_count == 1
     assert first.last_error == "worker exited non-zero"
+    assert first.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     second = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert second.job_status == "failed"
     assert second.attempt_count == 2
     assert second.last_error == "worker exited non-zero"
+    assert second.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
 
 
 def test_discovery_dispatch_processor_fails_immediately_on_non_retriable_error(
@@ -449,8 +486,138 @@ def test_discovery_dispatch_processor_fails_immediately_on_non_retriable_error(
         retry_delay_seconds=0.0,
     )
 
-    assert processor.process_pending() == 1
+    assert processor.process_pending().processed_count == 1
     stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert stored.job_status == "failed"
     assert stored.attempt_count == 1
     assert stored.last_error == "active subscription required for runs"
+    assert stored.last_error_code == DiscoveryFailureCode.ENTITLEMENT_DENIED
+
+
+def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-renewal.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="long-crawl",
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDispatcher:
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            assert request.discovery_job_id == job.id
+            started.set()
+            assert release.wait(timeout=2.0)
+
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=BlockingDispatcher(),
+        claim_limit=1,
+        lease_seconds=0.12,
+        lease_heartbeat_seconds=0.02,
+    )
+    results: list[DiscoveryDispatchBatchResult] = []
+    worker = threading.Thread(
+        target=lambda: results.append(processor.process_pending()),
+        daemon=True,
+    )
+    worker.start()
+    assert started.wait(timeout=1.0)
+
+    time.sleep(0.2)
+    competing_claim = repo.claim_pending_discovery_jobs(limit=1, lease_seconds=0.12)
+    release.set()
+    worker.join(timeout=2.0)
+
+    stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+    assert competing_claim == []
+    assert worker.is_alive() is False
+    assert results[0].processed_count == 1
+    assert stored.job_status == "dispatched"
+    assert stored.claim_token is None
+
+
+def test_dispatch_retries_transient_lease_renewal_before_expiry() -> None:
+    job = _job_record(
+        "11111111-1111-1111-1111-111111111111",
+        keyword="transient-renewal",
+    )
+
+    class TransientRenewStore(RecordingClaimStore):
+        def __init__(self) -> None:
+            super().__init__([job])
+            self.renew_calls = 0
+            self.renewed = threading.Event()
+
+        def renew_discovery_job_lease(self, **kwargs) -> DiscoveryJobRecord:
+            del kwargs
+            self.renew_calls += 1
+            if self.renew_calls == 1:
+                raise RuntimeError("temporary database connection loss")
+            self.renewed.set()
+            return job
+
+    store = TransientRenewStore()
+
+    class WaitForRenewalDispatcher:
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            del request
+            assert store.renewed.wait(timeout=1.0)
+
+    result = DiscoveryDispatchProcessor(
+        repository=store,
+        dispatcher=WaitForRenewalDispatcher(),
+        lease_seconds=1.0,
+        lease_heartbeat_seconds=0.01,
+    ).process_pending(limit=1)
+
+    assert result.dispositions[0].outcome == "dispatched"
+    assert store.renew_calls >= 2
+
+
+def test_confirmed_lease_loss_cancels_cancellable_dispatcher() -> None:
+    job = _job_record(
+        "11111111-1111-1111-1111-111111111111",
+        keyword="lost-lease",
+    )
+
+    class LostLeaseStore(RecordingClaimStore):
+        def renew_discovery_job_lease(self, **kwargs) -> DiscoveryJobRecord:
+            del kwargs
+            raise StaleDiscoveryJobClaimError("claim was superseded")
+
+    class CancellableDispatcher:
+        def __init__(self) -> None:
+            self.cancelled = threading.Event()
+
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            del request
+            raise AssertionError("processor did not use cancellable dispatch")
+
+        def dispatch_cancellable(
+            self,
+            request: DiscoveryDispatchRequest,
+            *,
+            cancellation_event: threading.Event,
+        ) -> None:
+            del request
+            assert cancellation_event.wait(timeout=1.0)
+            self.cancelled.set()
+
+    dispatcher = CancellableDispatcher()
+    result = DiscoveryDispatchProcessor(
+        repository=LostLeaseStore([job]),
+        dispatcher=dispatcher,
+        lease_seconds=1.0,
+        lease_heartbeat_seconds=0.01,
+    ).process_pending(limit=1)
+
+    assert dispatcher.cancelled.is_set()
+    assert result.dispositions[0].outcome == "stale_claim"
+    assert result.dispositions[0].failure_code == DiscoveryFailureCode.LEASE_LOST

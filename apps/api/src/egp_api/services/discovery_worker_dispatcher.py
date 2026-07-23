@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -39,6 +41,7 @@ from egp_api.config import (
 )
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
+    DiscoveryPreDispatchResult,
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.run_trigger_mapping import map_job_trigger_to_run_trigger
@@ -49,14 +52,20 @@ from egp_crawler_core.profile_lock import (
 )
 from egp_crawler_core.rate_limiter import get_default_rate_limiter
 from egp_observability.metrics import record_discovery_keyword_scan
+from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
 PROFILE_STATE_FILENAME = ".egp-profile-state.json"
 WORKER_STDOUT_SPOOL_LIMIT_BYTES = 1_048_576
 WORKER_RESULT_TAIL_BYTES = 65_536
+WORKER_CANCELLATION_POLL_SECONDS = 0.5
 
 _logger = logging.getLogger("egp_api.main")
+
+
+class _DiscoveryLeaseCancellation(RuntimeError):
+    """Internal signal raised after a lease-loss event kills the worker."""
 
 
 def _browser_cdp_port_for_run_id(
@@ -331,6 +340,50 @@ def _kill_process_group(proc) -> None:
         pass
 
 
+def _communicate_with_cancellation(
+    proc,
+    *,
+    payload: bytes,
+    timeout_seconds: float,
+    cancellation_event: threading.Event | None,
+) -> tuple[bytes | str | None, bytes | str | None]:
+    if cancellation_event is None:
+        return proc.communicate(input=payload, timeout=timeout_seconds)
+
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    pending_input: bytes | None = payload
+    while True:
+        if cancellation_event.is_set():
+            _kill_process_group(proc)
+            proc.communicate()
+            raise _DiscoveryLeaseCancellation("discovery job lease ownership was lost")
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise subprocess.TimeoutExpired(
+                cmd=getattr(proc, "args", "egp_worker"),
+                timeout=timeout_seconds,
+            )
+        try:
+            result = proc.communicate(
+                input=pending_input,
+                timeout=min(WORKER_CANCELLATION_POLL_SECONDS, remaining_seconds),
+            )
+        except subprocess.TimeoutExpired as exc:
+            pending_input = None
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(
+                    cmd=getattr(proc, "args", exc.cmd),
+                    timeout=timeout_seconds,
+                    output=exc.output,
+                    stderr=exc.stderr,
+                ) from exc
+        if cancellation_event.is_set():
+            _kill_process_group(proc)
+            proc.communicate()
+            raise _DiscoveryLeaseCancellation("discovery job lease ownership was lost")
+        return result
+
+
 def _resolve_browser_settings_payload(
     *,
     profile_repository,
@@ -461,6 +514,15 @@ class _NoopRunRepository:
 class DiscoverySpawnError(RuntimeError):
     """Raised when a subprocess discovery worker fails for a retriable reason."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_code: DiscoveryFailureCode = DiscoveryFailureCode.DISPATCH_EXCEPTION,
+    ) -> None:
+        self.failure_code = failure_code
+        super().__init__(message)
+
 
 def _decode_discovery_worker_result(stdout: bytes | str | None) -> dict[str, object] | None:
     if stdout is None:
@@ -483,20 +545,38 @@ def _validate_discovery_worker_result(
     *,
     expected_run_id: str,
     keyword: str,
-) -> str:
+) -> tuple[str, DiscoveryFailureCode | None]:
     result_run_id = str(result.get("run_id") or "").strip()
     if result_run_id != expected_run_id:
         raise DiscoverySpawnError(
             "discover worker returned an invalid run_id "
-            f"for keyword {keyword!r}: expected {expected_run_id!r}, got {result_run_id!r}"
+            f"for keyword {keyword!r}: expected {expected_run_id!r}, got {result_run_id!r}",
+            failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
         )
     run_status = str(result.get("run_status") or "").strip().casefold()
     if run_status not in {"succeeded", "partial", "failed"}:
         raise DiscoverySpawnError(
             f"discover worker returned invalid run_status {run_status!r} "
-            f"for keyword {keyword!r}"
+            f"for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
         )
-    return run_status
+    raw_failure_code = str(result.get("failure_code") or "").strip()
+    failure_code: DiscoveryFailureCode | None = None
+    if raw_failure_code:
+        try:
+            failure_code = DiscoveryFailureCode(raw_failure_code)
+        except ValueError as exc:
+            raise DiscoverySpawnError(
+                f"discover worker returned invalid failure_code {raw_failure_code!r} "
+                f"for keyword {keyword!r}",
+                failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
+            ) from exc
+    if run_status == "failed" and failure_code is None:
+        raise DiscoverySpawnError(
+            f"discover worker returned failed without failure_code for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
+        )
+    return run_status, failure_code
 
 
 def _drain_worker_stdout(
@@ -643,16 +723,19 @@ class SubprocessDiscoveryDispatcher:
         run_dir = _browser_profile_dir_for_run_id(run_id, profile_root=self._browser_profile_root)
         return run_dir, True
 
-    def prepare_for_dispatch(self) -> bool:
+    def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
         """Warm/preflight a stale persistent profile before claiming a job."""
 
-        if get_default_rate_limiter().is_circuit_open():
+        circuit_snapshot = get_default_rate_limiter().get_circuit_snapshot()
+        if circuit_snapshot.is_open:
             _logger.warning(
-                "Host-shared e-GP circuit is open; deferring discovery job claim"
+                "Host-shared e-GP circuit is open; deferring discovery job claim "
+                "(reset_at=%s)",
+                circuit_snapshot.reset_at,
             )
-            return False
+            return DiscoveryPreDispatchResult.blocked(CrawlerBlockerCode.CIRCUIT_OPEN)
         if self._browser_profile_mode != "persistent":
-            return True
+            return DiscoveryPreDispatchResult.ready()
         assert self._browser_persistent_profile_dir is not None
         try:
             profile_lock = _acquire_profile_lock(self._browser_persistent_profile_dir)
@@ -662,21 +745,30 @@ class SubprocessDiscoveryDispatcher:
                 "(profile_dir=%s)",
                 self._browser_persistent_profile_dir,
             )
-            return False
+            return DiscoveryPreDispatchResult.blocked(CrawlerBlockerCode.PROFILE_BUSY)
         try:
             self._warm_persistent_profile_if_stale(
                 profile_dir=self._browser_persistent_profile_dir,
                 browser_settings=self._build_persistent_warm_browser_settings(),
             )
-            return True
+            return DiscoveryPreDispatchResult.ready()
         except DiscoverySpawnError as exc:
+            blocker = (
+                CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED
+                if _profile_warm_operator_action_required(
+                    self._browser_persistent_profile_dir,
+                    pause_threshold=self._browser_warmup_failure_pause_threshold,
+                )
+                else CrawlerBlockerCode.PROFILE_WARM_RETRY
+            )
             _logger.warning(
                 "Persistent browser profile is not ready; deferring discovery job claim "
-                "(profile_dir=%s error=%s)",
+                "(profile_dir=%s blocker=%s error=%s)",
                 self._browser_persistent_profile_dir,
+                blocker,
                 exc,
             )
-            return False
+            return DiscoveryPreDispatchResult.blocked(blocker)
         finally:
             _release_profile_lock(profile_lock)
 
@@ -705,6 +797,14 @@ class SubprocessDiscoveryDispatcher:
         return payload
 
     def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+        self.dispatch_cancellable(request, cancellation_event=None)
+
+    def dispatch_cancellable(
+        self,
+        request: DiscoveryDispatchRequest,
+        *,
+        cancellation_event: threading.Event | None,
+    ) -> None:
         run_id = str(uuid4())
         run_trigger = map_job_trigger_to_run_trigger(request.trigger_type)
         browser_profile_dir, cleanup_after = self._resolve_profile_dir_for_dispatch(run_id)
@@ -809,9 +909,11 @@ class SubprocessDiscoveryDispatcher:
                         ),
                     },
                 )
-                returned_stdout, stderr = proc.communicate(
-                    input=payload,
-                    timeout=self._timeout_seconds,
+                returned_stdout, stderr = _communicate_with_cancellation(
+                    proc,
+                    payload=payload,
+                    timeout_seconds=self._timeout_seconds,
+                    cancellation_event=cancellation_event,
                 )
                 stdout = _drain_worker_stdout(
                     stdout_capture,
@@ -833,7 +935,7 @@ class SubprocessDiscoveryDispatcher:
                     if terminated is not None:
                         raise terminated
                 if worker_result is not None:
-                    run_status = _validate_discovery_worker_result(
+                    run_status, failure_code = _validate_discovery_worker_result(
                         worker_result,
                         expected_run_id=run_id,
                         keyword=request.keyword,
@@ -843,7 +945,11 @@ class SubprocessDiscoveryDispatcher:
                         detail = f": {error}" if error else ""
                         semantic_error = DiscoverySpawnError(
                             "discover worker reported failed for keyword "
-                            f"{request.keyword!r}{detail}"
+                            f"{request.keyword!r}{detail}",
+                            failure_code=(
+                                failure_code
+                                or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+                            ),
                         )
                         if self._browser_profile_mode == "persistent":
                             self._record_persistent_profile_failure(
@@ -865,16 +971,32 @@ class SubprocessDiscoveryDispatcher:
                     if non_retriable is not None:
                         raise non_retriable
                     raise DiscoverySpawnError(
-                        f"discover worker exited non-zero for keyword {request.keyword!r}"
+                        f"discover worker exited non-zero for keyword {request.keyword!r}",
+                        failure_code=DiscoveryFailureCode.WORKER_EXIT_NONZERO,
                     )
                 if worker_result is None:
                     raise DiscoverySpawnError(
-                        f"discover worker returned no result for keyword {request.keyword!r}"
+                        f"discover worker returned no result for keyword {request.keyword!r}",
+                        failure_code=DiscoveryFailureCode.WORKER_RESULT_MISSING,
                     )
                 self._emit_discovery_run_metrics(
                     tenant_id=request.tenant_id,
                     run_id=run_id,
                 )
+            except _DiscoveryLeaseCancellation as exc:
+                error_message = (
+                    f"discover worker stopped because lease ownership was lost "
+                    f"for keyword {request.keyword!r}"
+                )
+                self._mark_active_run_failed(
+                    run_id=run_id,
+                    error=error_message,
+                    failure_reason="lease_lost",
+                )
+                raise DiscoverySpawnError(
+                    error_message,
+                    failure_code=DiscoveryFailureCode.LEASE_LOST,
+                ) from exc
             except subprocess.TimeoutExpired as exc:
                 _kill_process_group(proc)
                 returned_stdout, stderr = proc.communicate()
@@ -903,7 +1025,10 @@ class SubprocessDiscoveryDispatcher:
                     error=error_message,
                     failure_reason="worker_timeout",
                 )
-                raise DiscoverySpawnError(error_message) from exc
+                raise DiscoverySpawnError(
+                    error_message,
+                    failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+                ) from exc
             except DiscoverySpawnError:
                 raise
             except Exception:
@@ -1145,4 +1270,7 @@ class SubprocessDiscoveryDispatcher:
             error=error_message,
             failure_reason="worker_terminated",
         )
-        return NonRetriableDiscoveryDispatchError(error_message)
+        return NonRetriableDiscoveryDispatchError(
+            error_message,
+            failure_code=DiscoveryFailureCode.WORKER_TERMINATED,
+        )

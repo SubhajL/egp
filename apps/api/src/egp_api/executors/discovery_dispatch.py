@@ -17,11 +17,16 @@ from egp_api.config import (
     get_artifact_root,
     get_artifact_storage_backend,
     get_database_url,
+    get_discovery_lease_heartbeat_seconds,
+    get_discovery_lease_seconds,
     get_discovery_worker_count,
     get_supabase_service_role_key,
     get_supabase_url,
 )
-from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
+from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchBatchResult,
+    DiscoveryDispatchProcessor,
+)
 from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
 from egp_api.services.run_service import RunService
 from egp_db.connection import create_shared_engine
@@ -34,7 +39,11 @@ logger = logging.getLogger(__name__)
 
 
 class PendingDiscoveryProcessor(Protocol):
-    def process_pending(self, *, limit: int | None = None) -> int: ...
+    def process_pending(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> DiscoveryDispatchBatchResult: ...
 
 
 class MissingWorkerReconciler(Protocol):
@@ -109,6 +118,8 @@ def build_discovery_dispatch_runtime(
         ),
         dispatcher=dispatcher,
         pre_dispatch_preparer=dispatcher,
+        lease_seconds=get_discovery_lease_seconds(),
+        lease_heartbeat_seconds=get_discovery_lease_heartbeat_seconds(),
         worker_count=get_discovery_worker_count(worker_count),
     )
     return DiscoveryDispatchRuntime(
@@ -152,7 +163,7 @@ def run_discovery_dispatch_once(
     owner_pid: int | None = None,
     limit: int | None = None,
     logger: logging.Logger | None = None,
-) -> int:
+) -> DiscoveryDispatchBatchResult:
     """Process one batch of queued discovery dispatch jobs."""
 
     _reconcile_if_configured(
@@ -310,7 +321,10 @@ def main(
             owner_pid=resolved_owner_pid,
             limit=args.limit,
         )
-        logger.info("Processed %d pending discovery dispatch jobs", processed)
+        logger.info(
+            "Processed %d pending discovery dispatch jobs",
+            processed.processed_count,
+        )
         return 0
 
     try:

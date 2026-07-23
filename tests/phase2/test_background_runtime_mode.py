@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import text
 
-from egp_api.config import get_background_runtime_mode, get_discovery_worker_count
+from egp_api.config import (
+    get_background_runtime_mode,
+    get_discovery_lease_heartbeat_seconds,
+    get_discovery_lease_seconds,
+    get_discovery_worker_count,
+)
 from egp_api.main import create_app
+from egp_api.services.discovery_dispatch import (
+    DiscoveryDispatchRequest,
+    DiscoveryPreDispatchResult,
+)
+from egp_db.connection import create_shared_engine
+from egp_db.repositories.profile_repo import create_profile_repository
 
 
 JWT_SECRET = "phase2-runtime-secret"
@@ -51,6 +63,28 @@ def test_get_discovery_worker_count_rejects_invalid_value(
         get_discovery_worker_count()
 
 
+def test_discovery_lease_configuration_reads_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_SECONDS", " 90 ")
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS", " 15 ")
+
+    assert get_discovery_lease_seconds() == 90.0
+    assert get_discovery_lease_heartbeat_seconds() == 15.0
+
+
+def test_discovery_lease_configuration_requires_heartbeat_before_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_SECONDS", "30")
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS", "30")
+
+    with pytest.raises(RuntimeError, match="must be less than EGP_DISCOVERY_LEASE_SECONDS"):
+        get_discovery_lease_heartbeat_seconds(
+            lease_seconds=get_discovery_lease_seconds()
+        )
+
+
 def test_create_app_external_background_mode_disables_api_background_work(
     tmp_path,
 ) -> None:
@@ -73,6 +107,8 @@ def test_create_app_embedded_background_mode_preserves_database_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EGP_DISCOVERY_WORKER_COUNT", "4")
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_SECONDS", "120")
+    monkeypatch.setenv("EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS", "20")
 
     app = create_app(
         artifact_root=tmp_path,
@@ -87,3 +123,68 @@ def test_create_app_embedded_background_mode_preserves_database_defaults(
     assert app.state.discovery_dispatch_processor_enabled is True
     assert app.state.discovery_dispatch_route_kick_enabled is True
     assert app.state.discovery_dispatch_processor.worker_count == 4
+    assert app.state.discovery_dispatch_processor.lease_seconds == 120.0
+    assert app.state.discovery_dispatch_processor.lease_heartbeat_seconds == 20.0
+
+
+def test_create_app_embedded_dispatch_preserves_typed_preparation_result(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'embedded-dispatch.sqlite3'}"
+    app = create_app(
+        artifact_root=tmp_path,
+        database_url=database_url,
+        jwt_secret=JWT_SECRET,
+        payment_callback_secret="runtime-callback-secret",
+        background_runtime_mode="embedded",
+    )
+    dispatched: list[DiscoveryDispatchRequest] = []
+
+    class TypedSpawner:
+        def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
+            return DiscoveryPreDispatchResult.ready()
+
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            dispatched.append(request)
+
+    app.state.discover_spawner = TypedSpawner()
+    engine = create_shared_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO tenants (
+                    id, name, slug, plan_code, is_active, created_at, updated_at
+                ) VALUES (
+                    :id, 'Embedded', 'embedded', 'monthly_membership', 1,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": "11111111-1111-1111-1111-111111111111"},
+        )
+    profile = create_profile_repository(
+        database_url=database_url,
+        engine=engine,
+        bootstrap_schema=False,
+    ).create_profile(
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        name="Embedded profile",
+        profile_type="custom",
+        max_pages_per_keyword=1,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=["analytics"],
+        is_active=True,
+    )
+    app.state.discovery_dispatch_processor.repository.create_discovery_job(
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        profile_id=profile.profile.id,
+        profile_type="custom",
+        keyword="analytics",
+    )
+
+    result = app.state.discovery_dispatch_processor.process_pending(limit=1)
+
+    assert result.processed_count == 1
+    assert [request.keyword for request in dispatched] == ["analytics"]

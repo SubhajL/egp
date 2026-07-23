@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from egp_observability.metrics import record_worker_job
+from egp_shared_types.enums import DiscoveryFailureCode
 
 from .browser_discovery import BrowserDiscoverySettings
 from .scheduler import run_scheduled_discovery
@@ -143,6 +144,14 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             error = str(summary.get("error") or "").strip()
             if error:
                 response["error"] = error
+            failure_code = str(summary.get("failure_code") or "").strip()
+            if failure_code:
+                response["failure_code"] = failure_code
+        if (
+            str(response["run_status"]) == "failed"
+            and "failure_code" not in response
+        ):
+            response["failure_code"] = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
         if payload.get("profile_id") is not None:
             response["profile_id"] = str(payload["profile_id"])
         return response

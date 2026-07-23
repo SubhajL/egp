@@ -640,3 +640,196 @@ LOW
 - Creating the new index can briefly contend with writes on a large `crawl_runs` table; schedule
   the normal migration window and observe migration duration. No feature flag or environment
   variable is required.
+
+### U1 landing
+
+- PR: `https://github.com/SubhajL/egp/pull/174`
+- GitHub Actions and Claude jobs all stopped before execution because the GitHub account was
+  locked for billing. Direct check annotations confirmed this was infrastructure, not a test
+  failure.
+- The user-authorized admin squash merge completed at
+  `2511879981e824be774c8a0ab7f63c5137dac2df`.
+- `origin/main` and the primary local `main` were verified at that exact SHA. The user-owned
+  untracked `docs/TOR KEYWORDS.md` remained untouched.
+- Post-merge verification: 75 relevant Python tests, Ruff, two focused web unit tests, and
+  OpenAPI drift all passed on exact local `main`.
+
+---
+
+## Implementation Update - U2 renewable claims and typed failure state
+
+### Scope implemented
+
+- Added migration `032_discovery_job_leases.sql` with `claim_token`, `lease_expires_at`,
+  `lease_heartbeat_at`, and `last_error_code`, plus a pending-lease index.
+- Replaced permanent `processing_started_at` ownership with tokenized renewable leases:
+  unclaimed or expired jobs are claimable; active leases are not; renewals require the current
+  tenant/job/token and an unexpired lease; completion clears lease state.
+- Added a fail-closed `DiscoveryJobLeaseKeeper` around the blocking worker subprocess. Transient
+  renew errors retry within the last confirmed lease; a superseded/expired claim emits
+  cancellation, kills the worker/Chrome process group, returns `lease_lost`, and cannot overwrite
+  the newer owner.
+- Added shared stable `DiscoveryFailureCode` and `CrawlerBlockerCode` vocabularies.
+- Worker semantic anomalies now cross the stdout JSON boundary with a failure code. The dispatcher
+  validates the result and distinguishes semantic failure, malformed/missing result, nonzero exit,
+  timeout, termination, entitlement failure, generic dispatch failure, and lost ownership.
+- Added typed `DiscoveryPreDispatchResult`, per-job disposition, and
+  `DiscoveryDispatchBatchResult`. Pre-dispatch checks report exact circuit/profile blockers and
+  leave jobs pending and unclaimed.
+- Added an operator-safe rate-limiter circuit snapshot with reset timestamp/duration and aggregate
+  counters only.
+- Wired lease duration/heartbeat through embedded and standalone executors, both Compose files,
+  all relevant environment templates, and deployment/remote-crawler runbooks.
+
+### RED evidence
+
+The focused tests were written before implementation:
+
+```text
+PYTHONPATH=<worktree API/worker/DB/shared/crawler sources> python -m pytest \
+  tests/concurrency/test_fair_claim.py \
+  tests/phase2/test_discovery_dispatch.py \
+  tests/phase1/test_worker_entrypoint.py \
+  tests/phase1/test_worker_live_discovery.py \
+  tests/phase1/test_api_discovery_spawn.py \
+  tests/phase2/test_persistent_browser_profile.py \
+  tests/concurrency/test_rate_limiter.py \
+  tests/phase1/test_migration_runner.py \
+  tests/phase2/test_background_runtime_mode.py \
+  tests/phase2/test_discovery_executor.py \
+  apps/api/tests/test_dispatch_trigger_metadata.py -q
+```
+
+Expected collection failed with six import/config errors because
+`DiscoveryDispatchBatchResult`, `DiscoveryFailureCode`, `CrawlerBlockerCode`, and the lease
+configuration helpers did not exist.
+
+The first GREEN attempt found SQLite's expected naive-datetime adapter behavior in the stale-token
+comparison. Normalizing repository timestamps to UTC fixed the adapter-specific failure without
+weakening the Postgres predicate. The focused lease/typed-result set then passed (`12 passed`).
+
+### GREEN and regression evidence
+
+- Broad compatibility split:
+  - dispatch/repository/executor/API: `25 passed`;
+  - worker/spawner/persistent profile after updating five intended summary contracts:
+    `94 passed`;
+  - migration/config/rate limiter: `25 passed`.
+- Environment-template, remote-crawl asset, and migration tests: `34 passed`.
+- Final affected suite, including full rules API and architecture checks, passed three consecutive
+  times before QCHECK: `229 passed, 5 existing SQLite deprecation warnings` each run.
+- Repository-wide Python suite: `1327 passed, 112 existing SQLite deprecation warnings`.
+  The isolated worktree temporarily linked `.venv` to the primary checkout's existing environment
+  because one backup CLI test deliberately invokes `<repo>/.venv/bin/python`; the link was removed
+  immediately after the gate and never staged.
+- Ruff across API, worker, packages, and affected tests: passed.
+- Compileall across API, worker, and packages: passed.
+- `git diff --check`: passed.
+
+### Wiring verification
+
+| Contract | Definition/write | Runtime read/consumer | Verification |
+|---|---|---|---|
+| discovery lease columns | migration `032`; SQLAlchemy discovery-job table and record | claim, renew, and finish predicates in `discovery_job_repo.py` | migration upgrade/preservation and repository concurrency tests |
+| lease config | `get_discovery_lease_seconds()` and heartbeat validation | embedded bootstrap and standalone executor | config and runtime-mode tests; Compose/env drift tests |
+| claim token ownership | UUID generated on atomic pending claim | lease keeper renewal and token-scoped completion | renewed/expired/stale-token/blocking-worker tests |
+| `DiscoveryFailureCode` | shared `StrEnum` and worker summary writer | stdout validator, dispatch disposition, `last_error_code` persistence | worker-entrypoint, spawner, workflow, and retry/final-state tests |
+| `CrawlerBlockerCode` | shared `StrEnum` | circuit/profile preflight and typed batch result | circuit/profile and no-claim tests |
+| circuit snapshot | `RateLimiterCircuitSnapshot` | pre-dispatch circuit gate and safe operator logging | exact snapshot/reset-time test |
+
+No wiring row is `NOT FOUND`. Tenant predicates remain explicit on renew, finish, get/list, and
+all job mutation queries. Migration `032` is additive: unstarted pending jobs keep null lease
+fields and remain claimable, while legacy in-flight jobs receive a sentinel lease through the
+remainder of the old three-hour worker timeout.
+
+### U2 review state
+
+Independent QCHECK found:
+
+1. HIGH: the embedded app adapter converted typed preparation back to `bool`, causing an
+   `AttributeError` on a real pending job;
+2. HIGH: one transient renew exception abandoned the lease without retrying or cancelling Chrome;
+3. MEDIUM: migration could reclaim a legacy in-flight job immediately;
+4. MEDIUM: the advertised stable failure-code vocabulary was unconstrained in DB/repository;
+5. LOW: missing-worker reconciliation returned `int` but was annotated as a batch result.
+
+All findings were accepted. Seven RED tests reproduced them. The fixes preserve the typed result
+in embedded mode, retry transient renew failures until the confirmed deadline, propagate a
+cancellation event into a polled subprocess `communicate`, kill the whole worker process group on
+confirmed loss, protect legacy in-flight rows with a three-hour sentinel lease, constrain codes in
+SQLAlchemy/Postgres and repository input, and correct the annotation.
+
+The seven QCHECK regressions pass. The expanded affected suite passes three consecutive times at
+`235 passed, 5 existing SQLite deprecation warnings` each run. Independent re-review also ran the
+seven focused tests (`7 passed`) and reported no remaining findings. The final post-remediation
+repository-wide suite passed with confirmed exit code: `1333 passed, 112 existing SQLite
+deprecation warnings`.
+
+Implementation, local gates, and QCHECK are complete. Formal staged `g-check`, commit, PR,
+user-authorized admin merge, exact local-main landing, and post-merge verification remain.
+
+## Review (2026-07-23 20:24:39 +07) - staged working tree U2 renewable claims
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-review-crawler-hiccups`
+- Branch: `fix/discovery-job-leases`
+- Scope: staged working tree against U1 merge
+  `2511879981e824be774c8a0ab7f63c5137dac2df`
+- Commands Run: staged/unstaged status, name and stat inspection, staged diff/check, production
+  diff inspection, exact schema/config/worker/consumer wiring searches, migration upgrade,
+  affected suite three times, repository-wide pytest, Ruff, compileall, environment-template
+  drift, and independent QCHECK/re-review
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No outstanding findings. Both QCHECK HIGH findings were reproduced, fixed, and independently
+  re-reviewed before this formal review.
+
+MEDIUM
+
+- No outstanding findings. During formal staged inspection, a cancellation race remained: if
+  `communicate()` returned during the 500 ms poll in which lease loss was signalled, the late
+  worker result could be treated as success before the next event check. The regression was
+  tightened to signal cancellation inside `communicate()` and failed as expected. The helper now
+  rechecks cancellation after every successful `communicate()` return, kills/drains the process
+  group, and reports `lease_lost`. The focused test passes, and the 235-test affected suite passed
+  three more consecutive times after the fix.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Deployment must stop and drain old embedded/standalone discovery executors before migration
+  `032`, then start only lease-aware code. The migration sentinel protects already in-flight old
+  jobs but does not make deliberately mixed versions a supported steady state.
+- Host and database clocks remain normally synchronized. The renewal loop additionally uses a
+  monotonic local deadline after translating the DB lease timestamp.
+- Semantic `partial` runs remain accepted dispatches by existing policy; zero-project semantic
+  anomalies are `failed` and retry with their stable failure code.
+
+### Recommended Tests / Validation
+
+- Complete: seven QCHECK regressions; temporary-PostgreSQL upgrade, sentinel, and check-constraint
+  proof; renewal/reclaim/stale-token/cancellation tests; embedded and standalone wiring; stdout
+  semantic-failure validation; exact blocker/circuit snapshot tests; affected suite three times;
+  post-remediation repository-wide suite (`1333 passed`); Ruff; compileall; diff check.
+- Post-merge: rerun the seven regression tests, migration prefix/upgrade test, and the compact
+  discovery dispatch/worker suite on exact local `main`.
+
+### Rollout Notes
+
+- Stop/drain all old discovery executors; apply migration `032`; deploy/start the new executor.
+- Keep lease/heartbeat at `60/20` initially and worker count at `1`.
+- Observe `lease_lost`, renewal errors, typed blocker counts, worker termination, and pending-job
+  age before any concurrency increase.
+- Application rollback is safe with additive columns, but do not restart old executors against
+  newly queued work after migration without first stopping the new executor.

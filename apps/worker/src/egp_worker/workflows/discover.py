@@ -29,6 +29,7 @@ from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, creat
 from egp_shared_types.project_events import DiscoveredProjectEvent
 from egp_shared_types.enums import (
     CrawlOutcomeReason,
+    DiscoveryFailureCode,
     DocumentCaptureAttemptStatus,
     DocumentCaptureReason,
 )
@@ -230,6 +231,20 @@ def _build_live_crawl_anomaly_error(latest_anomaly: dict[str, object]) -> str:
     return f"live crawl anomaly: {stage}"
 
 
+def _live_crawl_anomaly_failure_code(
+    latest_anomaly: dict[str, object],
+) -> DiscoveryFailureCode:
+    raw_code = str(
+        latest_anomaly.get("reason_code")
+        or latest_anomaly.get("stage")
+        or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+    )
+    try:
+        return DiscoveryFailureCode(raw_code)
+    except ValueError:
+        return DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+
+
 def _build_discover_task_failure_result(
     *,
     exc: Exception,
@@ -386,6 +401,7 @@ def run_discover_workflow(
     ignored_late_stage_projects = 0
     error_count = 0
     run_level_error: str | None = None
+    run_failure_code: DiscoveryFailureCode | None = None
     live_progress: dict[str, object] | None = None
     live_crawl_anomaly_count = 0
     live_crawl_latest_anomaly: dict[str, object] | None = None
@@ -499,7 +515,7 @@ def run_discover_workflow(
 
     def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
         nonlocal error_count, ignored_late_stage_projects, keyword_task_creation_blocked
-        nonlocal project_task_count, run_level_error
+        nonlocal project_task_count, run_failure_code, run_level_error
         source_status_text = str(discovered.get("source_status_text") or "")
         if not is_discoverable_stage_status(source_status_text):
             ignored_late_stage_projects += 1
@@ -645,6 +661,7 @@ def run_discover_workflow(
                 )
             else:
                 run_level_error = str(exc)
+                run_failure_code = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
                 keyword_task_creation_blocked = True
             return None
 
@@ -674,17 +691,24 @@ def run_discover_workflow(
 
         for discovered in resolved_projects:
             _persist_discovered_project(discovered)
-    except (LiveDiscoveryPartialError, SearchPageStateError) as exc:
+    except LiveDiscoveryPartialError as exc:
         run_level_error = str(exc)
+        run_failure_code = DiscoveryFailureCode.LIVE_DISCOVERY_PARTIAL
+        error_count += 1
+    except SearchPageStateError as exc:
+        run_level_error = str(exc)
+        run_failure_code = DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR
         error_count += 1
     except Exception as exc:
         run_level_error = str(exc)
+        run_failure_code = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
         run_repository.mark_run_finished(
             run.id,
             status="failed",
             summary_json={
                 "projects_seen": len(persisted_projects),
                 "error": run_level_error,
+                "failure_code": run_failure_code,
             },
             error_count=max(1, error_count),
         )
@@ -709,16 +733,32 @@ def run_discover_workflow(
         if live_crawl_latest_anomaly is not None
         else None
     )
+    anomaly_failure_code = (
+        _live_crawl_anomaly_failure_code(live_crawl_latest_anomaly)
+        if live_crawl_latest_anomaly is not None
+        else None
+    )
     summary_json = _current_summary()
     if run_level_error is not None:
         summary_json["error"] = run_level_error
+        summary_json["failure_code"] = (
+            run_failure_code or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+        )
     elif anomaly_error is not None:
         summary_json["error"] = anomaly_error
+        summary_json["failure_code"] = (
+            anomaly_failure_code or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+        )
     if project_task_count == 0 and not keyword_task_creation_blocked:
         keyword_task_error = run_level_error or anomaly_error
         keyword_task_result: dict[str, object] = {"projects_seen": len(persisted_projects)}
         if keyword_task_error is not None:
             keyword_task_result["error"] = keyword_task_error
+            keyword_task_result["failure_code"] = (
+                run_failure_code
+                or anomaly_failure_code
+                or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+            )
         try:
             _record_keyword_run_task(
                 task_status="failed" if keyword_task_error is not None else "succeeded",
@@ -727,8 +767,10 @@ def run_discover_workflow(
         except Exception as exc:
             error_count += 1
             run_level_error = str(exc)
+            run_failure_code = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
             summary_json = _current_summary()
             summary_json["error"] = run_level_error
+            summary_json["failure_code"] = run_failure_code
     effective_error_count = error_count + live_crawl_anomaly_count
     if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
         existing_project_id = _backfill_project_id_for_keyword(

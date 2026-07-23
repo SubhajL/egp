@@ -8,6 +8,8 @@ This is the **landing page** for production deployment guidance. For end-to-end 
 |---|---|---|
 | `EGP_BACKGROUND_RUNTIME_MODE` | `external` | Run the discovery dispatch loop as a standalone process so a 3-hour `proc.communicate()` cannot freeze the API event loop. |
 | `EGP_DISCOVERY_WORKER_COUNT` | `1` | Keep single-worker mode until PR-03 is observed cleanly and host-level rate limiting ships. See "When worker_count can increase" below. |
+| `EGP_DISCOVERY_LEASE_SECONDS` | `60` | Renewable ownership window for a claimed discovery job. An executor crash makes the job reclaimable after this window instead of leaving stale work stuck forever. |
+| `EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS` | `20` | Renewal interval while a worker subprocess is active. It must be positive and shorter than the lease. |
 | `EGP_BROWSER_CDP_PORT_BASE` | `9222` | First Chrome remote-debugging port available for discovery workers. |
 | `EGP_BROWSER_CDP_PORT_RANGE` | `200` | Number of deterministic per-run CDP ports reserved on each host. |
 | `EGP_BROWSER_PROFILE_ROOT` | `~/.egp/profiles` | Root for per-run Chrome user-data directories; keep this outside synced folders. |
@@ -26,6 +28,35 @@ The production compose stack runs the discovery dispatcher as a separate service
 - `webhook-executor` - runs `python -m egp_api.executors.webhook_delivery` for outbound webhook delivery.
 
 This is implemented as the `api`, `discovery-executor`, and `webhook-executor` services in [`docker-compose.yml`](../docker-compose.yml).
+
+## Renewable claims and typed failures
+
+Every claimed `discovery_jobs` row receives a unique claim token and expiring lease. The
+dispatcher renews that lease while its worker subprocess is alive. Only the current,
+unexpired token may mark the job dispatched, retrying, or failed; a late process from an
+older claim is rejected. If an executor dies, another executor can reclaim the row after
+`lease_expires_at` instead of treating the old `processing_started_at` value as permanent
+ownership.
+
+Keep the heartbeat comfortably below the lease duration. A 20-second heartbeat and 60-second
+lease tolerate a missed renewal while bounding crash recovery to about one minute. Transient
+renewal errors are retried until the last confirmed lease expires. A confirmed stale token or
+expired lease cancels the worker process group, including Chrome/Xvfb, before releasing its
+browser-profile lock. Raising the worker timeout does not require raising the lease because
+ownership is renewed throughout the crawl.
+
+Dispatch outcomes now persist stable `last_error_code` values separately from human-readable
+`last_error`. Pre-dispatch pauses likewise return an exact blocker (`circuit_open`,
+`profile_busy`, `profile_warm_retry`, or `profile_operator_action_required`) without claiming
+work. Use these codes for automation and dashboards; retain the free-form error only for
+operator detail. The database and repository both reject values outside the shared failure-code
+vocabulary.
+
+Migration `032` protects an old-version in-flight row with a sentinel lease lasting through the
+remainder of the legacy three-hour subprocess timeout. For a clean rollout, stop and drain all
+old API-embedded and standalone discovery executors before applying the migration, then start only
+the new lease-aware executor. Do not run mixed versions deliberately; the sentinel is a crash-safe
+rollout guard, not a substitute for draining.
 
 ## Browser isolation
 

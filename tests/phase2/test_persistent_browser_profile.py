@@ -20,6 +20,7 @@ from egp_api.services.discovery_worker_dispatcher import (
     DiscoverySpawnError,
     SubprocessDiscoveryDispatcher,
 )
+from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 
 class _FakeProcess:
@@ -30,6 +31,7 @@ class _FakeProcess:
         on_communicate: Callable[[dict[str, object]], None] | None = None,
         run_status: str = "succeeded",
         error: str | None = None,
+        failure_code: str | None = None,
     ) -> None:
         self.returncode = returncode
         self.pid = 51515
@@ -37,6 +39,7 @@ class _FakeProcess:
         self._on_communicate = on_communicate
         self._run_status = run_status
         self._error = error
+        self._failure_code = failure_code
 
     def communicate(self, input=None, timeout=None):
         del timeout
@@ -53,6 +56,8 @@ class _FakeProcess:
         }
         if self._error is not None:
             result["error"] = self._error
+        if self._failure_code is not None:
+            result["failure_code"] = self._failure_code
         return (json.dumps(result).encode("utf-8"), b"")
 
 
@@ -229,6 +234,7 @@ def test_persistent_mode_does_not_record_failed_crawl_as_recent_use(
             returncode=0,
             run_status="failed",
             error="e-GP site error after search submit",
+            failure_code=DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR,
         ),
     )
 
@@ -325,7 +331,8 @@ def test_prepare_for_dispatch_defers_when_profile_already_locked(
 
     monkeypatch.setattr("egp_worker.warmup.run_profile_warmup", must_not_warm)
     try:
-        assert _make_dispatcher(tmp_path, warm_dir).prepare_for_dispatch() is False
+        result = _make_dispatcher(tmp_path, warm_dir).prepare_for_dispatch()
+        assert result.blocker == CrawlerBlockerCode.PROFILE_BUSY
     finally:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
@@ -337,7 +344,12 @@ def test_prepare_for_dispatch_defers_when_shared_egp_circuit_is_open(
 ) -> None:
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.get_default_rate_limiter",
-        lambda: SimpleNamespace(is_circuit_open=lambda: True),
+        lambda: SimpleNamespace(
+            get_circuit_snapshot=lambda: SimpleNamespace(
+                is_open=True,
+                reset_at="2026-07-23T04:00:00+00:00",
+            )
+        ),
     )
     dispatcher = SubprocessDiscoveryDispatcher(
         "postgresql://example.test/egp",
@@ -345,7 +357,9 @@ def test_prepare_for_dispatch_defers_when_shared_egp_circuit_is_open(
         run_repository=_FakeRunRepository(),
     )
 
-    assert dispatcher.prepare_for_dispatch() is False
+    result = dispatcher.prepare_for_dispatch()
+
+    assert result.blocker == CrawlerBlockerCode.CIRCUIT_OPEN
 
 
 def test_prepare_for_dispatch_pauses_after_repeated_warm_failures(
@@ -371,9 +385,13 @@ def test_prepare_for_dispatch_pauses_after_repeated_warm_failures(
         browser_warmup_failure_pause_threshold=2,
     )
 
-    assert dispatcher.prepare_for_dispatch() is False
-    assert dispatcher.prepare_for_dispatch() is False
-    assert dispatcher.prepare_for_dispatch() is False
+    first = dispatcher.prepare_for_dispatch()
+    second = dispatcher.prepare_for_dispatch()
+    third = dispatcher.prepare_for_dispatch()
+
+    assert first.blocker == CrawlerBlockerCode.PROFILE_WARM_RETRY
+    assert second.blocker == CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED
+    assert third.blocker == CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED
 
     state = json.loads(
         (warm_dir / ".egp-profile-state.json").read_text(encoding="utf-8")
