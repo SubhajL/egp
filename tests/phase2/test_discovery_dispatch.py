@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import threading
 import time
 
@@ -14,6 +15,7 @@ from egp_api.services.discovery_dispatch import (
 )
 from egp_db.repositories.discovery_job_repo import (
     DiscoveryJobRecord,
+    DiscoveryQueueSnapshot,
     SqlDiscoveryJobRepository,
     StaleDiscoveryJobClaimError,
 )
@@ -78,6 +80,15 @@ class RecordingClaimStore:
         excluded = set(exclude_job_ids or ())
         self.events.append("probe")
         return any(job.id not in excluded for job in self._jobs)
+
+    def get_discovery_queue_snapshot(self) -> DiscoveryQueueSnapshot:
+        pending_count = len(self._jobs)
+        return DiscoveryQueueSnapshot(
+            pending_count=pending_count,
+            claimable_count=pending_count,
+            leased_count=0,
+            retry_scheduled_count=0,
+        )
 
     def claim_pending_discovery_jobs(
         self,
@@ -210,6 +221,52 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
     assert stored.job_status == "dispatched"
     assert stored.attempt_count == 1
     assert stored.dispatched_at is not None
+
+
+def test_discovery_queue_snapshot_distinguishes_due_leased_and_retrying(
+    tmp_path,
+) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-queue-snapshot.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    first = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="first",
+    )
+    second = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="second",
+    )
+
+    assert repo.get_discovery_queue_snapshot() == DiscoveryQueueSnapshot(
+        pending_count=2,
+        claimable_count=2,
+        leased_count=0,
+        retry_scheduled_count=0,
+    )
+
+    claimed = repo.claim_pending_discovery_jobs(limit=1, lease_seconds=60)
+    assert len(claimed) == 1
+    retry_job_id = second.id if claimed[0].id == first.id else first.id
+    repo.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=retry_job_id,
+        job_status="pending",
+        next_attempt_at=datetime.now(UTC) + timedelta(minutes=5),
+    )
+
+    assert repo.get_discovery_queue_snapshot() == DiscoveryQueueSnapshot(
+        pending_count=2,
+        claimable_count=0,
+        leased_count=1,
+        retry_scheduled_count=1,
+    )
 
 
 def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(tmp_path) -> None:

@@ -73,6 +73,9 @@ cmd_install() {
       launchctl print "gui/$uid/$label" >/dev/null 2>&1 || break
       sleep 0.2
     done
+    if [[ "$label" == "com.egp.remote-crawl" ]]; then
+      "$ROOT/scripts/run_remote_crawl.sh" wait-database
+    fi
     launchctl bootstrap "gui/$uid" "$AGENT_DIR/$label.plist"
     echo "loaded $label"
   done

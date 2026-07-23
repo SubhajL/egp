@@ -24,11 +24,17 @@ falls back to ``os.environ``. The bash wrapper never ``source``s the env file.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+import math
 import os
 import shlex
 import sys
-from collections.abc import Mapping
+import time
 from urllib.parse import parse_qs, urlsplit
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 PRODUCTION_ACK_VALUE = "I_UNDERSTAND_THIS_WRITES_PRODUCTION"
 LOCALDEV_DB_PORT = 5434
@@ -47,6 +53,89 @@ _SYNC_FOLDER_MARKERS = (
 
 class RemoteCrawlGuardError(RuntimeError):
     """Raised when the remote-crawl environment is unsafe to run."""
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseReadinessResult:
+    ready: bool
+    attempts: int
+    elapsed_seconds: float
+
+
+def _probe_database_once(database_url: str, timeout_seconds: float) -> None:
+    url = make_url(database_url)
+    connect_args: dict[str, object] = {}
+    if url.get_backend_name().startswith("postgresql"):
+        connect_args["connect_timeout"] = max(
+            1,
+            int(math.ceil(max(0.001, timeout_seconds))),
+        )
+    engine = create_engine(url, future=True, connect_args=connect_args)
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1")).scalar_one()
+    finally:
+        engine.dispose()
+
+
+def probe_database_until_ready(
+    database_url: str,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+    probe: Callable[[str, float], None] = _probe_database_once,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> DatabaseReadinessResult:
+    """Wait within a fixed budget and never echo a URL or driver exception."""
+
+    timeout = float(timeout_seconds)
+    interval = float(poll_interval_seconds)
+    if (
+        not math.isfinite(timeout)
+        or not math.isfinite(interval)
+        or timeout <= 0
+        or interval <= 0
+    ):
+        raise ValueError(
+            "database wait timeout and poll interval must be positive finite values"
+        )
+    started_at = monotonic()
+    attempts = 0
+    while True:
+        elapsed = max(0.0, monotonic() - started_at)
+        if elapsed >= timeout:
+            raise RemoteCrawlGuardError(
+                "database did not become ready within "
+                f"{timeout:.3f}s after {attempts} attempt(s); "
+                "verify the SSH tunnel and production database service"
+            )
+        remaining = max(0.0, timeout - elapsed)
+        attempts += 1
+        try:
+            probe(database_url, max(0.001, min(5.0, remaining)))
+        except Exception:
+            elapsed = max(0.0, monotonic() - started_at)
+            if elapsed >= timeout:
+                raise RemoteCrawlGuardError(
+                    "database did not become ready within "
+                    f"{timeout:.3f}s after {attempts} attempt(s); "
+                    "verify the SSH tunnel and production database service"
+                ) from None
+            sleep(min(interval, timeout - elapsed))
+            continue
+        elapsed = max(0.0, monotonic() - started_at)
+        if elapsed > timeout:
+            raise RemoteCrawlGuardError(
+                "database did not become ready within "
+                f"{timeout:.3f}s after {attempts} attempt(s); "
+                "verify the SSH tunnel and production database service"
+            )
+        return DatabaseReadinessResult(
+            ready=True,
+            attempts=attempts,
+            elapsed_seconds=elapsed,
+        )
 
 
 def _coerce_port(value: str) -> int | None:
@@ -343,19 +432,38 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Guard the Track C remote crawler.")
     parser.add_argument(
         "command",
-        choices=("check", "tunnel-cmd", "tunnel-exec", "print-env"),
+        choices=(
+            "check",
+            "tunnel-cmd",
+            "tunnel-exec",
+            "print-env",
+            "wait-database",
+        ),
         nargs="?",
         default="check",
         help=(
             "check: validate env (default). tunnel-cmd: print the ssh tunnel command. "
             "tunnel-exec: validate then exec the ssh tunnel. print-env: validate then "
-            "emit NUL-delimited KEY=VALUE for safe export."
+            "emit NUL-delimited KEY=VALUE for safe export. wait-database: validate then "
+            "probe database readiness within a fixed timeout."
         ),
     )
     parser.add_argument(
         "--env-file",
         default=None,
         help="Strict dotenv file to load (no shell expansion). Defaults to the process env.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=60.0,
+        help="Bounded wait budget for wait-database (default: 60).",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Retry interval for wait-database (default: 1).",
     )
     return parser
 
@@ -393,6 +501,23 @@ def main(argv: list[str] | None = None, *, env: Mapping[str, str] | None = None)
     if args.command == "print-env":
         # NUL-delimited KEY=VALUE so the wrapper can export without shell eval.
         sys.stdout.write("".join(f"{key}={value}\0" for key, value in config.items()))
+        return 0
+
+    if args.command == "wait-database":
+        try:
+            result = probe_database_until_ready(
+                _get(config, "DATABASE_URL"),
+                timeout_seconds=args.timeout_seconds,
+                poll_interval_seconds=args.poll_interval_seconds,
+            )
+        except (RemoteCrawlGuardError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(
+            "database-ready "
+            f"attempts={result.attempts} "
+            f"elapsed_seconds={result.elapsed_seconds:.3f}"
+        )
         return 0
 
     if args.command == "tunnel-exec":

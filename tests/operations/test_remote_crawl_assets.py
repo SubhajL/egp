@@ -36,6 +36,8 @@ def test_run_remote_crawl_sh_guards_before_dispatching() -> None:
     # The crawl/watch paths must validate first (fail-closed): run_module calls
     # guard_check before exec'ing the module.
     assert "guard_check\n  load_validated_env\n  exec" in text
+    assert "wait-database)" in text
+    assert "egp_api.executors.discovery_doctor" in text
 
 
 def test_run_remote_crawl_sh_never_sources_env_file() -> None:
@@ -63,6 +65,18 @@ def test_install_launchd_sh_keeps_warm_profile_timer_opt_in() -> None:
     assert "OPTIONAL_WARM_LABEL=com.egp.pg-warm" in text
     assert "--with-warm" in text
     assert "LABELS=(com.egp.pg-tunnel com.egp.remote-crawl com.egp.pg-warm)" not in text
+
+
+def test_install_orders_tunnel_readiness_before_watcher() -> None:
+    text = (REPO_ROOT / "scripts" / "install_launchd.sh").read_text(encoding="utf-8")
+    wait_before_bootstrap = (
+        'if [[ "$label" == "com.egp.remote-crawl" ]]; then\n'
+        '      "$ROOT/scripts/run_remote_crawl.sh" wait-database\n'
+        "    fi\n"
+        '    launchctl bootstrap "gui/$uid" "$AGENT_DIR/$label.plist"'
+    )
+
+    assert wait_before_bootstrap in text
 
 
 def test_pg_tunnel_overlay_binds_loopback_only() -> None:
@@ -121,3 +135,17 @@ def test_env_example_is_production_safe_template() -> None:
     assert "EGP_REMOTECRAWL_PRODUCTION_ACK=I_UNDERSTAND_THIS_WRITES_PRODUCTION" not in text
     assert "EGP_REMOTECRAWL_PRODUCTION_ACK=CHANGE_ME" in text
     assert "I_UNDERSTAND_THIS_WRITES_PRODUCTION" in text  # shown in a comment
+
+
+def test_remote_crawl_runbook_documents_doctor_summary_and_typed_decisions() -> None:
+    text = (REPO_ROOT / "docs" / "REMOTE_LOCAL_CRAWLER.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/run_remote_crawl.sh doctor" in text
+    assert "scripts/run_remote_crawl.sh wait-database" in text
+    assert "remaining_pending_count" in text
+    assert "limit_reached" in text
+    assert "`agent_offline`" in text
+    assert "`correlation_mismatch`" in text
+    assert "semantic-failure burst" not in text

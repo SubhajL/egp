@@ -15,6 +15,7 @@ from egp_crawler_core.profile_lock import (
     PROFILE_LOCK_FILENAME,
     ProfileLockedError,
     acquire_profile_lock,
+    is_profile_locked,
     release_profile_lock,
 )
 
@@ -57,6 +58,19 @@ def test_release_allows_reacquire(tmp_path) -> None:
 
 def test_release_none_is_noop() -> None:
     release_profile_lock(None)  # must not raise
+
+
+def test_profile_lock_probe_is_read_only_and_detects_busy(tmp_path) -> None:
+    profile_dir = tmp_path / "missing-profile"
+    assert is_profile_locked(profile_dir) is False
+    assert profile_dir.exists() is False
+
+    held = acquire_profile_lock(profile_dir)
+    try:
+        assert is_profile_locked(profile_dir) is True
+    finally:
+        release_profile_lock(held)
+    assert is_profile_locked(profile_dir) is False
 
 
 # --- dispatcher preserves its DiscoverySpawnError contract ----------------

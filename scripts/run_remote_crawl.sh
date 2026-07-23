@@ -18,6 +18,8 @@
 #   scripts/run_remote_crawl.sh check         # validate .env.remotecrawl, fail closed
 #   scripts/run_remote_crawl.sh tunnel        # open the SSH tunnel to prod Postgres (foreground)
 #   scripts/run_remote_crawl.sh warm-profile  # warm the persistent Chrome profile (run once)
+#   scripts/run_remote_crawl.sh wait-database # bounded tunnel/database readiness check
+#   scripts/run_remote_crawl.sh doctor        # read-only sanitized runtime diagnosis
 #   scripts/run_remote_crawl.sh crawl [N]     # drain N pending prod jobs once, then exit
 #   scripts/run_remote_crawl.sh watch         # continuously claim + crawl prod jobs
 # ──────────────────────────────────────────────────────────────────────────
@@ -58,10 +60,12 @@ case "${1:-check}" in
   check)        require_env_file; guard_check; echo "OK — safe to crawl production." ;;
   # Python execs the ssh argv directly (no bash word-split / option injection).
   tunnel)       require_env_file; exec "$PY" "$GUARD" tunnel-exec --env-file "$ENV_FILE" ;;
+  wait-database) require_env_file; shift || true; exec "$PY" "$GUARD" wait-database --env-file "$ENV_FILE" "$@" ;;
   warm-profile) require_env_file; run_module egp_worker.warmup ;;
+  doctor)       require_env_file; run_module egp_api.executors.discovery_doctor ;;
   crawl)        require_env_file; shift || true; run_module egp_api.executors.discovery_dispatch --once --limit "${1:-5}" ;;
   watch)        require_env_file; run_module egp_api.executors.discovery_dispatch --poll-interval-seconds 2 ;;
   # Read-only WS0 diagnostic: dump search rows for a keyword (no persistence, no DB).
   diagnose)     require_env_file; shift || true; guard_check; load_validated_env; exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" "$@" ;;
-  *) echo "usage: $0 {check|tunnel|warm-profile|crawl [N]|watch|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
+  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|watch|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
 esac

@@ -18,6 +18,7 @@ from sqlalchemy import (
     String,
     Table,
     and_,
+    case,
     func,
     insert,
     or_,
@@ -113,6 +114,23 @@ class DiscoveryJobRecord:
 class DiscoveryJobEnqueueResult:
     job: DiscoveryJobRecord
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryQueueSnapshot:
+    pending_count: int
+    claimable_count: int
+    leased_count: int
+    retry_scheduled_count: int
+
+    @classmethod
+    def empty(cls) -> DiscoveryQueueSnapshot:
+        return cls(
+            pending_count=0,
+            claimable_count=0,
+            leased_count=0,
+            retry_scheduled_count=0,
+        )
 
 
 class StaleDiscoveryJobClaimError(RuntimeError):
@@ -354,6 +372,53 @@ class SqlDiscoveryJobRepository:
                     )
                 ).scalar_one()
             )
+
+    def get_discovery_queue_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> DiscoveryQueueSnapshot:
+        """Return global operational counts without tenant or keyword payloads."""
+
+        resolved_now = _as_utc(now or _now())
+        pending = DISCOVERY_JOBS_TABLE.c.job_status == "pending"
+        claimable = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= resolved_now,
+            or_(
+                DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
+                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= resolved_now,
+            ),
+        )
+        leased = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.claim_token.is_not(None),
+            DISCOVERY_JOBS_TABLE.c.lease_expires_at > resolved_now,
+        )
+        retry_scheduled = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at > resolved_now,
+        )
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                select(
+                    func.sum(case((pending, 1), else_=0)).label("pending_count"),
+                    func.sum(case((claimable, 1), else_=0)).label(
+                        "claimable_count"
+                    ),
+                    func.sum(case((leased, 1), else_=0)).label("leased_count"),
+                    func.sum(case((retry_scheduled, 1), else_=0)).label(
+                        "retry_scheduled_count"
+                    ),
+                ).select_from(DISCOVERY_JOBS_TABLE)
+            ).mappings().one()
+        return DiscoveryQueueSnapshot(
+            pending_count=int(row["pending_count"] or 0),
+            claimable_count=int(row["claimable_count"] or 0),
+            leased_count=int(row["leased_count"] or 0),
+            retry_scheduled_count=int(row["retry_scheduled_count"] or 0),
+        )
 
     def has_claimable_discovery_jobs(
         self,

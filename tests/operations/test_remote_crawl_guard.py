@@ -20,10 +20,12 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import remote_crawl_guard  # noqa: E402
 from remote_crawl_guard import (  # noqa: E402
+    DatabaseReadinessResult,
     RemoteCrawlGuardError,
     build_ssh_tunnel_command,
     main,
     parse_env_file,
+    probe_database_until_ready,
     require_safe_remote_crawl,
     validate_database_topology,
     validate_remote_crawl_env,
@@ -380,3 +382,166 @@ def test_main_check_loads_env_file(tmp_path: Path) -> None:
     lines = [f"{key}={value}" for key, value in _valid_config(tmp_path).items()]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     assert main(["check", "--env-file", str(env_path)]) == 0
+
+
+def test_database_probe_waits_then_succeeds() -> None:
+    clock = [0.0]
+    attempts = 0
+
+    def probe(database_url: str, timeout_seconds: float) -> None:
+        nonlocal attempts
+        assert database_url == "postgresql://operator:secret@127.0.0.1:15432/egp"
+        assert timeout_seconds > 0
+        attempts += 1
+        if attempts < 3:
+            raise OSError("tunnel not ready")
+
+    result = probe_database_until_ready(
+        "postgresql://operator:secret@127.0.0.1:15432/egp",
+        timeout_seconds=5,
+        poll_interval_seconds=1,
+        probe=probe,
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    )
+
+    assert result == DatabaseReadinessResult(
+        ready=True,
+        attempts=3,
+        elapsed_seconds=2.0,
+    )
+
+
+def test_database_probe_times_out_actionably_without_credentials() -> None:
+    clock = [0.0]
+
+    def fail_probe(database_url: str, timeout_seconds: float) -> None:
+        del database_url, timeout_seconds
+        raise OSError("password=super-secret")
+
+    with pytest.raises(RemoteCrawlGuardError) as exc_info:
+        probe_database_until_ready(
+            "postgresql://operator:super-secret@127.0.0.1:15432/egp",
+            timeout_seconds=0.5,
+            poll_interval_seconds=0.2,
+            probe=fail_probe,
+            monotonic=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    message = str(exc_info.value)
+    assert "database did not become ready" in message
+    assert "tunnel" in message
+    assert "super-secret" not in message
+    assert "postgresql://" not in message
+
+
+@pytest.mark.parametrize(
+    ("timeout_seconds", "poll_interval_seconds"),
+    [
+        (float("nan"), 1.0),
+        (float("inf"), 1.0),
+        (1.0, float("nan")),
+        (1.0, float("inf")),
+    ],
+)
+def test_database_probe_rejects_non_finite_wait_values(
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> None:
+    with pytest.raises(ValueError, match="positive finite"):
+        probe_database_until_ready(
+            "postgresql://operator:secret@127.0.0.1:15432/egp",
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            probe=lambda database_url, timeout: None,
+        )
+
+
+def test_database_probe_does_not_retry_at_exact_deadline() -> None:
+    clock = [0.0]
+    attempts = 0
+
+    def fail_probe(database_url: str, timeout_seconds: float) -> None:
+        nonlocal attempts
+        del database_url, timeout_seconds
+        attempts += 1
+        raise OSError("not ready")
+
+    with pytest.raises(RemoteCrawlGuardError):
+        probe_database_until_ready(
+            "postgresql://operator:secret@127.0.0.1:15432/egp",
+            timeout_seconds=1.0,
+            poll_interval_seconds=1.0,
+            probe=fail_probe,
+            monotonic=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    assert attempts == 1
+    assert clock[0] == 1.0
+
+
+def test_database_probe_rejects_success_after_deadline() -> None:
+    clock = [0.0]
+
+    def slow_success(database_url: str, timeout_seconds: float) -> None:
+        del database_url, timeout_seconds
+        clock[0] = 5.0
+
+    with pytest.raises(RemoteCrawlGuardError, match="database did not become ready"):
+        probe_database_until_ready(
+            "postgresql://operator:secret@127.0.0.1:15432/egp",
+            timeout_seconds=1.0,
+            poll_interval_seconds=0.1,
+            probe=slow_success,
+            monotonic=lambda: clock[0],
+            sleep=lambda seconds: None,
+        )
+
+
+def test_main_wait_database_uses_bounded_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[tuple[str, float, float]] = []
+
+    def ready(
+        database_url: str,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float,
+    ) -> DatabaseReadinessResult:
+        calls.append((database_url, timeout_seconds, poll_interval_seconds))
+        return DatabaseReadinessResult(
+            ready=True,
+            attempts=2,
+            elapsed_seconds=1.0,
+        )
+
+    monkeypatch.setattr(remote_crawl_guard, "probe_database_until_ready", ready)
+
+    assert (
+        main(
+            [
+                "wait-database",
+                "--timeout-seconds",
+                "12",
+                "--poll-interval-seconds",
+                "0.5",
+            ],
+            env=_valid_config(tmp_path),
+        )
+        == 0
+    )
+    assert calls == [
+        (
+            "postgresql://egp:pw@127.0.0.1:15432/egp",
+            12.0,
+            0.5,
+        )
+    ]
+    assert capsys.readouterr().out.strip() == (
+        "database-ready attempts=2 elapsed_seconds=1.000"
+    )
