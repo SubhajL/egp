@@ -6,7 +6,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Index, Integer, Table
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Table,
+)
 from sqlalchemy import and_, func, insert, select, update
 from sqlalchemy.engine import Engine, RowMapping
 
@@ -26,6 +35,14 @@ RECRAWL_REQUESTS_TABLE = Table(
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
     ),
+    Column(
+        "source",
+        String,
+        nullable=False,
+        default="manual",
+        server_default="manual",
+    ),
+    Column("idempotency_key", String, nullable=True),
     Column("requested_keyword_count", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -33,12 +50,24 @@ RECRAWL_REQUESTS_TABLE = Table(
         "requested_keyword_count >= 0",
         name="recrawl_requests_keyword_count_check",
     ),
+    CheckConstraint(
+        "source IN ('manual', 'operator_recovery')",
+        name="recrawl_requests_source_check",
+    ),
 )
 
 Index(
     "idx_recrawl_requests_tenant_created",
     RECRAWL_REQUESTS_TABLE.c.tenant_id,
     RECRAWL_REQUESTS_TABLE.c.created_at,
+)
+Index(
+    "idx_recrawl_requests_tenant_idempotency",
+    RECRAWL_REQUESTS_TABLE.c.tenant_id,
+    RECRAWL_REQUESTS_TABLE.c.idempotency_key,
+    unique=True,
+    sqlite_where=RECRAWL_REQUESTS_TABLE.c.idempotency_key.is_not(None),
+    postgresql_where=RECRAWL_REQUESTS_TABLE.c.idempotency_key.is_not(None),
 )
 
 
@@ -94,16 +123,17 @@ def _summary_projects_seen(summary: object) -> int:
 
 def _dedupe_jobs(jobs: list[RecrawlJobInput]) -> list[RecrawlJobInput]:
     unique: list[RecrawlJobInput] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for job in jobs:
+        profile_id = normalize_uuid_string(job.profile_id)
         keyword = job.keyword.strip()
-        key = keyword.casefold()
+        key = (profile_id, keyword.casefold())
         if not keyword or key in seen:
             continue
         seen.add(key)
         unique.append(
             RecrawlJobInput(
-                profile_id=normalize_uuid_string(job.profile_id),
+                profile_id=profile_id,
                 profile_type=job.profile_type.strip() or "custom",
                 keyword=keyword,
             )
@@ -133,6 +163,10 @@ class SqlRecrawlRequestRepository:
         *,
         tenant_id: str,
         jobs: list[RecrawlJobInput],
+        source: str = "manual",
+        idempotency_key: str | None = None,
+        trigger_type: str = "manual",
+        reject_existing_pending: bool = False,
     ) -> RecrawlRequestCreateResult:
         from egp_db.repositories.discovery_job_repo import (
             DISCOVERY_JOBS_TABLE,
@@ -143,6 +177,25 @@ class SqlRecrawlRequestRepository:
         desired_jobs = _dedupe_jobs(jobs)
         if not desired_jobs:
             raise ValueError("at least one active keyword is required")
+        normalized_source = str(source).strip()
+        if normalized_source not in {"manual", "operator_recovery"}:
+            raise ValueError("invalid recrawl request source")
+        normalized_trigger_type = str(trigger_type).strip()
+        if normalized_trigger_type not in {"manual", "retry"}:
+            raise ValueError("invalid recrawl trigger_type")
+        normalized_idempotency_key = (
+            str(idempotency_key).strip() if idempotency_key is not None else None
+        )
+        if normalized_idempotency_key == "":
+            raise ValueError("idempotency_key cannot be empty")
+        if normalized_source == "operator_recovery" and (
+            normalized_trigger_type != "retry"
+            or not normalized_idempotency_key
+            or not reject_existing_pending
+        ):
+            raise ValueError(
+                "operator recovery requires retry jobs, idempotency, and pending-job rejection"
+            )
 
         now = _now()
         with self._engine.begin() as connection:
@@ -155,6 +208,23 @@ class SqlRecrawlRequestRepository:
                 ).scalar_one_or_none()
                 if tenant_row is None:
                     raise KeyError(tenant_id)
+            if normalized_idempotency_key is not None:
+                existing_request_id = connection.execute(
+                    select(RECRAWL_REQUESTS_TABLE.c.id).where(
+                        and_(
+                            RECRAWL_REQUESTS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            RECRAWL_REQUESTS_TABLE.c.idempotency_key
+                            == normalized_idempotency_key,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing_request_id is not None:
+                    return RecrawlRequestCreateResult(
+                        request_id=str(existing_request_id),
+                        queued_job_count=0,
+                        queued_keywords=[],
+                    )
             existing_by_key: dict[tuple[str, str], RowMapping] = {}
             for desired in desired_jobs:
                 row = (
@@ -181,6 +251,45 @@ class SqlRecrawlRequestRepository:
                 )
                 if row is not None:
                     existing_by_key[(desired.profile_id, desired.keyword.casefold())] = row
+
+            if reject_existing_pending and existing_by_key:
+                pending_ids = sorted(str(row["id"]) for row in existing_by_key.values())
+                raise ValueError(
+                    "recovery targets already have pending discovery jobs: "
+                    + ", ".join(pending_ids)
+                )
+            if reject_existing_pending:
+                desired_keys = {
+                    (desired.profile_id, desired.keyword.casefold())
+                    for desired in desired_jobs
+                }
+                pending_rows = connection.execute(
+                    select(DISCOVERY_JOBS_TABLE).where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id
+                            == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.profile_id.in_(
+                                {desired.profile_id for desired in desired_jobs}
+                            ),
+                            DISCOVERY_JOBS_TABLE.c.live.is_(True),
+                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                        )
+                    )
+                ).mappings().all()
+                matching_pending_ids = sorted(
+                    str(row["id"])
+                    for row in pending_rows
+                    if (
+                        str(row["profile_id"]),
+                        str(row["keyword"]).casefold(),
+                    )
+                    in desired_keys
+                )
+                if matching_pending_ids:
+                    raise ValueError(
+                        "recovery targets already have pending discovery jobs: "
+                        + ", ".join(matching_pending_ids)
+                    )
 
             existing_request_ids = {
                 str(row["recrawl_request_id"])
@@ -228,6 +337,8 @@ class SqlRecrawlRequestRepository:
                     insert(RECRAWL_REQUESTS_TABLE).values(
                         id=request_id,
                         tenant_id=normalized_tenant_id,
+                        source=normalized_source,
+                        idempotency_key=normalized_idempotency_key,
                         requested_keyword_count=len(desired_jobs),
                         created_at=now,
                         updated_at=now,
@@ -251,7 +362,7 @@ class SqlRecrawlRequestRepository:
                     profile_id=desired.profile_id,
                     profile_type=desired.profile_type,
                     keyword=desired.keyword,
-                    trigger_type="manual",
+                    trigger_type=normalized_trigger_type,
                     live=True,
                     recrawl_request_id=request_id,
                     now=now,

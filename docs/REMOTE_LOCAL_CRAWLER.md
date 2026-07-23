@@ -223,6 +223,50 @@ response includes a durable `request_id`; the UI polls
 across reloads. The Mac watcher claims and crawls them. Scheduled crawls are queued by
 the Lightsail timer.
 
+### Bounded recovery of known failed manual runs
+
+Use `scripts/requeue_failed_discovery_runs.py` only for an incident manifest containing
+explicit historical run UUIDs. It never selects work by date, status alone, or current
+profile membership. The default invocation is read-only and production recovery requires
+migrations `029` and `030` to be applied first.
+
+1. Stop the local watcher and verify the in-box `discovery-executor` still has zero replicas.
+2. Verify the shared circuit is closed and the persistent browser profile is active, current,
+   and not paused by repeated warm failures.
+3. Resolve the tenant UUID and exact failed manual run UUIDs with a read-only query. Save that
+   incident manifest outside git.
+4. Run the command without `--execute` and review every source, keyword, profile, count, and
+   pending-job conflict. For the 2026-07-22 incident, both `source_run_count` and
+   `recovery_job_count` must equal `10`, and `is_executable` must be `true`.
+
+```bash
+./.venv/bin/python scripts/requeue_failed_discovery_runs.py \
+  --tenant-id <tenant-uuid> \
+  --expected-count 10 \
+  --run-id <failed-run-1> \
+  --run-id <failed-run-2>
+# repeat --run-id for all ten explicit UUIDs
+```
+
+The command fails closed if a run is missing, belongs to another tenant, is not a failed
+manual run, has a missing/paused profile, lacks exactly one discover task keyword, does not
+match the expected count, or already has matching pending work. Only after the dry-run output
+has been saved and independently reviewed, repeat the exact command with `--execute`. It
+creates one `source=operator_recovery` request and correlated `retry` jobs in one transaction.
+The manifest-derived idempotency key makes an identical re-execution return the same request
+without adding jobs.
+
+Monitor only the returned request ID:
+
+```bash
+curl -fsS "https://api.<domain>/v1/rules/recrawl/<request-id>?tenant_id=<tenant-uuid>"
+```
+
+Stop immediately without deleting audit rows if the shared circuit opens, the profile pauses,
+the validated count differs from the incident manifest, a matching pending job appears, or a
+new semantic-failure burst begins. Leave pending jobs recoverable and investigate before any
+further execution.
+
 ---
 
 ## Safety model

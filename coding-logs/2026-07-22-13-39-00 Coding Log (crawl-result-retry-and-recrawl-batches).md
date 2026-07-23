@@ -715,3 +715,90 @@ LOW
 - Repository-wide Python suite passed: `1301 passed, 108 warnings in 168.21s`.
 - Final all-Python `ruff`, `compileall`, and `git diff --check` passed.
 - The recorded warnings are the existing Python 3.12+ SQLite datetime-adapter deprecations in document, rules, and tenant-storage tests; no test failed or was skipped to obtain the green gate.
+
+## Lifecycle Update (2026-07-23 08:59:49 +0700) - U2 landed
+
+- Committed U2 as `7b72acc1c6748b93100c5d764f301f72887c77c5` and opened PR #172: `https://github.com/SubhajL/egp/pull/172`.
+- GitHub Actions again stopped before execution because the account remained billing-locked; the exact annotations were reviewed and no code test ran remotely.
+- Under the user's explicit admin-merge authorization, squash-merged PR #172 as `b9b9b2825d2cf9172f05f78085355fd064dcb47e`.
+- Fast-forwarded local `main`, verified exact equality with `origin/main`, then passed the exact-main U2 gates: `123` relevant backend tests, `50` frontend unit tests, TypeScript typecheck, and OpenAPI drift.
+- Created `fix/bounded-failed-run-recovery` from exact U2 main. Production remained unchanged.
+
+## Implementation Update (2026-07-23 08:59:49 +0700) - PR U3 bounded recovery
+
+### Goal and contract
+
+- Added a dry-run-first command that accepts only one tenant UUID plus explicit source run UUIDs; it never discovers recovery scope from a time window or broad status query.
+- Validation fails closed for missing/cross-tenant/nonfailed/nonmanual runs, unresolved or paused profiles, ambiguous discover tasks, duplicate source IDs, count mismatches, and matching pending jobs.
+- Recovery jobs are deduplicated by profile plus case-folded keyword. The production CLI requires both the exact source-run count and the exact resulting job count to equal `--expected-count`, which defaults to `10` for this incident.
+- Execution creates one `source=operator_recovery` request and `retry` jobs transactionally. A manifest-derived idempotency key returns the same request on an identical rerun without adding jobs.
+- Migration `030_operator_recovery_requests.sql` adds the additive request source and tenant-scoped idempotency key needed for the audit trail. Existing U2 request rows migrate to `source=manual`.
+
+### TDD evidence
+
+- Initial RED failed during collection because `requeue_failed_discovery_runs` did not exist.
+- GREEN operations suite passed `10` tests covering default dry-run/no writes, unsafe source rejection, tenant isolation, paused/ambiguous source rejection, profile+keyword deduplication, exact-count and pending-job guards, execution-time revalidation, one-request execution, SQLite behavior, and migrated-PostgreSQL idempotent re-execution.
+- The complete migration-runner suite passed `4` tests, including an upgrade from pre-`030` data and the tenant/idempotency uniqueness constraint.
+- Auggie semantic retrieval was attempted for U3 but returned HTTP `402`; implementation continued with bounded reads of the exact repository, migration, run/task/profile, CLI, test, and runbook seams.
+
+### Production boundary
+
+- No production command, deployment, migration, request creation, or recovery job mutation has been performed in U3 yet.
+- The runbook requires the crawler watcher to be stopped, the in-box executor to remain at zero replicas, circuit/profile health to be verified, and the exact ten-run dry-run manifest to be saved and reviewed before `--execute`.
+- Stop-only backout remains authoritative: on an unexpected count, pending-job conflict, open circuit, profile pause, or new semantic-failure burst, do not delete request/job audit rows and do not enqueue more work.
+
+### QCHECK findings fixed
+
+- HIGH: a plan could become stale between dry-run construction and execution if an operator paused its profile. Execution now rebuilds and compares the exact manifest immediately before enqueue; a regression test pauses the profile after planning and proves zero writes.
+- MEDIUM: the transactional repository initially rejected only exact-case pending keywords, while the dry-run detector used case-folded identity. The recovery transaction now performs the same profile-plus-case-folded conflict check, preventing a case-variant duplicate under a concurrent enqueue.
+
+### Final pre-review verification
+
+- The expanded recovery/recrawl/dispatch/runbook matrix passed `85` tests three consecutive times.
+- Repository-wide Python verification passed: `1312 passed, 108 warnings in 175.09s`.
+- Full `ruff`, Python `compileall`, staged diff check, migration prefix inspection, and staged credential-pattern scan passed. The warnings remain the existing Python 3.12+ SQLite datetime-adapter deprecations.
+
+## Review (2026-07-23 09:07:53 +0700) - working-tree PR U3
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp`
+- Branch: `fix/bounded-failed-run-recovery`
+- Scope: staged working tree based on `b9b9b2825d2cf9172f05f78085355fd064dcb47e`
+- Commands Run: staged status/name/stat/check and targeted diff inspection; exact-string wiring and credential scans; three consecutive 85-test recovery/recrawl/dispatch runs; full 1312-test Python suite; all-Python `ruff` and `compileall`; PostgreSQL fresh/upgrade migration and recovery integration tests.
+- Auggie returned HTTP `402` during the required semantic review attempt, so review used the bounded direct-inspection fallback.
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No open findings. The stale-plan execution issue found during skeptical review was fixed and regression-tested before this formal disposition.
+
+MEDIUM
+
+- No open findings. Transactional case-folded pending-job detection was aligned with the dry-run identity rule and tested.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The exact incident scope remains ten distinct failed manual runs resolving to ten distinct active profile/keyword pairs; production dry-run must prove both counts before mutation.
+- Migrations `029` and `030` must be applied before deploying code that selects or writes the new request columns.
+- The local Mac remains the sole discovery claimer; the production `discovery-executor` must remain at zero replicas throughout recovery.
+
+### Recommended Tests / Validation
+
+- Current pre-commit coverage is sufficient: three stable relevant runs, migrated PostgreSQL execution/idempotency, full repository tests, lint, compile, and diff checks all passed.
+- After merge, rerun the 85-test matrix on exact `main`, deploy/apply migrations in safe order, and capture a read-only ten-run dry-run manifest before `--execute`.
+
+### Rollout Notes
+
+- Additive migration defaults historical/manual requests to `source=manual`; rollback may leave its nullable idempotency column and audit rows in place.
+- Recovery has no broad selector and no delete/backout mutation. An identical manifest returns the existing request; any different matching pending work fails closed.
+- Stop the watcher before validation and execution, then monitor only the returned request ID. On circuit/profile/count/semantic stop conditions, leave durable rows intact and halt further work.
