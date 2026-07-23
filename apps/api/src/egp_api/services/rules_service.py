@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
 from egp_crawler_core.closure_rules import describe_closure_rules
 from egp_crawler_core.discovery_authorization import RunnableProfileKeyword
+from egp_crawler_core.recovery_policy import RecoveryDecision, evaluate_recovery_decision
+from egp_db.repositories.crawler_runtime_repo import CrawlerRuntimeSnapshot
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
 from egp_db.repositories.recrawl_request_repo import RecrawlJobInput, RecrawlRequestStatus
 from egp_shared_types.enums import (
@@ -23,6 +25,7 @@ from egp_api.services.entitlement_service import (
 
 if TYPE_CHECKING:
     from egp_db.repositories.admin_repo import SqlAdminRepository
+    from egp_db.repositories.crawler_runtime_repo import SqlCrawlerRuntimeRepository
     from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
     from egp_db.repositories.recrawl_request_repo import SqlRecrawlRequestRepository
 
@@ -95,6 +98,12 @@ class ManualRecrawlRequest:
     queued_keywords: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class ManualRecrawlStatus(RecrawlRequestStatus):
+    runtime: CrawlerRuntimeSnapshot
+    recovery_decision: RecoveryDecision
+
+
 def _map_profile(
     detail: CrawlProfileDetail,
     entitlements: TenantEntitlementSnapshot | None = None,
@@ -130,6 +139,9 @@ class RulesService:
         admin_repository: SqlAdminRepository | None = None,
         discovery_job_repository: SqlDiscoveryJobRepository | None = None,
         recrawl_request_repository: SqlRecrawlRequestRepository | None = None,
+        crawler_runtime_repository: SqlCrawlerRuntimeRepository | None = None,
+        background_runtime_mode: str = "embedded",
+        crawler_heartbeat_stale_after_seconds: float = 90.0,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
@@ -137,6 +149,11 @@ class RulesService:
         self._admin_repository = admin_repository
         self._discovery_job_repository = discovery_job_repository
         self._recrawl_request_repository = recrawl_request_repository
+        self._crawler_runtime_repository = crawler_runtime_repository
+        self._background_runtime_mode = background_runtime_mode
+        self._crawler_heartbeat_stale_after_seconds = (
+            crawler_heartbeat_stale_after_seconds
+        )
 
     def create_profile(
         self,
@@ -498,12 +515,36 @@ class RulesService:
         *,
         tenant_id: str,
         request_id: str,
-    ) -> RecrawlRequestStatus:
+    ) -> ManualRecrawlStatus:
         if self._recrawl_request_repository is None:
             raise RuntimeError("recrawl request repository is not configured")
-        return self._recrawl_request_repository.get_status(
+        request_status = self._recrawl_request_repository.get_status(
             tenant_id=tenant_id,
             request_id=request_id,
+        )
+        runtime = self.get_crawler_runtime_status()
+        decision = evaluate_recovery_decision(
+            is_terminal=request_status.is_terminal,
+            correlation_matches=request_status.correlation_matches,
+            runtime_blocker=runtime.blocker_code,
+            job_failure_codes=tuple(
+                job.last_error_code
+                for job in request_status.jobs
+                if job.last_error_code is not None
+            ),
+        )
+        return ManualRecrawlStatus(
+            **asdict(request_status),
+            runtime=runtime,
+            recovery_decision=decision,
+        )
+
+    def get_crawler_runtime_status(self) -> CrawlerRuntimeSnapshot:
+        if self._crawler_runtime_repository is None:
+            raise RuntimeError("crawler runtime repository is not configured")
+        return self._crawler_runtime_repository.get_freshest_status(
+            runtime_mode=self._background_runtime_mode,
+            stale_after_seconds=self._crawler_heartbeat_stale_after_seconds,
         )
 
     def _queue_profile_created_jobs(

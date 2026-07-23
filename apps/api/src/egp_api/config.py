@@ -78,6 +78,30 @@ def get_discovery_lease_heartbeat_seconds(
     return heartbeat_seconds
 
 
+def get_crawler_heartbeat_stale_after_seconds(
+    override: float | str | None = None,
+) -> float:
+    """Return when an external crawler heartbeat becomes an offline blocker."""
+
+    return _get_positive_float_env(
+        name="EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS",
+        default=90.0,
+        override=override,
+    )
+
+
+def get_crawler_heartbeat_interval_seconds(
+    override: float | str | None = None,
+) -> float:
+    """Return the minimum interval between unchanged agent heartbeats."""
+
+    return _get_positive_float_env(
+        name="EGP_CRAWLER_HEARTBEAT_INTERVAL_SECONDS",
+        default=30.0,
+        override=override,
+    )
+
+
 def _get_positive_int_env(
     *,
     name: str,

@@ -360,6 +360,7 @@ def test_prepare_for_dispatch_defers_when_shared_egp_circuit_is_open(
     result = dispatcher.prepare_for_dispatch()
 
     assert result.blocker == CrawlerBlockerCode.CIRCUIT_OPEN
+    assert result.circuit_reset_at == "2026-07-23T04:00:00+00:00"
 
 
 def test_prepare_for_dispatch_pauses_after_repeated_warm_failures(

@@ -733,7 +733,10 @@ class SubprocessDiscoveryDispatcher:
                 "(reset_at=%s)",
                 circuit_snapshot.reset_at,
             )
-            return DiscoveryPreDispatchResult.blocked(CrawlerBlockerCode.CIRCUIT_OPEN)
+            return DiscoveryPreDispatchResult.blocked(
+                CrawlerBlockerCode.CIRCUIT_OPEN,
+                circuit_reset_at=circuit_snapshot.reset_at,
+            )
         if self._browser_profile_mode != "persistent":
             return DiscoveryPreDispatchResult.ready()
         assert self._browser_persistent_profile_dir is not None

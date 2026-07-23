@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import threading
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 from egp_db.repositories.discovery_job_repo import (
     DiscoveryJobRecord,
@@ -93,6 +93,7 @@ class DiscoveryPreDispatchPreparer(Protocol):
 class DiscoveryPreDispatchResult:
     should_dispatch: bool
     blocker: CrawlerBlockerCode | None = None
+    circuit_reset_at: str | None = None
 
     @classmethod
     def ready(cls) -> DiscoveryPreDispatchResult:
@@ -102,8 +103,14 @@ class DiscoveryPreDispatchResult:
     def blocked(
         cls,
         blocker: CrawlerBlockerCode,
+        *,
+        circuit_reset_at: str | None = None,
     ) -> DiscoveryPreDispatchResult:
-        return cls(should_dispatch=False, blocker=blocker)
+        return cls(
+            should_dispatch=False,
+            blocker=blocker,
+            circuit_reset_at=circuit_reset_at,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +125,7 @@ class DiscoveryDispatchBatchResult:
     requested_limit: int
     dispositions: tuple[DiscoveryJobDispatchDisposition, ...]
     blocker: CrawlerBlockerCode | None = None
+    circuit_reset_at: str | None = None
 
     @property
     def processed_count(self) -> int:
@@ -250,11 +258,36 @@ class DiscoveryDispatchProcessor:
         *,
         limit: int | None = None,
     ) -> DiscoveryDispatchBatchResult:
+        return self._process_pending(
+            limit=limit,
+            on_pre_dispatch_ready=None,
+        )
+
+    def process_pending_with_observer(
+        self,
+        *,
+        limit: int | None = None,
+        on_pre_dispatch_ready: Callable[[], None],
+    ) -> DiscoveryDispatchBatchResult:
+        """Process jobs and notify once pre-dispatch proves the runtime ready."""
+
+        return self._process_pending(
+            limit=limit,
+            on_pre_dispatch_ready=on_pre_dispatch_ready,
+        )
+
+    def _process_pending(
+        self,
+        *,
+        limit: int | None,
+        on_pre_dispatch_ready: Callable[[], None] | None,
+    ) -> DiscoveryDispatchBatchResult:
         worker_count = max(1, int(self.worker_count))
         requested_limit = self.claim_limit if limit is None else max(1, int(limit))
         dispositions: list[DiscoveryJobDispatchDisposition] = []
         processed_job_ids: set[str] = set()
         blocker: CrawlerBlockerCode | None = None
+        circuit_reset_at: str | None = None
         while len(dispositions) < requested_limit:
             batch_limit = min(worker_count, requested_limit - len(dispositions))
             if not self.repository.has_claimable_discovery_jobs(
@@ -265,7 +298,10 @@ class DiscoveryDispatchProcessor:
                 preparation = self.pre_dispatch_preparer.prepare_for_dispatch()
                 if not preparation.should_dispatch:
                     blocker = preparation.blocker
+                    circuit_reset_at = preparation.circuit_reset_at
                     break
+            if on_pre_dispatch_ready is not None:
+                on_pre_dispatch_ready()
             jobs = self.repository.claim_pending_discovery_jobs(
                 limit=batch_limit,
                 lease_seconds=self.lease_seconds,
@@ -283,6 +319,7 @@ class DiscoveryDispatchProcessor:
             requested_limit=requested_limit,
             dispositions=tuple(dispositions),
             blocker=blocker,
+            circuit_reset_at=circuit_reset_at,
         )
 
     def _process_claimed_jobs(

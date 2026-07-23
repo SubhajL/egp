@@ -157,6 +157,9 @@ class DiscoveryFailureCode(StrEnum):
 class CrawlerBlockerCode(StrEnum):
     """Shared crawler conditions that stop dispatch before a job claim."""
 
+    AGENT_OFFLINE = "agent_offline"
+    DATABASE_UNREACHABLE = "database_unreachable"
+    CORRELATION_MISMATCH = "correlation_mismatch"
     CIRCUIT_OPEN = "circuit_open"
     PROFILE_BUSY = "profile_busy"
     PROFILE_WARM_RETRY = "profile_warm_retry"

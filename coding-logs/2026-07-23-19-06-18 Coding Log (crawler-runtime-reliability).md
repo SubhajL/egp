@@ -833,3 +833,251 @@ LOW
   age before any concurrency increase.
 - Application rollback is safe with additive columns, but do not restart old executors against
   newly queued work after migration without first stopping the new executor.
+
+## U2 landed
+
+- PR: `https://github.com/SubhajL/egp/pull/175`
+- Admin squash merge: `54fc96c6cf96c24bacd3b23759a8ce6ff3232c49`
+- GitHub checks could not start because the account was locked for billing; every check carried
+  the same immediate GitHub annotation. Local gates and the staged formal review above were green.
+- Primary local `main` was fast-forwarded to the exact merge SHA; user-owned untracked
+  `docs/TOR KEYWORDS.md` remained untouched.
+- Post-merge verification: the 235-test affected suite and Ruff passed on exact merged source.
+
+## Implementation Update (2026-07-23): U3 runtime and recovery visibility
+
+### Semantic exploration and fallback
+
+The required Auggie retrieval requested the heartbeat table/repository, worker-token route,
+bootstrap, exact recrawl aggregation, executor/reporting path, generated contracts, hooks, and
+Projects UI. Auggie again returned HTTP 402. Direct bounded `rg`/`sed` inspection established:
+
+- exact-request polling previously exposed counts and failed keyword names only;
+- no API/database contract represented the external Mac watcher, database tunnel, browser
+  profile, or circuit state;
+- the standalone executor could fail before database runtime construction and therefore had no
+  independent visibility channel;
+- React Query polled every five seconds until terminal, with no typed hard-stop boundary.
+
+### RED evidence
+
+Backend RED:
+
+```text
+PYTHONPATH=<worktree sources> <primary .venv>/bin/python -m pytest \
+  tests/phase2/test_crawler_runtime.py tests/phase1/test_migration_runner.py -q
+```
+
+Collection failed because `crawler_runtime_reporter`, `crawler_runtime_repo`, and
+`recovery_policy` did not exist. Frontend RED ran the focused hooks unit test and failed because
+`shouldPollRecrawlRequest` did not exist.
+
+### Implementation
+
+- Added migration `033` and `SqlCrawlerRuntimeRepository`. Heartbeats are global sanitized
+  operational state: no tenant/customer identifier, credential, URL, path, or free-form runtime
+  exception. Atomic Postgres/SQLite upsert prevents duplicate-agent races.
+- Added internal worker-token `POST /internal/worker/crawler-runtime/heartbeat` and run-operator
+  `GET /v1/rules/crawler-runtime`. External heartbeat age derives explicit `online`/`offline`;
+  embedded mode synthesizes `embedded_ready`.
+- Added a fail-open HTTPS `CrawlerRuntimeReporter`. The external executor constructs it before
+  database runtime state, so a real SQLAlchemy `OperationalError` reports
+  `database_unreachable` even when the SSH tunnel is down. Non-database exceptions are not
+  mislabeled as tunnel failures.
+- Added executable `evaluate_recovery_decision()`. Correlation mismatch, stale agent,
+  unreachable database, open circuit, and operator-required profile state are typed hard stops.
+  Busy/warm-retry and heterogeneous per-keyword failures continue/defer. Terminal request state
+  completes independently of keyword outcome mix.
+- Extended exact recrawl status with every correlated job's state, attempts, typed/latest error,
+  retry timestamp, latest run id/status/timestamps, correlation invariant, runtime snapshot, and
+  recovery decision. Per-request reads remain tenant-scoped.
+- Generated OpenAPI/TypeScript contracts now include both runtime routes and structured status.
+  Projects renders Thai hard-stop, retrying, and exact error diagnostics. Polling stops on either
+  terminal completion or a typed hard stop instead of running forever.
+- Added heartbeat interval/staleness configuration to templates/Compose and documented deploy
+  ordering: apply migration/API before restarting the Mac reporter.
+
+### Initial GREEN evidence
+
+- Backend focused set: `22 passed`.
+- Expanded affected Python run: `110 passed, 1 contract expectation failed`; the single failure
+  was an older exact-dictionary assertion that correctly detected the additive structured status.
+  The assertion was updated to verify the new fields explicitly.
+- Web unit suite: `51 passed`.
+- Projects Playwright suite: `8 passed`, including rendered Thai blocked/retrying/error states.
+- Generated OpenAPI drift check and TypeScript typecheck: passed.
+- Ruff across every touched Python file: passed.
+
+Final affected-suite repetition, repository-wide gates, wiring table, independent QCHECK,
+formal staged g-check, PR, merge, and exact local-main landing remain.
+
+### U3 QCHECK findings and remediation
+
+Independent read-only QCHECK passed 69 focused Python tests, six web unit tests, and web
+typecheck, then found two HIGH and three MEDIUM gaps:
+
+1. HIGH: heartbeats were emitted only after `process_pending()`, so a healthy three-hour worker
+   would be declared offline after 90 seconds;
+2. HIGH: both default Compose `discovery-executor` services omitted the internal API URL/token,
+   so the reporter could never start;
+3. MEDIUM: stopping React Query on a typed hard stop offered no in-page way to observe recovery;
+4. MEDIUM: terminal requests were overridden by later stale/offline runtime state;
+5. MEDIUM: circuit reset time was dropped between preflight and heartbeat, and transient
+   profile busy/warm-retry blockers were not rendered.
+
+All findings were accepted and reproduced with RED tests. Remediation:
+
+- the long-running executor owns an independent periodic heartbeat task whose state is updated by
+  batch results/errors; heartbeat HTTP runs off the event loop, unchanged failed deliveries are
+  also rate-limited, and `--once` reports its final batch;
+- both Compose executor services receive `http://api:8000`, the internal worker token, a distinct
+  in-box agent id, and heartbeat cadence;
+- terminal completion now wins after correlation validation and before runtime blockers;
+- finite polling remains stopped on a hard stop, but Projects exposes
+  `ตรวจสอบสถานะอีกครั้ง`; the browser test proves stop -> continue recovery without reload;
+- `circuit_reset_at` now flows from the sanitized limiter snapshot through preflight, batch,
+  reporter, table, API, and Thai UI; profile busy/warm-retry blockers render as amber defer states;
+- exact-request correlation now also rejects request-tagged runs whose discovery job is null or
+  belongs outside the request, not only job-count mismatch;
+- stale age comparison uses sub-second truth while the displayed age remains an integer.
+
+Post-remediation focused evidence:
+
+- `146 passed, 5 existing SQLite deprecation warnings`;
+- web unit `51 passed`;
+- Projects Playwright `8 passed`;
+- Ruff, compileall, TypeScript typecheck, and `git diff --check`: passed.
+
+Independent re-review, restarted three-consecutive affected runs, final repository-wide gates,
+wiring table, staged g-check, PR, merge, and exact local-main landing remain.
+
+### U3 final QCHECK remediation
+
+The first re-review found three remaining MEDIUM gaps and reproduced each one:
+
+1. every blocked poll briefly cleared the last-known circuit/profile blocker, producing
+   ready/open oscillation and bypassing failed-delivery throttling when the control plane was
+   unavailable;
+2. `--once` published a healthy heartbeat only after its batch completed, then exited while the
+   fresh heartbeat continued to imply a live agent;
+3. correlation validation queried runs only by `recrawl_request_id`, so a run linked through a
+   request job but missing/wrong on the reverse request axis was invisible.
+
+The processor now exposes a readiness observer that fires only after pre-dispatch has positively
+confirmed readiness and before a job is claimed. Until then the heartbeat retains the last-known
+blocker. Failed heartbeat delivery globally throttles all changing non-forced payloads for the
+configured interval. One-shot execution owns an independent serialized heartbeat thread while
+the blocking batch runs and force-publishes `stopping` + `agent_offline` at exit.
+
+Exact-request status now queries runs linked through either correlation axis and requires every
+visible run to agree on both `recrawl_request_id` and `discovery_job_id`; malformed inverse links
+cannot silently disappear or contribute a latest run.
+
+The next re-review found one HIGH shutdown ordering race and one MEDIUM terminal-label gap:
+
+- a delayed periodic HTTP request could outlive the one-second join and arrive after the forced
+  terminal heartbeat;
+- a one-shot exit retained circuit/profile/database blocker codes rather than becoming
+  `agent_offline`.
+
+Heartbeat delivery and terminal publication now share a lock. Shutdown sets the stop event,
+waits behind any in-flight periodic delivery, publishes the forced terminal state under the same
+lock, then joins the now-drained thread. `mark_stopping()` always selects `agent_offline`, while
+the separate database/profile/circuit diagnostic fields remain intact. The delayed-delivery
+regression proves the last report cannot revert from stopping to running. Final independent
+QCHECK reported no severity findings.
+
+Pre-formal staged inspection then found the analogous ordering risk in continuous mode: its
+periodic and post-batch async tasks could overlap and let an older delayed heartbeat arrive after
+new blocker state. Both paths now share an `asyncio.Lock` and capture state only after acquiring
+it. A delayed-first continuous-mode regression proves `circuit_open` remains the last report.
+The final bounded independent re-review again reported no severity findings.
+
+### U3 final verification
+
+| Producer | Contract seam | Consumer | Proof |
+| --- | --- | --- | --- |
+| external executor | sanitized worker-token heartbeat | runtime repository/API | heartbeat auth, stale/offline, failure-throttle, delayed-order tests |
+| pre-dispatch preparer | blocker/reset/readiness observer | periodic runtime state | persistent-blocker and confirmed-readiness tests |
+| recrawl jobs + crawl runs | both correlation axes | exact-request status/recovery policy | forward/null/inverse mismatch tests |
+| runtime + exact jobs | generated OpenAPI/types | Projects hook/UI | generated drift check, unit tests, 43 browser tests |
+| environment templates | API URL/token/agent/cadence | both Compose executors | configuration/wiring assertions and bounded diff inspection |
+
+Final gates after all remediation:
+
+- affected Python suite: `102 passed` on each of three consecutive runs;
+- repository-wide Python suite: `1356 passed, 112 existing SQLite deprecation warnings`;
+- web unit: `51 passed`; Playwright: `43 passed`; production build: passed;
+- generated OpenAPI/TypeScript drift check: passed using the isolated worktree source path;
+- TypeScript typecheck and Next lint: passed;
+- repository-wide Ruff and Python compileall: passed;
+- final independent QCHECK: no severity findings.
+
+The first repository-wide attempt had one environment-only failure because the isolated worktree
+did not contain its own `.venv`, which `scripts/pg_backup.sh` resolves relative to the repo root.
+An untracked worktree-local symlink to the primary environment allowed the exact backup test and
+full suite to run; it was removed immediately afterward and is not part of the change.
+
+## Review (2026-07-23 21:38:49 +0700) - U3 staged working tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-review-crawler-hiccups`
+- Branch: `fix/crawler-runtime-status`
+- Scope: staged working tree against
+  `54fc96c6cf96c24bacd3b23759a8ce6ff3232c49`
+- Commands Run: staged status/name/stat/check and targeted production diffs; exact
+  route/auth/repository/recovery/executor/Compose/UI wiring inspection; independent QCHECK and
+  bounded re-reviews; RED regressions; affected suite three times; repository-wide pytest;
+  OpenAPI drift; TypeScript typecheck; unit/browser tests; build; lint; Ruff; compileall
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No outstanding findings. QCHECK's long-batch heartbeat, missing Compose credentials, bounded
+  shutdown ordering, and continuous-mode delivery ordering risks were reproduced and fixed.
+
+MEDIUM
+
+- No outstanding findings. QCHECK's recovery refresh, terminal precedence, circuit/profile
+  diagnostics, blocker oscillation/throttling, one-shot liveness, and bidirectional correlation
+  gaps were reproduced and fixed.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Migration `033` and the API route are deployed before any external executor begins heartbeat
+  delivery.
+- `EGP_INTERNAL_API_BASE_URL`, `EGP_INTERNAL_WORKER_TOKEN`, and the agent id are supplied outside
+  git on the Mac; example values are placeholders only.
+- The initial 30-second heartbeat and 90-second stale threshold remain the rollout defaults.
+- Freshest-agent global state is intentional for the current single authoritative external
+  crawler; multi-agent aggregation is outside this PR.
+- A completed bounded `--once` process intentionally becomes `agent_offline`; the retained
+  database/profile/circuit fields remain diagnostic context rather than the stop reason.
+
+### Recommended Tests / Validation
+
+- Complete: `102 passed` three consecutive times for the affected Python suite.
+- Complete: repository-wide `1356 passed` with 112 existing SQLite deprecation warnings.
+- Complete: web unit `51 passed`, Playwright `43 passed`, production build, TypeScript typecheck,
+  Next lint, generated OpenAPI/type drift, Ruff, compileall, and staged diff check.
+- Post-merge: rerun the runtime/executor/correlation regressions and Ruff on exact merged
+  `main`.
+
+### Rollout Notes
+
+- Apply migration `033`, deploy the API/runtime status route, then restart the Mac executor.
+- Keep the worker token secret and rotate it if heartbeat authentication fails unexpectedly.
+- Observe heartbeat age, delivery warnings, `agent_offline`, `database_unreachable`,
+  `circuit_open`, profile blockers, and correlation mismatch before changing cadence.
+- Code rollback can leave the additive heartbeat table in place. Stop the new reporter before
+  rolling the API back so it does not repeatedly hit a missing endpoint.

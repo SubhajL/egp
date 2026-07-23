@@ -77,6 +77,23 @@ type RunActivityCard = {
   discoveredCount: number;
 };
 
+const CRAWLER_BLOCKER_LABELS: Record<string, string> = {
+  agent_offline: "ไม่พบ heartbeat จากเครื่อง crawler",
+  database_unreachable: "เครื่อง crawler เชื่อมต่อฐานข้อมูลไม่ได้",
+  correlation_mismatch: "จำนวนงานไม่ตรงกับคำขอ crawl รอบนี้",
+  circuit_open: "วงจรป้องกัน e-GP เปิดอยู่ ระบบหยุดเรียกเว็บชั่วคราว",
+  profile_busy: "โปรไฟล์เบราว์เซอร์กำลังถูกใช้งาน ระบบจะลองใหม่",
+  profile_warm_retry: "โปรไฟล์เบราว์เซอร์ยังอุ่นเครื่องไม่สำเร็จ ระบบจะลองใหม่",
+  profile_operator_action_required: "โปรไฟล์เบราว์เซอร์ต้องให้ผู้ดูแลแก้ไข",
+};
+
+function crawlerBlockerLabel(code: string | null | undefined): string {
+  if (!code) {
+    return "ระบบหยุดชั่วคราวเพื่อป้องกันข้อมูลผิดพลาด";
+  }
+  return CRAWLER_BLOCKER_LABELS[code] ?? `ระบบหยุดชั่วคราว (${code})`;
+}
+
 const MANUAL_RECRAWL_REQUEST_STORAGE_KEY = "egp.manual-recrawl-request-id";
 
 const ACTIVE_STATES = [
@@ -325,6 +342,7 @@ export default function ProjectsPage() {
     data: recrawlStatus,
     error: recrawlStatusError,
     isError: isRecrawlStatusError,
+    refetch: refetchRecrawlStatus,
   } = useRecrawlRequestStatus(manualRecrawlTracking?.requestId ?? null);
   const apiProjects = data?.projects ?? [];
   const totalProjects = data?.total ?? 0;
@@ -731,6 +749,65 @@ export default function ProjectsPage() {
                   ล้มเหลว: {recrawlStatus.failed_keywords.join(", ")}
                 </p>
               ) : null}
+              {recrawlStatus.recovery_decision?.blocker_code ? (
+                <div
+                  className={`mt-2 rounded-lg px-3 py-2 text-xs font-medium ${
+                    recrawlStatus.recovery_decision.action === "stop"
+                      ? "bg-[var(--badge-red-bg)] text-[var(--badge-red-text)]"
+                      : "bg-[var(--badge-amber-bg)] text-[var(--badge-amber-text)]"
+                  }`}
+                >
+                  <p>
+                    {recrawlStatus.recovery_decision.action === "stop"
+                      ? "หยุดติดตามอัตโนมัติ"
+                      : "รอระบบพร้อม"}
+                    :{" "}
+                    {crawlerBlockerLabel(
+                      recrawlStatus.recovery_decision.blocker_code,
+                    )}
+                  </p>
+                  {recrawlStatus.runtime.circuit_reset_at ? (
+                    <p className="mt-1 font-normal">
+                      เวลาลองใหม่โดยประมาณ:{" "}
+                      {new Date(
+                        recrawlStatus.runtime.circuit_reset_at,
+                      ).toLocaleString("th-TH")}
+                    </p>
+                  ) : null}
+                  {recrawlStatus.recovery_decision.action === "stop" ? (
+                    <button
+                      type="button"
+                      onClick={() => void refetchRecrawlStatus()}
+                      className="mt-2 rounded-lg border border-current px-2.5 py-1 font-medium hover:opacity-80"
+                    >
+                      ตรวจสอบสถานะอีกครั้ง
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              {(recrawlStatus.jobs ?? [])
+                .filter((job) => job.state === "retrying")
+                .map((job) => (
+                  <p
+                    key={`retrying-${job.job_id}`}
+                    className="mt-1 text-xs text-[var(--badge-amber-text)]"
+                  >
+                    กำลังลองใหม่: {job.keyword} · ครั้งที่ {job.attempt_count}
+                    {job.last_error_code ? ` · ${job.last_error_code}` : ""}
+                  </p>
+                ))}
+              {(recrawlStatus.jobs ?? [])
+                .filter((job) => job.state === "failed")
+                .map((job) => (
+                  <p
+                    key={`failed-${job.job_id}`}
+                    className="mt-1 text-xs text-[var(--badge-red-text)]"
+                  >
+                    ข้อผิดพลาด: {job.keyword}
+                    {job.last_error_code ? ` · ${job.last_error_code}` : ""}
+                    {job.last_error ? ` · ${job.last_error}` : ""}
+                  </p>
+                ))}
             </div>
           ) : manualRecrawlTracking ? (
             <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">

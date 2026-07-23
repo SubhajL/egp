@@ -37,14 +37,19 @@ class RecordingPreDispatchPreparer:
         events: list[str],
         *,
         blocker: CrawlerBlockerCode | None = None,
+        circuit_reset_at: str | None = None,
     ) -> None:
         self.events = events
         self.blocker = blocker
+        self.circuit_reset_at = circuit_reset_at
 
     def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
         self.events.append("prepare")
         if self.blocker is not None:
-            return DiscoveryPreDispatchResult.blocked(self.blocker)
+            return DiscoveryPreDispatchResult.blocked(
+                self.blocker,
+                circuit_reset_at=self.circuit_reset_at,
+            )
         return DiscoveryPreDispatchResult.ready()
 
 
@@ -343,6 +348,26 @@ def test_discovery_dispatch_processor_prepares_before_claiming_jobs() -> None:
     assert [request.keyword for request in dispatcher.requests] == ["one"]
 
 
+def test_discovery_dispatch_processor_observes_only_confirmed_readiness() -> None:
+    store = RecordingClaimStore(
+        [_job_record("11111111-1111-1111-1111-111111111111", keyword="one")]
+    )
+    readiness_events: list[str] = []
+    processor = DiscoveryDispatchProcessor(
+        repository=store,
+        dispatcher=RecordingDiscoveryDispatcher(),
+        pre_dispatch_preparer=RecordingPreDispatchPreparer(store.events),
+    )
+
+    result = processor.process_pending_with_observer(
+        on_pre_dispatch_ready=lambda: readiness_events.append("ready"),
+    )
+
+    assert result.processed_count == 1
+    assert readiness_events == ["ready"]
+    assert store.events[:3] == ["probe", "prepare", "claim"]
+
+
 def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimable() -> None:
     store = RecordingClaimStore([])
     dispatcher = RecordingDiscoveryDispatcher()
@@ -367,6 +392,7 @@ def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false()
     preparer = RecordingPreDispatchPreparer(
         store.events,
         blocker=CrawlerBlockerCode.PROFILE_BUSY,
+        circuit_reset_at="2026-07-23T04:00:00+00:00",
     )
     processor = DiscoveryDispatchProcessor(
         repository=store,
@@ -374,11 +400,16 @@ def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false()
         pre_dispatch_preparer=preparer,
     )
 
-    result = processor.process_pending()
+    readiness_events: list[str] = []
+    result = processor.process_pending_with_observer(
+        on_pre_dispatch_ready=lambda: readiness_events.append("ready"),
+    )
 
     assert result.processed_count == 0
     assert result.blocker == CrawlerBlockerCode.PROFILE_BUSY
+    assert result.circuit_reset_at == "2026-07-23T04:00:00+00:00"
     assert store.events == ["probe", "prepare"]
+    assert readiness_events == []
     assert store.claim_limits == []
     assert dispatcher.requests == []
 

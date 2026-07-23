@@ -20,6 +20,7 @@ from egp_api.config import (
     get_discovery_lease_heartbeat_seconds,
     get_discovery_lease_seconds,
     get_discovery_worker_count,
+    get_crawler_heartbeat_stale_after_seconds,
     get_promptpay_proxy_id,
     get_opn_public_key,
     get_opn_secret_key,
@@ -205,6 +206,7 @@ def configure_services(
     app.state.notification_repository = bundle.notification_repository
     app.state.discovery_job_repository = bundle.discovery_job_repository
     app.state.recrawl_request_repository = bundle.recrawl_request_repository
+    app.state.crawler_runtime_repository = bundle.crawler_runtime_repository
     app.state.support_repository = bundle.support_repository
     app.state.notification_service = notification_service
     app.state.notification_dispatcher = gated_notification_dispatcher
@@ -264,6 +266,9 @@ def configure_services(
         admin_repository=bundle.admin_repository,
         discovery_job_repository=bundle.discovery_job_repository,
         recrawl_request_repository=bundle.recrawl_request_repository,
+        crawler_runtime_repository=bundle.crawler_runtime_repository,
+        background_runtime_mode=background_runtime_mode,
+        crawler_heartbeat_stale_after_seconds=get_crawler_heartbeat_stale_after_seconds(),
     )
     app.state.export_service = ExportService(
         bundle.project_repository,

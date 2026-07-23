@@ -105,6 +105,7 @@ After a full deploy to #139+, delete the override (the base compose then carries
    #  ^ MUST be AWS_DEFAULT_REGION (not AWS_REGION) — it forces SigV4 presigned
    #    URLs; AWS_REGION=auto alone yields SigV2, which R2 rejects.
    EGP_INTERNAL_WORKER_TOKEN=…            # the Mac sends this as X-EGP-Worker-Token
+   EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS=90
    ```
 2. Bring the stack up **without** the in-box crawler, **with** the tunnel overlay:
    ```bash
@@ -138,7 +139,8 @@ After a full deploy to #139+, delete the override (the base compose then carries
    ```
    Fill in: `EGP_REMOTECRAWL_SSH_HOST`, the production `DATABASE_URL` (tunnel form
    `…@127.0.0.1:15432/egp`), `EGP_INTERNAL_API_BASE_URL=https://api.<domain>`,
-   `EGP_INTERNAL_WORKER_TOKEN`, the R2 vars (`S3_BUCKET`, `AWS_ENDPOINT_URL_S3`,
+   `EGP_INTERNAL_WORKER_TOKEN`, `EGP_CRAWLER_AGENT_ID`, the R2 vars
+   (`S3_BUCKET`, `AWS_ENDPOINT_URL_S3`,
    `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), `EGP_BROWSER_CHROME_PATH`, and a
    persistent profile dir **outside** OneDrive/iCloud/Dropbox.
 3. Validate — the guard fails closed on any missing/unsafe value:
@@ -159,6 +161,16 @@ scripts/run_remote_crawl.sh crawl 5       # drain up to 5 pending prod jobs, the
 # …or continuously:
 scripts/run_remote_crawl.sh watch
 ```
+
+The long-running executor sends a sanitized HTTPS heartbeat even when its
+database tunnel is unavailable. Operators can inspect the derived online/offline
+state at `GET /v1/rules/crawler-runtime`; exact manual-recrawl status also
+includes per-keyword attempts, typed errors, run correlation, and the typed
+recovery decision. A stale external heartbeat is an explicit hard stop, while a
+single warm-profile retry remains a continue/defer decision.
+
+For rollout, deploy migration `033` and the API route before restarting the Mac
+executor. Code rollback may leave the additive heartbeat table in place.
 
 ### Always-on (launchd)
 

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from egp_api.auth import require_admin_role, require_run_operator_role, resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError, RunAdmissionError
 from egp_api.services.rules_service import RulesService, RulesSnapshot
+from egp_api.routes.crawler_runtime import CrawlerRuntimeResponse
 from egp_db.repositories.profile_repo import ProfileNameConflictError
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,28 @@ class ManualRecrawlResponse(BaseModel):
     queued_keywords: list[str]
 
 
+class ManualRecrawlJobResponse(BaseModel):
+    job_id: str
+    keyword: str
+    state: str
+    attempt_count: int
+    last_error_code: str | None
+    last_error: str | None
+    next_attempt_at: str
+    processing_started_at: str | None
+    dispatched_at: str | None
+    run_id: str | None
+    run_status: str | None
+    run_started_at: str | None
+    run_finished_at: str | None
+
+
+class RecoveryDecisionResponse(BaseModel):
+    action: str
+    code: str
+    blocker_code: str | None
+
+
 class ManualRecrawlStatusResponse(BaseModel):
     request_id: str
     requested_keyword_count: int
@@ -155,6 +178,10 @@ class ManualRecrawlStatusResponse(BaseModel):
     partial_count: int
     failed_count: int
     failed_keywords: list[str]
+    jobs: list[ManualRecrawlJobResponse]
+    correlation_matches: bool
+    runtime: CrawlerRuntimeResponse
+    recovery_decision: RecoveryDecisionResponse
     is_terminal: bool
     created_at: str
     updated_at: str

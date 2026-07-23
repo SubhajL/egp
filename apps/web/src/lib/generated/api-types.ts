@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/worker/crawler-runtime/heartbeat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Crawler Runtime Heartbeat */
+        post: operations["record_crawler_runtime_heartbeat_internal_worker_crawler_runtime_heartbeat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/worker/projects/close-check": {
         parameters: {
             query?: never;
@@ -1141,6 +1158,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rules/crawler-runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Crawler Runtime */
+        get: operations["get_crawler_runtime_v1_rules_crawler_runtime_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/rules/profiles": {
         parameters: {
             query?: never;
@@ -1918,6 +1952,70 @@ export interface components {
             /** Tenant Id */
             tenant_id?: string | null;
         };
+        /**
+         * CrawlerBlockerCode
+         * @description Shared crawler conditions that stop dispatch before a job claim.
+         * @enum {string}
+         */
+        CrawlerBlockerCode: "agent_offline" | "database_unreachable" | "correlation_mismatch" | "circuit_open" | "profile_busy" | "profile_warm_retry" | "profile_operator_action_required";
+        /** CrawlerRuntimeHeartbeatRequest */
+        CrawlerRuntimeHeartbeatRequest: {
+            /** Agent Id */
+            agent_id: string;
+            blocker_code?: components["schemas"]["CrawlerBlockerCode"] | null;
+            /** Circuit Reset At */
+            circuit_reset_at?: string | null;
+            /**
+             * Circuit State
+             * @enum {string}
+             */
+            circuit_state: "closed" | "open" | "half_open" | "unknown";
+            /**
+             * Database Status
+             * @enum {string}
+             */
+            database_status: "connected" | "unreachable" | "unknown";
+            /**
+             * Profile Status
+             * @enum {string}
+             */
+            profile_status: "ready" | "busy" | "warm_retry" | "operator_action_required" | "unknown";
+            /**
+             * Runtime Mode
+             * @constant
+             */
+            runtime_mode: "external";
+            /**
+             * Watcher Status
+             * @enum {string}
+             */
+            watcher_status: "running" | "stopping" | "error";
+        };
+        /** CrawlerRuntimeResponse */
+        CrawlerRuntimeResponse: {
+            /** Agent Id */
+            agent_id: string;
+            /** Blocker Code */
+            blocker_code: string | null;
+            /** Circuit Reset At */
+            circuit_reset_at: string | null;
+            /** Circuit State */
+            circuit_state: string;
+            /** Database Status */
+            database_status: string;
+            /** Heartbeat Age Seconds */
+            heartbeat_age_seconds: number | null;
+            /** Heartbeat Status */
+            heartbeat_status: string;
+            /** Profile Status */
+            profile_status: string;
+            /** Reported At */
+            reported_at: string | null;
+            /** Runtime Mode */
+            runtime_mode: string;
+            /** Watcher Status */
+            watcher_status: string;
+        };
         /** CreateAdminUserRequest */
         CreateAdminUserRequest: {
             /** Email */
@@ -2523,6 +2621,35 @@ export interface components {
             /** Tenant Slug */
             tenant_slug?: string | null;
         };
+        /** ManualRecrawlJobResponse */
+        ManualRecrawlJobResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Dispatched At */
+            dispatched_at: string | null;
+            /** Job Id */
+            job_id: string;
+            /** Keyword */
+            keyword: string;
+            /** Last Error */
+            last_error: string | null;
+            /** Last Error Code */
+            last_error_code: string | null;
+            /** Next Attempt At */
+            next_attempt_at: string;
+            /** Processing Started At */
+            processing_started_at: string | null;
+            /** Run Finished At */
+            run_finished_at: string | null;
+            /** Run Id */
+            run_id: string | null;
+            /** Run Started At */
+            run_started_at: string | null;
+            /** Run Status */
+            run_status: string | null;
+            /** State */
+            state: string;
+        };
         /** ManualRecrawlQueuedResponse */
         ManualRecrawlQueuedResponse: {
             /** Code */
@@ -2556,6 +2683,8 @@ export interface components {
         };
         /** ManualRecrawlStatusResponse */
         ManualRecrawlStatusResponse: {
+            /** Correlation Matches */
+            correlation_matches: boolean;
             /** Created At */
             created_at: string;
             /** Failed Count */
@@ -2564,10 +2693,13 @@ export interface components {
             failed_keywords: string[];
             /** Is Terminal */
             is_terminal: boolean;
+            /** Jobs */
+            jobs: components["schemas"]["ManualRecrawlJobResponse"][];
             /** Partial Count */
             partial_count: number;
             /** Queued Count */
             queued_count: number;
+            recovery_decision: components["schemas"]["RecoveryDecisionResponse"];
             /** Request Id */
             request_id: string;
             /** Requested Keyword Count */
@@ -2576,6 +2708,7 @@ export interface components {
             retrying_count: number;
             /** Running Count */
             running_count: number;
+            runtime: components["schemas"]["CrawlerRuntimeResponse"];
             /** Succeeded Count */
             succeeded_count: number;
             /** Updated At */
@@ -2870,6 +3003,15 @@ export interface components {
             status: components["schemas"]["BillingPaymentStatus"];
             /** Tenant Id */
             tenant_id?: string | null;
+        };
+        /** RecoveryDecisionResponse */
+        RecoveryDecisionResponse: {
+            /** Action */
+            action: string;
+            /** Blocker Code */
+            blocker_code: string | null;
+            /** Code */
+            code: string;
         };
         /** RegisterRequest */
         RegisterRequest: {
@@ -3439,6 +3581,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    record_crawler_runtime_heartbeat_internal_worker_crawler_runtime_heartbeat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CrawlerRuntimeHeartbeatRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrawlerRuntimeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5569,6 +5744,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_crawler_runtime_v1_rules_crawler_runtime_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrawlerRuntimeResponse"];
                 };
             };
         };

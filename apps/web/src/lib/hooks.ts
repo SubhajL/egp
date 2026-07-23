@@ -102,13 +102,26 @@ export function useRuns(params: FetchRunsParams = {}) {
   });
 }
 
+type RecrawlPollingState = {
+  is_terminal: boolean;
+  recovery_decision?: {
+    action: string;
+  };
+};
+
+export function shouldPollRecrawlRequest(
+  status: RecrawlPollingState | undefined,
+): boolean {
+  return !status?.is_terminal && status?.recovery_decision?.action !== "stop";
+}
+
 export function useRecrawlRequestStatus(requestId: string | null) {
   return useQuery({
     queryKey: ["recrawl-request", requestId],
     queryFn: () => fetchRecrawlRequestStatus(requestId ?? ""),
     enabled: !!requestId,
     refetchInterval: (query) =>
-      query.state.data?.is_terminal ? false : 5000,
+      shouldPollRecrawlRequest(query.state.data) ? 5000 : false,
   });
 }
 
