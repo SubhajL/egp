@@ -11,6 +11,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,11 +28,15 @@ class _FakeProcess:
         *,
         returncode: int = 0,
         on_communicate: Callable[[dict[str, object]], None] | None = None,
+        run_status: str = "succeeded",
+        error: str | None = None,
     ) -> None:
         self.returncode = returncode
         self.pid = 51515
         self.payload: bytes | None = None
         self._on_communicate = on_communicate
+        self._run_status = run_status
+        self._error = error
 
     def communicate(self, input=None, timeout=None):
         del timeout
@@ -39,7 +44,16 @@ class _FakeProcess:
         payload = json.loads((input or b"{}").decode("utf-8"))
         if self._on_communicate is not None:
             self._on_communicate(payload)
-        return (b"", b"")
+        result = {
+            "command": "discover",
+            "run_id": payload.get("run_id"),
+            "run_status": self._run_status,
+            "project_count": 0,
+            "project_ids": [],
+        }
+        if self._error is not None:
+            result["error"] = self._error
+        return (json.dumps(result).encode("utf-8"), b"")
 
 
 class _FakeRunRepository:
@@ -198,6 +212,40 @@ def test_persistent_mode_records_successful_crawl_as_recent_use(
     assert state["source"] == "crawl"
 
 
+def test_persistent_mode_does_not_record_failed_crawl_as_recent_use(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    warm_dir = tmp_path / "warm-profile"
+    warm_dir.mkdir(parents=True)
+    state_path = warm_dir / ".egp-profile-state.json"
+    state_path.write_text(
+        json.dumps({"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *a, **k: _FakeProcess(
+            returncode=0,
+            run_status="failed",
+            error="e-GP site error after search submit",
+        ),
+    )
+
+    dispatcher = _make_dispatcher(tmp_path, warm_dir)
+    previous_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(DiscoverySpawnError, match="e-GP site error"):
+        dispatcher.dispatch(_request())
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "last_success_at" not in state
+    assert state["source"] == "crawl_failure"
+    assert state["last_crawl_failure_at"]
+    assert "e-GP site error" in state["last_crawl_failure_error"]
+    assert previous_state["last_success_at"]
+
+
 def test_persistent_mode_reuses_dir_and_passes_proxy_xvfb_chrome(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -281,6 +329,23 @@ def test_prepare_for_dispatch_defers_when_profile_already_locked(
     finally:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
+
+
+def test_prepare_for_dispatch_defers_when_shared_egp_circuit_is_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.get_default_rate_limiter",
+        lambda: SimpleNamespace(is_circuit_open=lambda: True),
+    )
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=_FakeRunRepository(),
+    )
+
+    assert dispatcher.prepare_for_dispatch() is False
 
 
 def test_prepare_for_dispatch_pauses_after_repeated_warm_failures(

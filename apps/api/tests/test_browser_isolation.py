@@ -31,7 +31,14 @@ class _FakeProcess:
         payload = json.loads((input or b"{}").decode("utf-8"))
         if self._on_communicate is not None:
             self._on_communicate(payload)
-        return (b"", b"")
+        result = {
+            "command": "discover",
+            "run_id": payload.get("run_id"),
+            "run_status": "succeeded",
+            "project_count": 0,
+            "project_ids": [],
+        }
+        return (json.dumps(result).encode("utf-8"), b"")
 
 
 class _FakeRunRepository:

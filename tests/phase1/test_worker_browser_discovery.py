@@ -797,6 +797,8 @@ def test_search_keyword_recovers_from_procurement_detail_page_before_waiting_for
 def test_search_keyword_raises_on_site_error_toast_after_submit(monkeypatch) -> None:
     page = FakeSearchPage()
     search_input = FakeSearchInput()
+    outcomes: list[str] = []
+    limiter = SimpleNamespace(record_outcome=outcomes.append)
 
     monkeypatch.setattr(
         "egp_worker.browser_discovery.wait_for_cloudflare",
@@ -823,6 +825,10 @@ def test_search_keyword_raises_on_site_error_toast_after_submit(monkeypatch) -> 
         lambda page: True,
         raising=False,
     )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_default_rate_limiter",
+        lambda: limiter,
+    )
 
     with pytest.raises(RuntimeError, match="ระบบเกิดข้อผิดพลาด"):
         search_keyword(
@@ -830,6 +836,7 @@ def test_search_keyword_raises_on_site_error_toast_after_submit(monkeypatch) -> 
             "แพลตฟอร์ม",
             BrowserDiscoverySettings(search_page_recovery_retries=0),
         )
+    assert outcomes == ["site_error"]
 
 
 def test_search_keyword_retries_site_error_toast_from_clean_page(monkeypatch) -> None:
@@ -837,6 +844,8 @@ def test_search_keyword_retries_site_error_toast_from_clean_page(monkeypatch) ->
     search_input = FakeSearchInput()
     toast_states = [True, False, False, False]
     goto_calls: list[str] = []
+    outcomes: list[str] = []
+    limiter = SimpleNamespace(record_outcome=outcomes.append)
 
     def has_toast(page) -> bool:
         return toast_states.pop(0) if toast_states else False
@@ -873,6 +882,10 @@ def test_search_keyword_retries_site_error_toast_from_clean_page(monkeypatch) ->
     monkeypatch.setattr(
         "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
     )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_default_rate_limiter",
+        lambda: limiter,
+    )
 
     search_keyword(
         page,
@@ -882,6 +895,7 @@ def test_search_keyword_retries_site_error_toast_from_clean_page(monkeypatch) ->
 
     assert len(goto_calls) == 1
     assert search_input.values == ["", "แพลตฟอร์ม", "", "แพลตฟอร์ม"]
+    assert outcomes == ["site_error", "site_success"]
 
 
 def test_search_keyword_rejects_stale_results_after_submit(monkeypatch) -> None:

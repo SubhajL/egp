@@ -540,7 +540,15 @@ def test_make_discover_spawner_forwards_profile_id_in_worker_payload(
         def communicate(self, *, input=None, timeout=None):
             captured["payload"] = input
             captured["timeout"] = timeout
-            return (None, b"")
+            payload = json.loads(input.decode())
+            result = {
+                "command": "discover",
+                "run_id": payload["run_id"],
+                "run_status": "succeeded",
+                "project_count": 0,
+                "project_ids": [],
+            }
+            return (json.dumps(result).encode(), b"")
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
@@ -568,7 +576,15 @@ def test_make_discover_spawner_enables_live_document_collection_in_worker_payloa
 
         def communicate(self, *, input=None, timeout=None):
             captured["payload"] = input
-            return (None, b"")
+            payload = json.loads(input.decode())
+            result = {
+                "command": "discover",
+                "run_id": payload["run_id"],
+                "run_status": "succeeded",
+                "project_count": 0,
+                "project_ids": [],
+            }
+            return (json.dumps(result).encode(), b"")
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")

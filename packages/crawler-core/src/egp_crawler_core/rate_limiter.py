@@ -20,6 +20,9 @@ DEFAULT_EGP_RPS = 0.5
 DEFAULT_EGP_BURST = 1
 DEFAULT_CIRCUIT_429_THRESHOLD = 5
 DEFAULT_CIRCUIT_RESET_SECONDS = 300.0
+DEFAULT_SITE_ERROR_THRESHOLD = 2
+DEFAULT_SITE_ERROR_BASE_SECONDS = 300.0
+DEFAULT_SITE_ERROR_MAX_SECONDS = 1_800.0
 
 
 class CircuitOpenError(RuntimeError):
@@ -38,6 +41,9 @@ class RateLimiterConfig:
     burst: int = DEFAULT_EGP_BURST
     circuit_429_threshold: int = DEFAULT_CIRCUIT_429_THRESHOLD
     circuit_reset_seconds: float = DEFAULT_CIRCUIT_RESET_SECONDS
+    site_error_threshold: int = DEFAULT_SITE_ERROR_THRESHOLD
+    site_error_base_seconds: float = DEFAULT_SITE_ERROR_BASE_SECONDS
+    site_error_max_seconds: float = DEFAULT_SITE_ERROR_MAX_SECONDS
     state_path: Path = Path(tempfile.gettempdir()) / "egp-rate-limiter" / "egp.json"
 
     @classmethod
@@ -65,6 +71,21 @@ class RateLimiterConfig:
                 source,
                 "EGP_EGP_CIRCUIT_RESET_SECONDS",
                 DEFAULT_CIRCUIT_RESET_SECONDS,
+            ),
+            site_error_threshold=_int_from_env(
+                source,
+                "EGP_EGP_SITE_ERROR_THRESHOLD",
+                DEFAULT_SITE_ERROR_THRESHOLD,
+            ),
+            site_error_base_seconds=_float_from_env(
+                source,
+                "EGP_EGP_SITE_ERROR_BASE_SECONDS",
+                DEFAULT_SITE_ERROR_BASE_SECONDS,
+            ),
+            site_error_max_seconds=_float_from_env(
+                source,
+                "EGP_EGP_SITE_ERROR_MAX_SECONDS",
+                DEFAULT_SITE_ERROR_MAX_SECONDS,
             ),
             state_path=default_state_path
             or Path(tempfile.gettempdir()) / "egp-rate-limiter" / "egp.json",
@@ -129,6 +150,28 @@ class FileLockRateLimiter:
                         float(state.get("circuit_open_until") or 0.0),
                         now + max(0.0, float(self._config.circuit_reset_seconds)),
                     )
+            elif normalized == "site_error":
+                consecutive = int(state.get("consecutive_site_errors") or 0) + 1
+                state["consecutive_site_errors"] = consecutive
+                if consecutive >= max(1, int(self._config.site_error_threshold)):
+                    trip_count = int(state.get("site_error_trip_count") or 0) + 1
+                    base_seconds = max(0.0, float(self._config.site_error_base_seconds))
+                    max_seconds = max(0.0, float(self._config.site_error_max_seconds))
+                    cooldown_seconds = min(
+                        max_seconds,
+                        base_seconds * (2 ** max(0, trip_count - 1)),
+                    )
+                    state["consecutive_site_errors"] = 0
+                    state["site_error_trip_count"] = trip_count
+                    state["circuit_open_until"] = max(
+                        float(state.get("circuit_open_until") or 0.0),
+                        now + cooldown_seconds,
+                    )
+            elif normalized == "site_success":
+                state["consecutive_site_errors"] = 0
+                state["site_error_trip_count"] = 0
+                if float(state.get("circuit_open_until") or 0.0) <= now:
+                    state["circuit_open_until"] = 0.0
             elif normalized in {"success", "ok", "200"}:
                 state["consecutive_429"] = 0
                 if float(state.get("circuit_open_until") or 0.0) <= now:
@@ -173,6 +216,8 @@ class FileLockRateLimiter:
         state.setdefault("tokens", float(burst))
         state.setdefault("updated_at", now)
         state.setdefault("consecutive_429", 0)
+        state.setdefault("consecutive_site_errors", 0)
+        state.setdefault("site_error_trip_count", 0)
         state.setdefault("circuit_open_until", 0.0)
 
     @contextmanager
