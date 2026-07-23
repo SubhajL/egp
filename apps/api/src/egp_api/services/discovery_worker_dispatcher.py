@@ -10,8 +10,10 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 from uuid import uuid4
 
 from egp_api.config import (
@@ -45,11 +47,14 @@ from egp_crawler_core.profile_lock import (
     ProfileLockedError,
     release_profile_lock as _shared_release_profile_lock,
 )
+from egp_crawler_core.rate_limiter import get_default_rate_limiter
 from egp_observability.metrics import record_discovery_keyword_scan
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
 PROFILE_STATE_FILENAME = ".egp-profile-state.json"
+WORKER_STDOUT_SPOOL_LIMIT_BYTES = 1_048_576
+WORKER_RESULT_TAIL_BYTES = 65_536
 
 _logger = logging.getLogger("egp_api.main")
 
@@ -243,6 +248,30 @@ def _write_profile_warm_failure_state(
     return consecutive_failures
 
 
+def _write_profile_crawl_failure_state(
+    profile_dir: Path,
+    *,
+    error: BaseException,
+    now: datetime | None = None,
+) -> None:
+    state = _read_profile_state(profile_dir) or {}
+    resolved_now = now or datetime.now(UTC)
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    payload = {
+        **state,
+        "last_crawl_failure_at": resolved_now.astimezone(UTC).isoformat(),
+        "last_crawl_failure_error": _stderr_preview(str(error), limit=300),
+        "source": "crawl_failure",
+    }
+    payload.pop("last_success_at", None)
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _profile_state_path(profile_dir).write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _profile_warm_operator_action_required(
     profile_dir: Path,
     *,
@@ -433,6 +462,72 @@ class DiscoverySpawnError(RuntimeError):
     """Raised when a subprocess discovery worker fails for a retriable reason."""
 
 
+def _decode_discovery_worker_result(stdout: bytes | str | None) -> dict[str, object] | None:
+    if stdout is None:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    for line in reversed(text.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _validate_discovery_worker_result(
+    result: dict[str, object],
+    *,
+    expected_run_id: str,
+    keyword: str,
+) -> str:
+    result_run_id = str(result.get("run_id") or "").strip()
+    if result_run_id != expected_run_id:
+        raise DiscoverySpawnError(
+            "discover worker returned an invalid run_id "
+            f"for keyword {keyword!r}: expected {expected_run_id!r}, got {result_run_id!r}"
+        )
+    run_status = str(result.get("run_status") or "").strip().casefold()
+    if run_status not in {"succeeded", "partial", "failed"}:
+        raise DiscoverySpawnError(
+            f"discover worker returned invalid run_status {run_status!r} "
+            f"for keyword {keyword!r}"
+        )
+    return run_status
+
+
+def _drain_worker_stdout(
+    stdout_capture: BinaryIO,
+    returned_stdout: bytes | str | None,
+    *,
+    log_handle: BinaryIO | None,
+) -> bytes:
+    if returned_stdout not in {None, b"", ""}:
+        data = (
+            returned_stdout
+            if isinstance(returned_stdout, bytes)
+            else returned_stdout.encode("utf-8")
+        )
+        if log_handle is not None:
+            log_handle.write(data)
+            if not data.endswith(b"\n"):
+                log_handle.write(b"\n")
+        return data[-WORKER_RESULT_TAIL_BYTES:]
+    stdout_capture.flush()
+    stdout_capture.seek(0)
+    tail = b""
+    while chunk := stdout_capture.read(65_536):
+        if log_handle is not None:
+            log_handle.write(chunk)
+        tail = (tail + chunk)[-WORKER_RESULT_TAIL_BYTES:]
+    if log_handle is not None and tail and not tail.endswith(b"\n"):
+        log_handle.write(b"\n")
+    return tail
+
+
 class SubprocessDiscoveryDispatcher:
     """Dispatch discovery jobs by launching the existing worker subprocess."""
 
@@ -551,6 +646,11 @@ class SubprocessDiscoveryDispatcher:
     def prepare_for_dispatch(self) -> bool:
         """Warm/preflight a stale persistent profile before claiming a job."""
 
+        if get_default_rate_limiter().is_circuit_open():
+            _logger.warning(
+                "Host-shared e-GP circuit is open; deferring discovery job claim"
+            )
+            return False
         if self._browser_profile_mode != "persistent":
             return True
         assert self._browser_persistent_profile_dir is not None
@@ -678,11 +778,15 @@ class SubprocessDiscoveryDispatcher:
                 },
                 ensure_ascii=False,
             ).encode()
+            stdout_capture = tempfile.SpooledTemporaryFile(
+                max_size=WORKER_STDOUT_SPOOL_LIMIT_BYTES,
+                mode="w+b",
+            )
             try:
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "egp_worker.main"],
                     stdin=subprocess.PIPE,
-                    stdout=log_handle or subprocess.DEVNULL,
+                    stdout=stdout_capture,
                     stderr=log_handle or subprocess.PIPE,
                     start_new_session=True,
                 )
@@ -698,12 +802,48 @@ class SubprocessDiscoveryDispatcher:
                         ),
                     },
                 )
-                _, stderr = proc.communicate(input=payload, timeout=self._timeout_seconds)
+                returned_stdout, stderr = proc.communicate(
+                    input=payload,
+                    timeout=self._timeout_seconds,
+                )
+                stdout = _drain_worker_stdout(
+                    stdout_capture,
+                    returned_stdout,
+                    log_handle=log_handle,
+                )
                 if log_handle is not None:
                     log_handle.flush()
                 stderr_text = (
                     self._read_log_tail(log_path) if log_path is not None else None
                 ) or stderr
+                worker_result = _decode_discovery_worker_result(stdout)
+                if proc.returncode is not None and proc.returncode < 0:
+                    terminated = self._worker_termination_error(
+                        returncode=int(proc.returncode),
+                        run_id=run_id,
+                        keyword=request.keyword,
+                    )
+                    if terminated is not None:
+                        raise terminated
+                if worker_result is not None:
+                    run_status = _validate_discovery_worker_result(
+                        worker_result,
+                        expected_run_id=run_id,
+                        keyword=request.keyword,
+                    )
+                    if run_status == "failed":
+                        error = str(worker_result.get("error") or "").strip()
+                        detail = f": {error}" if error else ""
+                        semantic_error = DiscoverySpawnError(
+                            "discover worker reported failed for keyword "
+                            f"{request.keyword!r}{detail}"
+                        )
+                        if self._browser_profile_mode == "persistent":
+                            self._record_persistent_profile_failure(
+                                profile_dir=browser_profile_dir,
+                                error=semantic_error,
+                            )
+                        raise semantic_error
                 if proc.returncode not in {0, None}:
                     preview = _stderr_preview(stderr_text)
                     _logger.warning(
@@ -714,18 +854,15 @@ class SubprocessDiscoveryDispatcher:
                         proc.returncode,
                         preview,
                     )
-                    terminated = self._worker_termination_error(
-                        returncode=int(proc.returncode),
-                        run_id=run_id,
-                        keyword=request.keyword,
-                    )
-                    if terminated is not None:
-                        raise terminated
                     non_retriable = _parse_non_retriable_error(stderr_text)
                     if non_retriable is not None:
                         raise non_retriable
                     raise DiscoverySpawnError(
                         f"discover worker exited non-zero for keyword {request.keyword!r}"
+                    )
+                if worker_result is None:
+                    raise DiscoverySpawnError(
+                        f"discover worker returned no result for keyword {request.keyword!r}"
                     )
                 self._emit_discovery_run_metrics(
                     tenant_id=request.tenant_id,
@@ -733,7 +870,12 @@ class SubprocessDiscoveryDispatcher:
                 )
             except subprocess.TimeoutExpired as exc:
                 _kill_process_group(proc)
-                _, stderr = proc.communicate()
+                returned_stdout, stderr = proc.communicate()
+                stdout = _drain_worker_stdout(
+                    stdout_capture,
+                    returned_stdout,
+                    log_handle=log_handle,
+                )
                 if log_handle is not None:
                     log_handle.flush()
                 stderr_text = (self._read_log_tail(log_path) if log_path is not None else None) or (
@@ -767,6 +909,7 @@ class SubprocessDiscoveryDispatcher:
                 )
                 raise
             finally:
+                stdout_capture.close()
                 if log_handle is not None:
                     log_handle.close()
             if self._browser_profile_mode == "persistent":
@@ -860,6 +1003,22 @@ class SubprocessDiscoveryDispatcher:
                 "Failed to write persistent browser profile state (profile_dir=%s source=%s)",
                 profile_dir,
                 source,
+                exc_info=True,
+            )
+
+    def _record_persistent_profile_failure(
+        self,
+        *,
+        profile_dir: Path,
+        error: BaseException,
+    ) -> None:
+        try:
+            _write_profile_crawl_failure_state(profile_dir, error=error)
+        except Exception:
+            _logger.warning(
+                "Failed to invalidate persistent browser profile state after crawl failure "
+                "(profile_dir=%s)",
+                profile_dir,
                 exc_info=True,
             )
 

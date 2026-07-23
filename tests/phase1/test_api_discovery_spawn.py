@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,18 +11,46 @@ import pytest
 
 from egp_api.main import _make_discover_spawner
 from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
+from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
 
 
 class _FakeProcess:
-    def __init__(self, *, returncode: int = 0, pid: int = 43210) -> None:
+    def __init__(
+        self,
+        *,
+        returncode: int = 0,
+        pid: int = 43210,
+        run_status: str = "succeeded",
+        error: str | None = None,
+        emit_result: bool = True,
+        raw_stdout: bytes = b"",
+        run_id_override: str | None = None,
+    ) -> None:
         self.returncode = returncode
         self.pid = pid
         self.payload: bytes | None = None
+        self.run_status = run_status
+        self.error = error
+        self.emit_result = emit_result
+        self.raw_stdout = raw_stdout
+        self.run_id_override = run_id_override
 
     def communicate(self, input=None, timeout=None):
         del timeout
         self.payload = input
-        return (b"", b"")
+        payload = json.loads((input or b"{}").decode("utf-8"))
+        if not self.emit_result:
+            return (self.raw_stdout, b"")
+        result = {
+            "command": "discover",
+            "run_id": self.run_id_override or payload.get("run_id"),
+            "run_status": self.run_status,
+            "project_count": 0,
+            "project_ids": [],
+        }
+        if self.error is not None:
+            result["error"] = self.error
+        return (json.dumps(result).encode("utf-8"), b"")
 
 
 def test_discover_spawner_reserves_run_and_forwards_artifact_root(
@@ -95,7 +124,109 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(
         "worker_owner_pid": os.getpid(),
         "worker_pid": process.pid,
     }
-    assert popen_kwargs["stdout"] is popen_kwargs["stderr"]
+    assert popen_kwargs["stdout"] is not subprocess.PIPE
+    assert hasattr(popen_kwargs["stdout"], "write")
+    assert popen_kwargs["stderr"] is not subprocess.PIPE
+
+
+def test_discover_spawner_retries_semantic_failed_worker_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    process = _FakeProcess(
+        returncode=0,
+        run_status="failed",
+        error="e-GP site error after search results load",
+    )
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    with pytest.raises(
+        DiscoverySpawnError,
+        match="e-GP site error after search results load",
+    ):
+        spawner(
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            profile_id="22222222-2222-2222-2222-222222222222",
+            profile_type="manual",
+            keyword="แพลตฟอร์ม",
+        )
+
+
+def test_discover_spawner_accepts_partial_worker_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: _FakeProcess(run_status="partial"),
+    )
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    spawner(
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        profile_id="22222222-2222-2222-2222-222222222222",
+        profile_type="manual",
+        keyword="แพลตฟอร์ม",
+    )
+
+
+@pytest.mark.parametrize("raw_stdout", [b"", b"LIVE_PROGRESS page=1\nnot-json\n"])
+def test_discover_spawner_retries_missing_or_malformed_worker_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw_stdout: bytes,
+) -> None:
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: _FakeProcess(
+            emit_result=False,
+            raw_stdout=raw_stdout,
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    with pytest.raises(DiscoverySpawnError, match="returned no result"):
+        spawner(
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            profile_id="22222222-2222-2222-2222-222222222222",
+            profile_type="manual",
+            keyword="แพลตฟอร์ม",
+        )
+
+
+def test_discover_spawner_retries_mismatched_worker_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: _FakeProcess(run_id_override="wrong-run"),
+    )
+    spawner = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    with pytest.raises(DiscoverySpawnError, match="invalid run_id"):
+        spawner(
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            profile_id="22222222-2222-2222-2222-222222222222",
+            profile_type="manual",
+            keyword="แพลตฟอร์ม",
+        )
 
 
 def test_discover_spawner_forwards_artifact_storage_config(

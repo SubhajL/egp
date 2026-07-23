@@ -138,6 +138,11 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             "project_count": len(result.projects),
             "project_ids": [project.id for project in result.projects],
         }
+        summary = result.run.run.summary_json
+        if isinstance(summary, dict):
+            error = str(summary.get("error") or "").strip()
+            if error:
+                response["error"] = error
         if payload.get("profile_id") is not None:
             response["profile_id"] = str(payload["profile_id"])
         return response
@@ -270,6 +275,14 @@ def main(stdin_text: str | None = None) -> None:
             duration_seconds=time.perf_counter() - started_at,
         )
         raise
+    if command == "discover" and str(result.get("run_status") or "") == "failed":
+        record_worker_job(
+            command=command,
+            outcome="failed",
+            duration_seconds=time.perf_counter() - started_at,
+        )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        raise SystemExit(1)
     record_worker_job(
         command=command,
         outcome="success",

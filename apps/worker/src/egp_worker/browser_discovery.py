@@ -707,7 +707,7 @@ def _collect_keyword_projects(
             except Exception:
                 break
         _logged_sleep(3)
-        if has_site_error_toast(page):
+        if _site_error_toast_detected(page):
             clear_site_error_toast(page)
             _log_live_progress(
                 "pagination_site_error",
@@ -1878,11 +1878,26 @@ def wait_for_cloudflare_or_operator(
     )
 
 
-def _raise_on_site_error_toast(page, *, action: str) -> None:
+def _site_error_toast_detected(page: object) -> bool:
     if not has_site_error_toast(page):
-        return
+        return False
+    get_default_rate_limiter().record_outcome("site_error")
+    return True
+
+
+def _record_site_search_success() -> None:
+    get_default_rate_limiter().record_outcome("site_success")
+
+
+def _raise_detected_site_error_toast(page: object, *, action: str) -> None:
     clear_site_error_toast(page)
     raise SearchPageStateError(f"e-GP site error after {action}: ระบบเกิดข้อผิดพลาด กรุณาตรวจสอบ")
+
+
+def _raise_on_site_error_toast(page: object, *, action: str) -> None:
+    if not _site_error_toast_detected(page):
+        return
+    _raise_detected_site_error_toast(page, action=action)
 
 
 def _compact_visible_text(value: str | None) -> str:
@@ -2381,14 +2396,16 @@ def search_keyword(
     search_input.fill(keyword)
     _logged_sleep(0.5)
     click_search_button(page, search_btn, timeout_ms=settings.nav_timeout_ms)
-    if has_site_error_toast(page) and _retry_search_from_clean_page(page, keyword, settings):
-        return
-    _raise_on_site_error_toast(page, action="search submit")
+    if _site_error_toast_detected(page):
+        if _retry_search_from_clean_page(page, keyword, settings):
+            return
+        _raise_detected_site_error_toast(page, action="search submit")
     wait_for_results_ready(page, settings)
     _wait_for_search_results_stable(page)
-    if has_site_error_toast(page) and _retry_search_from_clean_page(page, keyword, settings):
-        return
-    _raise_on_site_error_toast(page, action="search results load")
+    if _site_error_toast_detected(page):
+        if _retry_search_from_clean_page(page, keyword, settings):
+            return
+        _raise_detected_site_error_toast(page, action="search results load")
     same_keyword_retry = _compact_visible_text(previous_search_value) == _compact_visible_text(
         keyword
     )
@@ -2409,13 +2426,16 @@ def search_keyword(
             _compact_visible_text(previous_search_value) == _compact_visible_text(keyword)
             or _results_marker_matches_keyword(current_marker, keyword)
         ):
+            _record_site_search_success()
             return
         if settings.search_page_recovery_retries > 0:
             _retry_search_from_clean_page(page, keyword, settings)
             return
         if _results_marker_is_first_page_with_rows(current_marker):
+            _record_site_search_success()
             return
         raise SearchPageStateError(f"search results did not refresh for keyword '{keyword}'")
+    _record_site_search_success()
 
 
 def clear_search(page, settings: BrowserDiscoverySettings) -> None:

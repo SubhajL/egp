@@ -97,6 +97,59 @@ def test_circuit_opens_after_429_burst_and_resets(tmp_path: Path) -> None:
     assert limiter.is_circuit_open() is False
 
 
+def test_site_error_circuit_opens_and_uses_exponential_cooldown(tmp_path: Path) -> None:
+    clock = {"now": 1_000.0}
+    config = RateLimiterConfig(
+        requests_per_second=0.0,
+        burst=1,
+        circuit_429_threshold=5,
+        circuit_reset_seconds=30.0,
+        site_error_threshold=2,
+        site_error_base_seconds=10.0,
+        site_error_max_seconds=40.0,
+        state_path=tmp_path / "egp-rate-limit.json",
+    )
+    limiter = FileLockRateLimiter(config, now=lambda: clock["now"])
+    peer_limiter = FileLockRateLimiter(config, now=lambda: clock["now"])
+
+    limiter.record_outcome("site_error")
+    assert limiter.is_circuit_open() is False
+    peer_limiter.record_outcome("site_error")
+    with pytest.raises(CircuitOpenError) as first_trip:
+        peer_limiter.acquire(max_wait_seconds=0.0)
+    assert first_trip.value.reset_in_seconds == 10.0
+
+    clock["now"] += 11.0
+    assert limiter.is_circuit_open() is False
+    limiter.record_outcome("site_error")
+    limiter.record_outcome("site_error")
+    with pytest.raises(CircuitOpenError) as second_trip:
+        limiter.acquire(max_wait_seconds=0.0)
+    assert second_trip.value.reset_in_seconds == 20.0
+
+    clock["now"] += 21.0
+    peer_limiter.record_outcome("site_error")
+    peer_limiter.record_outcome("site_error")
+    with pytest.raises(CircuitOpenError) as capped_trip:
+        limiter.acquire(max_wait_seconds=0.0)
+    assert capped_trip.value.reset_in_seconds == 40.0
+
+    clock["now"] += 41.0
+    limiter.record_outcome("site_error")
+    limiter.record_outcome("site_error")
+    with pytest.raises(CircuitOpenError) as still_capped_trip:
+        peer_limiter.acquire(max_wait_seconds=0.0)
+    assert still_capped_trip.value.reset_in_seconds == 40.0
+
+    clock["now"] += 41.0
+    limiter.record_outcome("site_success")
+    limiter.record_outcome("site_error")
+    limiter.record_outcome("site_error")
+    with pytest.raises(CircuitOpenError) as reset_trip:
+        limiter.acquire(max_wait_seconds=0.0)
+    assert reset_trip.value.reset_in_seconds == 10.0
+
+
 def test_rate_limiter_config_reads_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -105,6 +158,9 @@ def test_rate_limiter_config_reads_environment(
     monkeypatch.setenv("EGP_EGP_BURST", "3")
     monkeypatch.setenv("EGP_EGP_CIRCUIT_429_THRESHOLD", "7")
     monkeypatch.setenv("EGP_EGP_CIRCUIT_RESET_SECONDS", "45")
+    monkeypatch.setenv("EGP_EGP_SITE_ERROR_THRESHOLD", "4")
+    monkeypatch.setenv("EGP_EGP_SITE_ERROR_BASE_SECONDS", "90")
+    monkeypatch.setenv("EGP_EGP_SITE_ERROR_MAX_SECONDS", "900")
 
     config = RateLimiterConfig.from_env(default_state_path=tmp_path / "state.json")
 
@@ -112,6 +168,9 @@ def test_rate_limiter_config_reads_environment(
     assert config.burst == 3
     assert config.circuit_429_threshold == 7
     assert config.circuit_reset_seconds == 45.0
+    assert config.site_error_threshold == 4
+    assert config.site_error_base_seconds == 90.0
+    assert config.site_error_max_seconds == 900.0
     assert config.state_path == tmp_path / "state.json"
 
 

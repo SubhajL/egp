@@ -11,6 +11,9 @@ This is the **landing page** for production deployment guidance. For end-to-end 
 | `EGP_BROWSER_CDP_PORT_BASE` | `9222` | First Chrome remote-debugging port available for discovery workers. |
 | `EGP_BROWSER_CDP_PORT_RANGE` | `200` | Number of deterministic per-run CDP ports reserved on each host. |
 | `EGP_BROWSER_PROFILE_ROOT` | `~/.egp/profiles` | Root for per-run Chrome user-data directories; keep this outside synced folders. |
+| `EGP_EGP_SITE_ERROR_THRESHOLD` | `2` | Open the host-shared e-GP circuit after repeated site-error toasts. |
+| `EGP_EGP_SITE_ERROR_BASE_SECONDS` | `300` | Initial cooldown after the site-error threshold is reached. |
+| `EGP_EGP_SITE_ERROR_MAX_SECONDS` | `1800` | Cap exponential site-error cooldowns at 30 minutes. |
 
 Both compose files in this repo (`docker-compose.yml`, `docker-compose-localdev.yml`) default to the safe worker-count value. The browser isolation env vars have code defaults, but production should set them explicitly so operators know which host ports and profile root are reserved. Do not raise `EGP_DISCOVERY_WORKER_COUNT` in production until the prerequisites in [When worker_count can increase](#when-worker_count-can-increase) are met.
 
