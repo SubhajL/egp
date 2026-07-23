@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from fastapi.testclient import TestClient
@@ -1135,7 +1135,10 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
     response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
 
     assert response.status_code == 202
-    assert response.json() == {
+    body = response.json()
+    UUID(body["request_id"])
+    assert body == {
+        "request_id": body["request_id"],
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
@@ -1147,6 +1150,225 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
             text("SELECT COUNT(*) FROM discovery_jobs")
         ).scalar_one()
     assert count == 1
+
+    status_response = client.get(
+        f"/v1/rules/recrawl/{body['request_id']}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert status_response.status_code == 200
+    status_body = status_response.json()
+    assert status_body == {
+        "request_id": body["request_id"],
+        "requested_keyword_count": 1,
+        "queued_count": 1,
+        "running_count": 0,
+        "retrying_count": 0,
+        "succeeded_count": 0,
+        "zero_result_count": 0,
+        "partial_count": 0,
+        "failed_count": 0,
+        "failed_keywords": [],
+        "is_terminal": False,
+        "created_at": status_body["created_at"],
+        "updated_at": status_body["updated_at"],
+    }
+    other_tenant_response = client.get(
+        f"/v1/rules/recrawl/{body['request_id']}",
+        params={"tenant_id": "22222222-2222-2222-2222-222222222222"},
+    )
+    assert other_tenant_response.status_code == 404
+    assert other_tenant_response.json() == {"detail": "recrawl request not found"}
+
+
+def test_manual_recrawl_attaches_existing_profile_created_job(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-attach.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    profile_id = "edededed-eded-eded-eded-edededededed"
+    _seed_profile(
+        client,
+        profile_id=profile_id,
+        name="Created profile",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("analytics", 1)],
+    )
+    existing_job = client.app.state.discovery_job_repository.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=profile_id,
+        profile_type="custom",
+        keyword="analytics",
+        trigger_type="profile_created",
+    )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body == {
+        "request_id": body["request_id"],
+        "queued_job_count": 0,
+        "queued_keywords": [],
+    }
+    stored_job = client.app.state.discovery_job_repository.get_discovery_job(
+        tenant_id=TENANT_ID,
+        job_id=existing_job.id,
+    )
+    assert stored_job.recrawl_request_id == body["request_id"]
+    status_response = client.get(
+        f"/v1/rules/recrawl/{body['request_id']}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["queued_count"] == 1
+
+
+def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-status.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    profile_id = "abababab-abab-abab-abab-abababababab"
+    keywords = [
+        "queued",
+        "running",
+        "retrying",
+        "success",
+        "empty",
+        "partial",
+        "failed",
+        "recovered",
+    ]
+    _seed_profile(
+        client,
+        profile_id=profile_id,
+        name="Status batch",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[(keyword, index) for index, keyword in enumerate(keywords, start=1)],
+    )
+
+    response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+    assert response.status_code == 202
+    request_id = response.json()["request_id"]
+    job_repository = client.app.state.discovery_job_repository
+    run_repository = client.app.state.run_repository
+    jobs = {
+        job.keyword: job
+        for job in job_repository.list_discovery_jobs(tenant_id=TENANT_ID)
+    }
+
+    def create_run(keyword: str, status: str, *, projects_seen: int = 0) -> None:
+        job = jobs[keyword]
+        run = run_repository.create_run(
+            tenant_id=TENANT_ID,
+            trigger_type="manual",
+            profile_id=profile_id,
+            discovery_job_id=job.id,
+            recrawl_request_id=request_id,
+        )
+        run_repository.mark_run_started(run.id)
+        run_repository.mark_run_finished(
+            run.id,
+            status=status,
+            summary_json={"projects_seen": projects_seen},
+            error_count=1 if status in {"partial", "failed"} else 0,
+        )
+
+    running_run = run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id=profile_id,
+        discovery_job_id=jobs["running"].id,
+        recrawl_request_id=request_id,
+    )
+    run_repository.mark_run_started(running_run.id)
+
+    create_run("retrying", "failed")
+    job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=jobs["retrying"].id,
+        job_status="pending",
+        last_error="site error",
+    )
+    for keyword, status, projects_seen in (
+        ("success", "succeeded", 2),
+        ("empty", "succeeded", 0),
+        ("partial", "partial", 1),
+    ):
+        create_run(keyword, status, projects_seen=projects_seen)
+        job_repository.record_discovery_job_attempt(
+            tenant_id=TENANT_ID,
+            job_id=jobs[keyword].id,
+            job_status="dispatched",
+            dispatched=True,
+        )
+    create_run("failed", "failed")
+    job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=jobs["failed"].id,
+        job_status="failed",
+        last_error="terminal site error",
+    )
+    create_run("recovered", "failed")
+    job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=jobs["recovered"].id,
+        job_status="pending",
+        last_error="first attempt failed",
+    )
+    create_run("recovered", "succeeded", projects_seen=1)
+    job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=jobs["recovered"].id,
+        job_status="dispatched",
+        dispatched=True,
+    )
+    unrelated_run = run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id=profile_id,
+    )
+    run_repository.mark_run_started(unrelated_run.id)
+    run_repository.mark_run_finished(
+        unrelated_run.id,
+        status="failed",
+        summary_json={"projects_seen": 0},
+        error_count=1,
+    )
+
+    status_response = client.get(
+        f"/v1/rules/recrawl/{request_id}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert status_response.status_code == 200
+    body = status_response.json()
+    assert body == {
+        "request_id": request_id,
+        "requested_keyword_count": 8,
+        "queued_count": 1,
+        "running_count": 1,
+        "retrying_count": 1,
+        "succeeded_count": 2,
+        "zero_result_count": 1,
+        "partial_count": 1,
+        "failed_count": 1,
+        "failed_keywords": ["failed"],
+        "is_terminal": False,
+        "created_at": body["created_at"],
+        "updated_at": body["updated_at"],
+    }
 
 
 def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
@@ -1179,7 +1401,9 @@ def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
     response = client.post("/v1/rules/recrawl", headers=_auth_headers(role="analyst"), json={})
 
     assert response.status_code == 202
-    assert response.json() == {
+    body = response.json()
+    assert body == {
+        "request_id": body["request_id"],
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
@@ -1246,6 +1470,7 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
     _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
+    _seed_tenant_entitlements(client, max_queued_keywords=1)
     _seed_profile(
         client,
         profile_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
@@ -1262,12 +1487,16 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
     second = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
 
     assert first.status_code == 202
-    assert first.json() == {
+    first_body = first.json()
+    second_body = second.json()
+    assert first_body == {
+        "request_id": first_body["request_id"],
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
     assert second.status_code == 202
-    assert second.json() == {
+    assert second_body == {
+        "request_id": first_body["request_id"],
         "queued_job_count": 0,
         "queued_keywords": [],
     }
@@ -1295,6 +1524,63 @@ def test_manual_recrawl_does_not_duplicate_pending_jobs(tmp_path) -> None:
             "job_status": "pending",
         }
     ]
+
+
+def test_manual_recrawl_reuses_nonterminal_batch_without_readding_failed_keyword(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-mixed.sqlite3'}"
+    client = TestClient(
+        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+    )
+    client.app.state.discovery_dispatch_route_kick_enabled = False
+    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    profile_id = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"
+    _seed_profile(
+        client,
+        profile_id=profile_id,
+        name="Mixed result batch",
+        profile_type="custom",
+        is_active=True,
+        max_pages_per_keyword=15,
+        close_consulting_after_days=30,
+        close_stale_after_days=45,
+        keywords=[("failed-first", 1), ("still-queued", 2)],
+    )
+
+    first = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+    request_id = first.json()["request_id"]
+    jobs = client.app.state.discovery_job_repository.list_discovery_jobs(
+        tenant_id=TENANT_ID
+    )
+    failed_job = next(job for job in jobs if job.keyword == "failed-first")
+    client.app.state.discovery_job_repository.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=failed_job.id,
+        job_status="failed",
+        last_error="terminal failure",
+    )
+
+    second = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
+
+    assert second.status_code == 202
+    assert second.json() == {
+        "request_id": request_id,
+        "queued_job_count": 0,
+        "queued_keywords": [],
+    }
+    stored_jobs = client.app.state.discovery_job_repository.list_discovery_jobs(
+        tenant_id=TENANT_ID
+    )
+    assert len(stored_jobs) == 2
+    status_response = client.get(
+        f"/v1/rules/recrawl/{request_id}",
+        params={"tenant_id": TENANT_ID},
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["requested_keyword_count"] == 2
+    assert status_response.json()["failed_count"] == 1
+    assert status_response.json()["queued_count"] == 1
 
 
 def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(
@@ -1362,7 +1648,9 @@ def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(
     third = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
 
     assert third.status_code == 202
-    assert third.json() == {
+    body = third.json()
+    assert body == {
+        "request_id": body["request_id"],
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
@@ -1413,7 +1701,9 @@ def test_manual_recrawl_ignores_stale_inflight_run_for_admission(tmp_path) -> No
     response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
 
     assert response.status_code == 202
-    assert response.json() == {
+    body = response.json()
+    assert body == {
+        "request_id": body["request_id"],
         "queued_job_count": 1,
         "queued_keywords": ["แพลตฟอร์ม"],
     }
@@ -1807,7 +2097,12 @@ def test_manual_recrawl_deduplicates_keyword_across_named_groups(tmp_path) -> No
     response = client.post("/v1/rules/recrawl", json={"tenant_id": TENANT_ID})
 
     assert response.status_code == 202
-    assert response.json() == {"queued_job_count": 1, "queued_keywords": ["analytics"]}
+    body = response.json()
+    assert body == {
+        "request_id": body["request_id"],
+        "queued_job_count": 1,
+        "queued_keywords": ["analytics"],
+    }
     with client.app.state.db_engine.connect() as connection:
         jobs = connection.execute(
             text("SELECT profile_id, keyword FROM discovery_jobs")

@@ -27,6 +27,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
 
 
 METADATA = DB_METADATA
@@ -46,6 +47,12 @@ DISCOVERY_JOBS_TABLE = Table(
     Column("keyword", String, nullable=False),
     Column("trigger_type", String, nullable=False, default="profile_created"),
     Column("live", Boolean, nullable=False, default=True),
+    Column(
+        "recrawl_request_id",
+        UUID_SQL_TYPE,
+        ForeignKey(RECRAWL_REQUESTS_TABLE.c.id, ondelete="SET NULL"),
+        nullable=True,
+    ),
     Column("job_status", String, nullable=False, default="pending"),
     Column("attempt_count", Integer, nullable=False, default=0),
     Column("last_error", String, nullable=True),
@@ -81,6 +88,7 @@ class DiscoveryJobRecord:
     dispatched_at: str | None
     created_at: str
     updated_at: str
+    recrawl_request_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +116,11 @@ def _job_from_mapping(row: RowMapping) -> DiscoveryJobRecord:
         keyword=str(row["keyword"]),
         trigger_type=str(row["trigger_type"]),
         live=bool(row["live"]),
+        recrawl_request_id=(
+            str(row["recrawl_request_id"])
+            if row["recrawl_request_id"] is not None
+            else None
+        ),
         job_status=str(row["job_status"]),
         attempt_count=int(row["attempt_count"]),
         last_error=str(row["last_error"]) if row["last_error"] is not None else None,
@@ -127,6 +140,7 @@ def build_discovery_job_values(
     keyword: str,
     trigger_type: str = "profile_created",
     live: bool = True,
+    recrawl_request_id: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
     created_at = now or _now()
@@ -138,6 +152,9 @@ def build_discovery_job_values(
         "keyword": str(keyword).strip(),
         "trigger_type": str(trigger_type).strip() or "profile_created",
         "live": bool(live),
+        "recrawl_request_id": (
+            normalize_uuid_string(recrawl_request_id) if recrawl_request_id else None
+        ),
         "job_status": "pending",
         "attempt_count": 0,
         "last_error": None,
@@ -178,6 +195,7 @@ class SqlDiscoveryJobRepository:
         keyword: str,
         trigger_type: str = "profile_created",
         live: bool = True,
+        recrawl_request_id: str | None = None,
     ) -> DiscoveryJobRecord:
         values = build_discovery_job_values(
             tenant_id=tenant_id,
@@ -186,6 +204,7 @@ class SqlDiscoveryJobRepository:
             keyword=keyword,
             trigger_type=trigger_type,
             live=live,
+            recrawl_request_id=recrawl_request_id,
         )
         with self._engine.begin() as connection:
             connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
@@ -200,6 +219,7 @@ class SqlDiscoveryJobRepository:
         keyword: str,
         trigger_type: str = "profile_created",
         live: bool = True,
+        recrawl_request_id: str | None = None,
     ) -> DiscoveryJobEnqueueResult:
         values = build_discovery_job_values(
             tenant_id=tenant_id,
@@ -208,6 +228,7 @@ class SqlDiscoveryJobRepository:
             keyword=keyword,
             trigger_type=trigger_type,
             live=live,
+            recrawl_request_id=recrawl_request_id,
         )
         with self._engine.begin() as connection:
             existing = (

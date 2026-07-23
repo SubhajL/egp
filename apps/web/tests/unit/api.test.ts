@@ -19,6 +19,7 @@ import {
   fetchMe,
   fetchProjectDetail,
   fetchProjects,
+  fetchRecrawlRequestStatus,
   fetchRules,
   fetchRuns,
   fetchSupportSummary,
@@ -29,6 +30,7 @@ import {
   register,
   resolveDocumentDownloadHref,
   startGoogleDriveOAuth,
+  triggerManualRecrawl,
   updateTenantSettings,
 } from "../../src/lib/api";
 import type {
@@ -739,5 +741,50 @@ describe("runs, dashboard, billing, admin, storage, webhook, and auth wrappers",
     expect(JSON.parse(fetchMock.mock.calls[5][1]?.body as string)).toMatchObject({
       support_email: "support@example.com",
     });
+  });
+});
+
+describe("manual recrawl request wrappers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("starts and polls one durable recrawl request", async () => {
+    const requestId = "55555555-5555-5555-5555-555555555555";
+    const started = {
+      request_id: requestId,
+      queued_job_count: 2,
+      queued_keywords: ["analytics", "platform"],
+    };
+    const status = {
+      request_id: requestId,
+      requested_keyword_count: 2,
+      queued_count: 0,
+      running_count: 0,
+      retrying_count: 0,
+      succeeded_count: 1,
+      zero_result_count: 0,
+      partial_count: 1,
+      failed_count: 0,
+      failed_keywords: [],
+      is_terminal: true,
+      created_at: "2026-07-23T00:00:00Z",
+      updated_at: "2026-07-23T00:01:00Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(started, { status: 202 }))
+      .mockResolvedValueOnce(Response.json(status));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(triggerManualRecrawl()).resolves.toEqual(started);
+    await expect(fetchRecrawlRequestStatus(requestId)).resolves.toEqual(status);
+
+    expect(new URL(fetchMock.mock.calls[0][0] as string).pathname).toBe(
+      "/v1/rules/recrawl",
+    );
+    expect(new URL(fetchMock.mock.calls[1][0] as string).pathname).toBe(
+      `/v1/rules/recrawl/${requestId}`,
+    );
   });
 });

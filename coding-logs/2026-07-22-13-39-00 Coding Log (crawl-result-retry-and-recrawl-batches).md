@@ -635,3 +635,83 @@ LOW
 - New optional env vars default safely to threshold `2`, base cooldown `300s`, and maximum cooldown `1800s`; rollback can restore the prior artifact without a schema change.
 - Worker stdout remains preserved in `worker.log`; parsing uses a bounded 64 KiB tail from a disk-spilling spool.
 - Failed semantic runs now invalidate persistent-profile freshness and retry through the existing queue policy. No migration, API response, or frontend contract changes in this PR.
+
+## Lifecycle Update (2026-07-23 08:44:20 +0700) - U1 landed
+
+- Committed U1 as `999f3cade3ba0e8aa3e8f71435914c786fa768bd` and opened PR #171: `https://github.com/SubhajL/egp/pull/171`.
+- All GitHub Actions jobs again failed before executing because the account remained locked for billing; Vercel was the only executable green check.
+- Under the user's explicit admin-merge authorization, squash-merged PR #171 as `0d7bf7d1db8089966190d4c88289b866b9e6bbaa`.
+- Fast-forwarded local `main`, verified exact equality with `origin/main`, and reran the 159-test U1 acceptance suite on exact merged `main`; all 159 passed in `67.08s`.
+- Created `feature/recrawl-request-batches` from exact U1 main. No production deploy, database migration, or recovery mutation was performed.
+
+## Implementation Update (2026-07-23 08:44:20 +0700) - PR U2 durable recrawl batches
+
+### Goal and contract
+
+- Added first-class, tenant-owned manual recrawl requests with stable request IDs.
+- POST `/v1/rules/recrawl` now returns `202` plus `request_id`; GET `/v1/rules/recrawl/{request_id}` returns exact batch counts for queued, running, retrying, succeeded, zero-result, partial, and terminal-failed keywords.
+- The latest run per discovery job controls its result, so retries do not double-count and unrelated runs cannot enter the request projection.
+- The Projects page stores the request ID across reloads, polls only that request while nonterminal, refreshes projects at terminal completion, and no longer uses the latest-ten-run heuristic for the batch summary.
+
+### TDD evidence
+
+- Initial backend RED failed at the intended contract boundary because POST had no `request_id` and no exact status endpoint.
+- Focused backend GREEN covered migration upgrade, request creation/status, duplicate click, profile-created job attachment, tenant isolation, latest-attempt recovery, partial/zero/failed taxonomy, and dispatcher-to-run correlation.
+- Frontend RED failed because `fetchRecrawlRequestStatus()` did not exist; GREEN added generated-contract wrappers, polling, local-storage restore, and exact-request browser assertions.
+- Three consecutive expanded backend runs passed `122` tests each (`6.89s`, `6.67s`, `6.84s`). A subsequent focused manual-recrawl run passed `12` tests after the final mixed-state review fix.
+- Frontend unit suite: `50 passed`; Projects browser suite: `8 passed`; full browser suite: `43 passed`; production Next build passed; OpenAPI drift check and TypeScript typecheck passed.
+
+### Implementation and wiring
+
+- Migration `029_recrawl_request_correlation.sql` creates `recrawl_requests`, adds nullable `discovery_jobs.recrawl_request_id`, and adds nullable `crawl_runs.discovery_job_id` plus `crawl_runs.recrawl_request_id` with FK/query indexes.
+- `SqlRecrawlRequestRepository.create_request()` creates/attaches request jobs in one transaction and takes a PostgreSQL tenant-row lock so concurrent duplicate clicks serialize. SQLite retains the same transaction without the PostgreSQL-only lock.
+- Admission counts only jobs not already covered by a pending request, preventing duplicate clicks from falsely exceeding the queue cap.
+- `DiscoveryDispatchProcessor` forwards the durable job/request IDs; `SubprocessDiscoveryDispatcher` reserves every retry run with both correlations.
+- Bootstrap registers the repository in app state and injects it into `RulesService`; route auth and tenant resolution remain at the request boundary.
+- Generated OpenAPI and TypeScript types are current; the web hook stops its five-second poll when `is_terminal=true`.
+- The remote crawler runbook documents the POST request ID and exact GET status flow.
+
+### QCHECK findings fixed
+
+- MEDIUM: a mixed request with one terminal keyword and another pending keyword could add a second discovery job for the already-terminal keyword when POST was repeated. The repository now treats every keyword already owned by the active request as covered, while still attaching genuinely new keywords; a regression test proves the request remains two jobs with one failed and one queued.
+- MEDIUM: admission originally added every active keyword to the current pending count, so a duplicate click at the queue cap could be rejected even though it added no work. Admission now subtracts pending/active-request coverage; the duplicate test runs with `max_queued_keywords=1`.
+- MEDIUM: the repository-wide suite exposed U1 worker test doubles without `summary_json`. The semantic-result reader now treats an absent summary as empty; all 15 worker-job compatibility tests pass.
+- LOW: a PostgreSQL row lock initially assumed every SQLite API fixture seeded a tenant row. The lock is now explicitly PostgreSQL-only; production serialization is preserved and SQLite tests retain transactional behavior.
+
+## Review (2026-07-23 08:44:20 +0700) - working-tree PR U2
+
+### Reviewed
+
+- Complete working-tree diff across migration, SQLAlchemy models/repositories, bootstrap, rules API/service, dispatch/run correlation, generated contracts, Projects UI/hooks, tests, worker compatibility fix, and runbook.
+- Traced POST admission and atomic enqueue through claimed job, reserved retry run, exact tenant-scoped status aggregation, React Query polling, reload restoration, and terminal project refresh.
+- Verified migration prefix `029` is the next unique prefix and historical rows remain valid through nullable correlations.
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No open findings. Three medium findings found during skeptical review were fixed and regression-tested as recorded above.
+
+LOW
+
+- No open findings. The SQLite fixture compatibility issue was fixed without weakening the PostgreSQL locking path.
+
+### Open questions and residual risk
+
+- Multiple overlapping active request IDs for the same desired keyword set are treated as an invariant violation and fail closed. PostgreSQL tenant-row serialization prevents new overlaps through this API.
+- The request ID remains in browser local storage after terminal completion so the truthful terminal summary survives reload; a new request replaces it, and tenant-scoped 404 clears stale cross-tenant state.
+- Full repository Python verification is being rerun after the final review fixes; commit is not allowed until it passes.
+
+### Final pre-commit verification
+
+- Repository-wide Python suite passed: `1301 passed, 108 warnings in 168.21s`.
+- Final all-Python `ruff`, `compileall`, and `git diff --check` passed.
+- The recorded warnings are the existing Python 3.12+ SQLite datetime-adapter deprecations in document, rules, and tenant-storage tests; no test failed or was skipped to obtain the green gate.

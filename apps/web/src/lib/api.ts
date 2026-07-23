@@ -782,7 +782,10 @@ export type TriggerManualRecrawlInput = Partial<
 >;
 
 export type TriggerManualRecrawlResponse =
-  paths["/v1/rules/recrawl"]["post"]["responses"][200]["content"]["application/json"];
+  paths["/v1/rules/recrawl"]["post"]["responses"][202]["content"]["application/json"];
+
+export type RecrawlRequestStatus =
+  paths["/v1/rules/recrawl/{request_id}"]["get"]["responses"][200]["content"]["application/json"];
 
 type CreateWebhookRequest = components["schemas"]["CreateWebhookRequest"];
 export type CreateWebhookInput = Omit<CreateWebhookRequest, "notification_types"> & {
@@ -875,6 +878,13 @@ export async function triggerManualRecrawl(
       tenant_id: payload.tenant_id,
     }),
   });
+}
+
+export async function fetchRecrawlRequestStatus(
+  requestId: string,
+): Promise<RecrawlRequestStatus> {
+  const url = buildUrl(`/v1/rules/recrawl/${encodeURIComponent(requestId)}`, {});
+  return apiFetch<RecrawlRequestStatus>(url);
 }
 
 export async function fetchBillingRecords(

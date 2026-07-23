@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from egp_crawler_core.closure_rules import describe_closure_rules
 from egp_crawler_core.discovery_authorization import RunnableProfileKeyword
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
+from egp_db.repositories.recrawl_request_repo import RecrawlJobInput, RecrawlRequestStatus
 from egp_shared_types.enums import (
     KeywordGroupEffectiveStatus,
     KeywordGroupStatusReason,
@@ -23,6 +24,7 @@ from egp_api.services.entitlement_service import (
 if TYPE_CHECKING:
     from egp_db.repositories.admin_repo import SqlAdminRepository
     from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
+    from egp_db.repositories.recrawl_request_repo import SqlRecrawlRequestRepository
 
 
 DEFAULT_CRAWL_INTERVAL_HOURS = 24
@@ -88,6 +90,7 @@ class RulesSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class ManualRecrawlRequest:
+    request_id: str
     queued_job_count: int
     queued_keywords: list[str]
 
@@ -126,12 +129,14 @@ class RulesService:
         notification_event_wiring_complete: bool = True,
         admin_repository: SqlAdminRepository | None = None,
         discovery_job_repository: SqlDiscoveryJobRepository | None = None,
+        recrawl_request_repository: SqlRecrawlRequestRepository | None = None,
     ) -> None:
         self._repository = repository
         self._entitlement_service = entitlement_service
         self._notification_event_wiring_complete = notification_event_wiring_complete
         self._admin_repository = admin_repository
         self._discovery_job_repository = discovery_job_repository
+        self._recrawl_request_repository = recrawl_request_repository
 
     def create_profile(
         self,
@@ -398,11 +403,10 @@ class RulesService:
                 raise ValueError("at least one active keyword is required")
         if self._discovery_job_repository is None:
             raise RuntimeError("discovery job repository is not configured")
+        if self._recrawl_request_repository is None:
+            raise RuntimeError("recrawl request repository is not configured")
 
         active_jobs: list[tuple[str, str, str]] = []
-        queued_keywords: list[str] = []
-        queued_job_count = 0
-        seen_keywords: set[str] = set()
         if snapshot is not None:
             active_jobs = [
                 (item.profile_id, item.profile_type, item.keyword)
@@ -427,34 +431,79 @@ class RulesService:
             raise ValueError("at least one active keyword is required")
 
         if self._entitlement_service is not None:
-            requested_keyword_count = len(
-                {normalized_keyword.casefold() for _, _, normalized_keyword in active_jobs}
+            selected_active_jobs: list[tuple[str, str, str]] = []
+            selected_keyword_keys: set[str] = set()
+            for active_job in active_jobs:
+                keyword_key = active_job[2].casefold()
+                if keyword_key in selected_keyword_keys:
+                    continue
+                selected_keyword_keys.add(keyword_key)
+                selected_active_jobs.append(active_job)
+            active_jobs = selected_active_jobs
+            stored_jobs = self._discovery_job_repository.list_discovery_jobs(
+                tenant_id=tenant_id
+            )
+            pending_job_keys = {
+                (job.profile_id, job.keyword.casefold())
+                for job in stored_jobs
+                if job.job_status == "pending" and job.live
+            }
+            desired_job_keys = {
+                (profile_id, normalized_keyword.casefold())
+                for profile_id, _, normalized_keyword in active_jobs
+            }
+            active_request_ids = {
+                job.recrawl_request_id
+                for job in stored_jobs
+                if job.recrawl_request_id is not None
+                and job.job_status == "pending"
+                and (job.profile_id, job.keyword.casefold()) in desired_job_keys
+            }
+            if len(active_request_ids) == 1:
+                active_request_id = next(iter(active_request_ids))
+                pending_job_keys.update(
+                    (job.profile_id, job.keyword.casefold())
+                    for job in stored_jobs
+                    if job.recrawl_request_id == active_request_id
+                )
+            requested_keyword_count = sum(
+                (profile_id, normalized_keyword.casefold()) not in pending_job_keys
+                for profile_id, _, normalized_keyword in active_jobs
             )
             self._entitlement_service.check_runs_admission(
                 tenant_id=tenant_id,
                 requested_keyword_count=requested_keyword_count,
             )
 
-        for profile_id, profile_type, normalized_keyword in active_jobs:
-            enqueue_result = self._discovery_job_repository.create_pending_discovery_job_if_absent(
-                tenant_id=tenant_id,
-                profile_id=profile_id,
-                profile_type=profile_type,
-                keyword=normalized_keyword,
-                trigger_type="manual",
-                live=True,
-            )
-            if not enqueue_result.created:
-                continue
-            queued_job_count += 1
-            dedupe_key = normalized_keyword.casefold()
-            if dedupe_key not in seen_keywords:
-                seen_keywords.add(dedupe_key)
-                queued_keywords.append(normalized_keyword)
+        created = self._recrawl_request_repository.create_request(
+            tenant_id=tenant_id,
+            jobs=[
+                RecrawlJobInput(
+                    profile_id=profile_id,
+                    profile_type=profile_type,
+                    keyword=normalized_keyword,
+                )
+                for profile_id, profile_type, normalized_keyword in active_jobs
+            ],
+        )
 
         return ManualRecrawlRequest(
-            queued_job_count=queued_job_count,
-            queued_keywords=queued_keywords,
+            request_id=created.request_id,
+            queued_job_count=created.queued_job_count,
+            queued_keywords=created.queued_keywords,
+        )
+
+    def get_recrawl_request_status(
+        self,
+        *,
+        tenant_id: str,
+        request_id: str,
+    ) -> RecrawlRequestStatus:
+        if self._recrawl_request_repository is None:
+            raise RuntimeError("recrawl request repository is not configured")
+        return self._recrawl_request_repository.get_status(
+            tenant_id=tenant_id,
+            request_id=request_id,
         )
 
     def _queue_profile_created_jobs(

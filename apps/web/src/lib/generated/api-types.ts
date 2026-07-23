@@ -1192,6 +1192,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rules/recrawl/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Recrawl Request Status */
+        get: operations["get_recrawl_request_status_v1_rules_recrawl__request_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/runs": {
         parameters: {
             query?: never;
@@ -2534,6 +2551,37 @@ export interface components {
             queued_job_count: number;
             /** Queued Keywords */
             queued_keywords: string[];
+            /** Request Id */
+            request_id: string;
+        };
+        /** ManualRecrawlStatusResponse */
+        ManualRecrawlStatusResponse: {
+            /** Created At */
+            created_at: string;
+            /** Failed Count */
+            failed_count: number;
+            /** Failed Keywords */
+            failed_keywords: string[];
+            /** Is Terminal */
+            is_terminal: boolean;
+            /** Partial Count */
+            partial_count: number;
+            /** Queued Count */
+            queued_count: number;
+            /** Request Id */
+            request_id: string;
+            /** Requested Keyword Count */
+            requested_keyword_count: number;
+            /** Retrying Count */
+            retrying_count: number;
+            /** Running Count */
+            running_count: number;
+            /** Succeeded Count */
+            succeeded_count: number;
+            /** Updated At */
+            updated_at: string;
+            /** Zero Result Count */
+            zero_result_count: number;
         };
         /** MfaCodeRequest */
         MfaCodeRequest: {
@@ -5603,7 +5651,7 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5627,6 +5675,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ManualRecrawlQueuedResponse"];
+                };
+            };
+        };
+    };
+    get_recrawl_request_status_v1_rules_recrawl__request_id__get: {
+        parameters: {
+            query?: {
+                tenant_id?: string | null;
+            };
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManualRecrawlStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

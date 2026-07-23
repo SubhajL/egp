@@ -735,11 +735,18 @@ class SubprocessDiscoveryDispatcher:
                 profile_dir=browser_profile_dir,
                 browser_settings=browser_settings,
             )
+            run_values: dict[str, object] = {
+                "tenant_id": request.tenant_id,
+                "profile_id": request.profile_id,
+                "trigger_type": run_trigger,
+                "run_id": run_id,
+            }
+            if request.discovery_job_id is not None:
+                run_values["discovery_job_id"] = request.discovery_job_id
+            if request.recrawl_request_id is not None:
+                run_values["recrawl_request_id"] = request.recrawl_request_id
             self._run_repository.create_run(
-                tenant_id=request.tenant_id,
-                profile_id=request.profile_id,
-                trigger_type=run_trigger,
-                run_id=run_id,
+                **run_values,
             )
             log_path = (
                 self._artifact_root / "tenants" / request.tenant_id / "runs" / run_id / "worker.log"

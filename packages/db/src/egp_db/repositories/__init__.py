@@ -39,6 +39,13 @@ from .document_repo import (
     create_document_repository,
 )
 from .project_repo import ProjectUpsertRecord, build_project_upsert_record
+from .recrawl_request_repo import (
+    RecrawlJobInput,
+    RecrawlRequestCreateResult,
+    RecrawlRequestStatus,
+    SqlRecrawlRequestRepository,
+    create_recrawl_request_repository,
+)
 
 __all__ = [
     "AuditLogEventRecord",
@@ -58,10 +65,14 @@ __all__ = [
     "DocumentRecord",
     "FilesystemDocumentRepository",
     "ProjectUpsertRecord",
+    "RecrawlJobInput",
+    "RecrawlRequestCreateResult",
+    "RecrawlRequestStatus",
     "SqlAuthRepository",
     "SqlDiscoveryJobRepository",
     "SqlDocumentCaptureAttemptRepository",
     "SqlDocumentRepository",
+    "SqlRecrawlRequestRepository",
     "StoreDocumentResult",
     "build_document_record",
     "build_project_upsert_record",
@@ -71,6 +82,7 @@ __all__ = [
     "create_discovery_job_repository",
     "create_document_capture_attempt_repository",
     "create_document_repository",
+    "create_recrawl_request_repository",
     "hash_password",
     "verify_password",
 ]

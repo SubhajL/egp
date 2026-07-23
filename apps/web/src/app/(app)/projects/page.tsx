@@ -9,13 +9,18 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { QueryState } from "@/components/ui/query-state";
 import { hasRunOperatorRole } from "@/lib/authorization";
 import { PROCUREMENT_TYPE_LABELS } from "@/lib/constants";
-import { useMe, useProjects, useRules, useRuns } from "@/lib/hooks";
+import {
+  useMe,
+  useProjects,
+  useRecrawlRequestStatus,
+  useRules,
+  useRuns,
+} from "@/lib/hooks";
 import {
   getActiveRuns,
   getRunActivitySnapshot,
   getRunDiscoveredCount,
   getStaleActiveRuns,
-  summarizeRecentKeywordRuns,
 } from "@/lib/run-progress";
 import { formatBudget, formatRelativeTime, formatThaiDate } from "@/lib/utils";
 import {
@@ -59,10 +64,7 @@ type ProjectRow = {
 };
 
 type ManualRecrawlTracking = {
-  queuedJobCount: number;
-  queuedKeywords: string[];
-  requestedAt: number;
-  timedOut: boolean;
+  requestId: string;
 };
 
 type RunActivityCard = {
@@ -75,7 +77,7 @@ type RunActivityCard = {
   discoveredCount: number;
 };
 
-const MANUAL_RECRAWL_RUN_WAIT_MS = 90_000;
+const MANUAL_RECRAWL_REQUEST_STORAGE_KEY = "egp.manual-recrawl-request-id";
 
 const ACTIVE_STATES = [
   "discovered",
@@ -258,6 +260,7 @@ export default function ProjectsPage() {
   const [manualRecrawlTracking, setManualRecrawlTracking] =
     useState<ManualRecrawlTracking | null>(null);
   const refreshedCompletedRunIdRef = useRef<string | null>(null);
+  const refreshedRecrawlRequestIdRef = useRef<string | null>(null);
   const rowsPerPage = 50;
   const { data: rulesData, isLoading: isRulesLoading } = useRules();
   const { data: currentSession, isLoading: isSessionLoading } = useMe();
@@ -318,6 +321,11 @@ export default function ProjectsPage() {
     isError: isRunsError,
     refetch: refetchRuns,
   } = useRuns({ limit: 10, offset: 0 });
+  const {
+    data: recrawlStatus,
+    error: recrawlStatusError,
+    isError: isRecrawlStatusError,
+  } = useRecrawlRequestStatus(manualRecrawlTracking?.requestId ?? null);
   const apiProjects = data?.projects ?? [];
   const totalProjects = data?.total ?? 0;
   const totalPages = Math.max(
@@ -335,18 +343,9 @@ export default function ProjectsPage() {
   const staleActiveRunCards = staleActiveRuns
     .slice(0, 3)
     .map(buildRunActivityCard);
-  const recentKeywordRunSummary = summarizeRecentKeywordRuns(
-    runsData?.runs ?? [],
-  );
   const latestRun = runsData?.runs[0] ?? null;
-  const latestRunStartedAfterManualRequest =
-    latestRun !== null &&
-    manualRecrawlTracking !== null &&
-    Date.parse(latestRun.run.created_at) >= manualRecrawlTracking.requestedAt;
   const latestCompletedRunCard =
-    latestRun &&
-    activeRuns.length === 0 &&
-    (manualRecrawlTracking === null || latestRunStartedAfterManualRequest)
+    latestRun && activeRuns.length === 0
       ? buildRunActivityCard(latestRun)
       : null;
   const runningRunCount = activeRuns.filter(
@@ -355,14 +354,11 @@ export default function ProjectsPage() {
   const queuedRunCount = activeRuns.filter(
     (detail) => detail.run.status === "queued",
   ).length;
-  const waitingForManualRun =
-    manualRecrawlTracking !== null &&
-    !manualRecrawlTracking.timedOut &&
-    activeRuns.length === 0;
   const shouldShowRunActivity =
     activeRuns.length > 0 ||
     staleActiveRuns.length > 0 ||
     manualRecrawlTracking !== null ||
+    recrawlStatus !== undefined ||
     latestCompletedRunCard !== null ||
     recrawlQueuedNotice !== null ||
     (recrawlNotice !== null && isRunsError);
@@ -373,14 +369,13 @@ export default function ProjectsPage() {
   ];
 
   useEffect(() => {
-    if (
-      manualRecrawlTracking === null ||
-      (activeRuns.length === 0 && latestCompletedRunCard === null)
-    ) {
-      return;
+    const storedRequestId = window.localStorage.getItem(
+      MANUAL_RECRAWL_REQUEST_STORAGE_KEY,
+    );
+    if (storedRequestId) {
+      setManualRecrawlTracking({ requestId: storedRequestId });
     }
-    setManualRecrawlTracking(null);
-  }, [activeRuns.length, latestCompletedRunCard, manualRecrawlTracking]);
+  }, []);
 
   useEffect(() => {
     if (
@@ -394,35 +389,38 @@ export default function ProjectsPage() {
   }, [latestCompletedRunCard, refetchProjects]);
 
   useEffect(() => {
-    if (!waitingForManualRun && activeRuns.length === 0) {
+    if (activeRuns.length === 0) {
       return;
     }
     const interval = window.setInterval(() => {
       void refetchRuns();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [activeRuns.length, refetchRuns, waitingForManualRun]);
+  }, [activeRuns.length, refetchRuns]);
 
   useEffect(() => {
-    if (!waitingForManualRun || manualRecrawlTracking === null) {
+    if (
+      !recrawlStatus?.is_terminal ||
+      refreshedRecrawlRequestIdRef.current === recrawlStatus.request_id
+    ) {
       return;
     }
-    const remainingMs =
-      MANUAL_RECRAWL_RUN_WAIT_MS -
-      (Date.now() - manualRecrawlTracking.requestedAt);
-    if (remainingMs <= 0) {
-      setManualRecrawlTracking((current) =>
-        current ? { ...current, timedOut: true } : current,
-      );
+    refreshedRecrawlRequestIdRef.current = recrawlStatus.request_id;
+    void refetchProjects();
+    void refetchRuns();
+  }, [recrawlStatus, refetchProjects, refetchRuns]);
+
+  useEffect(() => {
+    if (
+      !isRecrawlStatusError ||
+      !(recrawlStatusError instanceof ApiError) ||
+      recrawlStatusError.status !== 404
+    ) {
       return;
     }
-    const timeout = window.setTimeout(() => {
-      setManualRecrawlTracking((current) =>
-        current ? { ...current, timedOut: true } : current,
-      );
-    }, remainingMs);
-    return () => window.clearTimeout(timeout);
-  }, [manualRecrawlTracking, waitingForManualRun]);
+    window.localStorage.removeItem(MANUAL_RECRAWL_REQUEST_STORAGE_KEY);
+    setManualRecrawlTracking(null);
+  }, [isRecrawlStatusError, recrawlStatusError]);
 
   function toggleStatusFilter(key: string) {
     setStatusFilters((previous) =>
@@ -485,23 +483,19 @@ export default function ProjectsPage() {
     setRecrawlError(null);
     setRecrawlNotice(null);
     setRecrawlQueuedNotice(null);
-    setManualRecrawlTracking(null);
     try {
       const result = await triggerManualRecrawl();
       const keywordCount = result.queued_keywords.length;
       setRecrawlNotice(
         result.queued_job_count > 0
           ? `เริ่ม crawl ${result.queued_job_count} งานจาก ${keywordCount} คำค้นแล้ว`
-          : "รับคำสั่งแล้ว แต่ไม่มีคำค้นใหม่ที่ต้องเพิ่มเข้าคิว",
+          : "คำสั่งรอบนี้อยู่ในคิวแล้ว กำลังติดตามสถานะเดิม",
       );
-      if (result.queued_job_count > 0) {
-        setManualRecrawlTracking({
-          queuedJobCount: result.queued_job_count,
-          queuedKeywords: result.queued_keywords,
-          requestedAt: Date.now(),
-          timedOut: false,
-        });
-      }
+      window.localStorage.setItem(
+        MANUAL_RECRAWL_REQUEST_STORAGE_KEY,
+        result.request_id,
+      );
+      setManualRecrawlTracking({ requestId: result.request_id });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["rules"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
@@ -544,17 +538,17 @@ export default function ProjectsPage() {
         is_active: true,
         keywords: [normalizedKeyword],
       });
+      const result = await triggerManualRecrawl();
       setIsKeywordPromptOpen(false);
       setKeywordDraft("");
       setRecrawlError(null);
       setRecrawlQueuedNotice(null);
       setRecrawlNotice("เพิ่มคำค้นใหม่แล้ว ระบบจะเริ่มค้นหาทันที");
-      setManualRecrawlTracking({
-        queuedJobCount: 1,
-        queuedKeywords: [normalizedKeyword],
-        requestedAt: Date.now(),
-        timedOut: false,
-      });
+      window.localStorage.setItem(
+        MANUAL_RECRAWL_REQUEST_STORAGE_KEY,
+        result.request_id,
+      );
+      setManualRecrawlTracking({ requestId: result.request_id });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["rules"] }),
         queryClient.invalidateQueries({ queryKey: ["runs"] }),
@@ -572,6 +566,8 @@ export default function ProjectsPage() {
   const canOperateRuns = hasRunOperatorRole(currentSession?.user.role);
   const hasRunsEntitlement = !!rulesData?.entitlements.runs_allowed;
   const canRequestRecrawl = hasRunsEntitlement && canOperateRuns;
+  const hasActiveRecrawlRequest =
+    manualRecrawlTracking !== null && recrawlStatus?.is_terminal !== true;
 
   return (
     <>
@@ -597,6 +593,7 @@ export default function ProjectsPage() {
                 isLoading ||
                 isRulesLoading ||
                 isSessionLoading ||
+                hasActiveRecrawlRequest ||
                 !canRequestRecrawl
               }
               className="rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
@@ -699,8 +696,8 @@ export default function ProjectsPage() {
                 สถานะการ crawl ล่าสุด
               </h2>
               <p className="mt-1 text-sm text-[var(--text-muted)]">
-                แผงนี้อ่านจากข้อมูล run จริงของ worker เพื่อบอกว่างานค้างคิว
-                กำลังทำอะไรอยู่ หรือจบลงอย่างไร
+                แผงนี้ติดตามรอบ crawl ที่ร้องขอโดยตรง พร้อมแสดง run
+                ที่กำลังทำงานอยู่
               </p>
             </div>
             <Link
@@ -711,21 +708,33 @@ export default function ProjectsPage() {
             </Link>
           </div>
 
-          {activeRuns.length === 0 && recentKeywordRunSummary ? (
+          {recrawlStatus ? (
             <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
               <p className="font-medium text-[var(--text-primary)]">
-                สรุปล่าสุด {recentKeywordRunSummary.processedCount} คำค้น
+                {recrawlStatus.is_terminal ? "สรุปรอบนี้" : "ความคืบหน้ารอบนี้"}{" "}
+                {recrawlStatus.requested_keyword_count} คำค้น
               </p>
               <p className="mt-2">
-                เสร็จแล้ว {recentKeywordRunSummary.succeededCount} ·
-                ไม่พบโครงการ {recentKeywordRunSummary.zeroResultCount} · ล้มเหลว{" "}
-                {recentKeywordRunSummary.failedCount}
+                เสร็จแล้ว {recrawlStatus.succeeded_count} · ไม่พบโครงการ{" "}
+                {recrawlStatus.zero_result_count} · บางส่วน {recrawlStatus.partial_count} ·
+                ล้มเหลว {recrawlStatus.failed_count}
               </p>
-              {recentKeywordRunSummary.failedKeywords.length > 0 ? (
-                <p className="mt-1 text-xs text-[var(--badge-red-text)]">
-                  ล้มเหลว: {recentKeywordRunSummary.failedKeywords.join(", ")}
+              {!recrawlStatus.is_terminal ? (
+                <p className="mt-1 text-xs text-[var(--text-muted)]">
+                  รอคิว {recrawlStatus.queued_count} · กำลังทำงาน{" "}
+                  {recrawlStatus.running_count} · กำลังลองใหม่{" "}
+                  {recrawlStatus.retrying_count}
                 </p>
               ) : null}
+              {recrawlStatus.failed_keywords.length > 0 ? (
+                <p className="mt-1 text-xs text-[var(--badge-red-text)]">
+                  ล้มเหลว: {recrawlStatus.failed_keywords.join(", ")}
+                </p>
+              ) : null}
+            </div>
+          ) : manualRecrawlTracking ? (
+            <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
+              กำลังโหลดสถานะรอบ crawl ที่ร้องขอ
             </div>
           ) : null}
 
@@ -813,34 +822,6 @@ export default function ProjectsPage() {
                 ))}
               </div>
             </>
-          ) : manualRecrawlTracking && latestCompletedRunCard === null ? (
-            <div className="mt-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface-secondary)] p-4 text-sm text-[var(--text-secondary)]">
-              <p className="font-medium text-[var(--text-primary)]">
-                {manualRecrawlTracking.timedOut
-                  ? "ระบบรับคำสั่ง crawl แล้ว แต่ยังไม่พบ run ที่ worker เริ่มทำงาน"
-                  : "ระบบรับคำสั่ง crawl แล้ว กำลังรอ worker สร้าง run แรก"}
-              </p>
-              <p className="mt-2">
-                {manualRecrawlTracking.queuedJobCount} งาน /{" "}
-                {manualRecrawlTracking.queuedKeywords.length} คำค้น
-              </p>
-              {manualRecrawlTracking.queuedKeywords.length > 0 ? (
-                <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  คำค้นที่ส่งแล้ว:{" "}
-                  {manualRecrawlTracking.queuedKeywords.join(", ")}
-                </p>
-              ) : null}
-              {manualRecrawlTracking.timedOut ? (
-                <p className="mt-2 text-xs text-[var(--badge-amber-text)]">
-                  หาก worker เริ่มช้ากว่านี้
-                  ให้รีเฟรชอีกครั้งหรือเปิดหน้าการทำงานเพื่อตรวจสอบ
-                </p>
-              ) : (
-                <p className="mt-2 text-xs text-[var(--text-muted)]">
-                  ระบบจะดึงสถานะใหม่ทุก 5 วินาทีจนกว่าจะเห็นงานเริ่มทำงานจริง
-                </p>
-              )}
-            </div>
           ) : latestCompletedRunCard ? (
             <>
               <div className="mt-4 flex flex-wrap gap-2 text-sm">
