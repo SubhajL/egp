@@ -173,7 +173,7 @@ def test_recrawl_request_correlation_migration_upgrades_existing_rows(
     staged_migrations = tmp_path / "recrawl-migrations"
     staged_migrations.mkdir()
     for migration in list_migration_files(migrations_dir):
-        if migration.name != correlation_migration.name:
+        if migration.name < correlation_migration.name:
             copy2(migration, staged_migrations / migration.name)
 
     with TempPostgresCluster() as cluster:
@@ -278,3 +278,93 @@ def test_recrawl_request_correlation_migration_upgrades_existing_rows(
             connection.commit()
 
         assert result.applied_versions == [correlation_migration.name]
+
+
+def test_operator_recovery_request_migration_is_additive_and_idempotent(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        return
+
+    from egp_db.migration_runner import apply_migrations, list_migration_files
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    recovery_migration = migrations_dir / "030_operator_recovery_requests.sql"
+    assert recovery_migration.exists()
+    staged_migrations = tmp_path / "operator-recovery-migrations"
+    staged_migrations.mkdir()
+    for migration in list_migration_files(migrations_dir):
+        if migration.name < recovery_migration.name:
+            copy2(migration, staged_migrations / migration.name)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_operator_recovery_migration_test")
+        database_url = cluster.database_url("egp_operator_recovery_migration_test")
+        apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, slug)
+                    VALUES ('11111111-1111-1111-1111-111111111111', 'LLL', 'lll')
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO recrawl_requests (
+                        id, tenant_id, requested_keyword_count
+                    ) VALUES (
+                        '22222222-2222-2222-2222-222222222222',
+                        '11111111-1111-1111-1111-111111111111',
+                        1
+                    )
+                    """
+                )
+            connection.commit()
+
+        copy2(recovery_migration, staged_migrations / recovery_migration.name)
+        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT source, idempotency_key
+                    FROM recrawl_requests
+                    WHERE id = '22222222-2222-2222-2222-222222222222'
+                    """
+                )
+                assert cursor.fetchone() == ("manual", None)
+                cursor.execute(
+                    """
+                    INSERT INTO recrawl_requests (
+                        id, tenant_id, source, idempotency_key,
+                        requested_keyword_count
+                    ) VALUES (
+                        '33333333-3333-3333-3333-333333333333',
+                        '11111111-1111-1111-1111-111111111111',
+                        'operator_recovery', 'incident-manifest', 1
+                    )
+                    """
+                )
+            connection.commit()
+
+        with connect(database_url) as connection:
+            with pytest.raises(UniqueViolation):
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO recrawl_requests (
+                            id, tenant_id, source, idempotency_key,
+                            requested_keyword_count
+                        ) VALUES (
+                            '44444444-4444-4444-4444-444444444444',
+                            '11111111-1111-1111-1111-111111111111',
+                            'operator_recovery', 'incident-manifest', 1
+                        )
+                        """
+                    )
+
+        assert result.applied_versions == [recovery_migration.name]
