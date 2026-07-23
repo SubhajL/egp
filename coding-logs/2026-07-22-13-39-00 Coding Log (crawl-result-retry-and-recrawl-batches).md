@@ -802,3 +802,258 @@ LOW
 - Additive migration defaults historical/manual requests to `source=manual`; rollback may leave its nullable idempotency column and audit rows in place.
 - Recovery has no broad selector and no delete/backout mutation. An identical manifest returns the existing request; any different matching pending work fails closed.
 - Stop the watcher before validation and execution, then monitor only the returned request ID. On circuit/profile/count/semantic stop conditions, leave durable rows intact and halt further work.
+
+## Review (2026-07-23 18:04:01 +0700) - system
+
+### Reviewed
+
+- Repo/worktree: `/Users/subhajlimanond/dev/egp-review-crawler-hiccups`
+- Branch/base: `review/crawler-hiccup-retro-20260723` at exact `origin/main`
+  `6882850cb79930beb7ca14c5c8500a54e0605134`
+- Scope: retrospective of apparently unexplained crawl stops, especially stale runs blocking
+  new work, accepted recrawls producing no visible run, semantic failures being lost, profile
+  pauses, bounded commands exiting after a small number of keywords, and the 2026-07-23
+  recovery stopping after two keyword failures.
+- Sources: `docs/PRD.md`, `TRACKS.md`, `docs/REMOTE_LOCAL_CRAWLER.md`,
+  `docs/OBSERVABILITY.md`, current API/worker/database/web code and tests, the crawl-related
+  Coding Logs from 2026-05-21 through 2026-07-23, and the production recovery evidence in
+  `/tmp/egp-recovery-20260723-Dy1cL8/{stop-state,final-state}.json`.
+- Auggie semantic retrieval was unavailable with HTTP `402`; review used the skill's bounded
+  direct-inspection fallback.
+- Validation:
+  `/Users/subhajlimanond/dev/egp/.venv/bin/python -m pytest
+  tests/operations/test_remote_crawl_assets.py
+  tests/phase2/test_persistent_browser_profile.py
+  tests/phase2/test_discovery_dispatch.py tests/phase2/test_rules_api.py -q`
+  passed: `70 passed, 2 warnings in 4.10s`.
+
+### Executive conclusion
+
+There was no single mysterious crawler failure. The incidents came from several independent
+state machines being presented as one "crawl" operation:
+
+1. persisted crawl-run state in Postgres;
+2. durable queue and retry state in Postgres;
+3. the Mac launchd watcher and SSH tunnel;
+4. local persistent-profile readiness;
+5. a host-local site-error circuit;
+6. worker process transport status;
+7. worker semantic crawl status; and
+8. operator recovery policy.
+
+Before the recent fixes, each seam had at least one place where the wrong signal was treated as
+authoritative. Some were implementation defects now fixed; others were fail-closed safeguards
+that worked as designed but were invisible to the API/UI; the "two keywords then stop" event was
+an operator-policy stop caused by an undefined runbook phrase, not a crawler or circuit stop.
+
+### As-Is pipeline
+
+```text
+Projects UI
+  | POST recrawl; poll exact request ID
+  v
+API admission --------------------> crawl_runs
+  | count "active" by 3h age           ^
+  |                                    | worker writes status/summary
+  v                                    |
+recrawl_requests -> discovery_jobs ----+
+                        |
+                        | production queue reached through SSH tunnel
+                        v
+Mac launchd watcher -- pre-claim gates
+  |                      |- shared site-error circuit JSON
+  |                      |- persistent-profile lock/state JSON
+  |                      `- warm/preflight
+  |
+  `-> claim pending job (60s stale lease, no heartbeat)
+          |
+          v
+     one-shot worker subprocess -> real Chrome/e-GP
+          |
+          |- transport: process exit/stdout
+          `- semantic: succeeded/partial/failed + reason
+                         |
+                         v
+                dispatched OR pending+backoff OR failed
+```
+
+The exact recrawl-request correlation is now durable. The remaining observability problem is
+that the API can report queue/run outcomes but not whether the out-of-process Mac runtime is
+loaded, the tunnel is usable, the profile requires an operator, or the circuit is cooling down.
+
+### Incident reconstruction
+
+| Symptom | Actual cause | Reasoning/implementation gap | Current disposition |
+|---|---|---|---|
+| An old run prevented `Crawl ใหม่` | Any `queued`/`running` row counted as active forever | A status label was treated as a live lease; there was no freshness/reconciliation contract | Fixed by the three-hour admission cutoff and stale-run UI, but the duplicated freshness logic still drifts |
+| Recrawl accepted but no run appeared | The Mac watcher was not loaded; in another start, it raced the tunnel | Queue acceptance was mistaken for executor health; API/UI had no watcher/tunnel status | Runtime was restored, but health visibility and startup readiness remain open |
+| Jobs stayed pending at attempt zero | Profile state had reached two warm failures and required an operator | Intentional fail-closed behavior lived only in local JSON/logs, so it looked like a no-op | Safeguard is correct; control-plane visibility is open |
+| A failed keyword looked dispatched | Worker persisted `run_status=failed` while its process contract still appeared successful | OS process success was used as business success; failed crawl also refreshed profile freshness | Fixed in U1 with strict run-correlated stdout, semantic retry, and profile invalidation |
+| Batch progress was confusing | UI inferred one action from the latest ten runs | A documented non-authoritative heuristic was used during operations as if it were batch truth | Fixed in U2 with durable requests/job/run correlation; recent activity remains a separate view |
+| Manual `crawl 1`, `crawl 2`, or default `crawl 5` exited | `crawl [N]` is explicitly a one-shot bounded command | Normal completion did not prominently report the requested limit and remaining queue | Behavior is correct; terminal operator output remains too weak |
+| Recovery stopped after two failed keywords | An operator applied "new semantic-failure burst" as two consecutive heterogeneous failures | The runbook provided neither a threshold nor a failure taxonomy | Open policy defect; resume proved the stop was premature |
+
+### Findings
+
+CRITICAL
+
+- No open critical finding. The production recovery reached a terminal state and no current
+  evidence shows silent semantic failures being marked dispatched.
+
+HIGH
+
+1. **[OPEN, reasoning/policy] "Semantic-failure burst" is undefined and caused a false stop.**
+   `docs/REMOTE_LOCAL_CRAWLER.md:265-267` says to stop on a new burst but defines neither
+   which failure classes count nor how many constitute a burst. The captured stop state says
+   `"two consecutive semantic failures after three successful recovery jobs"` while the
+   circuit was closed, the profile was active, the tunnel/API were healthy, and the jobs were
+   still retryable. The two failures were not equivalent: a pagination site error after page
+   13 and `keyword_no_results`; a preceding retry was `no_eligible_rows`. After resume, the
+   pagination job succeeded on attempt two, while the two stable anomalies exhausted three
+   attempts. Final result: seven succeeded, one explicit zero-result, two failed, 35 projects.
+   The pause added operator intervention without protecting a failing shared dependency.
+
+2. **[OPEN, implementation/operability] The control plane cannot explain a blocked queue.**
+   `prepare_for_dispatch()` correctly stops before claim for an open circuit, busy profile, or
+   failed/paused warm (`discovery_worker_dispatcher.py:646-679`), but those reasons exist only
+   in Mac logs and host-local JSON. The exact request endpoint reports counts and failed
+   keyword names (`recrawl_request_repo.py:462-508`) but not watcher heartbeat, tunnel health,
+   profile action required, circuit reset time, job attempt/retry time, or latest failure
+   class. Therefore "queued and not moving" still has no product-visible explanation.
+
+3. **[OPEN, implementation] A 60-second claim lease has no heartbeat although crawls can run
+   for minutes or hours.** `DiscoveryDispatchProcessor` defaults
+   `claim_stale_after_seconds=60` (`discovery_dispatch.py:67-76`), and the repository reclaims
+   pending jobs whose `processing_started_at` crosses that threshold
+   (`discovery_job_repo.py:318-439`). The supported single-worker/zero-in-box-executor topology
+   reduces the chance of collision but does not make ownership durable. A second dispatcher,
+   restart overlap, or future concurrency can duplicate an alive crawl. This risk was already
+   recorded in the 2026-05-21 Coding Log and remains unresolved.
+
+MEDIUM
+
+1. **[FIXED ROOT CAUSE, OPEN DRIFT] Stale crawl rows used to block new work indefinitely.**
+   The regression and fix are documented in the 2026-06-17 log at lines 391-449. Current API
+   admission uses only `started_at`/`created_at` (`run_repo.py:813-847`), while the frontend
+   independently hard-codes the same three-hour limit and also considers
+   `live_progress.updated_at` (`run-progress.ts:16,57-84`). A legitimate run older than three
+   hours with fresh progress can therefore be active in the UI but stale for API admission.
+   The original stale rows also remain historically mislabeled unless explicitly reconciled.
+
+2. **[FIXED] Semantic failure was lost across the subprocess boundary.** Before U1, a worker
+   could persist a failed run yet be accepted from its process-level result, causing a job to
+   become `dispatched` and a bad profile to look fresh. Current code validates the exact run
+   ID/status, raises retryable failure for semantic `failed`, and records profile success only
+   after accepted completion (`discovery_worker_dispatcher.py:826-926`). The underlying
+   reasoning failure was testing process transport and business outcome separately without an
+   end-to-end contract test.
+
+3. **[OPEN, operability] One-shot completion is too easy to mistake for a stop.**
+   `scripts/run_remote_crawl.sh:17-22,57-63` documents that `crawl [N]` drains at most N jobs
+   and exits; the executor logs only `"Processed N pending discovery dispatch jobs"`
+   (`executors/discovery_dispatch.py:306-314`). It does not distinguish queue empty, profile
+   deferral, circuit deferral, retry scheduling, or limit reached, nor report remaining work.
+
+4. **[OPEN, implementation/operations] launchd reload has no tunnel-readiness gate.**
+   `install_launchd.sh:44-78` bootstraps agents in order but does not wait for Postgres to accept
+   traffic before loading the watcher. The June recovery log records both a missing watcher
+   and a connection-refused startup race. KeepAlive eventually recovered the race, but
+   `run_remote_crawl.sh check` validates configuration rather than live runtime dependencies.
+
+5. **[OPEN, reasoning/data contract] Failure classes remain conflated.** Infrastructure
+   failure, profile/Cloudflare pause, shared site toast, transient pagination failure,
+   `keyword_no_results`, `no_eligible_rows`, a normal zero-result, and a bounded exit have
+   different retry and stop implications. Today they collapse into counts plus an untyped
+   `last_error`, so operators must interpret prose/logs and can apply the wrong stop rule.
+
+LOW
+
+1. **[OPEN, process] Production completion evidence was not appended to the active Coding Log.**
+   The log ended at the pre-production U3 boundary, while the stop and final truth lived only
+   in `/tmp`. That fragmented the incident timeline and made the premature pause look like
+   crawler behavior until the final artifact was examined.
+
+2. **[OPEN, UX] Exact request progress and general recent-run activity coexist.** U2 correctly
+   made the request card authoritative, but operators can still mentally combine it with
+   unrelated recent activity unless labels clearly state the scopes.
+
+### Intended-vs-actual drift matrix
+
+| Intended contract | Actual drift that caused or obscured hiccups | Status |
+|---|---|---|
+| API owns product state; worker emits results (`PRD:443`) | Host-local profile/circuit/runtime state can halt dispatch but is absent from API state | Open |
+| Scheduler owns retry/backoff/DLQ (`PRD:467-471`) | Semantic worker failure was formerly reduced to process success | Fixed U1 |
+| One recrawl action has truthful progress | Latest-ten inference mixed unrelated attempts/runs | Fixed U2 |
+| Active run means live work | Old state labels gated admission forever; current backend/frontend freshness sources differ | Partially fixed |
+| A claimed job has one active owner | 60-second stale reclaim has no worker heartbeat | Open |
+| Recovery stops protect shared dependencies | Undefined "semantic-failure burst" stopped heterogeneous retryable jobs while all shared health gates were green | Open |
+| Isolated crawler worker is operationally distinct (`PRD:455-461`) | Temporary Mac+SSH-tunnel topology has no product-visible agent health or readiness handshake | Open |
+
+### Recommended tactical roadmap
+
+1. **P0 — Replace the fuzzy recovery stop rule with a typed decision table.**
+   Hard-stop only on shared dependency failures (circuit open, profile operator action, tunnel
+   or watcher unhealthy), manifest/count invariant violation, or an explicitly defined
+   same-class threshold. Let job-local retryable anomalies use their existing three attempts.
+   Done when the captured two-failure sequence continues automatically to terminal while a
+   simulated shared circuit/profile failure stops before the next claim.
+
+2. **P0 — Expose exact request blockers and per-job outcomes.**
+   Add per-keyword state, attempt count, next retry time, normalized failure code, latest run
+   ID, and blocked reason to the request-status contract/UI. Done when an operator can
+   distinguish queued, retry-backoff, profile-paused, circuit-open, worker-offline, and
+   terminal failure without querying Postgres or local files.
+
+3. **P0 — Add a Mac crawler-agent heartbeat.**
+   Persist agent ID/version, last poll, watcher PID/start time, tunnel probe, profile state,
+   circuit open-until, active job/run, and last error through a tenant-safe API/reporting seam.
+   Done when an accepted request with no progress displays a single current blocker within two
+   polling intervals and alerts when heartbeat age exceeds a bounded threshold.
+
+4. **P1 — Make queue ownership renewable.**
+   Add owner/lease token plus heartbeat while the worker subprocess is alive; reclaim only an
+   expired token, and reject completion from a superseded owner. Done with a test where a crawl
+   exceeds 60 seconds, a second dispatcher polls, and exactly one worker/result exists.
+
+5. **P1 — Centralize run freshness classification in the backend.**
+   Compute `last_activity_at` from live progress/start/create and return authoritative
+   `is_stale`; have admission and UI use that result/configured threshold. Add an explicit
+   reconciliation command for historical orphaned rows. Done when a >3h run with fresh
+   heartbeat remains active everywhere and an abandoned run is stale everywhere.
+
+6. **P1 — Make bounded command exit self-explanatory and gate startup readiness.**
+   On `crawl N`, print claimed/succeeded/retrying/failed/deferred/remaining and an explicit exit
+   reason (`limit_reached`, `queue_empty`, `profile_paused`, `circuit_open`). Probe the tunnel
+   before watcher bootstrap/one-shot work. Done with operations tests for unavailable-then-ready
+   tunnel and for all bounded exit reasons.
+
+7. **P1 — Preserve incident evidence durably.**
+   Append production execution/stop/resume/final outcomes and artifact hashes to the Coding Log
+   or an incident record, not only `/tmp`. Done when the timeline can be reconstructed from
+   tracked metadata without relying on a live workstation temp directory.
+
+### Recommended strategic architecture
+
+Replace the Mac worker's direct production-DB claim over an SSH tunnel with an authenticated,
+outbound crawler-agent protocol:
+
+1. add heartbeat/status reporting while retaining the current DB claimant;
+2. add API lease/renew/complete endpoints with typed outcomes and idempotent run correlation;
+3. canary one tenant/profile through the API path while dual-reporting status;
+4. disable direct DB claiming after parity and failure-injection tests;
+5. retain the current guarded runner only as a rollback path, then remove the tunnel dependency.
+
+This keeps the necessary real-Mac Chrome runtime but makes queue ownership, health, stop reasons,
+and semantic outcomes part of one control plane. The tradeoff is more authenticated-agent and
+lease code, but it removes the largest class of "accepted but apparently nothing happened"
+incidents and makes fail-closed behavior visible instead of mysterious.
+
+### Formal disposition
+
+- The recent U1/U2/U3 implementation repaired the two most damaging silent-data issues:
+  semantic failure acceptance and non-authoritative batch identity.
+- The 2026-07-23 production recovery itself completed correctly after resume:
+  `7 succeeded + 1 zero_result + 2 failed = 10`, no pending/processing jobs, no failed latest
+  run marked dispatched, profile active, circuit closed, watcher and tunnel running.
+- The next highest-value work is not another crawler parsing fix. It is to formalize recovery
+  stop semantics and surface agent/dependency health in the request status path.

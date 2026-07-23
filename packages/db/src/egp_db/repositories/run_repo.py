@@ -18,10 +18,9 @@ from sqlalchemy import (
     and_,
     desc,
     func,
-    or_,
 )
 from sqlalchemy import Column, insert, select, update
-from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy.engine import Connection, Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
@@ -41,6 +40,7 @@ class CrawlRunRecord:
     recrawl_request_id: str | None
     started_at: str | None
     finished_at: str | None
+    last_activity_at: str
     summary_json: dict[str, object] | None
     error_count: int
     created_at: str
@@ -148,6 +148,12 @@ CRAWL_RUNS_TABLE = Table(
     Column("status", String, nullable=False),
     Column("started_at", DateTime(timezone=True), nullable=True),
     Column("finished_at", DateTime(timezone=True), nullable=True),
+    Column(
+        "last_activity_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
     Column("summary_json", JSON, nullable=True),
     Column("error_count", Integer, nullable=False, default=0),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -207,6 +213,47 @@ _VALID_TASK_STATUSES = {"queued", "running", "succeeded", "failed", "skipped"}
 ACTIVE_RUN_STALE_AFTER_SECONDS = 3 * 60 * 60
 
 
+def is_run_stale(
+    run: CrawlRunRecord,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: float = ACTIVE_RUN_STALE_AFTER_SECONDS,
+) -> bool:
+    """Return whether an active run has exceeded the canonical activity window."""
+
+    if run.status not in {CrawlRunStatus.QUEUED, CrawlRunStatus.RUNNING}:
+        return False
+    activity_at = datetime.fromisoformat(run.last_activity_at)
+    if activity_at.tzinfo is None:
+        activity_at = activity_at.replace(tzinfo=UTC)
+    else:
+        activity_at = activity_at.astimezone(UTC)
+    resolved_now = now or _now()
+    if resolved_now.tzinfo is None:
+        resolved_now = resolved_now.replace(tzinfo=UTC)
+    else:
+        resolved_now = resolved_now.astimezone(UTC)
+    return (resolved_now - activity_at).total_seconds() > max(
+        1.0,
+        float(stale_after_seconds),
+    )
+
+
+def touch_run_activity(
+    connection: Connection,
+    *,
+    run_id: str,
+    activity_at: datetime,
+) -> None:
+    """Refresh canonical activity within the caller's existing transaction."""
+
+    connection.execute(
+        update(CRAWL_RUNS_TABLE)
+        .where(CRAWL_RUNS_TABLE.c.id == normalize_uuid_string(run_id))
+        .values(last_activity_at=activity_at)
+    )
+
+
 def _validate_run_trigger_type(value: str) -> str:
     normalized = str(value).strip()
     if normalized not in _VALID_RUN_TRIGGER_TYPES:
@@ -258,6 +305,7 @@ def _run_from_mapping(row: RowMapping) -> CrawlRunRecord:
         ),
         started_at=_dt_to_iso(row["started_at"]),
         finished_at=_dt_to_iso(row["finished_at"]),
+        last_activity_at=_dt_to_iso(row["last_activity_at"]) or "",
         summary_json=row["summary_json"],
         error_count=int(row["error_count"]),
         created_at=_dt_to_iso(row["created_at"]) or "",
@@ -389,6 +437,7 @@ class SqlRunRepository:
                     status=CrawlRunStatus.QUEUED.value,
                     started_at=None,
                     finished_at=None,
+                    last_activity_at=now,
                     summary_json=summary_json,
                     error_count=0,
                     created_at=now,
@@ -412,7 +461,11 @@ class SqlRunRepository:
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
                 .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
-                .values(status=CrawlRunStatus.RUNNING.value, started_at=now)
+                .values(
+                    status=CrawlRunStatus.RUNNING.value,
+                    started_at=now,
+                    last_activity_at=now,
+                )
             )
             row = (
                 connection.execute(
@@ -452,6 +505,7 @@ class SqlRunRepository:
                 .values(
                     status=normalized_status,
                     finished_at=now,
+                    last_activity_at=now,
                     summary_json=_merge_summary_json(
                         current["summary_json"],
                         summary_json,
@@ -476,6 +530,7 @@ class SqlRunRepository:
         *,
         summary_json: dict[str, object] | None,
     ) -> CrawlRunRecord:
+        now = _now()
         normalized_run_id = normalize_uuid_string(run_id)
         with self._engine.begin() as connection:
             current = (
@@ -491,6 +546,7 @@ class SqlRunRepository:
                 update(CRAWL_RUNS_TABLE)
                 .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
                 .values(
+                    last_activity_at=now,
                     summary_json=_merge_summary_json(
                         current["summary_json"],
                         summary_json,
@@ -548,6 +604,7 @@ class SqlRunRepository:
                     .values(
                         status=CrawlRunStatus.FAILED.value,
                         finished_at=now,
+                        last_activity_at=now,
                         summary_json=summary,
                         error_count=max(1, int(row["error_count"])),
                     )
@@ -598,6 +655,7 @@ class SqlRunRepository:
                 .values(
                     status=CrawlRunStatus.FAILED.value,
                     finished_at=now,
+                    last_activity_at=now,
                     summary_json=summary,
                     error_count=max(1, int(row["error_count"])),
                 )
@@ -653,6 +711,7 @@ class SqlRunRepository:
                         .values(
                             status=CrawlRunStatus.FAILED.value,
                             finished_at=now,
+                            last_activity_at=now,
                             summary_json=summary,
                             error_count=max(1, int(row["error_count"])),
                         )
@@ -679,12 +738,13 @@ class SqlRunRepository:
     ) -> CrawlTaskRecord:
         now = _now()
         task_id = str(uuid4())
+        normalized_run_id = normalize_uuid_string(run_id)
         normalized_task_type = _validate_task_type(task_type)
         with self._engine.begin() as connection:
             connection.execute(
                 insert(CRAWL_TASKS_TABLE).values(
                     id=task_id,
-                    run_id=normalize_uuid_string(run_id),
+                    run_id=normalized_run_id,
                     task_type=normalized_task_type,
                     project_id=normalize_uuid_string(project_id)
                     if project_id
@@ -698,6 +758,11 @@ class SqlRunRepository:
                     result_json=None,
                     created_at=now,
                 )
+            )
+            touch_run_activity(
+                connection,
+                run_id=normalized_run_id,
+                activity_at=now,
             )
             row = (
                 connection.execute(
@@ -714,6 +779,15 @@ class SqlRunRepository:
         now = _now()
         normalized_task_id = normalize_uuid_string(task_id)
         with self._engine.begin() as connection:
+            current = (
+                connection.execute(
+                    select(CRAWL_TASKS_TABLE)
+                    .where(CRAWL_TASKS_TABLE.c.id == normalized_task_id)
+                    .limit(1)
+                )
+                .mappings()
+                .one()
+            )
             connection.execute(
                 update(CRAWL_TASKS_TABLE)
                 .where(CRAWL_TASKS_TABLE.c.id == normalized_task_id)
@@ -722,6 +796,11 @@ class SqlRunRepository:
                     started_at=now,
                     attempts=CRAWL_TASKS_TABLE.c.attempts + 1,
                 )
+            )
+            touch_run_activity(
+                connection,
+                run_id=str(current["run_id"]),
+                activity_at=now,
             )
             row = (
                 connection.execute(
@@ -766,6 +845,11 @@ class SqlRunRepository:
                     finished_at=now,
                     result_json=result_json,
                 )
+            )
+            touch_run_activity(
+                connection,
+                run_id=str(current["run_id"]),
+                activity_at=now,
             )
             row = (
                 connection.execute(
@@ -834,13 +918,7 @@ class SqlRunRepository:
                                     CrawlRunStatus.RUNNING.value,
                                 ]
                             ),
-                            or_(
-                                CRAWL_RUNS_TABLE.c.started_at >= active_since,
-                                and_(
-                                    CRAWL_RUNS_TABLE.c.started_at.is_(None),
-                                    CRAWL_RUNS_TABLE.c.created_at >= active_since,
-                                ),
-                            ),
+                            CRAWL_RUNS_TABLE.c.last_activity_at >= active_since,
                         )
                     )
                 ).scalar_one()

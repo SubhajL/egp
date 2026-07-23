@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from shutil import copy2
 
@@ -368,3 +369,79 @@ def test_operator_recovery_request_migration_is_additive_and_idempotent(
                     )
 
         assert result.applied_versions == [recovery_migration.name]
+
+
+def test_crawl_run_activity_migration_uses_next_unique_prefix(repo_root: Path) -> None:
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    activity_migration = migrations_dir / "031_crawl_run_last_activity.sql"
+
+    assert activity_migration.exists()
+    assert [path.name for path in migrations_dir.glob("031_*.sql")] == [
+        activity_migration.name
+    ]
+
+
+def test_crawl_run_activity_migration_backfills_existing_rows(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        return
+
+    from egp_db.migration_runner import apply_migrations, list_migration_files
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    activity_migration = migrations_dir / "031_crawl_run_last_activity.sql"
+    staged_migrations = tmp_path / "crawl-run-activity-migrations"
+    staged_migrations.mkdir()
+    for migration in list_migration_files(migrations_dir):
+        if migration.name < activity_migration.name:
+            copy2(migration, staged_migrations / migration.name)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_crawl_run_activity_migration_test")
+        database_url = cluster.database_url("egp_crawl_run_activity_migration_test")
+        apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, slug)
+                    VALUES ('11111111-1111-1111-1111-111111111111', 'LLL', 'lll')
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_runs (
+                        id, tenant_id, trigger_type, status, started_at, created_at
+                    ) VALUES (
+                        '22222222-2222-2222-2222-222222222222',
+                        '11111111-1111-1111-1111-111111111111',
+                        'manual', 'running',
+                        '2026-07-23T01:00:00+00:00',
+                        '2026-07-23T00:59:00+00:00'
+                    )
+                    """
+                )
+            connection.commit()
+
+        copy2(activity_migration, staged_migrations / activity_migration.name)
+        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT last_activity_at, is_nullable
+                    FROM crawl_runs
+                    JOIN information_schema.columns
+                      ON table_name = 'crawl_runs'
+                     AND column_name = 'last_activity_at'
+                    WHERE id = '22222222-2222-2222-2222-222222222222'
+                    """
+                )
+                last_activity_at, is_nullable = cursor.fetchone()
+
+        assert result.applied_versions == [activity_migration.name]
+        assert last_activity_at.astimezone(UTC).isoformat() == "2026-07-23T01:00:00+00:00"
+        assert is_nullable == "NO"

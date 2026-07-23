@@ -322,7 +322,41 @@ def test_runs_endpoints_create_list_and_return_tasks(tmp_path) -> None:
     assert listed.json()["limit"] == 50
     assert listed.json()["offset"] == 0
     assert listed.json()["runs"][0]["run"]["status"] == CrawlRunStatus.SUCCEEDED.value
+    assert listed.json()["runs"][0]["run"]["last_activity_at"] is not None
+    assert listed.json()["runs"][0]["run"]["is_stale"] is False
     assert listed.json()["runs"][0]["tasks"][0]["task_type"] == "discover"
+
+
+def test_run_api_returns_authoritative_stale_classification(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-stale-run.sqlite3'}"
+    client = TestClient(
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
+    )
+    run = client.app.state.run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+    )
+    client.app.state.run_repository.mark_run_started(run.id)
+    stale_activity_at = datetime.now(UTC) - timedelta(hours=4)
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE crawl_runs
+                SET last_activity_at = :stale_activity_at
+                WHERE id = :run_id
+                """
+            ),
+            {"stale_activity_at": stale_activity_at, "run_id": run.id},
+        )
+
+    listed = client.get("/v1/runs", params={"tenant_id": TENANT_ID})
+
+    assert listed.status_code == 200
+    assert listed.json()["runs"][0]["run"]["last_activity_at"] is not None
+    assert listed.json()["runs"][0]["run"]["is_stale"] is True
 
 
 def test_projects_and_runs_endpoints_accept_limit_and_offset(tmp_path) -> None:

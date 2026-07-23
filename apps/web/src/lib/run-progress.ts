@@ -13,13 +13,6 @@ export type RecentKeywordRunSummary = {
   failedKeywords: string[];
 };
 
-const ACTIVE_RUN_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
-
-type RunFreshnessOptions = {
-  nowMs?: number;
-  staleAfterMs?: number;
-};
-
 function readRecordSummary(
   summary: Record<string, unknown> | null,
   key: string,
@@ -55,33 +48,13 @@ function parseTimestamp(value: string | null | undefined): number {
 }
 
 function getRunActivityTimestamp(runDetail: RunDetailResponse): number {
-  const progress = readRecordSummary(
-    runDetail.run.summary_json,
-    "live_progress",
-  );
-  const progressUpdatedAt =
-    typeof progress?.updated_at === "string" ? progress.updated_at : null;
-  return Math.max(
-    parseTimestamp(progressUpdatedAt),
-    parseTimestamp(runDetail.run.started_at),
-    parseTimestamp(runDetail.run.created_at),
-  );
+  return parseTimestamp(runDetail.run.last_activity_at);
 }
 
-export function isStaleActiveRun(
-  runDetail: RunDetailResponse,
-  options: RunFreshnessOptions = {},
-): boolean {
-  if (!isActiveRunStatus(runDetail.run.status)) {
-    return false;
-  }
-  const activityTimestamp = getRunActivityTimestamp(runDetail);
-  if (activityTimestamp <= 0) {
-    return false;
-  }
-  const nowMs = options.nowMs ?? Date.now();
-  const staleAfterMs = options.staleAfterMs ?? ACTIVE_RUN_STALE_AFTER_MS;
-  return nowMs - activityTimestamp > staleAfterMs;
+export function isStaleActiveRun(runDetail: RunDetailResponse): boolean {
+  return (
+    isActiveRunStatus(runDetail.run.status) && runDetail.run.is_stale === true
+  );
 }
 
 export function formatProgressStage(stage: string): string {

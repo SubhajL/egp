@@ -2952,6 +2952,10 @@ export interface components {
             finished_at: string | null;
             /** Id */
             id: string;
+            /** Is Stale */
+            is_stale: boolean;
+            /** Last Activity At */
+            last_activity_at: string;
             /** Profile Id */
             profile_id: string | null;
             /** Started At */
