@@ -1093,3 +1093,145 @@ LOW
   approval.
 - Formal disposition: no unresolved finding changes the Phase 1 code-complete/E0-blocked/S1-closed
   decision. Proceed to merge this evidence record.
+
+## Partial Gate S1 rehearsal (2026-07-27 09:56:40 +0700)
+
+### Goal and scope
+
+- Perform every non-destructive S1 check that is currently meaningful while GitHub billing keeps
+  E0 unavailable.
+- Use clean exact-`main` source for local checks and read-only production/Mac diagnostics for live
+  state.
+- Do not deploy, warm the browser profile, enqueue work, exercise payment/notification providers,
+  or open a pilot. This is partial evidence only; it cannot accept Gate S1.
+
+### Release identity and E0
+
+- Clean rehearsal worktree base: `622d2957ac8df31ff3c0f167117eaf12c3b8acbd`, identical to
+  freshly fetched `origin/main`.
+- Read-only SSH inspection reports the Lightsail checkout at
+  `6882850cb79930beb7ca14c5c8500a54e0605134`. The host checkout is not the U1-U4 completion
+  tree, and no running-image revision evidence proves an exact U1-U4 deployment.
+- Current-`main` Actions runs `30231390350` and `30231390315` contain seven failed jobs:
+  six CI/image jobs and the publish-images job. Every check annotation says:
+  `The job was not started because your account is locked due to a billing issue.`
+- The jobs executed no source steps. E0 remains blocked; local evidence is not a substitute.
+
+### Evidence collected
+
+- `API_URL=https://api.egptracker.com ./scripts/check_launch_gates.sh`:
+  `7 passed, 3 failed, 2 skipped`.
+  - `/metrics`, conflict counters, e-GP 429 count, inflight count, subprocess count, and the local
+    Chrome PID cap passed.
+  - `/live` and `/ready` failed against the current production runtime.
+  - The checker flagged one first-level profile directory as stale. This is not accepted as
+    proof of orphan cleanup because the directory is the intentional persistent profile.
+  - Cross-tenant DB attribution and rate-limiter engagement skipped without production DB/traffic
+    context.
+- `scripts/run_remote_crawl.sh check` passed the production safety guard.
+- `scripts/run_remote_crawl.sh doctor` was read-only and sanitized:
+  database connected, shared circuit closed, profile lock free, but status `blocked` with
+  `queue_unavailable` and `heartbeat_unavailable`; the persistent profile reported
+  `warm_required`.
+- `./.venv/bin/python scripts/run_phase1_postgres_smoke.py` passed on clean exact `main`:
+  fresh migrations, document create/list/download, project/run/task/status-event persistence, and
+  alias persistence all completed against throwaway PostgreSQL clusters.
+- The focused local S1 behavior matrix passed `271 tests`:
+  migration/readiness, backup/restore, restore evidence, login/session/admin, project/run,
+  rules/recrawl, export, document/artifact streaming, internal worker auth, discovery dispatch,
+  crawler runtime, payment callbacks, email notification, notification dispatch, and LINE
+  activation coverage.
+
+### Requirement-by-requirement disposition
+
+| Gate S1 requirement | Current evidence | Disposition |
+|---|---|---|
+| E0 jobs execute real steps and pass | Seven current-main jobs stopped by billing before steps | BLOCKED |
+| U1-U4 deployed at the exact checked SHA | `main=622d2957`; Lightsail checkout `6882850c` | NOT ACHIEVED |
+| U5-U6 in progress with dependency/image freeze | Phase 2 not yet implemented | NOT ACHIEVED |
+| Fresh/upgrade migrations and `/ready` | Local PostgreSQL matrix green; deployed `/ready` fails | PARTIAL LOCAL ONLY |
+| Login/admin/project/rule/recrawl/document/export | Local defect-sensitive matrix green; no live flow run | PARTIAL LOCAL ONLY |
+| Worker status-update and one exact terminal request | Local route/dispatch/runtime matrix green; live queue unavailable | PARTIAL LOCAL ONLY |
+| Payment sandbox, email/LINE, artifact upload/download | Local provider/notification/artifact contracts green; no live provider exercise | PARTIAL LOCAL ONLY |
+| Latest backups and current restore drill | Local restore contract green; last recorded drill is 2026-06-16 with artifact-mirror caveats | INSUFFICIENT LIVE EVIDENCE |
+| Mac doctor, worker `1`, profile/circuit/heartbeat healthy | Guard safe and DB/circuit healthy; queue/heartbeat blocked and profile warm required | FAILED |
+| Launch checker has no failures or mandatory skips | `7 passed, 3 failed, 2 skipped` | FAILED |
+| Named operator, rollback command, observation window | No exact-release live observation was started | NOT ACHIEVED |
+
+### TDD and validation record
+
+- No product behavior changed in this evidence-only rehearsal, so there is no RED implementation
+  run.
+- Exact commands:
+  - `API_URL=https://api.egptracker.com ./scripts/check_launch_gates.sh`
+  - `./.venv/bin/python scripts/run_phase1_postgres_smoke.py`
+  - `EGP_REMOTECRAWL_ENV_FILE=/Users/subhajlimanond/dev/egp/.env.remotecrawl scripts/run_remote_crawl.sh check`
+  - `EGP_REMOTECRAWL_ENV_FILE=/Users/subhajlimanond/dev/egp/.env.remotecrawl scripts/run_remote_crawl.sh doctor`
+  - `./.venv/bin/python -m pytest -q tests/phase1/test_migration_runner.py tests/phase1/test_api_readiness.py tests/operations/test_api_readiness_assets.py tests/operations/test_pg_backup_restore.py tests/operations/test_restore_drill_evidence.py tests/phase4/test_auth_api.py tests/phase4/test_admin_api.py tests/phase1/test_projects_and_runs_api.py tests/phase2/test_rules_api.py tests/phase2/test_export_service.py tests/phase1/test_documents_api.py tests/phase1/test_internal_worker_auth.py tests/phase2/test_discovery_dispatch.py tests/phase2/test_crawler_runtime.py tests/phase3/test_payment_links.py tests/phase2/test_notification_service.py tests/phase2/test_notification_dispatch.py tests/phase4/test_line_activation_notify.py tests/phase1/test_artifact_store_streaming.py`
+- Result: PostgreSQL smoke passed; focused matrix `271 passed, 21 warnings`.
+
+### Decision and follow-up
+
+- **Partial S1 rehearsal: COMPLETE.**
+- **Gate S1: CLOSED.** The evidence directly contradicts acceptance on deployment identity,
+  readiness, crawler runtime health, complete launch checks, and operator observation.
+- Proceed with Phase 2 U5 then U6 through separate sequential PR lifecycles. Continue to block any
+  pilot until billing is restored, checks execute real steps, the exact checked U1-U6 SHA is
+  deployed, and every live S1 item passes without a mandatory skip.
+
+## Review (2026-07-27 09:58:27 +0700) - partial S1 evidence
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `docs/partial-s1-rehearsal`
+- Scope: staged working-tree evidence append based on
+  `622d2957ac8df31ff3c0f167117eaf12c3b8acbd`
+- Commands Run: exact S1 source-plan reread; current-main GitHub check/job/annotation inspection;
+  read-only production launch checker; read-only Lightsail checkout SHA inspection; remote-crawl
+  guard and sanitized doctor; local PostgreSQL smoke; focused 271-test S1 matrix;
+  `git diff --check`; staged diff/stat inspection
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The running production container has no exact revision evidence in this rehearsal. The older host
+  checkout plus missing `/live` and `/ready` are enough to reject exact-release acceptance, not to
+  assert an unobserved image SHA.
+- Local integration tests verify behavior contracts but do not replace live provider, backup,
+  crawler, or observation evidence.
+- Auggie was skipped because the available interface cannot enforce the required real two-second
+  timeout; review used direct evidence and exact-string inspection.
+
+### Recommended Tests / Validation
+
+- After billing restoration, rerun all required jobs and verify non-empty successful steps on the
+  exact release SHA.
+- After U5-U6, deploy that checked SHA and run every S1 item live without mandatory skips.
+- Capture immutable running-image identity, current backup/restore evidence, healthy doctor output,
+  one exact terminal request, provider delivery, and the named operator observation record.
+
+### Rollout Notes
+
+- This evidence PR changes no product behavior and authorizes no deployment or pilot.
+- The documented billing override applies only to landing engineering/evidence PRs, not to opening
+  Gate S1.
+- Formal disposition: no unresolved finding prevents committing the partial-S1 evidence while Gate
+  S1 remains closed.
