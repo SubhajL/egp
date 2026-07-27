@@ -14,7 +14,7 @@ from egp_api.config import (
     get_discovery_lease_seconds,
     get_discovery_worker_count,
 )
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
     DiscoveryPreDispatchResult,

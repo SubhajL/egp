@@ -1177,7 +1177,7 @@ def create_notification_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlNotificationRepository:
     return SqlNotificationRepository(
         database_url=database_url,

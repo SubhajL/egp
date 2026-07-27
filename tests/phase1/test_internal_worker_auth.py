@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 
 
 WORKER_TOKEN = "phase1-worker-token"

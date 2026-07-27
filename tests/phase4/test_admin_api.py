@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.google_drive import GoogleDriveOAuthConfig
 from egp_api.services.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.project_repo import build_project_upsert_record

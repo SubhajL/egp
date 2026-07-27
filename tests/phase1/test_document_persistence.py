@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_db.artifact_store import LocalArtifactStore
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.repositories.admin_repo import create_admin_repository

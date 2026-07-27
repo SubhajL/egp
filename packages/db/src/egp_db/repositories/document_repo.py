@@ -14,7 +14,7 @@ from egp_db.artifact_store import (
     SupabaseArtifactStore,
 )
 from egp_db.connection import create_shared_engine
-from egp_db.db_utils import is_sqlite_url, normalize_database_url
+from egp_db.db_utils import normalize_database_url
 from egp_db.tenant_storage_resolver import TenantArtifactStoreResolver
 from egp_document_classifier.classifier import classify_document
 
@@ -123,6 +123,7 @@ def create_document_repository(
     supabase_service_role_key: str | None = None,
     supabase_client=None,
     artifact_store_resolver: TenantArtifactStoreResolver | None = None,
+    bootstrap_schema: bool = False,
 ) -> SqlDocumentRepository:
     artifact_store = create_artifact_store(
         storage_backend=storage_backend,
@@ -139,7 +140,7 @@ def create_document_repository(
         artifact_store=artifact_store,
         artifact_store_resolver=artifact_store_resolver,
         engine=engine,
-        bootstrap_schema=is_sqlite_url(database_url),
+        bootstrap_schema=bootstrap_schema,
     )
 
 

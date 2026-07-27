@@ -45,6 +45,36 @@ def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> N
         assert rows == expected_versions
 
 
+def test_migrated_postgres_starts_without_repository_bootstrap(
+    repo_root: Path,
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        return
+
+    from fastapi.testclient import TestClient
+
+    from egp_api.main import create_app
+    from egp_db.migration_runner import apply_migrations
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migrated_api_startup_test")
+        database_url = cluster.database_url("egp_migrated_api_startup_test")
+        apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+
+        client = TestClient(
+            create_app(
+                artifact_root=tmp_path,
+                database_url=database_url,
+                auth_required=False,
+                background_runtime_mode="external",
+            )
+        )
+
+        assert client.get("/health").json() == {"status": "ok"}
+
+
 def test_keyword_group_lifecycle_migration_backfills_intent_and_unique_names(
     repo_root: Path,
     tmp_path: Path,
@@ -232,7 +262,9 @@ def test_recrawl_request_correlation_migration_upgrades_existing_rows(
             connection.commit()
 
         copy2(correlation_migration, staged_migrations / correlation_migration.name)
-        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        result = apply_migrations(
+            database_url=database_url, migrations_dir=staged_migrations
+        )
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
@@ -287,8 +319,7 @@ def test_crawler_runtime_migration_has_no_tenant_or_customer_payload(
     repo_root: Path,
 ) -> None:
     runtime_migration = (
-        repo_root
-        / "packages/db/src/migrations/033_crawler_runtime_heartbeats.sql"
+        repo_root / "packages/db/src/migrations/033_crawler_runtime_heartbeats.sql"
     )
 
     assert runtime_migration.exists()
@@ -343,7 +374,9 @@ def test_operator_recovery_request_migration_is_additive_and_idempotent(
             connection.commit()
 
         copy2(recovery_migration, staged_migrations / recovery_migration.name)
-        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        result = apply_migrations(
+            database_url=database_url, migrations_dir=staged_migrations
+        )
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
@@ -443,7 +476,9 @@ def test_crawl_run_activity_migration_backfills_existing_rows(
             connection.commit()
 
         copy2(activity_migration, staged_migrations / activity_migration.name)
-        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        result = apply_migrations(
+            database_url=database_url, migrations_dir=staged_migrations
+        )
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
@@ -460,7 +495,9 @@ def test_crawl_run_activity_migration_backfills_existing_rows(
                 last_activity_at, is_nullable = cursor.fetchone()
 
         assert result.applied_versions == [activity_migration.name]
-        assert last_activity_at.astimezone(UTC).isoformat() == "2026-07-23T01:00:00+00:00"
+        assert (
+            last_activity_at.astimezone(UTC).isoformat() == "2026-07-23T01:00:00+00:00"
+        )
         assert is_nullable == "NO"
 
 
@@ -547,7 +584,9 @@ def test_discovery_job_lease_migration_guards_inflight_and_preserves_unstarted_j
             connection.commit()
 
         copy2(lease_migration, staged_migrations / lease_migration.name)
-        result = apply_migrations(database_url=database_url, migrations_dir=staged_migrations)
+        result = apply_migrations(
+            database_url=database_url, migrations_dir=staged_migrations
+        )
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:

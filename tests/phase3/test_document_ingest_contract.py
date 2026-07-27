@@ -7,7 +7,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ProcurementType, ProjectState
 from egp_worker.workflows import document_ingest as worker_document_ingest

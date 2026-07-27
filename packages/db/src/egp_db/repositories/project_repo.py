@@ -86,7 +86,7 @@ def create_project_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlProjectRepository:
     return SqlProjectRepository(
         database_url=database_url, engine=engine, bootstrap_schema=bootstrap_schema

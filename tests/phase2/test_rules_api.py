@@ -7,7 +7,7 @@ from sqlalchemy import text
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_shared_types.enums import DiscoveryFailureCode
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"

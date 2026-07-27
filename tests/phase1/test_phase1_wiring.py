@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from egp_db.repositories.document_repo import build_document_record
-from egp_db.repositories.project_repo import build_project_upsert_record
+from egp_db.repositories.project_repo import (
+    build_project_upsert_record,
+    create_project_repository,
+)
 from egp_shared_types.enums import (
     ClosedReason,
     DocumentPhase,
@@ -64,8 +67,14 @@ def test_evaluate_timeout_transition_wires_closure_rules_and_lifecycle() -> None
 
 
 def test_worker_document_ingest_wires_repository_backed_persistence(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'document_metadata.sqlite3'}"
+    create_project_repository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
     result = ingest_document_artifact(
         artifact_root=tmp_path,
+        database_url=database_url,
         tenant_id=TENANT_ID,
         project_id=PROJECT_ID,
         file_name="tor.pdf",

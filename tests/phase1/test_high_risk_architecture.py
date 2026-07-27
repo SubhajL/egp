@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import ast
+from importlib import import_module
+from inspect import signature
 from pathlib import Path
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from egp_api.main import create_app
+from egp_api.main import create_app as create_runtime_app
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
 from egp_db.repositories.project_repo import (
     PROJECTS_TABLE,
@@ -17,11 +20,34 @@ from egp_db.repositories.project_repo import (
 from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import ProcurementType, ProjectState
 from egp_worker.workflows.discover import run_discover_workflow
+from tests.support.app_factory import create_test_app as create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "99999999-9999-9999-9999-999999999999"
 JWT_SECRET = "phase1-test-secret"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+NO_DDL_FACTORY_TARGETS = (
+    ("egp_db.repositories.admin_repo", "create_admin_repository"),
+    ("egp_db.repositories.audit_repo", "create_audit_repository"),
+    ("egp_db.repositories.auth_repo", "create_auth_repository"),
+    ("egp_db.repositories.billing_repo", "create_billing_repository"),
+    ("egp_db.repositories.crawler_runtime_repo", "create_crawler_runtime_repository"),
+    ("egp_db.repositories.discovery_job_repo", "create_discovery_job_repository"),
+    (
+        "egp_db.repositories.document_capture_attempt_repo",
+        "create_document_capture_attempt_repository",
+    ),
+    ("egp_db.repositories.document_repo", "create_document_repository"),
+    ("egp_db.repositories.notification_repo", "create_notification_repository"),
+    ("egp_db.repositories.profile_repo", "create_profile_repository"),
+    ("egp_db.repositories.project_repo", "create_project_repository"),
+    ("egp_db.repositories.recrawl_request_repo", "create_recrawl_request_repository"),
+    ("egp_db.repositories.run_repo", "create_run_repository"),
+    (
+        "egp_db.repositories.tenant_entitlement_repo",
+        "create_tenant_entitlement_repository",
+    ),
+)
 
 
 class FakeS3Client:
@@ -52,7 +78,9 @@ def test_worker_boundary_imports_no_api_services() -> None:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("egp_api.services"):
-                        forbidden_imports.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+                        forbidden_imports.append(
+                            f"{path.relative_to(REPO_ROOT)}:{node.lineno}"
+                        )
 
     assert forbidden_imports == []
 
@@ -118,6 +146,60 @@ def test_create_app_shares_one_engine_across_repositories(tmp_path) -> None:
 
     assert app.state.project_repository._engine is app.state.run_repository._engine
     assert app.state.project_repository._engine is app.state.document_repository._engine
+
+
+def test_create_app_default_does_not_create_sqlite_schema(tmp_path) -> None:
+    database_path = tmp_path / "phase1-no-runtime-ddl.sqlite3"
+
+    create_runtime_app(
+        artifact_root=tmp_path,
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        auth_required=False,
+        background_runtime_mode="external",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert table_names == set()
+
+
+def test_create_app_explicit_test_bootstrap_creates_sqlite_schema(tmp_path) -> None:
+    database_path = tmp_path / "phase1-explicit-test-ddl.sqlite3"
+
+    create_runtime_app(
+        artifact_root=tmp_path,
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        auth_required=False,
+        background_runtime_mode="external",
+        bootstrap_schema=True,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+
+    assert "tenants" in table_names
+    assert "projects" in table_names
+
+
+@pytest.mark.parametrize(("module_name", "factory_name"), NO_DDL_FACTORY_TARGETS)
+def test_repository_factories_default_bootstrap_false(
+    module_name: str,
+    factory_name: str,
+) -> None:
+    factory = getattr(import_module(module_name), factory_name)
+
+    assert signature(factory).parameters["bootstrap_schema"].default is False
 
 
 def test_create_app_exposes_expected_bootstrap_state(tmp_path) -> None:

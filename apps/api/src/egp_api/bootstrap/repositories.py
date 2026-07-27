@@ -124,6 +124,7 @@ def build_repository_bundle(
     onedrive_oauth_config: OneDriveOAuthConfig | None,
     onedrive_client: object | None,
     internal_worker_token: str | None,
+    bootstrap_schema: bool = False,
 ) -> RepositoryBundle:
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(database_url, artifact_root=resolved_artifact_root)
@@ -161,19 +162,16 @@ def build_repository_bundle(
     session_cookie_max_age_seconds = get_session_cookie_max_age_seconds(None)
     session_cookie_secure = get_session_cookie_secure(None)
     session_cookie_samesite = get_session_cookie_samesite(None)
-    resolved_artifact_storage_backend = get_artifact_storage_backend(
-        artifact_storage_backend
-    )
+    resolved_artifact_storage_backend = get_artifact_storage_backend(artifact_storage_backend)
     resolved_artifact_bucket = get_artifact_bucket(artifact_bucket)
     resolved_artifact_prefix = get_artifact_prefix(artifact_prefix)
     resolved_supabase_url = get_supabase_url(supabase_url)
-    resolved_supabase_service_role_key = get_supabase_service_role_key(
-        supabase_service_role_key
-    )
+    resolved_supabase_service_role_key = get_supabase_service_role_key(supabase_service_role_key)
     shared_engine = create_shared_engine(resolved_database_url)
     admin_repository = create_admin_repository(
         database_url=resolved_database_url,
         engine=shared_engine,
+        bootstrap_schema=bootstrap_schema,
     )
     managed_artifact_store = create_artifact_store(
         storage_backend=resolved_artifact_storage_backend,
@@ -213,6 +211,7 @@ def build_repository_bundle(
         supabase_url=resolved_supabase_url,
         supabase_service_role_key=resolved_supabase_service_role_key,
         supabase_client=supabase_client,
+        bootstrap_schema=bootstrap_schema,
     )
     return RepositoryBundle(
         resolved_artifact_root=resolved_artifact_root,
@@ -240,47 +239,58 @@ def build_repository_bundle(
         document_capture_attempt_repository=create_document_capture_attempt_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         document_repository=document_repository,
         project_repository=create_project_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         billing_repository=create_billing_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         auth_repository=create_auth_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         audit_repository=create_audit_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         profile_repository=create_profile_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         run_repository=create_run_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         notification_repository=create_notification_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         discovery_job_repository=create_discovery_job_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         recrawl_request_repository=create_recrawl_request_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         tenant_entitlement_repository=create_tenant_entitlement_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         support_repository=create_support_repository(
             database_url=resolved_database_url,
@@ -289,10 +299,12 @@ def build_repository_bundle(
         line_payment_repository=create_line_payment_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         crawler_runtime_repository=create_crawler_runtime_repository(
             database_url=resolved_database_url,
             engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
         ),
         managed_artifact_store=managed_artifact_store,
     )

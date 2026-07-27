@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.payment_provider import (
     CreatedPaymentRequest,
     OpnProvider,

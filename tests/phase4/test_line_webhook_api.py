@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.line_slip_service import LineSlipService
 from egp_db.repositories.line_payment_repo import LinePaymentRepository
 

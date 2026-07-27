@@ -499,3 +499,159 @@ LOW
 - `(cd apps/web && npm run build)`: Next.js production build passed.
 - QCHECK and formal `g-check`: no findings; residual risk is the separately documented zero-step
   GitHub billing lock.
+
+## U1 merge and local landing (2026-07-27 07:50:15 +0700)
+
+- PR: `#178`, `https://github.com/SubhajL/egp/pull/178`.
+- Reviewed head: `3aaceea8a95ca5032d7cc086a3dbb38470bfa846`.
+- Required checks: all six failed with zero steps; exact annotation remained
+  `The job was not started because your account is locked due to a billing issue.`
+- Admin squash merge: `ae90f374b27a90ddc779848e6eb688151019f388`.
+- Primary checkout fast-forwarded without touching its three protected dirty files.
+- Verified local `main == origin/main == ae90f374b27a90ddc779848e6eb688151019f388`.
+- Exact merged-SHA post-merge gate:
+  `python -m pytest tests/phase1/test_internal_worker_auth.py tests/phase1/test_projects_and_runs_api.py tests/phase2/test_crawler_runtime.py -q`
+  returned `30 passed, 1 warning`; touched-file Ruff passed.
+- Disposition: U1 is landed. E0 and Gate S1 remain blocked independently.
+
+## Implementation (2026-07-27 08:04:58 +0700) - U2 migration-only API bootstrap
+
+### Goal
+
+Make checked-in migrations the only runtime schema authority. Repository factories and default API
+construction must emit no DDL, while SQLite tests retain a clearly named explicit bootstrap path.
+
+### What changed
+
+- `apps/api/src/egp_api/main.py`: added `bootstrap_schema: bool = False` and forwarded it into the
+  repository bundle.
+- `apps/api/src/egp_api/bootstrap/repositories.py`: threaded the explicit flag through every
+  DDL-capable API repository factory; runtime default remains false.
+- Thirteen repository factory modules: changed `bootstrap_schema` defaults from true to false.
+- `packages/db/src/egp_db/repositories/document_repo.py`: added an explicit false-default factory
+  parameter and removed automatic SQLite detection/DDL.
+- `tests/support/app_factory.py`: added `create_test_app()`, which explicitly opts SQLite API tests
+  into `bootstrap_schema=True` and leaves PostgreSQL tests migration-owned.
+- API test imports now use the named test adapter. Direct worker/repository tests explicitly create
+  their SQLite mapped schema at the test boundary.
+- `tests/phase1/test_high_risk_architecture.py`: added blank-database, explicit-test-bootstrap, and
+  fourteen-factory-default contracts.
+- `tests/phase1/test_migration_runner.py`: added a real temporary-PostgreSQL test that applies every
+  migration, constructs the API without repository bootstrap, and serves `/health`.
+
+### TDD evidence
+
+- RED command:
+  `python -m pytest tests/phase1/test_high_risk_architecture.py -k 'default_does_not_create_sqlite_schema or explicit_test_bootstrap_creates_sqlite_schema or repository_factories_default_bootstrap_false' -q`
+- RED result: `16 failed`; default app creation made 38 mapped tables, explicit bootstrap was not a
+  supported argument, thirteen factories defaulted true, and the document factory had no explicit
+  bootstrap parameter.
+- GREEN result for the same command: `16 passed, 10 deselected`.
+- PostgreSQL contract command:
+  `python -m pytest tests/phase1/test_high_risk_architecture.py tests/phase1/test_migration_runner.py::test_migrated_postgres_starts_without_repository_bootstrap -q`
+- PostgreSQL contract result: `27 passed`.
+
+### Regression discovery and remediation
+
+- First full run after removing implicit DDL: `14 failed, 1231 passed`.
+- The failures identified precisely the remaining test-only assumptions:
+  four direct worker-document cases, one Phase 1 wiring case, two close-check workflow cases, one
+  direct crawler-runtime repository case, and six immediate-discovery API cases whose grouped
+  product import had bypassed the test adapter.
+- After explicit test setup, `pytest --lf` returned `14 passed`.
+- Affected suite:
+  `pytest tests/phase1/test_high_risk_architecture.py tests/phase1/test_migration_runner.py tests/phase1/test_document_infrastructure.py tests/phase1/test_phase1_wiring.py tests/phase1/test_worker_workflows.py tests/phase2/test_crawler_runtime.py tests/phase2/test_immediate_discover.py -q`
+- Affected result: `93 passed, 36 warnings`, repeated successfully three consecutive times.
+- Final full result: `1245 passed, 112 warnings`.
+
+### Additional gates
+
+- `ruff check apps packages tests scripts`: passed.
+- `python -m compileall -q apps packages`: passed.
+- `apps/web npm run check:api-types`: generated schema/types current.
+- `apps/web npm run test:unit`: 12 files and 51 tests passed.
+- `apps/web npm run typecheck`: passed.
+- `apps/web npm run lint`: passed with no warnings or errors.
+- `apps/web npm run build`: production build passed.
+
+### Wiring verification
+
+| Component | Production call site | Registration/caller | Schema |
+|---|---|---|---|
+| Runtime no-DDL default | `uvicorn egp_api.main:create_app --factory` | `create_app()` to `build_repository_bundle()` | all mapped tables unchanged |
+| Repository factory defaults | API, workers, scripts | fourteen explicit `bootstrap_schema=False` defaults | shared `DB_METADATA` |
+| Explicit SQLite test setup | pytest API/direct worker tests | `tests.support.app_factory.create_test_app()` or explicit factory true | SQLite mapped schema only |
+| Migrated PostgreSQL startup | API construction after runner | `apply_migrations()` then `create_app()` | `schema_migrations` plus current tables |
+| Document repository factory | API and worker document ingest | explicit bootstrap argument, default false | documents and related tables |
+
+### Behavior and risk
+
+- Runtime app or repository construction no longer creates or repairs tables implicitly.
+- Blank, stale, or unmigrated databases now fail when real repository operations occur; U3 will
+  surface that state proactively through `/ready`.
+- Test-only SQLite bootstrap remains explicit and cannot be activated by a production environment
+  variable.
+- No SQL migration, table, column, route, response schema, or TypeScript contract changed.
+- Backout is a revert, but that would restore the confirmed out-of-ledger DDL defect.
+
+### Follow-ups
+
+- Perform QCHECK and formal `g-check`, then commit, submit, inspect zero-step CI, admin-merge, and
+  verify the exact landed SHA.
+- E0 and Gate S1 remain blocked by the billing lock.
+
+## Review (2026-07-27 08:08:42 +0700) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase1-u1`
+- Branch: `fix/migration-only-api-bootstrap`
+- Scope: staged U2 changes at base `ae90f374b27a90ddc779848e6eb688151019f388`
+- Commands Run: staged status/name/stat/patch inspection; DDL-capable factory and caller
+  inventories; remaining implicit-bootstrap search; focused RED/GREEN and PostgreSQL migration
+  contracts; affected suite three times; full Python suite; repository Ruff/compile; generated API
+  types; web unit/type/lint/build
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Assumption: `FilesystemDocumentRepository` remains an explicitly local compatibility wrapper.
+  Its constructor-owned SQLite schema creation is isolated from API/worker repository factories and
+  is the sole remaining product `bootstrap_schema=True` call.
+- Residual risk: a blank or stale database now fails on first real repository operation until U3
+  adds proactive readiness reporting.
+- Residual risk: GitHub required jobs still execute zero steps because of the account billing lock;
+  local gates cannot certify the remote runner or image-publish environment.
+
+### Recommended Tests / Validation
+
+- Keep both the blank-SQLite no-DDL test and the migrated-PostgreSQL startup test in required Python
+  gates.
+- Preserve the factory-default inventory so newly added DDL-capable factories must explicitly
+  remain migration-only.
+- Rerun real required GitHub checks when E0 is restored.
+
+### Rollout Notes
+
+- No migration or database object changed; this changes ownership of schema creation, not schema
+  shape.
+- API and worker deployments must run the checked-in migration runner before startup.
+- Formal disposition: no product-code findings require remediation. Proceed to commit and PR after
+  restaging this appended review artifact.

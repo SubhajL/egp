@@ -636,7 +636,7 @@ def create_document_capture_attempt_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlDocumentCaptureAttemptRepository:
     return SqlDocumentCaptureAttemptRepository(
         database_url=database_url,

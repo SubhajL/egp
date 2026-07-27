@@ -10,10 +10,11 @@ from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.admin_repo import create_admin_repository
+from egp_db.repositories.project_repo import create_project_repository
 from egp_db.storage_credentials import StorageCredentialCipher
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
 from egp_worker.browser_downloads import ingest_downloaded_documents
@@ -21,6 +22,13 @@ from egp_worker.workflows.document_ingest import ingest_document_artifact
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROJECT_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _bootstrap_sqlite_schema(database_url: str) -> None:
+    create_project_repository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
 
 
 class FakeS3Client:
@@ -417,6 +425,7 @@ def test_worker_document_ingest_uses_database_url_override(tmp_path) -> None:
     database_path = tmp_path / "worker.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
     artifact_root = tmp_path / "artifacts"
+    _bootstrap_sqlite_schema(database_url)
 
     result = ingest_document_artifact(
         database_url=database_url,
@@ -442,6 +451,7 @@ def test_ingest_downloaded_documents_persists_multiple_downloads(tmp_path) -> No
     database_path = tmp_path / "downloaded.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
     artifact_root = tmp_path / "artifacts"
+    _bootstrap_sqlite_schema(database_url)
 
     results = ingest_downloaded_documents(
         database_url=database_url,
@@ -526,6 +536,7 @@ def test_ingest_downloaded_documents_logs_start_and_success(tmp_path, caplog) ->
     database_path = tmp_path / "downloaded.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
     artifact_root = tmp_path / "artifacts"
+    _bootstrap_sqlite_schema(database_url)
     caplog.set_level(logging.INFO, logger="egp_worker.browser_downloads")
 
     results = ingest_downloaded_documents(
@@ -795,6 +806,7 @@ def test_worker_document_ingest_supports_supabase_storage_backend(tmp_path) -> N
     database_path = tmp_path / "worker.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
     client = FakeSupabaseClient()
+    _bootstrap_sqlite_schema(database_url)
 
     result = ingest_document_artifact(
         database_url=database_url,

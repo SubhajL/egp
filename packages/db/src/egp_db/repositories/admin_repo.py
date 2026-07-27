@@ -889,7 +889,7 @@ def create_admin_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlAdminRepository:
     return SqlAdminRepository(
         database_url=database_url,
