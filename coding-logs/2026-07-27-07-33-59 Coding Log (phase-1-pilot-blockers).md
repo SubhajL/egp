@@ -1473,3 +1473,89 @@ LOW
   Ruff lint/format; TypeScript; ESLint; `51` Vitest tests; clean production npm audit; no
   all-dependency critical finding; and webpack web image
   `sha256:e2aa179525163676c194c39989761b2e947847c5ee018b878025ba3e6021509d`.
+
+## 2026-07-27 11:13:23 +0700 — U5 Vercel output-mode correction
+
+- Replacement deployment `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf` at exact
+  `6e8789ec6970c4c2784c387d83149df4fbad684c` disproved the bundler hypothesis: Next 16.2.12
+  webpack also compiled, typechecked, prerendered, traced, and ran Vercel `onBuildComplete`, then
+  produced zero deployment outputs and ended `ERROR` without an error code/message.
+- The distinguishing boundary is deployment mode. The repo forced `output: "standalone"` for the
+  Docker image even when Vercel's Next 16 adapter owned serverless output packaging. Vercel does
+  not require standalone output; the self-hosted image does.
+- Corrected implementation:
+  `output: process.env.VERCEL ? undefined : "standalone"`. The ineffective webpack changes in
+  `package.json` and `vercel.json` are reverted.
+- TDD RED/GREEN: the release contract failed while the two build commands still selected webpack
+  and the config forced standalone. It now passes and asserts standard release commands plus the
+  Vercel/self-hosted output boundary.
+- Behavioral local proof:
+  a normal Next 16.2.12 build produced `.next/standalone/server.js`; a `VERCEL=1` build succeeded
+  without `.next/standalone`; TypeScript, ESLint, and `51` Vitest tests passed.
+- A third replacement preview remains mandatory before merge.
+- Focused Claude review found that implicit `VERCEL` detection could make a local Vercel CLI build
+  incompatible with the generic standalone `start` command. The final boundary is therefore
+  explicit: `npm run build` sets `EGP_BUILD_STANDALONE=true`, `npm run build:vercel` does not, and
+  `vercel.json` calls the latter. Local behavioral proof confirms the first build creates
+  `.next/standalone/server.js` and the Vercel build does not.
+
+## Review (2026-07-27 11:17:00 +0700) - final U5 Vercel output-mode fix
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged follow-up against
+  `6e8789ec6970c4c2784c387d83149df4fbad684c`
+- Commands Run: exact metadata and bounded logs for Vercel deployments
+  `dpl_DuQn1cMEzm7oRkzUx5St8NbmAHJj` and
+  `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf`; targeted staged diff; focused pytest;
+  explicit self-hosted and Vercel-mode Next builds; TypeScript; ESLint; Vitest; two focused Claude
+  read-only reviews
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No unresolved findings. Claude's first review correctly found that implicit `VERCEL` detection
+  made local Vercel CLI output ambiguous; the explicit `EGP_BUILD_STANDALONE` build split resolves
+  it. Claude's final suggestion to retain webpack is rejected by exact runtime evidence: deployment
+  `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf` used `next build --webpack`, reached
+  `onBuildComplete`, emitted zero outputs, and failed identically. Webpack is not the fix and should
+  not remain as an unexplained divergence.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Only the third Vercel preview can prove the adapter emits deployable output with standalone
+  disabled. Merge remains blocked until that preview passes.
+- `npm run build` is the self-hosted contract and must keep producing the server consumed by
+  `npm start` and the web Dockerfile. `npm run build:vercel` deliberately delegates output
+  packaging to Vercel.
+
+### Recommended Tests / Validation
+
+- Re-run focused contracts three times, frontend/browser checks, audits, and the Docker build on
+  the final explicit-mode tree.
+- Inspect the third preview's output count and require Vercel `READY`.
+
+### Rollout Notes
+
+- No production deployment is initiated by this preview fix.
+- Formal disposition: no unresolved local finding; external preview proof is the remaining merge
+  condition.
+- Final explicit-mode gates passed: release contracts `8 passed` three consecutive times; Ruff;
+  TypeScript; ESLint; `51` Vitest tests; critical Playwright `3 passed`; clean production npm
+  audit; no all-dependency critical finding; self-hosted and Vercel-mode Next builds; and web image
+  `sha256:87a2b764bb737dc66f8f88f6cb283694a07ff6d2d19a57f5844b416776a90b3a`.

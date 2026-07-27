@@ -198,14 +198,21 @@ def test_next_type_declarations_do_not_capture_playwright_dist_dir() -> None:
     assert ".next-playwright" not in next_env
 
 
-def test_next_16_release_build_uses_vercel_compatible_webpack() -> None:
+def test_next_16_release_build_separates_vercel_and_docker_output_modes() -> None:
     package_config = json.loads(
         (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
     )
     vercel_config = json.loads(
         (REPO_ROOT / "apps/web/vercel.json").read_text(encoding="utf-8")
     )
-    release_build = "rm -rf .next && next build --webpack"
+    next_config = (REPO_ROOT / "apps/web/next.config.mjs").read_text(encoding="utf-8")
+    standalone_build = "rm -rf .next && EGP_BUILD_STANDALONE=true next build"
+    vercel_build = "rm -rf .next && next build"
 
-    assert package_config["scripts"]["build"] == release_build
-    assert vercel_config["buildCommand"] == release_build
+    assert package_config["scripts"]["build"] == standalone_build
+    assert package_config["scripts"]["build:vercel"] == vercel_build
+    assert vercel_config["buildCommand"] == "npm run build:vercel"
+    assert (
+        'process.env.EGP_BUILD_STANDALONE === "true" ? "standalone" : undefined'
+        in next_config
+    )
