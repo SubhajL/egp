@@ -1437,18 +1437,21 @@ def _detail_page_is_invalid(page, detail: dict[str, str]) -> bool:
 
 def _find_bundled_chromium() -> str | None:
     """Locate the Playwright-bundled Chromium binary, if installed."""
-    cache = Path.home() / ".cache" / "ms-playwright"
-    if not cache.is_dir():
-        return None
+    configured_root = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    caches = [Path(configured_root)] if configured_root else []
+    caches.append(Path.home() / ".cache" / "ms-playwright")
     patterns = (
         "chromium-*/chrome-linux64/chrome",
         "chromium-*/chrome-linux/chrome",
         "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
     )
-    for pattern in patterns:
-        for candidate in sorted(cache.glob(pattern)):
-            if candidate.exists():
-                return str(candidate)
+    for cache in caches:
+        if not cache.is_dir():
+            continue
+        for pattern in patterns:
+            for candidate in sorted(cache.glob(pattern)):
+                if candidate.exists():
+                    return str(candidate)
     return None
 
 

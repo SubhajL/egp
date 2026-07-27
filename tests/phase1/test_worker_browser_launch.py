@@ -71,6 +71,23 @@ def test_resolve_chrome_binary_falls_back_to_bundled_when_configured_missing(
     assert resolved == str(bundled)
 
 
+def test_resolve_chrome_binary_honors_playwright_browser_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("EGP_BROWSER_CHROME_PATH", raising=False)
+    browser_root = tmp_path / "ms-playwright"
+    bundled = browser_root / "chromium-1228" / "chrome-linux" / "chrome"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
+    monkeypatch.setenv("HOME", str(tmp_path / "unrelated-home"))
+
+    resolved = resolve_chrome_binary("/definitely/not/here/Google Chrome")
+
+    assert resolved == str(bundled)
+
+
 def test_build_launch_command_default_matches_existing_args() -> None:
     settings = replace(
         BrowserDiscoverySettings(), cdp_port=9222, browser_profile_dir=Path("/p")
