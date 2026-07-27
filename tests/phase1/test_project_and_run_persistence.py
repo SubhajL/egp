@@ -133,7 +133,9 @@ def test_list_projects_is_tenant_scoped_and_returns_newest_first(tmp_path) -> No
     assert project_page.total == 2
 
 
-def test_list_projects_can_filter_to_invitation_stage_document_evidence(tmp_path) -> None:
+def test_list_projects_can_filter_to_invitation_stage_document_evidence(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "phase1.sqlite3"
     database_url = f"sqlite+pysqlite:///{database_path}"
     project_repository = SqlProjectRepository(
@@ -517,8 +519,14 @@ def test_run_repository_tracks_canonical_activity_across_lifecycle(
     )
     finished = repository.mark_run_finished(created.id, status="succeeded")
 
-    assert datetime.fromisoformat(created.last_activity_at).replace(tzinfo=UTC) == created_at
-    assert datetime.fromisoformat(started.last_activity_at).replace(tzinfo=UTC) == started_at
+    assert (
+        datetime.fromisoformat(created.last_activity_at).replace(tzinfo=UTC)
+        == created_at
+    )
+    assert (
+        datetime.fromisoformat(started.last_activity_at).replace(tzinfo=UTC)
+        == started_at
+    )
     assert (
         datetime.fromisoformat(progressed.last_activity_at).replace(tzinfo=UTC)
         == progress_at
@@ -579,10 +587,13 @@ def test_task_lifecycle_refreshes_parent_run_activity(
         datetime.fromisoformat(after_finish.last_activity_at).replace(tzinfo=UTC)
         == task_finished_at
     )
-    assert repository.count_active_runs(
-        tenant_id=TENANT_ID,
-        stale_after_seconds=3 * 60 * 60,
-    ) == 1
+    assert (
+        repository.count_active_runs(
+            tenant_id=TENANT_ID,
+            stale_after_seconds=3 * 60 * 60,
+        )
+        == 1
+    )
 
 
 def test_run_repository_fails_running_runs_started_since(tmp_path) -> None:

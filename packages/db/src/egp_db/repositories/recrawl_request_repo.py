@@ -231,8 +231,7 @@ class SqlRecrawlRequestRepository:
                 existing_request_id = connection.execute(
                     select(RECRAWL_REQUESTS_TABLE.c.id).where(
                         and_(
-                            RECRAWL_REQUESTS_TABLE.c.tenant_id
-                            == normalized_tenant_id,
+                            RECRAWL_REQUESTS_TABLE.c.tenant_id == normalized_tenant_id,
                             RECRAWL_REQUESTS_TABLE.c.idempotency_key
                             == normalized_idempotency_key,
                         )
@@ -269,7 +268,9 @@ class SqlRecrawlRequestRepository:
                     .first()
                 )
                 if row is not None:
-                    existing_by_key[(desired.profile_id, desired.keyword.casefold())] = row
+                    existing_by_key[
+                        (desired.profile_id, desired.keyword.casefold())
+                    ] = row
 
             if reject_existing_pending and existing_by_key:
                 pending_ids = sorted(str(row["id"]) for row in existing_by_key.values())
@@ -282,19 +283,23 @@ class SqlRecrawlRequestRepository:
                     (desired.profile_id, desired.keyword.casefold())
                     for desired in desired_jobs
                 }
-                pending_rows = connection.execute(
-                    select(DISCOVERY_JOBS_TABLE).where(
-                        and_(
-                            DISCOVERY_JOBS_TABLE.c.tenant_id
-                            == normalized_tenant_id,
-                            DISCOVERY_JOBS_TABLE.c.profile_id.in_(
-                                {desired.profile_id for desired in desired_jobs}
-                            ),
-                            DISCOVERY_JOBS_TABLE.c.live.is_(True),
-                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                pending_rows = (
+                    connection.execute(
+                        select(DISCOVERY_JOBS_TABLE).where(
+                            and_(
+                                DISCOVERY_JOBS_TABLE.c.tenant_id
+                                == normalized_tenant_id,
+                                DISCOVERY_JOBS_TABLE.c.profile_id.in_(
+                                    {desired.profile_id for desired in desired_jobs}
+                                ),
+                                DISCOVERY_JOBS_TABLE.c.live.is_(True),
+                                DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                            )
                         )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
                 matching_pending_ids = sorted(
                     str(row["id"])
                     for row in pending_rows
@@ -329,8 +334,7 @@ class SqlRecrawlRequestRepository:
                             and_(
                                 DISCOVERY_JOBS_TABLE.c.tenant_id
                                 == normalized_tenant_id,
-                                DISCOVERY_JOBS_TABLE.c.recrawl_request_id
-                                == request_id,
+                                DISCOVERY_JOBS_TABLE.c.recrawl_request_id == request_id,
                             )
                         )
                     )
@@ -430,8 +434,7 @@ class SqlRecrawlRequestRepository:
                 connection.execute(
                     select(RECRAWL_REQUESTS_TABLE).where(
                         and_(
-                            RECRAWL_REQUESTS_TABLE.c.tenant_id
-                            == normalized_tenant_id,
+                            RECRAWL_REQUESTS_TABLE.c.tenant_id == normalized_tenant_id,
                             RECRAWL_REQUESTS_TABLE.c.id == normalized_request_id,
                         )
                     )
@@ -451,7 +454,9 @@ class SqlRecrawlRequestRepository:
                             == normalized_request_id,
                         )
                     )
-                    .order_by(DISCOVERY_JOBS_TABLE.c.created_at, DISCOVERY_JOBS_TABLE.c.id)
+                    .order_by(
+                        DISCOVERY_JOBS_TABLE.c.created_at, DISCOVERY_JOBS_TABLE.c.id
+                    )
                 )
                 .mappings()
                 .all()
@@ -527,14 +532,14 @@ class SqlRecrawlRequestRepository:
                         else None
                     ),
                     last_error=(
-                        str(job["last_error"]) if job["last_error"] is not None else None
+                        str(job["last_error"])
+                        if job["last_error"] is not None
+                        else None
                     ),
                     next_attempt_at=_to_iso(job["next_attempt_at"]) or "",
                     processing_started_at=_to_iso(job["processing_started_at"]),
                     dispatched_at=_to_iso(job["dispatched_at"]),
-                    run_id=(
-                        str(latest_run["id"]) if latest_run is not None else None
-                    ),
+                    run_id=(str(latest_run["id"]) if latest_run is not None else None),
                     run_status=(
                         str(latest_run["status"]) if latest_run is not None else None
                     ),
@@ -555,8 +560,7 @@ class SqlRecrawlRequestRepository:
         correlation_matches = len(job_rows) == requested_count and all(
             row["recrawl_request_id"] is not None
             and str(row["recrawl_request_id"]) == normalized_request_id
-            and
-            row["discovery_job_id"] is not None
+            and row["discovery_job_id"] is not None
             and str(row["discovery_job_id"]) in job_ids
             for row in run_rows
         )

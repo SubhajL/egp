@@ -277,7 +277,7 @@ test("redirects unauthenticated protected pages to login", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "เข้าสู่ระบบ" })).toBeVisible();
 });
 
-test("login submits tenant credentials and MFA code", async ({ page }) => {
+test("login submits tenant credentials and MFA code @critical", async ({ page }) => {
   let loginPayload: unknown;
   await mockApi(page, {
     onLogin: (payload) => {

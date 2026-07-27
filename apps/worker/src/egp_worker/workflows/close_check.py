@@ -193,9 +193,7 @@ def run_close_check_workflow(
                     )
                     updated_projects.append(project)
                     continue
-                closed_reason = check_winner_closure(
-                    source_status_text
-                )
+                closed_reason = check_winner_closure(source_status_text)
                 if closed_reason is None:
                     result_json: dict[str, object] = {"matched": False}
                     if downloaded_documents:

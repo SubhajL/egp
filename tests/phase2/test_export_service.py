@@ -272,7 +272,9 @@ def _exported_project_numbers(excel_bytes: bytes) -> list[str]:
     return values
 
 
-def test_export_to_excel_derives_legacy_state_columns_from_db_and_documents(tmp_path) -> None:
+def test_export_to_excel_derives_legacy_state_columns_from_db_and_documents(
+    tmp_path,
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'export-legacy.sqlite3'}"
     repo = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
     document_repo = FilesystemDocumentRepository(tmp_path / "artifacts")
@@ -316,7 +318,10 @@ def test_export_to_excel_derives_legacy_state_columns_from_db_and_documents(tmp_
     assert worksheet.cell(row=2, column=10).value == "ระบบสุขภาพดิจิทัล"
     assert worksheet.cell(row=2, column=11).value == ProjectState.WINNER_ANNOUNCED.value
     assert worksheet.cell(row=2, column=12).value == ClosedReason.WINNER_ANNOUNCED.value
-    assert worksheet.cell(row=2, column=13).value == ArtifactBucket.FINAL_TOR_DOWNLOADED.value
+    assert (
+        worksheet.cell(row=2, column=13).value
+        == ArtifactBucket.FINAL_TOR_DOWNLOADED.value
+    )
 
 
 def test_export_route_matches_explorer_filter_contract(tmp_path) -> None:

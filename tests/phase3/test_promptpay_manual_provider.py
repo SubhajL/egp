@@ -53,7 +53,9 @@ def test_enum_has_promptpay_manual_value() -> None:
 
 
 def test_create_request_builds_valid_emvco_payload_from_proxy_and_reference() -> None:
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     created = provider.create_payment_request(request=_request_template())
     assert isinstance(created, CreatedPaymentRequest)
     assert created.provider is BillingPaymentProvider.PROMPTPAY_MANUAL
@@ -69,7 +71,9 @@ def test_create_request_builds_valid_emvco_payload_from_proxy_and_reference() ->
 
 
 def test_create_request_provider_reference_is_unique_per_call() -> None:
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     first = provider.create_payment_request(request=_request_template())
     second = provider.create_payment_request(request=_request_template())
     assert first.provider_reference != second.provider_reference
@@ -77,7 +81,9 @@ def test_create_request_provider_reference_is_unique_per_call() -> None:
 
 
 def test_create_request_rejects_non_promptpay_method() -> None:
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     with pytest.raises(ValueError):
         provider.create_payment_request(
             request=_request_template(method=BillingPaymentMethod.CARD)
@@ -85,13 +91,17 @@ def test_create_request_rejects_non_promptpay_method() -> None:
 
 
 def test_create_request_rejects_non_thb_currency() -> None:
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     with pytest.raises(ValueError):
         provider.create_payment_request(request=_request_template(currency="USD"))
 
 
 def test_create_request_rejects_wrong_provider() -> None:
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     bad = ProviderPaymentRequest(
         provider=BillingPaymentProvider.STRIPE,
         payment_method=BillingPaymentMethod.PROMPTPAY_QR,
@@ -109,7 +119,9 @@ def test_create_request_rejects_wrong_provider() -> None:
 def test_parse_callback_fails_closed_no_provider_webhook() -> None:
     # Manual PromptPay has no acquirer; a provider callback must never settle
     # a request. Settlement only happens via admin slip verification.
-    provider = PromptpayManualProvider(base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID)
+    provider = PromptpayManualProvider(
+        base_url="https://api.example.com", promptpay_proxy_id=PROXY_ID
+    )
     with pytest.raises(ValueError):
         provider.parse_callback(
             payload={

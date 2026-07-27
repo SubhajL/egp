@@ -56,10 +56,14 @@ def _make_record(billing, *, tenant_id: str, record_number: str) -> str:
 
 def test_create_slip_is_idempotent_by_message_id(repo) -> None:
     first, created_first = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-1", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-1",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     second, created_second = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-1", received_at="2026-05-29T10:05:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-1",
+        received_at="2026-05-29T10:05:00+00:00",
     )
     assert created_first is True
     assert created_second is False
@@ -100,7 +104,9 @@ def test_latest_context_ignores_expired(repo) -> None:
 def test_match_slip_sets_tenant_and_record(repo, billing) -> None:
     record_id = _make_record(billing, tenant_id=TENANT_A, record_number="INV-2026-0100")
     slip, _ = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-2", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-2",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     matched = repo.match_slip(
         slip_id=slip.id,
@@ -115,7 +121,9 @@ def test_match_slip_sets_tenant_and_record(repo, billing) -> None:
 
 def test_attach_image_stores_object_key_and_hash(repo) -> None:
     slip, _ = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-3", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-3",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     updated = repo.attach_image(
         slip_id=slip.id,
@@ -129,7 +137,9 @@ def test_attach_image_stores_object_key_and_hash(repo) -> None:
 
 def test_mark_verified_and_rejected_transitions(repo) -> None:
     slip, _ = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-4", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-4",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     verified = repo.mark_verified(
         slip_id=slip.id, verified_by_user_id=TENANT_B, notes="looks good"
@@ -138,15 +148,27 @@ def test_mark_verified_and_rejected_transitions(repo) -> None:
     assert verified.verified_at is not None
 
     other, _ = repo.create_slip(
-        line_user_id="Uabc", line_message_id="msg-5", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uabc",
+        line_message_id="msg-5",
+        received_at="2026-05-29T10:00:00+00:00",
     )
-    rejected = repo.mark_rejected(slip_id=other.id, verified_by_user_id=TENANT_B, notes="blurry")
+    rejected = repo.mark_rejected(
+        slip_id=other.id, verified_by_user_id=TENANT_B, notes="blurry"
+    )
     assert rejected.verification_status == "rejected"
 
 
 def test_list_slips_filters_by_status(repo) -> None:
-    a, _ = repo.create_slip(line_user_id="U1", line_message_id="m-a", received_at="2026-05-29T10:00:00+00:00")
-    b, _ = repo.create_slip(line_user_id="U2", line_message_id="m-b", received_at="2026-05-29T11:00:00+00:00")
+    a, _ = repo.create_slip(
+        line_user_id="U1",
+        line_message_id="m-a",
+        received_at="2026-05-29T10:00:00+00:00",
+    )
+    b, _ = repo.create_slip(
+        line_user_id="U2",
+        line_message_id="m-b",
+        received_at="2026-05-29T11:00:00+00:00",
+    )
     repo.mark_verified(slip_id=b.id, verified_by_user_id=TENANT_B, notes=None)
     pending = repo.list_slips(status="pending")
     assert [s.id for s in pending] == [a.id]
@@ -197,7 +219,9 @@ def test_find_billing_records_by_number_is_status_agnostic(billing) -> None:
 
 def test_claim_settle_finalize_lifecycle(repo) -> None:
     slip, _ = repo.create_slip(
-        line_user_id="Uc", line_message_id="claim-1", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uc",
+        line_message_id="claim-1",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     repo.match_slip(
         slip_id=slip.id,
@@ -213,7 +237,9 @@ def test_claim_settle_finalize_lifecycle(repo) -> None:
 
     # A pending (unmatched) slip is not claimable.
     other, _ = repo.create_slip(
-        line_user_id="Uc", line_message_id="claim-2", received_at="2026-05-29T10:00:00+00:00"
+        line_user_id="Uc",
+        line_message_id="claim-2",
+        received_at="2026-05-29T10:00:00+00:00",
     )
     assert repo.claim_slip_for_verification(slip_id=other.id) is False
 
@@ -223,13 +249,19 @@ def test_claim_settle_finalize_lifecycle(repo) -> None:
 
     # Claim again, then finalize only after settlement -> verified.
     assert repo.claim_slip_for_verification(slip_id=slip.id) is True
-    final = repo.finalize_verification(slip_id=slip.id, verified_by_user_id=None, notes="ok")
+    final = repo.finalize_verification(
+        slip_id=slip.id, verified_by_user_id=None, notes="ok"
+    )
     assert final.verification_status == "verified"
 
 
 def test_admin_subscribers_add_and_list(repo) -> None:
-    repo.add_admin_subscriber(line_user_id="Uadmin", tenant_id=None, display_name="Owner")
-    repo.add_admin_subscriber(line_user_id="Uadmin", tenant_id=None, display_name="Owner-dup")
+    repo.add_admin_subscriber(
+        line_user_id="Uadmin", tenant_id=None, display_name="Owner"
+    )
+    repo.add_admin_subscriber(
+        line_user_id="Uadmin", tenant_id=None, display_name="Owner-dup"
+    )
     subs = repo.list_admin_subscribers()
     assert [s.line_user_id for s in subs] == ["Uadmin"]
 

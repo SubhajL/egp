@@ -573,7 +573,9 @@ async function mockBillingApp(
   };
 }
 
-test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR", async ({ page }) => {
+test("billing page shows free-trial upgrade CTA and auto-creates PromptPay QR @critical", async ({
+  page,
+}) => {
   const mocks = await mockBillingApp(page, "free_trial");
 
   await page.goto("/billing");

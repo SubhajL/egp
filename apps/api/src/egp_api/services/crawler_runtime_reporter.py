@@ -49,9 +49,7 @@ class CrawlerRuntimeReporter:
             "watcher_status": watcher_status,
             "database_status": database_status,
             "blocker_code": (
-                CrawlerBlockerCode(blocker_code).value
-                if blocker_code is not None
-                else None
+                CrawlerBlockerCode(blocker_code).value if blocker_code is not None else None
             ),
             "profile_status": profile_status,
             "circuit_state": circuit_state,
@@ -70,10 +68,7 @@ class CrawlerRuntimeReporter:
             if (
                 not force
                 and within_minimum_interval
-                and (
-                    payload == self._last_payload
-                    or not self._last_delivery_succeeded
-                )
+                and (payload == self._last_payload or not self._last_delivery_succeeded)
             ):
                 return self._last_delivery_succeeded
             # Rate-limit attempts, not only successes. A broken control plane
@@ -116,7 +111,6 @@ def build_crawler_runtime_reporter_from_env() -> CrawlerRuntimeReporter | None:
     return CrawlerRuntimeReporter(
         base_url=base_url,
         worker_token=worker_token,
-        agent_id=os.getenv("EGP_CRAWLER_AGENT_ID", "crawler-agent").strip()
-        or "crawler-agent",
+        agent_id=os.getenv("EGP_CRAWLER_AGENT_ID", "crawler-agent").strip() or "crawler-agent",
         minimum_interval_seconds=get_crawler_heartbeat_interval_seconds(),
     )

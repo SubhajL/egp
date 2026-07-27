@@ -16,7 +16,9 @@ def test_extract_expected_project_number_prefers_egp_number_over_list_prefix() -
     assert extract_expected_project_number("3") is None
 
 
-def test_load_expected_project_numbers_dedupes_and_tracks_ignored_lines(tmp_path) -> None:
+def test_load_expected_project_numbers_dedupes_and_tracks_ignored_lines(
+    tmp_path,
+) -> None:
     expected_file = tmp_path / "expected.txt"
     expected_file.write_text(
         "\n".join(

@@ -129,9 +129,7 @@ class DiscoveryDispatchBatchResult:
     dispositions: tuple[DiscoveryJobDispatchDisposition, ...]
     blocker: CrawlerBlockerCode | None = None
     circuit_reset_at: str | None = None
-    queue_snapshot: DiscoveryQueueSnapshot = field(
-        default_factory=DiscoveryQueueSnapshot.empty
-    )
+    queue_snapshot: DiscoveryQueueSnapshot = field(default_factory=DiscoveryQueueSnapshot.empty)
 
     @property
     def processed_count(self) -> int:
@@ -161,9 +159,7 @@ class DiscoveryJobLeaseKeeper:
 
     def __enter__(self) -> DiscoveryJobLeaseKeeper:
         if not self._job.claim_token or self._lease_deadline is None:
-            raise StaleDiscoveryJobClaimError(
-                f"discovery job {self._job.id} has no valid lease"
-            )
+            raise StaleDiscoveryJobClaimError(f"discovery job {self._job.id} has no valid lease")
         self._thread = threading.Thread(
             target=self._renew_loop,
             daemon=True,
@@ -316,9 +312,7 @@ class DiscoveryDispatchProcessor:
             if not jobs:
                 break
             processed_job_ids.update(job.id for job in jobs)
-            dispositions.extend(
-                self._process_claimed_jobs(jobs=jobs, worker_count=worker_count)
-            )
+            dispositions.extend(self._process_claimed_jobs(jobs=jobs, worker_count=worker_count))
             if len(jobs) < batch_limit:
                 break
         return DiscoveryDispatchBatchResult(

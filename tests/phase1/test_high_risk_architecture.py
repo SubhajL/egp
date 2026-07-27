@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from egp_api.main import create_app as create_runtime_app
 from egp_api.config import get_jwt_secret
@@ -25,7 +25,7 @@ from tests.support.app_factory import create_test_app as create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "99999999-9999-9999-9999-999999999999"
-JWT_SECRET = "phase1-test-secret"
+JWT_SECRET = "phase1-test-secret-at-least-32-bytes"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NO_DDL_FACTORY_TARGETS = (
     ("egp_db.repositories.admin_repo", "create_admin_repository"),

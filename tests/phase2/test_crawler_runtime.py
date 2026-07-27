@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.crawler_runtime_reporter import CrawlerRuntimeReporter
@@ -19,7 +19,7 @@ def _auth_headers(*, role: str) -> dict[str, str]:
             "tenant_id": "11111111-1111-1111-1111-111111111111",
             "role": role,
         },
-        "runtime-jwt-secret",
+        "runtime-jwt-secret-at-least-32-bytes",
         algorithm="HS256",
     )
     return {"Authorization": f"Bearer {token}"}
@@ -106,7 +106,7 @@ def test_runtime_status_requires_run_operator_role(tmp_path) -> None:
             artifact_root=tmp_path,
             database_url=f"sqlite+pysqlite:///{tmp_path / 'runtime-role.sqlite3'}",
             auth_required=True,
-            jwt_secret="runtime-jwt-secret",
+            jwt_secret="runtime-jwt-secret-at-least-32-bytes",
             background_runtime_mode="embedded",
         )
     )
@@ -240,19 +240,25 @@ def test_reporter_rate_limits_changed_payloads_after_delivery_failure() -> None:
         minimum_interval_seconds=30,
     )
 
-    assert reporter.report(
-        watcher_status="running",
-        database_status="connected",
-        profile_status="ready",
-        circuit_state="closed",
-    ) is False
-    assert reporter.report(
-        watcher_status="running",
-        database_status="connected",
-        blocker_code=CrawlerBlockerCode.CIRCUIT_OPEN,
-        profile_status="ready",
-        circuit_state="open",
-    ) is False
+    assert (
+        reporter.report(
+            watcher_status="running",
+            database_status="connected",
+            profile_status="ready",
+            circuit_state="closed",
+        )
+        is False
+    )
+    assert (
+        reporter.report(
+            watcher_status="running",
+            database_status="connected",
+            blocker_code=CrawlerBlockerCode.CIRCUIT_OPEN,
+            profile_status="ready",
+            circuit_state="open",
+        )
+        is False
+    )
     assert client.call_count == 1
 
 

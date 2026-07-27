@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from fastapi import HTTPException, Request
-from jose import JWTError, jwt
+import jwt
 
 from egp_db.db_utils import normalize_uuid_string
 
@@ -68,7 +68,7 @@ def authenticate_bearer_request(
             algorithms=["HS256"],
             options={"verify_aud": False},
         )
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="invalid bearer token") from exc
 
     subject = str(claims.get("sub") or "").strip()

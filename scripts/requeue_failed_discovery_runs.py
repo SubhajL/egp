@@ -101,10 +101,7 @@ def _idempotency_key(
     payload = {
         "tenant_id": tenant_id,
         "source_run_ids": sorted(source.run_id for source in sources),
-        "jobs": sorted(
-            (job.profile_id, job.keyword.casefold())
-            for job in jobs
-        ),
+        "jobs": sorted((job.profile_id, job.keyword.casefold()) for job in jobs),
     }
     digest = sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -130,13 +127,19 @@ def build_recovery_plan(
 
     engine = create_shared_engine(database_url)
     with engine.connect() as connection:
-        run_rows = connection.execute(
-            select(CRAWL_RUNS_TABLE).where(
-                CRAWL_RUNS_TABLE.c.id.in_(normalized_run_ids)
+        run_rows = (
+            connection.execute(
+                select(CRAWL_RUNS_TABLE).where(
+                    CRAWL_RUNS_TABLE.c.id.in_(normalized_run_ids)
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         runs_by_id = {str(row["id"]): row for row in run_rows}
-        missing_ids = [run_id for run_id in normalized_run_ids if run_id not in runs_by_id]
+        missing_ids = [
+            run_id for run_id in normalized_run_ids if run_id not in runs_by_id
+        ]
         if missing_ids:
             raise RecoveryValidationError(
                 "source runs not found: " + ", ".join(missing_ids)
@@ -146,7 +149,9 @@ def build_recovery_plan(
         for run_id in normalized_run_ids:
             row = runs_by_id[run_id]
             if str(row["tenant_id"]) != normalized_tenant_id:
-                raise RecoveryValidationError(f"source run {run_id} belongs to another tenant")
+                raise RecoveryValidationError(
+                    f"source run {run_id} belongs to another tenant"
+                )
             if str(row["status"]) != "failed" or str(row["trigger_type"]) != "manual":
                 raise RecoveryValidationError(
                     f"source run {run_id} must be a failed manual run"
@@ -155,20 +160,28 @@ def build_recovery_plan(
                 raise RecoveryValidationError(f"source run {run_id} has no profile")
             profile_ids.append(str(row["profile_id"]))
 
-        profile_rows = connection.execute(
-            select(CRAWL_PROFILES_TABLE).where(
-                CRAWL_PROFILES_TABLE.c.id.in_(set(profile_ids))
-            )
-        ).mappings().all()
-        profiles_by_id = {str(row["id"]): row for row in profile_rows}
-        task_rows = connection.execute(
-            select(CRAWL_TASKS_TABLE).where(
-                and_(
-                    CRAWL_TASKS_TABLE.c.run_id.in_(normalized_run_ids),
-                    CRAWL_TASKS_TABLE.c.task_type == "discover",
+        profile_rows = (
+            connection.execute(
+                select(CRAWL_PROFILES_TABLE).where(
+                    CRAWL_PROFILES_TABLE.c.id.in_(set(profile_ids))
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
+        profiles_by_id = {str(row["id"]): row for row in profile_rows}
+        task_rows = (
+            connection.execute(
+                select(CRAWL_TASKS_TABLE).where(
+                    and_(
+                        CRAWL_TASKS_TABLE.c.run_id.in_(normalized_run_ids),
+                        CRAWL_TASKS_TABLE.c.task_type == "discover",
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
         tasks_by_run: dict[str, list] = {}
         for row in task_rows:
             tasks_by_run.setdefault(str(row["run_id"]), []).append(row)
@@ -183,9 +196,7 @@ def build_recovery_plan(
                     f"source run {run_id} profile is not resolvable for tenant"
                 )
             if not bool(profile["enabled_by_user"]) or not bool(profile["is_active"]):
-                raise RecoveryValidationError(
-                    f"source run {run_id} profile is paused"
-                )
+                raise RecoveryValidationError(f"source run {run_id} profile is paused")
             run_tasks = tasks_by_run.get(run_id, [])
             if len(run_tasks) != 1:
                 raise RecoveryValidationError(
@@ -234,16 +245,20 @@ def build_recovery_plan(
             )
 
         target_profile_ids = {job.profile_id for job in jobs}
-        pending_rows = connection.execute(
-            select(DISCOVERY_JOBS_TABLE).where(
-                and_(
-                    DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
-                    DISCOVERY_JOBS_TABLE.c.profile_id.in_(target_profile_ids),
-                    DISCOVERY_JOBS_TABLE.c.live.is_(True),
-                    DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+        pending_rows = (
+            connection.execute(
+                select(DISCOVERY_JOBS_TABLE).where(
+                    and_(
+                        DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                        DISCOVERY_JOBS_TABLE.c.profile_id.in_(target_profile_ids),
+                        DISCOVERY_JOBS_TABLE.c.live.is_(True),
+                        DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                    )
                 )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     target_keys = {(job.profile_id, job.keyword.casefold()) for job in jobs}
     conflicts = [

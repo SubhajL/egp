@@ -136,9 +136,7 @@ def _seed_profile(
     tenant_id: str = TENANT_ID,
     enabled_by_user: bool | None = None,
 ) -> None:
-    resolved_enabled_by_user = (
-        is_active if enabled_by_user is None else enabled_by_user
-    )
+    resolved_enabled_by_user = is_active if enabled_by_user is None else enabled_by_user
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
             text(
@@ -368,7 +366,9 @@ def test_user_paused_group_stays_paused_after_reinstatement(tmp_path) -> None:
     assert body["profiles"][0]["status_reason"] is None
 
 
-def test_free_trial_snapshot_limits_exports_downloads_and_notifications(tmp_path) -> None:
+def test_free_trial_snapshot_limits_exports_downloads_and_notifications(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     _seed_subscription(
@@ -450,7 +450,9 @@ def test_one_time_cycle_excludes_old_groups_without_mutation(tmp_path) -> None:
     assert tuple(stored_state) == (True, True)
 
 
-def test_future_one_time_renewal_does_not_retire_current_cycle_profile(tmp_path) -> None:
+def test_future_one_time_renewal_does_not_retire_current_cycle_profile(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     _seed_subscription(
@@ -583,7 +585,9 @@ def test_expired_one_time_pack_falls_back_to_free_trial_with_archive_access(
     assert body["profiles"][0]["status_reason"] == "outside_current_plan_cycle"
 
 
-def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(tmp_path) -> None:
+def test_cancelled_replaced_subscription_does_not_win_entitlement_selection(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     _seed_subscription(
@@ -640,7 +644,9 @@ def test_run_creation_requires_keyword_in_current_cycle(tmp_path) -> None:
     )
 
     assert response.status_code == 403
-    assert response.json()["detail"] == "at least one active keyword is required for runs"
+    assert (
+        response.json()["detail"] == "at least one active keyword is required for runs"
+    )
 
 
 def test_discover_task_keyword_must_be_entitled(tmp_path) -> None:
@@ -716,12 +722,12 @@ def test_over_limit_profiles_block_new_discover_tasks(tmp_path) -> None:
     assert rules_body["entitlements"]["enabled_keyword_count"] == 6
     assert rules_body["entitlements"]["runnable_keyword_count"] == 0
     assert rules_body["entitlements"]["runnable_keywords"] == []
-    assert {
-        profile["effective_status"] for profile in rules_body["profiles"]
-    } == {"blocked_quota"}
-    assert {
-        profile["status_reason"] for profile in rules_body["profiles"]
-    } == {"keyword_limit_exceeded"}
+    assert {profile["effective_status"] for profile in rules_body["profiles"]} == {
+        "blocked_quota"
+    }
+    assert {profile["status_reason"] for profile in rules_body["profiles"]} == {
+        "keyword_limit_exceeded"
+    }
 
     created = client.post(
         "/v1/runs",
@@ -750,7 +756,9 @@ def test_save_group_without_subscription_queues_no_jobs(tmp_path) -> None:
     assert response.json()["effective_status"] == "paused_by_plan"
     assert response.json()["status_reason"] == "subscription_inactive"
     with client.app.state.db_engine.connect() as connection:
-        job_count = connection.execute(text("SELECT count(*) FROM discovery_jobs")).scalar_one()
+        job_count = connection.execute(
+            text("SELECT count(*) FROM discovery_jobs")
+        ).scalar_one()
     assert job_count == 0
 
 
@@ -853,7 +861,9 @@ def test_document_download_requires_active_subscription(tmp_path) -> None:
     )
 
 
-def test_free_trial_document_download_is_denied_by_download_capability(tmp_path) -> None:
+def test_free_trial_document_download_is_denied_by_download_capability(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = date.today()
     _seed_subscription(

@@ -60,7 +60,12 @@ def build_rich_menu_spec(
                 "action": {"type": "uri", "uri": trading_url},
             },
             {
-                "bounds": {"x": third * 2, "y": 0, "width": last_width, "height": MENU_HEIGHT},
+                "bounds": {
+                    "x": third * 2,
+                    "y": 0,
+                    "width": last_width,
+                    "height": MENU_HEIGHT,
+                },
                 "action": {"type": "message", "text": contact_message},
             },
         ],
@@ -84,26 +89,33 @@ def render_rich_menu_image(out_path: str, *, font_path: str | None = None) -> st
         ("Online Trading", "ชำระเงิน", "#0EA5E9"),
         ("ติดต่อแอดมิน", "chat with us", "#06C755"),
     ]
-    font = (
-        ImageFont.truetype(font_path, 96)
-        if font_path
-        else ImageFont.load_default()
-    )
+    font = ImageFont.truetype(font_path, 96) if font_path else ImageFont.load_default()
     for index, (title, subtitle, color) in enumerate(cells):
         x0 = index * third
         x1 = MENU_WIDTH if index == 2 else x0 + third
         draw.rectangle([x0, 0, x1, MENU_HEIGHT], outline=color, width=8)
         center_x = (x0 + x1) // 2
-        draw.text((center_x, MENU_HEIGHT // 2 - 80), title, fill=color, font=font, anchor="mm")
         draw.text(
-            (center_x, MENU_HEIGHT // 2 + 80), subtitle, fill="#475569", font=font, anchor="mm"
+            (center_x, MENU_HEIGHT // 2 - 80), title, fill=color, font=font, anchor="mm"
+        )
+        draw.text(
+            (center_x, MENU_HEIGHT // 2 + 80),
+            subtitle,
+            fill="#475569",
+            font=font,
+            anchor="mm",
         )
     image.save(out_path, format="PNG")
     return out_path
 
 
 def _api_request(
-    method: str, url: str, token: str, *, data: bytes | None = None, content_type: str | None = None
+    method: str,
+    url: str,
+    token: str,
+    *,
+    data: bytes | None = None,
+    content_type: str | None = None,
 ) -> bytes:  # pragma: no cover - network
     headers = {"Authorization": f"Bearer {token}"}
     if content_type:
@@ -122,7 +134,9 @@ def list_rich_menus(token: str) -> list[dict]:  # pragma: no cover - network
     return json.loads(payload).get("richmenus", [])
 
 
-def delete_rich_menu(token: str, rich_menu_id: str) -> None:  # pragma: no cover - network
+def delete_rich_menu(
+    token: str, rich_menu_id: str
+) -> None:  # pragma: no cover - network
     _api_request("DELETE", f"{LINE_API_BASE}/richmenu/{rich_menu_id}", token)
 
 
@@ -137,7 +151,9 @@ def create_rich_menu(token: str, spec: dict) -> str:  # pragma: no cover - netwo
     return json.loads(payload)["richMenuId"]
 
 
-def upload_rich_menu_image(token: str, rich_menu_id: str, image_path: str) -> None:  # pragma: no cover - network
+def upload_rich_menu_image(
+    token: str, rich_menu_id: str, image_path: str
+) -> None:  # pragma: no cover - network
     with open(image_path, "rb") as handle:
         data = handle.read()
     content_type = "image/png" if image_path.lower().endswith(".png") else "image/jpeg"
@@ -150,14 +166,18 @@ def upload_rich_menu_image(token: str, rich_menu_id: str, image_path: str) -> No
     )
 
 
-def set_default_rich_menu(token: str, rich_menu_id: str) -> None:  # pragma: no cover - network
+def set_default_rich_menu(
+    token: str, rich_menu_id: str
+) -> None:  # pragma: no cover - network
     _api_request("POST", f"{LINE_API_BASE}/user/all/richmenu/{rich_menu_id}", token)
 
 
 def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI glue
     parser = argparse.ArgumentParser(description="Deploy the e-GP LINE OA rich menu")
     parser.add_argument("--image", help="Path to the 2500x1686 menu image (PNG/JPEG)")
-    parser.add_argument("--font", help="Path to a Thai-capable TTF font for auto-render")
+    parser.add_argument(
+        "--font", help="Path to a Thai-capable TTF font for auto-render"
+    )
     parser.add_argument(
         "--egp-billing-url", default="https://app.egptracker.com/billing"
     )

@@ -12,12 +12,16 @@ SECRET = "shared-webhook-secret"
 
 
 def _sign(secret: str, body: bytes) -> str:
-    return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+    return base64.b64encode(
+        hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    ).decode()
 
 
 def test_accepts_valid_signature() -> None:
     body = b'{"events":[1]}'
-    assert verify_hmac_sha256_base64(secret=SECRET, raw_body=body, signature=_sign(SECRET, body))
+    assert verify_hmac_sha256_base64(
+        secret=SECRET, raw_body=body, signature=_sign(SECRET, body)
+    )
 
 
 def test_rejects_tampered_body_or_secret() -> None:

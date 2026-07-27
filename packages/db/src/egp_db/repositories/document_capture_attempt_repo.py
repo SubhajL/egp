@@ -608,7 +608,9 @@ class SqlDocumentCaptureAttemptRepository:
         for row in rows:
             transient_latest_at = _aware_datetime(row["transient_latest_at"])
             no_documents_latest_at = _aware_datetime(row["no_documents_latest_at"])
-            terminal_times = [t for t in (transient_latest_at, no_documents_latest_at) if t]
+            terminal_times = [
+                t for t in (transient_latest_at, no_documents_latest_at) if t
+            ]
             latest_terminal_at = max(terminal_times) if terminal_times else None
             latest_is_no_doc = no_documents_latest_at is not None and (
                 transient_latest_at is None

@@ -15,7 +15,9 @@ import subprocess
 import sys
 from urllib.parse import urljoin
 
-_TRYCLOUDFLARE_PATTERN = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com", re.IGNORECASE)
+_TRYCLOUDFLARE_PATTERN = re.compile(
+    r"https://[a-z0-9-]+\.trycloudflare\.com", re.IGNORECASE
+)
 _DEFAULT_WEBHOOK_PATH = "/v1/billing/providers/opn/webhooks"
 
 

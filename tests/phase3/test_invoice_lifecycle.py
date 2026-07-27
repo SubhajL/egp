@@ -732,7 +732,9 @@ def test_expired_one_time_can_request_renewal_to_one_time_search_pack(tmp_path) 
     assert detail["record"]["upgrade_mode"] == "replace_now"
 
 
-def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(tmp_path) -> None:
+def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
     today = _utc_today()
     _seed_subscription(
@@ -781,14 +783,19 @@ def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(tmp_pat
         },
     )
     assert reconciled_response.status_code == 200
-    assert reconciled_response.json()["subscription"]["plan_code"] == "one_time_search_pack"
+    assert (
+        reconciled_response.json()["subscription"]["plan_code"]
+        == "one_time_search_pack"
+    )
 
     rules_after_renewal = client.get("/v1/rules", params={"tenant_id": TENANT_ID})
     assert rules_after_renewal.status_code == 200
     rules_body = rules_after_renewal.json()
     assert rules_body["entitlements"]["active_keyword_count"] == 0
     assert rules_body["entitlements"]["remaining_keyword_slots"] == 1
-    old_profile = next(profile for profile in rules_body["profiles"] if profile["id"] == old_profile_id)
+    old_profile = next(
+        profile for profile in rules_body["profiles"] if profile["id"] == old_profile_id
+    )
     assert old_profile["enabled_by_user"] is True
     assert old_profile["is_active"] is True
     assert old_profile["effective_status"] == "paused_by_plan"
@@ -811,7 +818,9 @@ def test_one_time_renewal_keeps_project_history_and_reopens_keyword_slot(tmp_pat
 
     projects_response = client.get("/v1/projects", params={"tenant_id": TENANT_ID})
     assert projects_response.status_code == 200
-    assert old_project.id in {project["id"] for project in projects_response.json()["projects"]}
+    assert old_project.id in {
+        project["id"] for project in projects_response.json()["projects"]
+    }
 
 
 def test_expired_monthly_membership_can_request_one_time_search_pack(tmp_path) -> None:

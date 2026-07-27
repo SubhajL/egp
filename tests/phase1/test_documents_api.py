@@ -1365,7 +1365,9 @@ def test_document_download_link_uses_forwarded_https_proxy_url(
     assert response.status_code == 200
     body = response.json()
     assert body["direct"] is False
-    assert body["url"] == f"https://api.egptracker.com/v1/documents/{document_id}/download"
+    assert (
+        body["url"] == f"https://api.egptracker.com/v1/documents/{document_id}/download"
+    )
 
 
 def test_document_download_link_returns_proxy_url_for_managed_supabase_store(

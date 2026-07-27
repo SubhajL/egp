@@ -96,8 +96,9 @@ def test_discover_spawner_assigns_distinct_browser_isolation_payloads(
     )
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
-        lambda *args, **kwargs: launched_processes.append(process_queue.pop(0))
-        or launched_processes[-1],
+        lambda *args, **kwargs: (
+            launched_processes.append(process_queue.pop(0)) or launched_processes[-1]
+        ),
     )
 
     spawner = _make_discover_spawner(
@@ -110,8 +111,7 @@ def test_discover_spawner_assigns_distinct_browser_isolation_payloads(
     _dispatch_once(spawner)
 
     payloads = [
-        json.loads((process.payload or b"{}").decode("utf-8"))
-        for process in launched_processes
+        json.loads((process.payload or b"{}").decode("utf-8")) for process in launched_processes
     ]
     browser_settings = [payload["browser_settings"] for payload in payloads]
     ports = [settings["browser_cdp_port"] for settings in browser_settings]

@@ -651,8 +651,7 @@ export type FetchAuditLogParams = {
   >;
 };
 
-export type FetchDashboardSummaryParams = {
-};
+export type FetchDashboardSummaryParams = Record<string, never>;
 
 export type FetchAdminSnapshotParams = {
   [Key in keyof NonNullable<
@@ -821,7 +820,7 @@ export async function fetchRunLog(runId: string): Promise<string | null> {
 export async function fetchDashboardSummary(
   params: FetchDashboardSummaryParams = {},
 ): Promise<DashboardSummaryResponse> {
-  const url = buildUrl("/v1/dashboard/summary", {});
+  const url = buildUrl("/v1/dashboard/summary", params);
   return apiFetch<DashboardSummaryResponse>(url);
 }
 

@@ -83,9 +83,7 @@ def test_doctor_reports_profile_circuit_queue_and_heartbeat() -> None:
 
 def test_doctor_sanitizes_database_failure_and_preserves_local_diagnostics() -> None:
     def unavailable_database() -> None:
-        raise RuntimeError(
-            "postgresql://operator:super-secret@127.0.0.1:15432/egp"
-        )
+        raise RuntimeError("postgresql://operator:super-secret@127.0.0.1:15432/egp")
 
     snapshot = build_discovery_doctor_snapshot(
         database_probe=unavailable_database,
@@ -209,9 +207,7 @@ def test_doctor_main_sanitizes_initialization_failure(
         database_url: str | None,
     ) -> discovery_doctor.DiscoveryDoctorSnapshot:
         del database_url
-        raise RuntimeError(
-            "postgresql://operator:must-never-leak@127.0.0.1:15432/egp"
-        )
+        raise RuntimeError("postgresql://operator:must-never-leak@127.0.0.1:15432/egp")
 
     exit_code = discovery_doctor.main(
         [

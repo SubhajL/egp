@@ -56,9 +56,7 @@ class RunService:
                 capability="runs",
             )
             if snapshot.over_keyword_limit:
-                raise EntitlementError(
-                    "active keyword configuration exceeds plan limit"
-                )
+                raise EntitlementError("active keyword configuration exceeds plan limit")
             if snapshot.active_keyword_count == 0:
                 raise EntitlementError("at least one active keyword is required for runs")
         run = self._repository.create_run(

@@ -171,7 +171,9 @@ def _record(capture_repository, project, status, *, ago, reason="x"):
 def _due_project_ids(capture_repository, *, now=NOW, **kwargs):
     return [
         c.project_id
-        for c in capture_repository.list_due_backfill_candidates(now=now, limit=10, **kwargs)
+        for c in capture_repository.list_due_backfill_candidates(
+            now=now, limit=10, **kwargs
+        )
     ]
 
 
@@ -200,9 +202,16 @@ def test_recent_enqueued_throttles_then_stale_enqueued_reenqueues(tmp_path) -> N
     )
     _create_profile(profile_repository)
     project = _create_project(project_repository)
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.ENQUEUED, ago=timedelta(minutes=30))
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.ENQUEUED,
+        ago=timedelta(minutes=30),
+    )
 
-    assert _due_project_ids(capture_repository, enqueued_stale_after_seconds=10800) == []
+    assert (
+        _due_project_ids(capture_repository, enqueued_stale_after_seconds=10800) == []
+    )
 
     # Same row is now 4h old (> 3h horizon) → no longer throttles.
     assert _due_project_ids(
@@ -219,8 +228,18 @@ def test_terminal_after_enqueued_clears_throttle(tmp_path) -> None:
     )
     _create_profile(profile_repository)
     project = _create_project(project_repository)
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.ENQUEUED, ago=timedelta(hours=2))
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=1, minutes=30))
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.ENQUEUED,
+        ago=timedelta(hours=2),
+    )
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.FAILED,
+        ago=timedelta(hours=1, minutes=30),
+    )
 
     # transient: 1 terminal < cap, backoff 1h elapsed (90m) → due.
     assert _due_project_ids(capture_repository) == [project.id]
@@ -234,7 +253,12 @@ def test_no_documents_uses_daily_cadence_not_count_cap(tmp_path) -> None:
     _create_profile(profile_repository)
     fresh = _create_project(project_repository, project_number="69049163851")
     daily_due = _create_project(project_repository, project_number="69049163852")
-    _record(capture_repository, fresh, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=12))
+    _record(
+        capture_repository,
+        fresh,
+        DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+        ago=timedelta(hours=12),
+    )
     for index in range(5):  # 5 > max_attempts=3, but no_documents ignores the count cap
         _record(
             capture_repository,
@@ -255,8 +279,18 @@ def test_no_documents_stops_after_30_day_cap_when_deadline_unknown(tmp_path) -> 
     project = _create_project(
         project_repository, project_number="69049163853", proposal_submission_date=None
     )
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(days=31))
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=25))
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+        ago=timedelta(days=31),
+    )
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+        ago=timedelta(hours=25),
+    )
 
     assert _due_project_ids(capture_repository, no_documents_max_age_days=30) == []
 
@@ -270,8 +304,18 @@ def test_transient_failed_honors_backoff_and_attempt_cap(tmp_path) -> None:
     capped = _create_project(project_repository, project_number="69049163854")
     due = _create_project(project_repository, project_number="69049163855")
     for index in range(3):
-        _record(capture_repository, capped, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=index + 1))
-    _record(capture_repository, due, DocumentCaptureAttemptStatus.TIMEOUT, ago=timedelta(hours=3))
+        _record(
+            capture_repository,
+            capped,
+            DocumentCaptureAttemptStatus.FAILED,
+            ago=timedelta(hours=index + 1),
+        )
+    _record(
+        capture_repository,
+        due,
+        DocumentCaptureAttemptStatus.TIMEOUT,
+        ago=timedelta(hours=3),
+    )
 
     assert _due_project_ids(capture_repository, max_attempts=3) == [due.id]
 
@@ -316,7 +360,12 @@ def test_throttled_enqueued_flood_does_not_starve_due_candidate(tmp_path) -> Non
             ago=timedelta(minutes=20),
         )
     due = _create_project(project_repository, project_number="69049163860")
-    _record(capture_repository, due, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=3))
+    _record(
+        capture_repository,
+        due,
+        DocumentCaptureAttemptStatus.FAILED,
+        ago=timedelta(hours=3),
+    )
 
     candidates = capture_repository.list_due_backfill_candidates(now=NOW, limit=2)
 
@@ -333,17 +382,34 @@ def test_old_transient_plus_fresh_no_documents_flood_does_not_starve(tmp_path) -
     _create_profile(profile_repository)
     for index in range(11):  # > limit(2) * 5 prefetch
         noisy = _create_project(project_repository, project_number=f"710000{index:05d}")
-        _record(capture_repository, noisy, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(days=10))
-        _record(capture_repository, noisy, DocumentCaptureAttemptStatus.NO_DOCUMENTS, ago=timedelta(hours=1))
+        _record(
+            capture_repository,
+            noisy,
+            DocumentCaptureAttemptStatus.FAILED,
+            ago=timedelta(days=10),
+        )
+        _record(
+            capture_repository,
+            noisy,
+            DocumentCaptureAttemptStatus.NO_DOCUMENTS,
+            ago=timedelta(hours=1),
+        )
     due = _create_project(project_repository, project_number="69049163861")
-    _record(capture_repository, due, DocumentCaptureAttemptStatus.FAILED, ago=timedelta(hours=3))
+    _record(
+        capture_repository,
+        due,
+        DocumentCaptureAttemptStatus.FAILED,
+        ago=timedelta(hours=3),
+    )
 
     candidates = capture_repository.list_due_backfill_candidates(now=NOW, limit=2)
 
     assert due.id in [candidate.project_id for candidate in candidates]
 
 
-def test_no_documents_history_then_timeout_is_not_immediately_exhausted(tmp_path) -> None:
+def test_no_documents_history_then_timeout_is_not_immediately_exhausted(
+    tmp_path,
+) -> None:
     # MEDIUM-1 regression: the transient attempt cap counts only failed/timeout,
     # NOT prior no_documents heartbeats.
     _, project_repository, _, profile_repository, capture_repository = (
@@ -358,7 +424,12 @@ def test_no_documents_history_then_timeout_is_not_immediately_exhausted(tmp_path
             DocumentCaptureAttemptStatus.NO_DOCUMENTS,
             ago=timedelta(hours=25 + index * 24),
         )
-    _record(capture_repository, project, DocumentCaptureAttemptStatus.TIMEOUT, ago=timedelta(hours=2))
+    _record(
+        capture_repository,
+        project,
+        DocumentCaptureAttemptStatus.TIMEOUT,
+        ago=timedelta(hours=2),
+    )
 
     assert _due_project_ids(capture_repository, max_attempts=3) == [project.id]
 

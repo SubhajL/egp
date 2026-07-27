@@ -427,9 +427,7 @@ def run_discover_workflow(
     def _record_keyword_scan(event_snapshot: dict[str, object]) -> None:
         scan_keyword = str(event_snapshot.get("keyword") or keyword)
         keyword_scans[scan_keyword] = {
-            key: value
-            for key, value in event_snapshot.items()
-            if key not in ("stage", "keyword")
+            key: value for key, value in event_snapshot.items() if key not in ("stage", "keyword")
         }
         if event_snapshot.get("header_signature_drift"):
             logger.warning(

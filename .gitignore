@@ -23,6 +23,7 @@ test-results/
 # Local tooling
 .codex/
 .mcp.json
+.tools/
 .taskmaster/config.json
 .taskmaster/state.json
 

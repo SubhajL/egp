@@ -274,7 +274,9 @@ def test_discover_spawner_kills_worker_when_lease_cancellation_is_signalled(
         artifact_root=tmp_path / "artifacts",
         run_repository=FakeRunRepository(),
     )
-    with pytest.raises(DiscoverySpawnError, match="lease ownership was lost") as exc_info:
+    with pytest.raises(
+        DiscoverySpawnError, match="lease ownership was lost"
+    ) as exc_info:
         dispatcher.dispatch_cancellable(
             DiscoveryDispatchRequest(
                 tenant_id="11111111-1111-1111-1111-111111111111",
@@ -609,7 +611,10 @@ def test_discover_spawner_persists_absolute_worker_log_path_for_relative_artifac
 
 
 def test_discover_spawner_emits_scan_metrics_from_finished_run(tmp_path) -> None:
-    from egp_observability.metrics import render_prometheus_metrics, reset_metrics_for_tests
+    from egp_observability.metrics import (
+        render_prometheus_metrics,
+        reset_metrics_for_tests,
+    )
 
     reset_metrics_for_tests()
 

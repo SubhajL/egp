@@ -152,9 +152,7 @@ async def handle_line_webhook(request: Request) -> LineWebhookResponse:
     # a worker thread so a slow LINE API can't freeze the event loop and stall
     # every other API request. Slip creation is idempotent on line_message_id,
     # so LINE redelivery is safe.
-    summary = await run_in_threadpool(
-        service.handle_webhook_events, parse_message_events(payload)
-    )
+    summary = await run_in_threadpool(service.handle_webhook_events, parse_message_events(payload))
     return LineWebhookResponse(
         status="ok",
         text_events=summary.text_events,

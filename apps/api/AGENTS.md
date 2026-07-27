@@ -9,7 +9,8 @@
 ## Setup & Run
 
 ```bash
-cd apps/api && python -m pip install -e ".[dev]"
+./scripts/bootstrap_python_env.sh
+uv sync --frozen --all-packages --all-extras
 cd apps/api && ../../.venv/bin/uvicorn src.main:app --reload --port 8000
 ./.venv/bin/python -m compileall apps/api/src
 ./.venv/bin/ruff check apps/api packages

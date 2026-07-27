@@ -59,7 +59,9 @@ class _RecordingRunRepository:
     def __init__(self) -> None:
         self.create_run_kwargs: dict[str, object] = {}
 
-    def create_run(self, *, tenant_id, trigger_type, profile_id=None, summary_json=None, run_id=None):
+    def create_run(
+        self, *, tenant_id, trigger_type, profile_id=None, summary_json=None, run_id=None
+    ):
         self.create_run_kwargs = {
             "tenant_id": tenant_id,
             "trigger_type": trigger_type,
@@ -183,8 +185,6 @@ def test_subprocess_dispatch_preserves_schedule_trigger(
 def test_subprocess_dispatch_maps_unknown_trigger_to_manual(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    run_repo, payload = _dispatch_with_fakes(
-        monkeypatch, tmp_path, trigger_type="profile_created"
-    )
+    run_repo, payload = _dispatch_with_fakes(monkeypatch, tmp_path, trigger_type="profile_created")
     assert run_repo.create_run_kwargs["trigger_type"] == "manual"
     assert payload["trigger_type"] == "manual"

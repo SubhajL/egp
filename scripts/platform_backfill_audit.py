@@ -109,7 +109,9 @@ def _collect_keyword_projects(
             return projects
 
 
-def _group_projects_by_number(projects: Sequence[ProjectRecord]) -> dict[str, list[ProjectRecord]]:
+def _group_projects_by_number(
+    projects: Sequence[ProjectRecord],
+) -> dict[str, list[ProjectRecord]]:
     grouped: dict[str, list[ProjectRecord]] = {}
     for project in projects:
         project_number = str(project.project_number or "").strip()
@@ -178,7 +180,9 @@ def _print_plaintext_report(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database-url", required=True, help="Application database URL.")
+    parser.add_argument(
+        "--database-url", required=True, help="Application database URL."
+    )
     parser.add_argument("--tenant-id", required=True, help="Tenant UUID to audit.")
     parser.add_argument(
         "--keyword",

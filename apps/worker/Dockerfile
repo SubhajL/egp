@@ -1,21 +1,28 @@
 FROM python:3.12-slim-bookworm AS base
 
+COPY --from=ghcr.io/astral-sh/uv@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c /uv /uvx /bin/
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev gcc && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+ENV UV_PYTHON_DOWNLOADS=0 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies
 FROM base AS deps
 
 COPY pyproject.toml ./
+COPY uv.lock ./
+COPY apps/api/pyproject.toml apps/api/
 COPY apps/worker/pyproject.toml apps/worker/
 COPY packages/ packages/
+COPY apps/api/src apps/api/src
+COPY apps/worker/src apps/worker/src
 
-RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir playwright psycopg[binary] httpx \
-    sqlalchemy boto3 supabase openpyxl prometheus-client
+RUN uv sync --frozen --all-packages --all-extras --no-editable
 
 RUN playwright install chromium --with-deps
 
@@ -30,15 +37,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=deps /usr/local/bin /usr/local/bin
+COPY --from=deps /app/.venv /app/.venv
 COPY --from=deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-COPY pyproject.toml ./
-COPY packages/ packages/
-COPY apps/worker/ apps/worker/
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
 
-RUN pip install --no-cache-dir -e .
+COPY pyproject.toml ./
+COPY uv.lock ./
+COPY packages/ packages/
+COPY apps/api/ apps/api/
+COPY apps/worker/ apps/worker/
 
 # Full Chromium runtime libraries (authoritative Playwright list — includes
 # libcups2 and friends the curated list above omits) plus a virtual display so
@@ -48,7 +57,5 @@ RUN apt-get update && \
     python -m playwright install-deps chromium && \
     apt-get install -y --no-install-recommends xvfb xauth fonts-thai-tlwg && \
     rm -rf /var/lib/apt/lists/*
-
-ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-m", "egp_worker.main"]

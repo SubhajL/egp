@@ -1235,3 +1235,426 @@ LOW
   Gate S1.
 - Formal disposition: no unresolved finding prevents committing the partial-S1 evidence while Gate
   S1 remains closed.
+
+## 2026-07-27 10:34:32 +0700 — Phase 2 U5 reproducible release gates
+
+### Goal and boundary
+
+- Implement U5 from the frozen soft-launch plan on
+  `build/reproducible-release-gates`, based on merged partial-S1 SHA
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b`.
+- Scope: one frozen Python workspace, immutable SQL migration manifest, real PostgreSQL
+  migration/readiness contracts, a critical browser lane, and enforced dependency vulnerability
+  policy.
+- U6 runtime-image separation/hardening is deliberately deferred to its own sequential PR.
+- E0 is still billing-blocked and Gate S1 remains CLOSED.
+- Auggie was skipped because the available interface cannot enforce the required real two-second
+  timeout; direct exact-string and file inspection was used.
+
+### TDD record
+
+- Initial RED:
+  `./.venv/bin/python -m pytest -q tests/operations/test_reproducible_release_gates.py`
+  failed all 5 initial tests because `uv.lock`/workspace wiring, the migration-manifest checker,
+  enforced CI audits/PostgreSQL contracts, and the critical Playwright lane did not exist.
+- Docker validation exposed a second wiring defect: the runtime stage invoked system Python before
+  the frozen virtualenv was on `PATH`; the first API build failed with
+  `No module named playwright`. Both runtime stages now set `PATH` before dependency-assisted
+  install commands.
+- The first web image validation transferred a 653.68 MB host context, including local build
+  artifacts. A sixth RED test proved `apps/web/.dockerignore` was absent; the added ignore contract
+  reduced the verified context to 9.64 kB.
+- Current focused GREEN:
+  `6 passed` in `tests/operations/test_reproducible_release_gates.py`.
+
+### Implementation and wiring
+
+| Producer | Consumer / enforced path | Evidence |
+|---|---|---|
+| Root `pyproject.toml`, API/worker workspace members, `uv.lock` | Bootstrap, all Python CI jobs, API and worker Docker builds | uv 0.11.32 and setup action pinned; every sync/export is frozen |
+| `packages/db/src/migrations/manifest.sha256` | `scripts/check_migration_manifest.py`, migration CI job | Exact 35-file checksum set verified; drift unit test passes |
+| PostgreSQL ledger/readiness contracts | Migration CI job with `EGP_CI_POSTGRES_CONTRACT=1` | Isolated temporary PostgreSQL run passed both opt-in contracts |
+| `@critical` launch-path tags | `test:e2e:critical`, dedicated CI job | Login/MFA, worker-backed recrawl, and PromptPay tests each passed 3 consecutive runs |
+| Python runtime export | `pip-audit --strict --disable-pip` | No known vulnerabilities |
+| Frontend production/all-dependency audits | Frontend build CI job | Runtime high/critical: 0; all dependencies: no critical findings |
+| Web `.dockerignore` | Web Docker build context | Host dependencies, generated builds, reports, and env files excluded |
+
+### Security and compatibility changes
+
+- Replaced vulnerable `python-jose`/`ecdsa` with `PyJWT[crypto]`; API exception handling and all JWT
+  tests now use PyJWT. The frozen runtime audit is clean.
+- Test-only HMAC keys were lengthened to at least 32 bytes so PyJWT's key-strength warnings identify
+  real configuration problems rather than fixtures.
+- Upgraded the frontend to patched Next.js 16.2.12 and nodemailer 9.0.3, migrated to Next's flat
+  ESLint configuration, and retained only a documented compatibility exception for existing
+  controlled-form hydration.
+- The production npm audit is clean. Eleven high-severity findings remain in development-only
+  ESLint/OpenAPI transitive packages; CI fails on critical findings across all dependencies without
+  an allowlist or `continue-on-error`.
+
+### Validation evidence so far
+
+- Frozen lock, migration manifest, Ruff lint, and Ruff format: green. The newly executable format
+  gate found latent billing-hidden drift; 79 Python files were normalized mechanically and the
+  final declared scope reports `310 files already formatted`.
+- Three consecutive full Python suites before the final fixture/dockerignore additions:
+  `1424 passed, 2 skipped` each, in 180.04 s, 179.69 s, and 176.27 s. A final post-review triple run
+  is still required before commit.
+- Frontend unit tests: 3 consecutive runs, each `51 passed`; critical Playwright: 3 consecutive
+  runs, each `3 passed`; full Playwright: `43 passed`.
+- OpenAPI generated types current; TypeScript, ESLint, Next production build, compileall, and both
+  Compose config validations passed.
+- API, worker, and web images build. API/worker frozen-runtime import smokes passed.
+- Shared local PostgreSQL was inspected but not modified after revealing pre-existing drift
+  (`crawler_runtime_heartbeats` present while migration `033` was absent from the ledger).
+  An isolated `TempPostgresCluster` applied the complete migration set and passed both CI contracts.
+
+### Remaining lifecycle work
+
+- Inspect the complete semantic and mechanical diff, run Claude read-only review, QCHECK, and formal
+  `g-check`; remediate any findings.
+- Run final post-remediation gates and three consecutive full suites.
+- Commit, push, open U5 PR, record the expected billing-blocked GitHub checks, use the user's
+  engineering-PR admin-merge authorization, and land exact merged `origin/main` locally.
+- Start U6 only from that landed U5 main SHA.
+
+## Review (2026-07-27 10:49:17 +0700) - Phase 2 U5 staged working tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged working tree based on
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b`
+- Commands Run: bounded staged diff/status/stat inspection; exact-string dependency and wiring
+  searches; lock and manifest checks; Ruff lint/format; focused and full pytest; isolated
+  PostgreSQL contracts; OpenAPI type check; TypeScript; ESLint; Vitest; critical and full
+  Playwright; npm and pip audits; Compose config; API/worker/web image builds and runtime imports;
+  Claude Code 2.1.220 read-only semantic review
+
+### Findings
+
+CRITICAL
+
+- No unresolved findings. Claude identified that `apps/web/next-env.d.ts` had captured the local
+  `.next-playwright` dist directory, which could couple clean type generation to a local
+  Playwright artifact. The declaration is now the build-generated `.next/types/routes.d.ts` form
+  at `apps/web/next-env.d.ts:3`, and
+  `tests/operations/test_reproducible_release_gates.py:194` prevents regression. Clean-directory
+  typecheck and production build both pass.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- GitHub billing still prevents hosted jobs from starting, so the new
+  `Critical Playwright Smoke` job cannot yet provide hosted runtime evidence. Admin-merging this
+  engineering PR under the user's explicit billing override does not open Gate S1.
+- The branch-protection required-check set is external configuration. After billing restoration,
+  confirm the new job is required before treating it as a release gate.
+- The 79-file Ruff normalization was reviewed as mechanical-only and is covered by the full suite;
+  semantic review focused on the release-gate files.
+
+### Recommended Tests / Validation
+
+- Complete the final post-review triple full-suite run after all review remediation.
+- Re-run the frozen lock, manifest, lint/format, audits, frontend matrix, exact PostgreSQL
+  contracts, and all three image builds on the final staged state.
+- On the PR, inspect every hosted job annotation and do not describe zero-step billing failures as
+  passing checks.
+
+### Rollout Notes
+
+- U5 changes build/test/release contracts and dependency implementations but performs no
+  deployment or production mutation.
+- The PyJWT replacement preserves HS256 bearer behavior and rejects invalid tokens through
+  `jwt.PyJWTError`; runtime dependency auditing is clean.
+- U6 remains a separate sequential PR for lean non-root images, executor isolation, resource/log
+  limits, and formal image smoke gates.
+- Gate S1 remains CLOSED until exact deployed U1-U6 evidence and every live requirement pass.
+
+### Final post-review validation closure
+
+- Three consecutive full final-tree Python suites passed identically:
+  `1426 passed, 2 skipped`, in 184.42 s, 184.51 s, and 177.84 s.
+- The warning count fell to 113 after strengthening test-only HMAC fixtures; remaining warnings are
+  the known Starlette/httpx and SQLite datetime deprecations.
+- Final frozen lock, 35-file migration manifest, Ruff lint/format over 310 files, compileall,
+  OpenAPI types, TypeScript, ESLint, Vitest, critical Playwright, Next production build, npm
+  policy audits, Python runtime audit, and both Compose configurations passed.
+- Final images built from the staged tree:
+  API `sha256:4b30acdbd2107b27fcd678b4952af8e62a841dc4ba22a9148df06099dc97055f`,
+  worker `sha256:f80c9d1fdb6081200685d0feb9dce019f7061417e269758641992198d3457672`,
+  web `sha256:4da61432f0cd02a0782c18cc401109a14e51825892624a1ad091da9055b34295`.
+  API and worker frozen-runtime import smokes passed.
+- Final formal disposition: no unresolved QCHECK or g-check finding blocks the U5 commit.
+
+## 2026-07-27 11:06:35 +0700 — U5 Vercel preview remediation
+
+- PR #184 opened at exact head
+  `fc140ee1119b4309b2748e24c397c405862e1a06`.
+- All eight GitHub-hosted checks created zero source steps and returned the exact annotation:
+  `The job was not started because your account is locked due to a billing issue.`
+- Vercel was a separate real failure. Deployment
+  `dpl_DuQn1cMEzm7oRkzUx5St8NbmAHJj` cloned exact `fc140ee`, installed successfully, and completed
+  Next 16.2.12 Turbopack compilation/type/static generation, but Vercel's post-build adapter emitted
+  no deployable output and the deployment ended `ERROR` without an error code/message. The last
+  exact-main Next 15/webpack deployment emitted its expected lambdas and completed.
+- TDD RED:
+  `test_next_16_release_build_uses_vercel_compatible_webpack` first failed on the package build
+  command, then on the explicit `vercel.json` command.
+- Remediation: both local/Docker and Vercel release builds now use Next 16's supported
+  `next build --webpack` path while retaining the patched Next 16.2.12 dependency.
+- Focused GREEN: release-gate suite `8 passed`; webpack production build, TypeScript, ESLint, and
+  `51` Vitest tests passed locally.
+- A replacement Vercel preview must emit real deployable outputs and pass before merge.
+
+## Review (2026-07-27 11:08:00 +0700) - U5 Vercel remediation
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged follow-up against committed U5 SHA
+  `fc140ee1119b4309b2748e24c397c405862e1a06`
+- Commands Run: failed/exact-main Vercel deployment metadata and bounded logs; targeted staged
+  diff; focused release-gate pytest; Next 16.2.12 webpack build; TypeScript; ESLint; Vitest;
+  Claude Code read-only focused review
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The static contract proves both release entry points select webpack; the replacement Vercel
+  deployment is the required behavioral proof that deployable outputs are restored.
+- Development remains on Turbopack through `next dev`; only production release builds use webpack.
+  This is intentional because the observed failure was in Vercel post-build packaging, not local
+  development.
+
+### Recommended Tests / Validation
+
+- Require the replacement Vercel preview to complete `READY` with non-empty lambda/static outputs.
+- Re-run final lint, focused Python tests, unit/browser tests, production audit, and web Docker build
+  on the follow-up commit.
+
+### Rollout Notes
+
+- The fix changes only the Next production bundler and does not alter routes, API contracts, or
+  production environment values.
+- Formal disposition: no unresolved finding blocks the follow-up commit; merge remains blocked on
+  replacement preview evidence.
+- Final local follow-up gates passed: focused release contracts `8 passed` three consecutive times;
+  Ruff lint/format; TypeScript; ESLint; `51` Vitest tests; clean production npm audit; no
+  all-dependency critical finding; and webpack web image
+  `sha256:e2aa179525163676c194c39989761b2e947847c5ee018b878025ba3e6021509d`.
+
+## 2026-07-27 11:13:23 +0700 — U5 Vercel output-mode correction
+
+- Replacement deployment `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf` at exact
+  `6e8789ec6970c4c2784c387d83149df4fbad684c` disproved the bundler hypothesis: Next 16.2.12
+  webpack also compiled, typechecked, prerendered, traced, and ran Vercel `onBuildComplete`, then
+  produced zero deployment outputs and ended `ERROR` without an error code/message.
+- The distinguishing boundary is deployment mode. The repo forced `output: "standalone"` for the
+  Docker image even when Vercel's Next 16 adapter owned serverless output packaging. Vercel does
+  not require standalone output; the self-hosted image does.
+- Corrected implementation:
+  `output: process.env.VERCEL ? undefined : "standalone"`. The ineffective webpack changes in
+  `package.json` and `vercel.json` are reverted.
+- TDD RED/GREEN: the release contract failed while the two build commands still selected webpack
+  and the config forced standalone. It now passes and asserts standard release commands plus the
+  Vercel/self-hosted output boundary.
+- Behavioral local proof:
+  a normal Next 16.2.12 build produced `.next/standalone/server.js`; a `VERCEL=1` build succeeded
+  without `.next/standalone`; TypeScript, ESLint, and `51` Vitest tests passed.
+- A third replacement preview remains mandatory before merge.
+- Focused Claude review found that implicit `VERCEL` detection could make a local Vercel CLI build
+  incompatible with the generic standalone `start` command. The final boundary is therefore
+  explicit: `npm run build` sets `EGP_BUILD_STANDALONE=true`, `npm run build:vercel` does not, and
+  `vercel.json` calls the latter. Local behavioral proof confirms the first build creates
+  `.next/standalone/server.js` and the Vercel build does not.
+
+## Review (2026-07-27 11:17:00 +0700) - final U5 Vercel output-mode fix
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged follow-up against
+  `6e8789ec6970c4c2784c387d83149df4fbad684c`
+- Commands Run: exact metadata and bounded logs for Vercel deployments
+  `dpl_DuQn1cMEzm7oRkzUx5St8NbmAHJj` and
+  `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf`; targeted staged diff; focused pytest;
+  explicit self-hosted and Vercel-mode Next builds; TypeScript; ESLint; Vitest; two focused Claude
+  read-only reviews
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No unresolved findings. Claude's first review correctly found that implicit `VERCEL` detection
+  made local Vercel CLI output ambiguous; the explicit `EGP_BUILD_STANDALONE` build split resolves
+  it. Claude's final suggestion to retain webpack is rejected by exact runtime evidence: deployment
+  `dpl_5m4jFtxHqumHAnyiAkD8dxkHBwwf` used `next build --webpack`, reached
+  `onBuildComplete`, emitted zero outputs, and failed identically. Webpack is not the fix and should
+  not remain as an unexplained divergence.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- Only the third Vercel preview can prove the adapter emits deployable output with standalone
+  disabled. Merge remains blocked until that preview passes.
+- `npm run build` is the self-hosted contract and must keep producing the server consumed by
+  `npm start` and the web Dockerfile. `npm run build:vercel` deliberately delegates output
+  packaging to Vercel.
+
+### Recommended Tests / Validation
+
+- Re-run focused contracts three times, frontend/browser checks, audits, and the Docker build on
+  the final explicit-mode tree.
+- Inspect the third preview's output count and require Vercel `READY`.
+
+### Rollout Notes
+
+- No production deployment is initiated by this preview fix.
+- Formal disposition: no unresolved local finding; external preview proof is the remaining merge
+  condition.
+- Final explicit-mode gates passed: release contracts `8 passed` three consecutive times; Ruff;
+  TypeScript; ESLint; `51` Vitest tests; critical Playwright `3 passed`; clean production npm
+  audit; no all-dependency critical finding; self-hosted and Vercel-mode Next builds; and web image
+  `sha256:87a2b764bb737dc66f8f88f6cb283694a07ff6d2d19a57f5844b416776a90b3a`.
+
+## 2026-07-27 11:33:27 +0700 — U5 patched Next 15 compatibility correction
+
+- Third replacement deployment `dpl_3YGpaRu5JiN24UktLFYqRx2zk5Qj` at exact
+  `2390febf2b1f4403c9b8617eb72e20c93f1a9f3a` disproved the standalone-output hypothesis:
+  Next 16.2.12 compiled, typechecked, prerendered, traced, ran Vercel `onBuildComplete`, emitted
+  zero deployment outputs, and ended `ERROR` without an error code/message.
+- Exact last-READY deployment `dpl_AWLHzqRoYGRHRMk8bKmcxUvCfsuM` at
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b` used the repository's unconditional
+  `output: "standalone"` contract with Next 15. The experimental webpack and output-mode changes
+  are therefore reverted instead of retained as ineffective complexity.
+- The compatibility correction selects the patched Next 15.5 release line required by Vercel's
+  May 2026 security advisory:
+  <https://vercel.com/changelog/next-js-may-2026-security-release>. The lock resolves Next and
+  `eslint-config-next` to `15.5.22`, above the advisory's `15.5.18` patched floor.
+- TDD RED/GREEN: the release contract failed on Next 16.2.12, then passed with `^15.5.18`, one
+  canonical build command, Vercel using `npm run build`, and the Docker standalone output restored.
+- Next 15 uses the legacy ESLint shareable config format. The flat ESLint 9 entry point now uses
+  the directly declared `@eslint/eslintrc` `FlatCompat`; strict ESLint passes.
+- Independent Claude review raised five items. Disposition:
+  - The Vercel/standalone critical concern is rejected by the exact last-READY Next 15 deployment
+    above; the fourth preview remains the required behavioral proof.
+  - The `.next-playwright` declaration leak was reproduced and fixed. Browser commands now use a
+    trap-protected wrapper that restores the exact pre-run `next-env.d.ts`; the file checksum
+    remained `85ae5aee75f011967cf2d25cbc342f62d69314e9d925f7f4aa3456fc2cffcca6`
+    across the critical browser run.
+  - The security-audit concern is already covered by CI and static contracts:
+    production dependencies fail on high findings and the full tree fails on critical findings.
+    Local production audit is clean; the full tree has no critical finding.
+  - The React Hooks rule-set and JSX-mode notes are non-blocking compatibility consequences of the
+    matched Next 15 toolchain; strict ESLint, TypeScript, build, unit, and browser gates pass.
+- Local behavioral evidence on the corrected tree: Next 15.5.22 production build, TypeScript,
+  ESLint, `51` Vitest tests, critical Playwright `3 passed`, full Playwright `43 passed`, clean
+  production npm audit, and no all-dependency critical finding. The canonical web image builds as
+  non-root user `nextjs` with standalone server:
+  `sha256:01355ce4646cdd0e5bbee7103bd39d4931cbe938fa2fa3a292b88e0e9a1343ff`
+  (`313,969,395` bytes).
+- Merge remains blocked on a fourth Vercel preview reaching `READY` with non-empty deployment
+  outputs. No production deployment or pilot activation is part of this correction.
+
+## Review (2026-07-27 11:35:06 +0700) - patched Next 15 compatibility correction
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: uncommitted follow-up against
+  `2390febf2b1f4403c9b8617eb72e20c93f1a9f3a`
+- Commands Run: exact last-READY source inspection; bounded diff/stat/check; Ruff lint/format;
+  focused release contracts three consecutive times; shell syntax; npm lock install; production
+  and full-tree audits; Next production build; TypeScript; ESLint; Vitest; critical and full
+  Playwright; canonical web image build; independent Claude read-only review
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No unresolved findings. Claude identified the Playwright declaration leak. It is remediated by
+  `scripts/run-playwright.sh`, with static contract coverage and checksum-verified runtime proof
+  across the browser lane.
+
+MEDIUM
+
+- No findings. The resolved Next 15.5.22 package is above the published 15.5.18 patched floor,
+  production dependencies have no audit finding, and CI retains the stricter production-high and
+  all-dependency-critical audit policy.
+
+LOW
+
+- No findings. The matched Next 15 ESLint/JSX compatibility changes pass strict lint, typecheck,
+  build, unit, and browser gates.
+
+### Open Questions / Assumptions
+
+- Vercel adapter behavior cannot be inferred from local build success. The fourth preview must
+  reach `READY` and expose non-empty deployment outputs before merge.
+- GitHub-hosted checks remain subject to the account billing lock and must be reported as zero-step
+  infrastructure failures if the lock persists.
+
+### Recommended Tests / Validation
+
+- Push the exact reviewed tree and inspect both Vercel deployment metadata/output count and every
+  latest-SHA GitHub check annotation.
+- Merge only after Vercel is behaviorally green and no newly started GitHub job reports a product
+  failure.
+
+### Rollout Notes
+
+- Formal disposition: no unresolved local QCHECK or g-check finding.
+- Final local gate summary: release contracts `8 passed` three consecutive times; Ruff and shell
+  syntax; TypeScript; ESLint; `51` Vitest tests; critical Playwright `3 passed` three consecutive
+  times; full Playwright `43 passed`; production Next build; clean production npm audit; no
+  all-dependency critical finding; and non-root standalone web image
+  `sha256:01355ce4646cdd0e5bbee7103bd39d4931cbe938fa2fa3a292b88e0e9a1343ff`.
+- No production deployment or pilot activation is authorized by this review.

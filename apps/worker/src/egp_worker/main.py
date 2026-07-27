@@ -91,9 +91,7 @@ def _artifact_storage_kwargs(payload: dict[str, object]) -> dict[str, str | None
     return {
         "artifact_storage_backend": str(payload.get("artifact_storage_backend") or "local"),
         "artifact_bucket": (
-            str(payload["artifact_bucket"])
-            if payload.get("artifact_bucket") is not None
-            else None
+            str(payload["artifact_bucket"]) if payload.get("artifact_bucket") is not None else None
         ),
         "artifact_prefix": str(payload.get("artifact_prefix") or ""),
         "supabase_url": (
@@ -147,10 +145,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             failure_code = str(summary.get("failure_code") or "").strip()
             if failure_code:
                 response["failure_code"] = failure_code
-        if (
-            str(response["run_status"]) == "failed"
-            and "failure_code" not in response
-        ):
+        if str(response["run_status"]) == "failed" and "failure_code" not in response:
             response["failure_code"] = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
         if payload.get("profile_id") is not None:
             response["profile_id"] = str(payload["profile_id"])

@@ -82,9 +82,7 @@ def parse_message_events(payload: object) -> list[LineMessageEvent]:
         events.append(
             LineMessageEvent(
                 event_type="message",
-                message_type=(
-                    str(message.get("type")) if message.get("type") else None
-                ),
+                message_type=(str(message.get("type")) if message.get("type") else None),
                 message_id=str(message.get("id")) if message.get("id") else None,
                 text=message.get("text") if isinstance(message.get("text"), str) else None,
                 line_user_id=str(source.get("userId")) if source.get("userId") else None,
@@ -123,9 +121,9 @@ class HttpLineMessagingClient:
         return data, content_type
 
     def push_message(self, *, to: str, text: str) -> None:
-        body = json.dumps(
-            {"to": to, "messages": [{"type": "text", "text": text[:5000]}]}
-        ).encode("utf-8")
+        body = json.dumps({"to": to, "messages": [{"type": "text", "text": text[:5000]}]}).encode(
+            "utf-8"
+        )
         request = urllib_request.Request(
             self._push_url,
             data=body,

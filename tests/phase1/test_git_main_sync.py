@@ -36,7 +36,9 @@ def _seed_remote(tmp_path: Path) -> tuple[Path, Path]:
     return seed, work
 
 
-def _run_sync_script(repo_root: Path, *, target_repo: Path) -> subprocess.CompletedProcess[str]:
+def _run_sync_script(
+    repo_root: Path, *, target_repo: Path
+) -> subprocess.CompletedProcess[str]:
     script_path = repo_root / "scripts" / "check_main_sync.py"
     return subprocess.run(
         [sys.executable, str(script_path), "--repo-root", str(target_repo), "--json"],

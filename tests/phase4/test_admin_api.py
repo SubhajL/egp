@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
@@ -16,7 +16,7 @@ from egp_shared_types.enums import ProcurementType, ProjectState
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
-JWT_SECRET = "phase4-admin-secret"
+JWT_SECRET = "phase4-admin-test-secret-at-least-32-bytes"
 
 
 def _utc_today() -> date:

@@ -125,7 +125,10 @@ def test_register_duplicate_email_rejected(tmp_path):
         },
     )
     assert second.status_code == 409, second.text
-    assert second.json()["detail"] == "account already exists for this email; please sign in"
+    assert (
+        second.json()["detail"]
+        == "account already exists for this email; please sign in"
+    )
 
 
 # ---------------------------------------------------------------------------

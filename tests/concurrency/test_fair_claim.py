@@ -215,9 +215,13 @@ def test_expired_lease_can_be_reclaimed(
         keyword="reclaim-me",
     )
 
-    first_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[0]
+    first_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[
+        0
+    ]
     clock["now"] += timedelta(seconds=61)
-    second_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[0]
+    second_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[
+        0
+    ]
 
     assert first_claim.id == second_claim.id
     assert first_claim.claim_token is not None
@@ -247,9 +251,13 @@ def test_stale_claim_token_cannot_finish_job(
         profile_type="custom",
         keyword="owned-job",
     )
-    first_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[0]
+    first_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[
+        0
+    ]
     clock["now"] += timedelta(seconds=61)
-    second_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[0]
+    second_claim = repository.claim_pending_discovery_jobs(limit=1, lease_seconds=60.0)[
+        0
+    ]
 
     with pytest.raises(StaleDiscoveryJobClaimError):
         repository.record_discovery_job_attempt(

@@ -100,8 +100,16 @@ def test_recovery_defaults_to_dry_run(tmp_path, capsys) -> None:
     assert output["source_run_count"] == 1
     assert output["recovery_job_count"] == 1
     with app.state.db_engine.connect() as connection:
-        assert connection.execute(text("SELECT COUNT(*) FROM recrawl_requests")).scalar_one() == 0
-        assert connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT COUNT(*) FROM recrawl_requests")
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+            == 0
+        )
 
 
 @pytest.mark.parametrize(
@@ -253,18 +261,26 @@ def test_recovery_execute_creates_one_correlated_request_and_is_idempotent(
     assert first.queued_job_count == 1
     assert second.queued_job_count == 0
     with app.state.db_engine.connect() as connection:
-        request_rows = connection.execute(
-            text(
-                "SELECT id, source, idempotency_key, requested_keyword_count "
-                "FROM recrawl_requests"
+        request_rows = (
+            connection.execute(
+                text(
+                    "SELECT id, source, idempotency_key, requested_keyword_count "
+                    "FROM recrawl_requests"
+                )
             )
-        ).mappings().all()
-        job_rows = connection.execute(
-            text(
-                "SELECT trigger_type, recrawl_request_id, keyword, job_status "
-                "FROM discovery_jobs"
+            .mappings()
+            .all()
+        )
+        job_rows = (
+            connection.execute(
+                text(
+                    "SELECT trigger_type, recrawl_request_id, keyword, job_status "
+                    "FROM discovery_jobs"
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     assert request_rows == [
         {
             "id": first.request_id,
@@ -301,8 +317,16 @@ def test_recovery_execute_revalidates_source_profile(tmp_path) -> None:
     with pytest.raises(recovery.RecoveryValidationError, match="paused"):
         recovery.execute_recovery_plan(database_url=database_url, plan=plan)
     with app.state.db_engine.connect() as connection:
-        assert connection.execute(text("SELECT COUNT(*) FROM recrawl_requests")).scalar_one() == 0
-        assert connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one() == 0
+        assert (
+            connection.execute(
+                text("SELECT COUNT(*) FROM recrawl_requests")
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+            == 0
+        )
 
 
 def test_recovery_executes_idempotently_on_migrated_postgres() -> None:

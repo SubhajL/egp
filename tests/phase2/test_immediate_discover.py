@@ -360,8 +360,12 @@ def test_enabled_profile_creation_without_subscription_saves_but_does_not_enqueu
     assert spawned == []
 
     with client.app.state.db_engine.connect() as connection:
-        job_count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
-        profile_count = connection.execute(text("SELECT COUNT(*) FROM crawl_profiles")).scalar_one()
+        job_count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
+        profile_count = connection.execute(
+            text("SELECT COUNT(*) FROM crawl_profiles")
+        ).scalar_one()
     assert job_count == 0
     assert profile_count == 1
 

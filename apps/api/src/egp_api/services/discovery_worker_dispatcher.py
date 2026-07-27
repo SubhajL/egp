@@ -556,8 +556,7 @@ def _validate_discovery_worker_result(
     run_status = str(result.get("run_status") or "").strip().casefold()
     if run_status not in {"succeeded", "partial", "failed"}:
         raise DiscoverySpawnError(
-            f"discover worker returned invalid run_status {run_status!r} "
-            f"for keyword {keyword!r}",
+            f"discover worker returned invalid run_status {run_status!r} for keyword {keyword!r}",
             failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
         )
     raw_failure_code = str(result.get("failure_code") or "").strip()
@@ -729,8 +728,7 @@ class SubprocessDiscoveryDispatcher:
         circuit_snapshot = get_default_rate_limiter().get_circuit_snapshot()
         if circuit_snapshot.is_open:
             _logger.warning(
-                "Host-shared e-GP circuit is open; deferring discovery job claim "
-                "(reset_at=%s)",
+                "Host-shared e-GP circuit is open; deferring discovery job claim (reset_at=%s)",
                 circuit_snapshot.reset_at,
             )
             return DiscoveryPreDispatchResult.blocked(
@@ -950,8 +948,7 @@ class SubprocessDiscoveryDispatcher:
                             "discover worker reported failed for keyword "
                             f"{request.keyword!r}{detail}",
                             failure_code=(
-                                failure_code
-                                or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+                                failure_code or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
                             ),
                         )
                         if self._browser_profile_mode == "persistent":
