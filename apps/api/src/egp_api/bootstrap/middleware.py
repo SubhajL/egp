@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
+from typing import Literal
 
 from fastapi import FastAPI, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from egp_api.auth import authenticate_request
 from egp_api.routes.admin import router as admin_router
@@ -36,6 +39,31 @@ VALIDATION_CODE_OVERRIDES: dict[tuple[str, str, str], str] = {
     ("/v1/rules/profiles", "name", "missing"): "validation_profile_name_required",
     ("/v1/rules/profiles", "keywords", "missing"): "validation_keywords_required",
 }
+_logger = logging.getLogger(__name__)
+
+
+class LivenessResponse(BaseModel):
+    status: Literal["ok"]
+
+
+class ReadinessDatabaseCheckResponse(BaseModel):
+    status: Literal["ok", "error", "unknown"]
+
+
+class ReadinessMigrationCheckResponse(ReadinessDatabaseCheckResponse):
+    pending_count: int | None
+    unexpected_count: int | None
+
+
+class ReadinessChecksResponse(BaseModel):
+    database: ReadinessDatabaseCheckResponse
+    migrations: ReadinessMigrationCheckResponse
+
+
+class ReadinessResponse(BaseModel):
+    status: Literal["ready", "not_ready"]
+    reason: str | None = None
+    checks: ReadinessChecksResponse
 
 
 def _validation_error_code(exc: RequestValidationError, *, path: str) -> str | None:
@@ -121,6 +149,8 @@ def _register_auth_middleware(
             request.url.path
             in {
                 "/health",
+                "/live",
+                "/ready",
                 "/metrics",
                 "/openapi.json",
                 "/docs",
@@ -175,9 +205,31 @@ def _register_auth_middleware(
 
 
 def _register_routes(app: FastAPI) -> None:
-    @app.get("/health")
-    def health():
-        return {"status": "ok"}
+    @app.get("/health", response_model=LivenessResponse)
+    def health() -> LivenessResponse:
+        return LivenessResponse(status="ok")
+
+    @app.get("/live", response_model=LivenessResponse)
+    def live() -> LivenessResponse:
+        return LivenessResponse(status="ok")
+
+    @app.get(
+        "/ready",
+        response_model=ReadinessResponse,
+        responses={503: {"model": ReadinessResponse}},
+    )
+    def ready(response: Response) -> ReadinessResponse:
+        snapshot = app.state.readiness_service.build_readiness_snapshot()
+        if not snapshot.is_ready:
+            _logger.warning(
+                "readiness check failed",
+                extra={
+                    "readiness_reason": snapshot.reason,
+                    "pending_migration_count": snapshot.pending_count,
+                },
+            )
+        response.status_code = 200 if snapshot.is_ready else 503
+        return ReadinessResponse.model_validate(snapshot.to_payload())
 
     app.include_router(auth_router)
     app.include_router(admin_router)

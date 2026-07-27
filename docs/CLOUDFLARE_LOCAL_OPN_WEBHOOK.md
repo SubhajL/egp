@@ -75,16 +75,16 @@ npm run dev
 
 That flow usually starts the API on port `8010`.
 
-### 3. Confirm health locally
+### 3. Confirm readiness locally
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/ready
 ```
 
 or
 
 ```bash
-curl http://127.0.0.1:8010/health
+curl http://127.0.0.1:8010/ready
 ```
 
 ---
@@ -166,7 +166,7 @@ watch the API subprocess logs in that terminal.
 Once the tunnel is up:
 
 ```bash
-curl https://<random>.trycloudflare.com/health
+curl https://<random>.trycloudflare.com/ready
 ```
 
 You should get:

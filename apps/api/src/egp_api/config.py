@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from egp_db.db_utils import is_sqlite_url
 from egp_notifications.service import SmtpConfig
 
 BackgroundRuntimeMode = Literal["embedded", "external"]
@@ -23,6 +24,21 @@ def get_background_runtime_mode(
     if raw in {"embedded", "external"}:
         return raw
     raise RuntimeError("EGP_BACKGROUND_RUNTIME_MODE must be one of: embedded, external")
+
+
+def validate_background_runtime_topology(
+    *,
+    database_url: str,
+    background_runtime_mode: BackgroundRuntimeMode,
+) -> BackgroundRuntimeMode:
+    """Reject the in-process background topology for PostgreSQL deployments."""
+
+    if not is_sqlite_url(database_url) and background_runtime_mode != "external":
+        raise RuntimeError(
+            "PostgreSQL requires EGP_BACKGROUND_RUNTIME_MODE=external; "
+            "embedded background execution is supported only for SQLite"
+        )
+    return background_runtime_mode
 
 
 def get_discovery_worker_count(override: int | str | None = None) -> int:
@@ -66,14 +82,11 @@ def get_discovery_lease_heartbeat_seconds(
         override=override,
     )
     resolved_lease_seconds = (
-        get_discovery_lease_seconds()
-        if lease_seconds is None
-        else float(lease_seconds)
+        get_discovery_lease_seconds() if lease_seconds is None else float(lease_seconds)
     )
     if heartbeat_seconds >= resolved_lease_seconds:
         raise RuntimeError(
-            "EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS must be less than "
-            "EGP_DISCOVERY_LEASE_SECONDS"
+            "EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS must be less than EGP_DISCOVERY_LEASE_SECONDS"
         )
     return heartbeat_seconds
 

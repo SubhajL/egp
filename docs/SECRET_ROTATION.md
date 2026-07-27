@@ -230,7 +230,7 @@ The password embedded in `DATABASE_URL=postgresql://egp:PASSWORD@host/db`.
   2. Edit `/etc/egp/egp.env` and reconstruct `DATABASE_URL` with the new
      password.
 - **Restart**: `sudo systemctl restart egp-api.service egp-worker@*.service`
-- **Verify**: API health endpoint returns 200; tail journalctl for both
+- **Verify**: API `/ready` endpoint returns 200; tail journalctl for both
   services to confirm no `password authentication failed` errors.
 - **Window**: Postgres only enforces one password per role. Plan a brief
   restart window (~30s) where API and workers restart together. Connections

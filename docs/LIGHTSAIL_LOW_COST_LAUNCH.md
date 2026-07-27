@@ -22,8 +22,9 @@ The current repo is not shaped like a pure scale-to-zero/serverless app.
 From the checked-in code:
 
 - background execution is controlled by `EGP_BACKGROUND_RUNTIME_MODE`
-- in `embedded` mode, the FastAPI app starts lifespan background loops from [`apps/api/src/egp_api/bootstrap/background.py`](../apps/api/src/egp_api/bootstrap/background.py)
-- in `external` mode, standalone executor processes run webhook delivery and discovery dispatch outside the HTTP server
+- PostgreSQL requires `external` mode, where standalone executor processes run webhook delivery
+  and discovery dispatch outside the HTTP server
+- `embedded` mode remains available only for SQLite local development
 - discovery dispatch still spawns worker subprocesses locally via `_make_discover_spawner(...)`
 - worker jobs run through `python -m egp_worker.main`
 - browser-driven discovery lives in the worker package and expects a normal host/container runtime
@@ -364,24 +365,27 @@ The production-oriented Compose file runs background work outside the API proces
 
 This avoids duplicate queue processing while keeping all services on one cheap host.
 
-### Rollback to embedded mode
+### Roll back the application release
 
-If you need to simplify the runtime during an incident:
+PostgreSQL API startup requires the external background topology. During an incident, keep
+`EGP_BACKGROUND_RUNTIME_MODE=external` and roll back the application release:
 
-1. stop the executor services:
-
-```bash
-docker compose --env-file /etc/egp/egp.env stop webhook-executor discovery-executor
-```
-
-2. set `EGP_BACKGROUND_RUNTIME_MODE=embedded` in `/etc/egp/egp.env`
-3. restart the API:
+1. stop the API and executor services:
 
 ```bash
-docker compose --env-file /etc/egp/egp.env up -d api
+docker compose --env-file /etc/egp/egp.env stop api webhook-executor discovery-executor
 ```
 
-In embedded mode the API resumes the legacy in-process background behavior. Do not leave external executors running while the API is in embedded mode.
+2. check out the previous known-good release SHA and restart the same topology:
+
+```bash
+git switch --detach <previous-release-sha>
+docker compose --env-file /etc/egp/egp.env up -d --build api webhook-executor discovery-executor
+curl -fsS https://api.yourdomain.com/ready
+```
+
+Do not enable embedded mode against PostgreSQL; startup rejects it to prevent duplicate queue
+ownership.
 
 ---
 
@@ -535,7 +539,9 @@ EGP_DISCOVERY_WORKER_COUNT=1 \
   ./scripts/check_launch_gates.sh
 ```
 
-Expect **PASS** for /metrics reachable, Chrome PID cap, project/document upsert outcomes, and 429-rate gate. **SKIP** is acceptable for the rate-limiter-engaging and cross-tenant DB gates until you have driven at least one real crawl.
+Expect **PASS** for `/live`, `/ready`, `/metrics`, Chrome PID cap, project/document upsert outcomes,
+and the 429-rate gate. **SKIP** is acceptable for the rate-limiter-engaging and cross-tenant DB
+gates until you have driven at least one real crawl.
 
 Before any ramp of `EGP_DISCOVERY_WORKER_COUNT` past 1, also run the Mode C dry run against a local stub:
 
@@ -575,8 +581,7 @@ That means:
 
 - user creates or updates a profile / recrawl action
 - the API queues discovery jobs
-- in external mode, the discovery executor claims jobs
-- in embedded mode, the API dispatch loop claims jobs
+- the external discovery executor claims jobs
 - the active discovery dispatch path spawns a worker subprocess per keyword
 
 This behavior is already in the code. The checked-in Compose runtime now runs the dispatch loop as a separate always-on executor service while staying on the same VM.

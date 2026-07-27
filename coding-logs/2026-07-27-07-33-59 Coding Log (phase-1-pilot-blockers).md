@@ -655,3 +655,167 @@ LOW
 - API and worker deployments must run the checked-in migration runner before startup.
 - Formal disposition: no product-code findings require remediation. Proceed to commit and PR after
   restaging this appended review artifact.
+
+## U2 merge and local landing (2026-07-27 08:11:04 +0700)
+
+- PR: `#179`, `https://github.com/SubhajL/egp/pull/179`.
+- Reviewed head: `dd1e7c939bac53cdccc20a9b80be3439d4323a90`.
+- Required checks: all six failed with zero steps; exact annotation remained
+  `The job was not started because your account is locked due to a billing issue.`
+- Admin squash merge: `3fa826a5f0c878167d702c9d345a8e972d8573b1`.
+- `gh pr merge` completed the remote merge, then returned nonzero only because it could not check
+  out `main` in the isolated worktree while the primary worktree owned that branch.
+- Primary checkout fast-forwarded without touching its three protected dirty files.
+- Verified local `main == origin/main == 3fa826a5f0c878167d702c9d345a8e972d8573b1`.
+- Exact merged-SHA post-merge contract returned `27 passed`; touched-scope Ruff passed.
+- Disposition: U2 is landed. E0 and Gate S1 remain blocked independently.
+
+## Implementation (2026-07-27 08:24:12 +0700) - U3 readiness and runtime topology
+
+### Goal
+
+Separate database-independent liveness from admission readiness, require the exact checked-in
+migration set before traffic, and reject every PostgreSQL API topology except explicit external
+background execution.
+
+### TDD evidence
+
+- RED command:
+  `python -m pytest tests/phase1/test_api_readiness.py
+  tests/phase2/test_background_runtime_mode.py::test_postgres_requires_explicit_external_mode
+  tests/phase2/test_background_runtime_mode.py::test_sqlite_defaults_to_embedded_background_mode
+  tests/phase1/test_dev_postgres.py::test_create_phase1_smoke_app_uses_local_callback_secret
+  tests/operations/test_api_readiness_assets.py -q`
+- RED result: `10 failed, 2 passed`.
+- Confirmed causes: `/live` and `/ready` were absent and auth-protected; PostgreSQL still defaulted
+  to embedded execution; the PostgreSQL smoke caller did not declare external mode; Compose and
+  the image still probed `/health`; the launch checker did not distinguish liveness from readiness.
+
+### What changed
+
+- Added `ReadinessService`, which performs a two-second PostgreSQL connection/statement-bounded
+  probe and compares the full `schema_migrations` ledger with the exact checked-in SQL filenames.
+- Added public `/live` and `/ready` endpoints. `/health` keeps its prior payload and OpenAPI
+  operation ID as a compatibility alias for liveness.
+- Readiness returns stable reasons for unreachable databases, absent ledgers, missing migrations,
+  unexpected migration history, and unavailable manifests. It logs the reason and pending count
+  without exposing driver errors or connection details.
+- PostgreSQL API startup now accepts only `EGP_BACKGROUND_RUNTIME_MODE=external`; SQLite retains
+  its embedded default. The PostgreSQL smoke app declares external mode explicitly.
+- Both Compose API health checks and the image health check now use `/ready`; both env templates
+  select external mode.
+- The launch gate checker independently probes `/live` and `/ready`. Deployment, rollback,
+  incident, secret-rotation, webhook, remote-crawler, frontend-handoff, and local-run guidance now
+  use readiness for admission and preserve `/health` only as a documented compatibility alias.
+- Regenerated OpenAPI and TypeScript API contracts with typed liveness/readiness responses and an
+  explicit HTTP 503 readiness response.
+
+### GREEN and regression evidence
+
+- Focused GREEN after implementation: `13 passed`, expanded to `32 passed` after exact-history,
+  absent-ledger, structured-log, explicit-environment, and compatibility-operation-ID coverage.
+- Affected matrix: `111 passed` three consecutive times.
+- Full repository Python run: `1258 passed, 112 warnings`.
+- Repository Ruff, touched-file format check, compileall, both Compose config validations, shell
+  syntax checks, and diff whitespace check passed.
+- OpenAPI/TypeScript generated contracts are current.
+- Web unit tests: 12 files and 51 tests passed; typecheck, lint, and production build passed.
+
+### Wiring verification
+
+| Component | Runtime entry point | Registration/caller | Schema |
+|---|---|---|---|
+| Liveness | `GET /live`, compatibility `GET /health` | auth bypass plus bootstrap route | none |
+| Readiness | `GET /ready` | `app.state.readiness_service` in service bootstrap | `schema_migrations` |
+| Migration manifest | readiness service | `packages/db/src/migrations/*.sql` exact filenames | ledger versions |
+| Runtime topology | `create_app()` | config validation after resolved database URL | none |
+| Container admission | API image and both Compose files | Docker/Compose health checks | readiness response |
+| Operator admission | `scripts/check_launch_gates.sh` | separate live/ready curl probes | readiness response |
+
+### Behavior and risk
+
+- Liveness remains database-independent; traffic admission now fails closed until DB and schema are
+  exactly ready.
+- Readiness performs no DDL and emits no database credentials or raw driver failures.
+- PostgreSQL embedded mode is intentionally removed. Rollback keeps the external topology and
+  rolls back the release SHA instead.
+- The first post-implementation GREEN attempt accidentally imported editable packages from the
+  primary checkout. All authoritative test runs explicitly placed the isolated worktree sources
+  first on `PYTHONPATH`; generated contracts used the same source path.
+- E0 and Gate S1 remain blocked by the GitHub billing lock.
+
+## Review (2026-07-27 08:34:30 +0700) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase1-u1`
+- Branch: `feat/readiness-topology`
+- Scope: staged U3 changes at base `3fa826a5f0c878167d702c9d345a8e972d8573b1`
+- Commands Run: staged core/test/operations/generated-contract patch inspection; runtime entry
+  point and background-mode caller inventories; stale health/embedded documentation searches;
+  focused and affected tests; full Python suite; Ruff/format/compile; Compose and shell validation;
+  generated contract check; web unit/type/lint/build
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No unresolved findings. During QCHECK, the first alias implementation changed the established
+  `/health` OpenAPI operation ID. It was split into a dedicated compatibility handler, the original
+  `health_health_get` ID was restored, and a regression assertion plus regenerated contract now
+  lock it.
+
+### Open Questions / Assumptions
+
+- Assumption: an applied migration version absent from the current checkout means the running
+  binary is older than the database and must fail readiness, even if all current filenames are
+  present.
+- Assumption: SQLite embedded mode is a local/test compatibility path only; every PostgreSQL API
+  deployment owns background execution through the external executor services.
+- Residual risk: each failed container probe emits one structured warning. This is intentional for
+  admission diagnosis but operators should aggregate identical failures during a prolonged outage.
+- Residual risk: GitHub required jobs still execute zero steps because of the account billing lock;
+  local gates cannot certify the remote runner or image-publish environment.
+
+### Recommended Tests / Validation
+
+- Keep unreachable, absent-ledger, pending, unexpected-history, and exact-migrated readiness states
+  in required Python gates.
+- Keep both Compose parsing tests and the generated OpenAPI/TypeScript contract check.
+- After deployment, verify `/live` remains green while a controlled database denial makes `/ready`
+  red, then restore the DB and prove `/ready` green on the exact deployed SHA.
+- Rerun real required GitHub checks when E0 is restored.
+
+### Rollout Notes
+
+- Apply all checked-in migrations before starting the API.
+- Set `EGP_BACKGROUND_RUNTIME_MODE=external`; PostgreSQL embedded or omitted mode now fails startup.
+- Roll back the release SHA without changing the external executor topology.
+- Formal disposition: no unresolved product-code findings require remediation. Proceed to final
+  exact-tree gates, commit, and PR.
+
+## U3 final pre-commit gates (2026-07-27 08:38:41 +0700)
+
+- Exact reviewed tree full Python suite: `1258 passed, 112 warnings`.
+- `ruff check apps packages tests scripts`: passed.
+- Touched Python `ruff format --check`: passed.
+- `python -m compileall -q apps packages`: passed.
+- Production and local-development Compose configurations: passed.
+- `bash -n scripts/check_launch_gates.sh scripts/run_local.sh`: passed.
+- Staged diff whitespace check: passed.
+- Generated OpenAPI/TypeScript contract check: current.
+- Web unit tests: 12 files and 51 tests passed.
+- Web typecheck, lint, and production build: passed.
+- QCHECK/formal `g-check`: no unresolved findings.

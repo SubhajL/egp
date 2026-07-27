@@ -84,7 +84,9 @@ def test_discovery_lease_configuration_requires_heartbeat_before_expiry(
     monkeypatch.setenv("EGP_DISCOVERY_LEASE_SECONDS", "30")
     monkeypatch.setenv("EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS", "30")
 
-    with pytest.raises(RuntimeError, match="must be less than EGP_DISCOVERY_LEASE_SECONDS"):
+    with pytest.raises(
+        RuntimeError, match="must be less than EGP_DISCOVERY_LEASE_SECONDS"
+    ):
         get_discovery_lease_heartbeat_seconds(
             lease_seconds=get_discovery_lease_seconds()
         )
@@ -108,9 +110,7 @@ def test_discovery_executor_compose_wires_runtime_reporter(
     compose_name: str,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    compose = yaml.safe_load(
-        (repo_root / compose_name).read_text(encoding="utf-8")
-    )
+    compose = yaml.safe_load((repo_root / compose_name).read_text(encoding="utf-8"))
     environment = compose["services"]["discovery-executor"]["environment"]
 
     assert environment["EGP_INTERNAL_API_BASE_URL"] == "http://api:8000"
@@ -136,29 +136,50 @@ def test_create_app_external_background_mode_disables_api_background_work(
     assert app.state.discovery_dispatch_route_kick_enabled is False
 
 
-def test_create_app_embedded_background_mode_preserves_database_defaults(
+def test_postgres_requires_explicit_external_mode(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("EGP_DISCOVERY_WORKER_COUNT", "4")
-    monkeypatch.setenv("EGP_DISCOVERY_LEASE_SECONDS", "120")
-    monkeypatch.setenv("EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS", "20")
+    monkeypatch.delenv("EGP_BACKGROUND_RUNTIME_MODE", raising=False)
 
+    with pytest.raises(RuntimeError, match="PostgreSQL.*external"):
+        create_app(
+            artifact_root=tmp_path,
+            database_url="postgresql://egp:egp_dev@localhost:5432/egp",
+            jwt_secret=JWT_SECRET,
+            payment_callback_secret="runtime-callback-secret",
+        )
+
+    with pytest.raises(RuntimeError, match="PostgreSQL.*external"):
+        create_app(
+            artifact_root=tmp_path,
+            database_url="postgresql://egp:egp_dev@localhost:5432/egp",
+            jwt_secret=JWT_SECRET,
+            payment_callback_secret="runtime-callback-secret",
+            background_runtime_mode="embedded",
+        )
+
+    monkeypatch.setenv("EGP_BACKGROUND_RUNTIME_MODE", "external")
     app = create_app(
         artifact_root=tmp_path,
         database_url="postgresql://egp:egp_dev@localhost:5432/egp",
         jwt_secret=JWT_SECRET,
         payment_callback_secret="runtime-callback-secret",
-        background_runtime_mode="embedded",
+    )
+
+    assert app.state.background_runtime_mode == "external"
+
+
+def test_sqlite_defaults_to_embedded_background_mode(tmp_path) -> None:
+    app = create_app(
+        artifact_root=tmp_path,
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'sqlite-topology.sqlite3'}",
+        jwt_secret=JWT_SECRET,
+        payment_callback_secret="runtime-callback-secret",
+        bootstrap_schema=True,
     )
 
     assert app.state.background_runtime_mode == "embedded"
-    assert app.state.webhook_delivery_processor_enabled is True
-    assert app.state.discovery_dispatch_processor_enabled is True
-    assert app.state.discovery_dispatch_route_kick_enabled is True
-    assert app.state.discovery_dispatch_processor.worker_count == 4
-    assert app.state.discovery_dispatch_processor.lease_seconds == 120.0
-    assert app.state.discovery_dispatch_processor.lease_heartbeat_seconds == 20.0
 
 
 def test_create_app_embedded_dispatch_preserves_typed_preparation_result(
