@@ -431,7 +431,7 @@ def get_jwt_secret(override: str | None = None) -> str | None:
     if override is not None:
         value = override.strip()
         return value or None
-    raw = os.getenv("EGP_JWT_SECRET", "").strip() or os.getenv("SUPABASE_JWT_SECRET", "").strip()
+    raw = os.getenv("EGP_JWT_SECRET", "").strip()
     return raw or None
 
 

@@ -105,6 +105,10 @@ NEXT_PUBLIC_EGP_TENANT_ID=11111111-1111-1111-1111-111111111111
 Current FE browser auth is cookie-session based. Do not reintroduce `NEXT_PUBLIC_EGP_API_BEARER_TOKEN` for user-facing login flows.
 For normal tenant-scoped pages, do not pass `tenant_id` from the frontend; rely on session context. Keep explicit `tenant_id` only for support-mode cross-tenant admin flows.
 
+Machine bearer tokens must be signed with `EGP_JWT_SECRET` and carry direct `sub`, `tenant_id`,
+and optional `role` claims. Nested `user_metadata` and `app_metadata` values are never
+authorization inputs.
+
 ---
 
 ## Current API Surface
