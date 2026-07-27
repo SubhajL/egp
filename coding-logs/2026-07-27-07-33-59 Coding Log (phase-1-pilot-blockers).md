@@ -1398,3 +1398,78 @@ LOW
   web `sha256:4da61432f0cd02a0782c18cc401109a14e51825892624a1ad091da9055b34295`.
   API and worker frozen-runtime import smokes passed.
 - Final formal disposition: no unresolved QCHECK or g-check finding blocks the U5 commit.
+
+## 2026-07-27 11:06:35 +0700 — U5 Vercel preview remediation
+
+- PR #184 opened at exact head
+  `fc140ee1119b4309b2748e24c397c405862e1a06`.
+- All eight GitHub-hosted checks created zero source steps and returned the exact annotation:
+  `The job was not started because your account is locked due to a billing issue.`
+- Vercel was a separate real failure. Deployment
+  `dpl_DuQn1cMEzm7oRkzUx5St8NbmAHJj` cloned exact `fc140ee`, installed successfully, and completed
+  Next 16.2.12 Turbopack compilation/type/static generation, but Vercel's post-build adapter emitted
+  no deployable output and the deployment ended `ERROR` without an error code/message. The last
+  exact-main Next 15/webpack deployment emitted its expected lambdas and completed.
+- TDD RED:
+  `test_next_16_release_build_uses_vercel_compatible_webpack` first failed on the package build
+  command, then on the explicit `vercel.json` command.
+- Remediation: both local/Docker and Vercel release builds now use Next 16's supported
+  `next build --webpack` path while retaining the patched Next 16.2.12 dependency.
+- Focused GREEN: release-gate suite `8 passed`; webpack production build, TypeScript, ESLint, and
+  `51` Vitest tests passed locally.
+- A replacement Vercel preview must emit real deployable outputs and pass before merge.
+
+## Review (2026-07-27 11:08:00 +0700) - U5 Vercel remediation
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged follow-up against committed U5 SHA
+  `fc140ee1119b4309b2748e24c397c405862e1a06`
+- Commands Run: failed/exact-main Vercel deployment metadata and bounded logs; targeted staged
+  diff; focused release-gate pytest; Next 16.2.12 webpack build; TypeScript; ESLint; Vitest;
+  Claude Code read-only focused review
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The static contract proves both release entry points select webpack; the replacement Vercel
+  deployment is the required behavioral proof that deployable outputs are restored.
+- Development remains on Turbopack through `next dev`; only production release builds use webpack.
+  This is intentional because the observed failure was in Vercel post-build packaging, not local
+  development.
+
+### Recommended Tests / Validation
+
+- Require the replacement Vercel preview to complete `READY` with non-empty lambda/static outputs.
+- Re-run final lint, focused Python tests, unit/browser tests, production audit, and web Docker build
+  on the follow-up commit.
+
+### Rollout Notes
+
+- The fix changes only the Next production bundler and does not alter routes, API contracts, or
+  production environment values.
+- Formal disposition: no unresolved finding blocks the follow-up commit; merge remains blocked on
+  replacement preview evidence.
+- Final local follow-up gates passed: focused release contracts `8 passed` three consecutive times;
+  Ruff lint/format; TypeScript; ESLint; `51` Vitest tests; clean production npm audit; no
+  all-dependency critical finding; and webpack web image
+  `sha256:e2aa179525163676c194c39989761b2e947847c5ee018b878025ba3e6021509d`.

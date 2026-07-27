@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "./scripts/dev.sh",
     "dev:web": "./scripts/dev-web.sh",
-    "build": "rm -rf .next && next build",
+    "build": "rm -rf .next && next build --webpack",
     "start": "node .next/standalone/server.js",
     "lint": "eslint src tests --max-warnings=0",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",

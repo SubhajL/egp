@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -195,3 +196,16 @@ def test_next_type_declarations_do_not_capture_playwright_dist_dir() -> None:
     next_env = (REPO_ROOT / "apps/web/next-env.d.ts").read_text(encoding="utf-8")
 
     assert ".next-playwright" not in next_env
+
+
+def test_next_16_release_build_uses_vercel_compatible_webpack() -> None:
+    package_config = json.loads(
+        (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
+    )
+    vercel_config = json.loads(
+        (REPO_ROOT / "apps/web/vercel.json").read_text(encoding="utf-8")
+    )
+    release_build = "rm -rf .next && next build --webpack"
+
+    assert package_config["scripts"]["build"] == release_build
+    assert vercel_config["buildCommand"] == release_build
