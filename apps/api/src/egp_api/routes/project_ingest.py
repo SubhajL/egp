@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_internal_worker_token
@@ -20,7 +20,11 @@ from egp_shared_types.project_events import (
 )
 
 
-router = APIRouter(prefix="/internal/worker/projects", tags=["internal-worker"])
+router = APIRouter(
+    prefix="/internal/worker/projects",
+    tags=["internal-worker"],
+    dependencies=[Depends(require_internal_worker_token)],
+)
 
 
 class DiscoverProjectIngestRequest(BaseModel):
@@ -91,7 +95,6 @@ def ingest_discovered_project(
     response: Response,
 ) -> DiscoverProjectIngestResponse:
     service = _service_from_request(request)
-    require_internal_worker_token(request)
     resolved_tenant_id = normalize_uuid_string(payload.tenant_id)
     try:
         result = service.ingest_discovered_project(
@@ -124,7 +127,6 @@ def ingest_close_check_project(
     request: Request,
 ) -> CloseCheckProjectIngestResponse:
     service = _service_from_request(request)
-    require_internal_worker_token(request)
     resolved_tenant_id = normalize_uuid_string(payload.tenant_id)
     try:
         project = service.ingest_close_check_event(
@@ -150,7 +152,6 @@ def ingest_project_status_update(
     request: Request,
 ) -> ProjectStatusUpdateResponse:
     service = _service_from_request(request)
-    require_internal_worker_token(request)
     resolved_tenant_id = normalize_uuid_string(payload.tenant_id)
     try:
         project = service.ingest_status_update_event(

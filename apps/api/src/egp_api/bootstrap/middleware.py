@@ -14,6 +14,9 @@ from egp_api.auth import authenticate_request
 from egp_api.routes.admin import router as admin_router
 from egp_api.routes.auth import router as auth_router
 from egp_api.routes.billing import router as billing_router
+from egp_api.routes.crawler_runtime import (
+    internal_router as crawler_runtime_internal_router,
+)
 from egp_api.routes.crawler_runtime import router as crawler_runtime_router
 from egp_api.routes.dashboard import router as dashboard_router
 from egp_api.routes.documents import router as documents_router
@@ -130,10 +133,8 @@ def _register_auth_middleware(
                 "/v1/auth/password/reset",
                 "/v1/auth/invite/accept",
                 "/v1/auth/email/verify",
-                "/internal/worker/projects/discover",
-                "/internal/worker/projects/close-check",
-                "/internal/worker/crawler-runtime/heartbeat",
             }
+            or request.url.path.startswith("/internal/worker/")
             or (
                 request.url.path.startswith("/v1/billing/payment-requests/")
                 and request.url.path.endswith("/callbacks")
@@ -181,6 +182,7 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(billing_router)
+    app.include_router(crawler_runtime_internal_router)
     app.include_router(crawler_runtime_router)
     app.include_router(dashboard_router)
     app.include_router(documents_router)

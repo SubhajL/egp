@@ -6,7 +6,7 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from pydantic import BaseModel, Field
 
 from egp_api.auth import require_internal_worker_token, require_run_operator_role
@@ -14,6 +14,11 @@ from egp_shared_types.enums import CrawlerBlockerCode
 
 
 router = APIRouter(tags=["crawler-runtime"])
+internal_router = APIRouter(
+    prefix="/internal/worker",
+    tags=["crawler-runtime"],
+    dependencies=[Depends(require_internal_worker_token)],
+)
 
 
 class CrawlerRuntimeResponse(BaseModel):
@@ -47,8 +52,8 @@ class CrawlerRuntimeHeartbeatRequest(BaseModel):
     circuit_reset_at: datetime | None = None
 
 
-@router.post(
-    "/internal/worker/crawler-runtime/heartbeat",
+@internal_router.post(
+    "/crawler-runtime/heartbeat",
     response_model=CrawlerRuntimeResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
@@ -56,7 +61,6 @@ def record_crawler_runtime_heartbeat(
     payload: CrawlerRuntimeHeartbeatRequest,
     request: Request,
 ) -> CrawlerRuntimeResponse:
-    require_internal_worker_token(request)
     snapshot = request.app.state.crawler_runtime_repository.record_heartbeat(
         agent_id=payload.agent_id,
         runtime_mode=payload.runtime_mode,
