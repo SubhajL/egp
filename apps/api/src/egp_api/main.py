@@ -155,6 +155,7 @@ def create_app(
     web_allowed_origins: list[str] | None = None,
     internal_worker_token: str | None = None,
     background_runtime_mode: BackgroundRuntimeMode | str | None = None,
+    bootstrap_schema: bool = False,
 ) -> FastAPI:
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
     resolved_web_allow_origin_regex = get_web_allow_origin_regex(None)
@@ -177,6 +178,7 @@ def create_app(
         onedrive_oauth_config=onedrive_oauth_config,
         onedrive_client=onedrive_client,
         internal_worker_token=internal_worker_token,
+        bootstrap_schema=bootstrap_schema,
     )
     app = FastAPI(
         title="e-GP Intelligence Platform",

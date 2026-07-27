@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_worker import main as worker_main
 
 try:

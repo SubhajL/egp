@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"

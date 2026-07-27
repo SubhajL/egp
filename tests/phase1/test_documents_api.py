@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.routes.documents import _build_content_disposition
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig

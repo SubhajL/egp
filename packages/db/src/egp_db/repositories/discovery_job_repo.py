@@ -726,7 +726,7 @@ def create_discovery_job_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlDiscoveryJobRepository:
     return SqlDiscoveryJobRepository(
         database_url=database_url,

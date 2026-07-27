@@ -87,7 +87,7 @@ def create_billing_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlBillingRepository:
     return SqlBillingRepository(
         database_url=database_url,

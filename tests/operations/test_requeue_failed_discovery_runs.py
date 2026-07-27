@@ -9,7 +9,7 @@ import sys
 import pytest
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 from egp_db.migration_runner import apply_migrations
 

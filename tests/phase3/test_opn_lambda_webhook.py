@@ -10,7 +10,7 @@ from decimal import Decimal
 from fastapi.testclient import TestClient
 
 from egp_api.lambda_handlers import opn_webhook, runtime_config
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.payment_provider import CreatedPaymentRequest, ParsedPaymentCallback
 from egp_shared_types.enums import (
     BillingPaymentMethod,

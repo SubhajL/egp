@@ -355,7 +355,7 @@ def create_crawler_runtime_repository(
     *,
     database_url: str | None = None,
     engine: Engine | None = None,
-    bootstrap_schema: bool = True,
+    bootstrap_schema: bool = False,
 ) -> SqlCrawlerRuntimeRepository:
     return SqlCrawlerRuntimeRepository(
         database_url=database_url,

@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_db.repositories.notification_repo import SqlNotificationRepository
 from egp_db.repositories.project_repo import (
     SqlProjectRepository,
@@ -367,6 +367,7 @@ def test_close_check_workflow_ingests_revisited_documents_without_close_match(
     monkeypatch, tmp_path
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    SqlRunRepository(database_url=database_url, bootstrap_schema=True)
     sink = FakeProjectEventSink()
     captured: dict[str, object] = {}
 
@@ -418,6 +419,7 @@ def test_close_check_workflow_updates_prelim_pricing_status_with_revisited_docum
     monkeypatch, tmp_path
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1-prelim.sqlite3'}"
+    SqlRunRepository(database_url=database_url, bootstrap_schema=True)
     sink = FakeProjectEventSink()
     captured: dict[str, object] = {}
 

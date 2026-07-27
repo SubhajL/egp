@@ -22,9 +22,9 @@ from egp_api.main import (
     _discovery_dispatch_route_kick_enabled,
     _logger,
     _make_discover_spawner,
-    create_app,
 )
 from egp_api.services.discovery_dispatch import NonRetriableDiscoveryDispatchError
+from tests.support.app_factory import create_test_app as create_app
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 

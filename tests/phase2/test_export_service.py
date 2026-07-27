@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy import text
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.export_service import ExportService
 from egp_db.repositories.document_repo import FilesystemDocumentRepository
 from egp_db.repositories.project_repo import (

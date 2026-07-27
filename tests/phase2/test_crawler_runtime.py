@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 from jose import jwt
 
-from egp_api.main import create_app
+from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.crawler_runtime_reporter import CrawlerRuntimeReporter
 from egp_crawler_core.recovery_policy import evaluate_recovery_decision
 from egp_db.repositories.crawler_runtime_repo import create_crawler_runtime_repository
@@ -69,6 +69,7 @@ def test_internal_heartbeat_requires_worker_token(tmp_path) -> None:
 def test_heartbeat_status_becomes_offline_when_stale(tmp_path) -> None:
     repository = create_crawler_runtime_repository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'runtime-stale.sqlite3'}",
+        bootstrap_schema=True,
     )
     reported_at = datetime(2026, 7, 23, 1, 0, tzinfo=UTC)
     repository.record_heartbeat(
