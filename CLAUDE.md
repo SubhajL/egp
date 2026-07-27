@@ -52,6 +52,10 @@ Subdirectory CLAUDE.md files extend these rules with package-specific context.
 # Bootstrap isolated Python environment
 ./scripts/bootstrap_python_env.sh
 
+# If uv 0.11.32 is already installed, reproduce the same environment directly
+uv sync --frozen --all-packages --all-extras
+uv run --frozen python -m compileall apps packages
+
 # Start infrastructure (PostgreSQL)
 docker compose up -d postgres
 
@@ -119,7 +123,9 @@ cd apps/web && npx eslint src/ --fix
 ### Quality Gates (run before PR)
 
 ```bash
-./.venv/bin/python -m ruff check apps/ packages/ && ./.venv/bin/python -m pytest apps/ packages/ -v && cd apps/web && npx tsc --noEmit && npx eslint src/
+uv run --frozen ruff check apps/ packages/ tests/ scripts/
+uv run --frozen python -m pytest tests/ apps/ packages/ -v
+cd apps/web && npx tsc --noEmit && npx eslint src/
 ```
 
 ---

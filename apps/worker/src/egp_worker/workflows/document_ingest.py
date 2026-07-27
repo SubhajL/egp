@@ -89,8 +89,7 @@ def ingest_document_artifact(
 ) -> StoreDocumentResult:
     resolved_artifact_root = Path(artifact_root)
     resolved_database_url = (
-        database_url
-        or f"sqlite+pysqlite:///{resolved_artifact_root / 'document_metadata.sqlite3'}"
+        database_url or f"sqlite+pysqlite:///{resolved_artifact_root / 'document_metadata.sqlite3'}"
     )
     if repository is None:
         managed_artifact_store = create_artifact_store(

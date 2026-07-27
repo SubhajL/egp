@@ -67,7 +67,9 @@ CRAWL_PROFILES_TABLE = Table(
     Column("tenant_id", UUID_SQL_TYPE, nullable=False),
     Column("name", String, nullable=False),
     Column("profile_type", String, nullable=False),
-    Column("enabled_by_user", Boolean, nullable=False, default=True, server_default=true()),
+    Column(
+        "enabled_by_user", Boolean, nullable=False, default=True, server_default=true()
+    ),
     Column("is_active", Boolean, nullable=False, default=True, server_default=true()),
     Column("max_pages_per_keyword", Integer, nullable=False, default=15),
     Column("close_consulting_after_days", Integer, nullable=False, default=30),
@@ -271,8 +273,7 @@ class SqlProfileRepository:
         )
         if exclude_profile_id is not None:
             statement = statement.where(
-                CRAWL_PROFILES_TABLE.c.id
-                != normalize_uuid_string(exclude_profile_id)
+                CRAWL_PROFILES_TABLE.c.id != normalize_uuid_string(exclude_profile_id)
             )
         if connection.execute(statement.limit(1)).first() is not None:
             raise ProfileNameConflictError("profile name already exists")

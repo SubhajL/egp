@@ -207,11 +207,7 @@ def _resolve_enabled_state(
     is_active: bool | None,
     default: bool | None,
 ) -> bool | None:
-    if (
-        enabled_by_user is not None
-        and is_active is not None
-        and enabled_by_user != is_active
-    ):
+    if enabled_by_user is not None and is_active is not None and enabled_by_user != is_active:
         raise ValueError("profile enabled state conflict")
     if enabled_by_user is not None:
         return enabled_by_user

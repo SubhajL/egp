@@ -5,13 +5,13 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from tests.support.app_factory import create_test_app as create_app
 from egp_shared_types.enums import DiscoveryFailureCode
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
-JWT_SECRET = "phase2-rules-secret"
+JWT_SECRET = "phase2-rules-test-secret-at-least-32-bytes"
 
 
 class RecordingWakeSignal:
@@ -761,14 +761,18 @@ def test_admin_can_update_profile_keywords_and_deactivate_from_rules_api(
 
 
 def test_profile_update_does_not_queue_keyword_owned_by_older_group(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-update-dedupe.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-update-dedupe.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
         )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     for profile_id, name, keywords in (
         (
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -803,15 +807,19 @@ def test_profile_update_does_not_queue_keyword_owned_by_older_group(tmp_path) ->
 
     assert response.status_code == 200
     with client.app.state.db_engine.connect() as connection:
-        jobs = connection.execute(
-            text(
-                """
+        jobs = (
+            connection.execute(
+                text(
+                    """
                 SELECT profile_id, keyword
                 FROM discovery_jobs
                 WHERE trigger_type = 'profile_updated'
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     assert jobs == []
 
 
@@ -939,7 +947,9 @@ def test_profile_creation_respects_active_keyword_limit(tmp_path) -> None:
 def test_over_limit_configuration_allows_rename_but_blocks_new_enabled_group(
     tmp_path,
 ) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-over-limit-edit.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-over-limit-edit.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -1032,7 +1042,9 @@ def test_profile_creation_denies_before_outbox_insert_when_keyword_queue_cap_exc
 
 
 def test_duplicate_keyword_group_does_not_consume_another_queue_slot(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-create-dedupe-cap.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-create-dedupe-cap.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -1060,8 +1072,12 @@ def test_duplicate_keyword_group_does_not_consume_another_queue_slot(tmp_path) -
     assert first.status_code == 201
     assert second.status_code == 201
     with client.app.state.db_engine.connect() as connection:
-        profile_count = connection.execute(text("SELECT COUNT(*) FROM crawl_profiles")).scalar_one()
-        job_count = connection.execute(text("SELECT COUNT(*) FROM discovery_jobs")).scalar_one()
+        profile_count = connection.execute(
+            text("SELECT COUNT(*) FROM crawl_profiles")
+        ).scalar_one()
+        job_count = connection.execute(
+            text("SELECT COUNT(*) FROM discovery_jobs")
+        ).scalar_one()
     assert profile_count == 2
     assert job_count == 1
 
@@ -1204,7 +1220,9 @@ def test_manual_recrawl_queues_and_wakes_active_free_trial_keyword(tmp_path) -> 
 def test_manual_recrawl_attaches_existing_profile_created_job(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-attach.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
     _seed_active_subscription(client, plan_code="free_trial", keyword_limit=1)
@@ -1253,10 +1271,14 @@ def test_manual_recrawl_attaches_existing_profile_created_job(tmp_path) -> None:
 def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-status.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     profile_id = "abababab-abab-abab-abab-abababababab"
     keywords = [
         "queued",
@@ -1413,10 +1435,7 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
     assert jobs_by_keyword["running"]["run_status"] == "running"
     assert jobs_by_keyword["retrying"]["attempt_count"] == 1
     assert jobs_by_keyword["retrying"]["last_error"] == "site error"
-    assert (
-        jobs_by_keyword["retrying"]["last_error_code"]
-        == "search_page_state_error"
-    )
+    assert jobs_by_keyword["retrying"]["last_error_code"] == "search_page_state_error"
     assert jobs_by_keyword["failed"]["state"] == "failed"
     assert jobs_by_keyword["failed"]["last_error_code"] == "project_detail_invalid"
     assert jobs_by_keyword["failed"]["run_status"] == "failed"
@@ -1501,7 +1520,9 @@ def test_manual_recrawl_status_uses_latest_attempts_for_exact_request(tmp_path) 
 
 
 def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-analyst.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-analyst.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path,
@@ -1527,7 +1548,9 @@ def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
         keywords=[("แพลตฟอร์ม", 1)],
     )
 
-    response = client.post("/v1/rules/recrawl", headers=_auth_headers(role="analyst"), json={})
+    response = client.post(
+        "/v1/rules/recrawl", headers=_auth_headers(role="analyst"), json={}
+    )
 
     assert response.status_code == 202
     body = response.json()
@@ -1540,7 +1563,9 @@ def test_manual_recrawl_allows_analyst_with_runs_entitlement(tmp_path) -> None:
 
 
 def test_manual_recrawl_denies_viewer_role(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-viewer.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-viewer.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path,
@@ -1562,7 +1587,9 @@ def test_manual_recrawl_denies_viewer_role(tmp_path) -> None:
         keywords=[("แพลตฟอร์ม", 1)],
     )
 
-    response = client.post("/v1/rules/recrawl", headers=_auth_headers(role="viewer"), json={})
+    response = client.post(
+        "/v1/rules/recrawl", headers=_auth_headers(role="viewer"), json={}
+    )
 
     assert response.status_code == 403
     assert response.json()["detail"] == "run operator role required"
@@ -1660,10 +1687,14 @@ def test_manual_recrawl_reuses_nonterminal_batch_without_readding_failed_keyword
 ) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-recrawl-mixed.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     profile_id = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"
     _seed_profile(
         client,
@@ -1786,9 +1817,7 @@ def test_manual_recrawl_denies_second_request_until_inflight_run_finishes(
 
 
 def test_manual_recrawl_ignores_stale_inflight_run_for_admission(tmp_path) -> None:
-    database_url = (
-        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-stale-admission.sqlite3'}"
-    )
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-stale-admission.sqlite3'}"
     client = TestClient(
         create_app(
             artifact_root=tmp_path, database_url=database_url, auth_required=False
@@ -1972,7 +2001,9 @@ def test_profile_creation_with_blank_name_returns_structured_validation_code(
 
 
 def test_duplicate_group_name_returns_structured_conflict(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-name-conflict.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-name-conflict.sqlite3'}"
+    )
     client = TestClient(
         create_app(
             artifact_root=tmp_path,
@@ -2057,12 +2088,18 @@ def test_pause_group_preserves_keywords_and_user_intent(tmp_path) -> None:
 
 
 def test_create_multiple_uniquely_named_keyword_groups(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-multiple-groups.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-multiple-groups.sqlite3'}"
+    )
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
 
     first = client.post(
         "/v1/rules/profiles",
@@ -2088,7 +2125,9 @@ def test_create_multiple_uniquely_named_keyword_groups(tmp_path) -> None:
 def test_rename_group_preserves_keywords_and_order(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-rename.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     _seed_profile(
         client,
@@ -2102,15 +2141,19 @@ def test_rename_group_preserves_keywords_and_order(tmp_path) -> None:
         keywords=[("first", 1), ("second", 2)],
     )
     with client.app.state.db_engine.connect() as connection:
-        ids_before = connection.execute(
-            text(
-                """
+        ids_before = (
+            connection.execute(
+                text(
+                    """
                 SELECT id FROM crawl_profile_keywords
                 WHERE profile_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
                 ORDER BY position
                 """
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     response = client.patch(
         "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -2121,22 +2164,28 @@ def test_rename_group_preserves_keywords_and_order(tmp_path) -> None:
     assert response.json()["name"] == "After"
     assert response.json()["keywords"] == ["first", "second"]
     with client.app.state.db_engine.connect() as connection:
-        ids_after = connection.execute(
-            text(
-                """
+        ids_after = (
+            connection.execute(
+                text(
+                    """
                 SELECT id FROM crawl_profile_keywords
                 WHERE profile_id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
                 ORDER BY position
                 """
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert ids_after == ids_before
 
 
 def test_resume_group_queues_only_when_effectively_runnable(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-resume.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
     _seed_profile(
@@ -2159,7 +2208,9 @@ def test_resume_group_queues_only_when_effectively_runnable(tmp_path) -> None:
         "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         json={"tenant_id": TENANT_ID, "enabled_by_user": False},
     )
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     active_resume = client.patch(
         "/v1/rules/profiles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         json={"tenant_id": TENANT_ID, "enabled_by_user": True},
@@ -2170,16 +2221,24 @@ def test_resume_group_queues_only_when_effectively_runnable(tmp_path) -> None:
     assert active_resume.status_code == 200
     assert active_resume.json()["effective_status"] == "running"
     with client.app.state.db_engine.connect() as connection:
-        jobs = connection.execute(
-            text("SELECT keyword FROM discovery_jobs ORDER BY created_at")
-        ).scalars().all()
+        jobs = (
+            connection.execute(
+                text("SELECT keyword FROM discovery_jobs ORDER BY created_at")
+            )
+            .scalars()
+            .all()
+        )
     assert jobs == ["analytics"]
 
 
 def test_rules_mutations_remain_tenant_scoped(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-tenant-scope.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-tenant-scope.sqlite3'}"
+    )
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     other_tenant_id = "22222222-2222-2222-2222-222222222222"
     with client.app.state.db_engine.begin() as connection:
@@ -2218,9 +2277,13 @@ def test_rules_mutations_remain_tenant_scoped(tmp_path) -> None:
 
 
 def test_profile_enabled_state_conflict_returns_structured_error(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-state-conflict.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-state-conflict.sqlite3'}"
+    )
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
 
     response = client.post(
@@ -2244,9 +2307,13 @@ def test_profile_enabled_state_conflict_returns_structured_error(tmp_path) -> No
 def test_empty_group_is_saved_but_never_runnable(tmp_path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-empty-group.sqlite3'}"
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
 
     response = client.post(
         "/v1/rules/profiles",
@@ -2261,12 +2328,18 @@ def test_empty_group_is_saved_but_never_runnable(tmp_path) -> None:
 
 
 def test_manual_recrawl_deduplicates_keyword_across_named_groups(tmp_path) -> None:
-    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-groups.sqlite3'}"
+    database_url = (
+        f"sqlite+pysqlite:///{tmp_path / 'phase2-rules-recrawl-groups.sqlite3'}"
+    )
     client = TestClient(
-        create_app(artifact_root=tmp_path, database_url=database_url, auth_required=False)
+        create_app(
+            artifact_root=tmp_path, database_url=database_url, auth_required=False
+        )
     )
     client.app.state.discovery_dispatch_route_kick_enabled = False
-    _seed_active_subscription(client, plan_code="monthly_membership", keyword_limit=None)
+    _seed_active_subscription(
+        client, plan_code="monthly_membership", keyword_limit=None
+    )
     for profile_id, name, keyword in (
         ("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "First", "analytics"),
         ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Second", " ANALYTICS "),
@@ -2293,9 +2366,11 @@ def test_manual_recrawl_deduplicates_keyword_across_named_groups(tmp_path) -> No
         "queued_keywords": ["analytics"],
     }
     with client.app.state.db_engine.connect() as connection:
-        jobs = connection.execute(
-            text("SELECT profile_id, keyword FROM discovery_jobs")
-        ).mappings().all()
+        jobs = (
+            connection.execute(text("SELECT profile_id, keyword FROM discovery_jobs"))
+            .mappings()
+            .all()
+        )
     assert jobs == [
         {"profile_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "keyword": "analytics"}
     ]

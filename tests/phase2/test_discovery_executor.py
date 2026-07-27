@@ -182,7 +182,9 @@ async def test_run_discovery_dispatch_loop_processes_until_stop_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_loop_reports_shared_blocker_without_stopping_observability() -> None:
+async def test_dispatch_loop_reports_shared_blocker_without_stopping_observability() -> (
+    None
+):
     stop_event = asyncio.Event()
     reporter = RecordingRuntimeReporter()
 
@@ -457,7 +459,9 @@ def test_main_once_builds_runtime_and_reports_batch(
     )
 
     assert exit_code == 0
-    assert built_args == [("sqlite+pysqlite:///discovery-executor.sqlite3", tmp_path, 3)]
+    assert built_args == [
+        ("sqlite+pysqlite:///discovery-executor.sqlite3", tmp_path, 3)
+    ]
     assert processor.limits == [7]
     assert run_service.owner_pids == [91011, 91011]
     assert reporter.payloads[0]["watcher_status"] == "running"
@@ -589,8 +593,7 @@ def test_main_once_heartbeats_while_batch_is_running_then_reports_stopping(
     assert entered.wait(timeout=1)
     assert reporter.wait_for_payloads(2)
     assert all(
-        payload["watcher_status"] == "running"
-        for payload in reporter.payloads[:2]
+        payload["watcher_status"] == "running" for payload in reporter.payloads[:2]
     )
     release.set()
     main_thread.join(timeout=1)

@@ -80,7 +80,7 @@ def _supabase_config(tmp_path: Path) -> dict[str, str]:
 def test_parse_env_file_strips_quotes_and_ignores_comments(tmp_path: Path) -> None:
     path = tmp_path / ".env.remotecrawl"
     path.write_text(
-        "# a comment\nFOO=bar\nQUOTED=\"with space\"\n\nEXPORTED=export-handled=ok\n",
+        '# a comment\nFOO=bar\nQUOTED="with space"\n\nEXPORTED=export-handled=ok\n',
         encoding="utf-8",
     )
     parsed = parse_env_file(path)
@@ -142,14 +142,18 @@ def test_s3_missing_endpoint_is_refused(tmp_path: Path) -> None:
 def test_s3_missing_credentials_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
     config.pop("AWS_SECRET_ACCESS_KEY")
-    assert any("aws_secret_access_key" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "aws_secret_access_key" in p.lower() for p in validate_remote_crawl_env(config)
+    )
 
 
 def test_s3_missing_region_is_refused(tmp_path: Path) -> None:
     # Without AWS_DEFAULT_REGION, boto3 presigns SigV2 URLs that R2 rejects.
     config = _valid_config(tmp_path)
     config.pop("AWS_DEFAULT_REGION")
-    assert any("aws_default_region" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "aws_default_region" in p.lower() for p in validate_remote_crawl_env(config)
+    )
 
 
 def test_s3_non_r2_endpoint_is_refused(tmp_path: Path) -> None:
@@ -162,7 +166,10 @@ def test_s3_ignore_configured_endpoint_is_refused(tmp_path: Path) -> None:
     # This botocore flag makes boto3 ignore the R2 endpoint and talk to AWS.
     config = _valid_config(tmp_path)
     config["AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"] = "true"
-    assert any("ignore_configured_endpoint" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "ignore_configured_endpoint" in p.lower()
+        for p in validate_remote_crawl_env(config)
+    )
 
 
 def test_supabase_backend_still_accepted_with_creds(tmp_path: Path) -> None:
@@ -190,7 +197,10 @@ def test_multi_worker_count_is_refused(tmp_path: Path) -> None:
 def test_profile_dir_in_synced_folder_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
     config["EGP_BROWSER_PERSISTENT_PROFILE_DIR"] = "/Users/me/OneDrive/egp/profile"
-    assert any("synced" in p.lower() or "onedrive" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "synced" in p.lower() or "onedrive" in p.lower()
+        for p in validate_remote_crawl_env(config)
+    )
 
 
 def test_missing_chrome_path_is_refused(tmp_path: Path) -> None:
@@ -202,7 +212,10 @@ def test_missing_chrome_path_is_refused(tmp_path: Path) -> None:
 def test_missing_worker_token_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
     config.pop("EGP_INTERNAL_WORKER_TOKEN")
-    assert any("worker_token" in p.lower() or "token" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "worker_token" in p.lower() or "token" in p.lower()
+        for p in validate_remote_crawl_env(config)
+    )
 
 
 def test_changeme_placeholder_value_is_refused(tmp_path: Path) -> None:
@@ -214,7 +227,9 @@ def test_changeme_placeholder_value_is_refused(tmp_path: Path) -> None:
 def test_invalid_tunnel_port_is_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
     config["EGP_REMOTECRAWL_TUNNEL_LOCAL_PORT"] = "not-a-port"
-    assert any("tunnel_local_port" in p.lower() for p in validate_remote_crawl_env(config))
+    assert any(
+        "tunnel_local_port" in p.lower() for p in validate_remote_crawl_env(config)
+    )
 
 
 # --- validate_database_topology ------------------------------------------
@@ -223,7 +238,10 @@ def test_invalid_tunnel_port_is_refused(tmp_path: Path) -> None:
 def test_localdev_database_is_always_refused(tmp_path: Path) -> None:
     config = _valid_config(tmp_path)
     config["DATABASE_URL"] = "postgresql://egp:egp_dev@localhost:5434/egp"
-    assert any("5434" in p or "localdev" in p.lower() for p in validate_database_topology(config))
+    assert any(
+        "5434" in p or "localdev" in p.lower()
+        for p in validate_database_topology(config)
+    )
 
 
 def test_ssh_tunnel_loopback_port_is_allowed(tmp_path: Path) -> None:
@@ -319,7 +337,9 @@ def test_main_check_returns_nonzero_for_invalid(tmp_path: Path) -> None:
     assert main(["check"], env=config) != 0
 
 
-def test_main_tunnel_cmd_prints_ssh(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_tunnel_cmd_prints_ssh(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     assert main(["tunnel-cmd"], env=_valid_config(tmp_path)) == 0
     out = capsys.readouterr().out
     assert "ssh" in out
@@ -331,7 +351,9 @@ def test_main_print_env_emits_nul_delimited_after_validation(
 ) -> None:
     assert main(["print-env"], env=_valid_config(tmp_path)) == 0
     out = capsys.readouterr().out
-    assert "\0" in out, "print-env must NUL-delimit so the wrapper exports without shell eval"
+    assert "\0" in out, (
+        "print-env must NUL-delimit so the wrapper exports without shell eval"
+    )
     pairs = dict(item.split("=", 1) for item in out.split("\0") if item)
     assert pairs["EGP_ARTIFACT_STORE"] == "s3"
     # A Chrome path WITH SPACES round-trips intact (the bash-source bug class).

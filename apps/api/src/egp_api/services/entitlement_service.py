@@ -131,14 +131,10 @@ class TenantEntitlementService:
     def get_snapshot(self, *, tenant_id: str) -> TenantEntitlementSnapshot:
         subscriptions = self._billing_repository.list_subscriptions_for_tenant(tenant_id=tenant_id)
         entitlement = resolve_effective_discovery_entitlement(subscriptions=subscriptions)
-        profile_details = self._profile_repository.list_profiles_with_keywords(
-            tenant_id=tenant_id
-        )
+        profile_details = self._profile_repository.list_profiles_with_keywords(tenant_id=tenant_id)
         profiles = _profile_candidates(profile_details)
         saved_keywords = _unique_keywords(
-            keyword.keyword
-            for detail in profile_details
-            for keyword in detail.keywords
+            keyword.keyword for detail in profile_details for keyword in detail.keywords
         )
         enabled_keywords = build_enabled_profile_keywords(
             profiles=profiles,
@@ -169,8 +165,7 @@ class TenantEntitlementService:
         }
         runnable_keyword_count = len(runnable_keywords)
         has_paid_archive_access = any(
-            subscription.plan_code in _PAID_ARCHIVE_PLAN_CODES
-            for subscription in subscriptions
+            subscription.plan_code in _PAID_ARCHIVE_PLAN_CODES for subscription in subscriptions
         )
 
         if entitlement.plan_code is None:
@@ -257,9 +252,7 @@ class TenantEntitlementService:
         if not bool(getattr(snapshot, spec.snapshot_field)):
             if not snapshot.has_active_subscription:
                 raise EntitlementError(f"active subscription required for {spec.label}")
-            raise EntitlementError(
-                f"{spec.label} capability is not included in current plan"
-            )
+            raise EntitlementError(f"{spec.label} capability is not included in current plan")
         return snapshot
 
     def require_discover_keyword(
@@ -345,9 +338,7 @@ class TenantEntitlementService:
                 max_concurrent_runs=DEFAULT_MAX_CONCURRENT_RUNS,
                 max_queued_keywords=DEFAULT_MAX_QUEUED_KEYWORDS,
             )
-        return self._tenant_entitlement_repository.get_run_admission_caps(
-            tenant_id=tenant_id
-        )
+        return self._tenant_entitlement_repository.get_run_admission_caps(tenant_id=tenant_id)
 
 
 def _profile_candidates(details) -> list[ProfileKeywordCandidate]:

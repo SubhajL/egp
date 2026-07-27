@@ -11,7 +11,10 @@ from fastapi.testclient import TestClient
 
 from egp_api.lambda_handlers import opn_webhook, runtime_config
 from tests.support.app_factory import create_test_app as create_app
-from egp_api.services.payment_provider import CreatedPaymentRequest, ParsedPaymentCallback
+from egp_api.services.payment_provider import (
+    CreatedPaymentRequest,
+    ParsedPaymentCallback,
+)
 from egp_shared_types.enums import (
     BillingPaymentMethod,
     BillingPaymentProvider,
@@ -92,7 +95,9 @@ def _create_billing_record(client: TestClient) -> dict[str, object]:
     return response.json()
 
 
-def _create_opn_payment_request(client: TestClient, *, record_id: str) -> dict[str, object]:
+def _create_opn_payment_request(
+    client: TestClient, *, record_id: str
+) -> dict[str, object]:
     response = client.post(
         f"/v1/billing/records/{record_id}/payment-requests",
         json={
@@ -118,7 +123,9 @@ class _FakeSsmClient:
     def __init__(self, parameter_value: str) -> None:
         self._parameter_value = parameter_value
 
-    def get_parameter(self, *, Name: str, WithDecryption: bool) -> dict[str, dict[str, str]]:
+    def get_parameter(
+        self, *, Name: str, WithDecryption: bool
+    ) -> dict[str, dict[str, str]]:
         return {"Parameter": {"Value": self._parameter_value}}
 
 
@@ -134,7 +141,10 @@ def _opn_signature(secret: str, raw_body: str) -> str:
 def test_runtime_config_supports_secrets_manager_bundle(monkeypatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("EGP_OPN_SECRET_KEY", raising=False)
-    monkeypatch.setenv("EGP_LAMBDA_CONFIG_SECRET_ARN", "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:egp/opn")
+    monkeypatch.setenv(
+        "EGP_LAMBDA_CONFIG_SECRET_ARN",
+        "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:egp/opn",
+    )
 
     config = runtime_config.load_runtime_config(
         secrets_client=_FakeSecretsManagerClient(
@@ -149,7 +159,10 @@ def test_runtime_config_supports_secrets_manager_bundle(monkeypatch) -> None:
         )
     )
 
-    assert config.database_url == "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp"
+    assert (
+        config.database_url
+        == "postgresql+psycopg://secret-user:secret-pass@db.example:5432/egp"
+    )
     assert config.opn_secret_key == "skey_test_secret_bundle"
     assert config.opn_public_key == "pkey_test_secret_bundle"
     assert config.opn_webhook_secret == "dGVzdC13ZWJob29rLXNlY3JldA=="
@@ -172,7 +185,10 @@ def test_runtime_config_supports_ssm_bundle(monkeypatch) -> None:
         )
     )
 
-    assert config.database_url == "postgresql+psycopg://ssm-user:ssm-pass@db.example:5432/egp"
+    assert (
+        config.database_url
+        == "postgresql+psycopg://ssm-user:ssm-pass@db.example:5432/egp"
+    )
     assert config.opn_secret_key == "skey_test_ssm_bundle"
     assert config.opn_public_key is None
     assert config.opn_webhook_secret is None
@@ -192,7 +208,9 @@ def test_lambda_handler_processes_opn_webhook_and_remains_idempotent(
     monkeypatch.setenv("EGP_PAYMENT_PROVIDER", "opn")
     monkeypatch.setenv("EGP_OPN_SECRET_KEY", "skey_test_opn")
     monkeypatch.delenv("EGP_OPN_PUBLIC_KEY", raising=False)
-    monkeypatch.setattr(opn_webhook, "build_payment_provider", lambda **kwargs: provider)
+    monkeypatch.setattr(
+        opn_webhook, "build_payment_provider", lambda **kwargs: provider
+    )
     opn_webhook._CACHED_BILLING_SERVICE = None
 
     raw_body = json.dumps(

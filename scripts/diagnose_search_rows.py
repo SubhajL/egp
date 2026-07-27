@@ -138,7 +138,9 @@ def _dump_rows(page) -> list[dict]:
                 "project_number": project_number,
                 "row_passes_status_filter": passes_status,
                 "would_persist_invitation_rule": persist_ok,
-                "status_filter_vs_persist_divergence": bool(persist_ok and not passes_status),
+                "status_filter_vs_persist_divergence": bool(
+                    persist_ok and not passes_status
+                ),
                 "skip_keyword_hit": skip_hit,
                 "eligible": bool(passes_status and not skip_hit),
                 "full_text_sample": full_text[:400],
@@ -181,7 +183,9 @@ def _dump_all_tables(page) -> list[dict]:
         first_row_cells: list[str] = []
         if body_rows:
             try:
-                first_row_cells = [_safe_text(c) for c in body_rows[0].query_selector_all("td")]
+                first_row_cells = [
+                    _safe_text(c) for c in body_rows[0].query_selector_all("td")
+                ]
             except Exception:
                 first_row_cells = []
         out.append(
@@ -220,7 +224,9 @@ def _advance_page(page, settings: BrowserDiscoverySettings) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only e-GP search-row diagnostic.")
+    parser = argparse.ArgumentParser(
+        description="Read-only e-GP search-row diagnostic."
+    )
     parser.add_argument("--keyword", default="วิเคราะห์ข้อมูล")
     parser.add_argument("--max-pages", type=int, default=7)
     parser.add_argument("--profile-dir", default=None)
@@ -277,7 +283,9 @@ def main(argv: list[str] | None = None) -> int:
         bd.search_keyword(page, args.keyword, settings)
         if bd.is_no_results_page(page):
             report["error"] = "no_results_page"
-            print(f"[diagnose] e-GP reported NO RESULTS for {args.keyword!r}", flush=True)
+            print(
+                f"[diagnose] e-GP reported NO RESULTS for {args.keyword!r}", flush=True
+            )
         else:
             for page_num in range(1, args.max_pages + 1):
                 headers = _dump_headers(page) if page_num == 1 else None
@@ -286,7 +294,9 @@ def main(argv: list[str] | None = None) -> int:
                 found_count = _results_found_count(page)
                 all_rows.extend(rows)
                 eligible = sum(1 for r in rows if r["eligible"])
-                divergent = sum(1 for r in rows if r["status_filter_vs_persist_divergence"])
+                divergent = sum(
+                    1 for r in rows if r["status_filter_vs_persist_divergence"]
+                )
                 for r in rows:
                     status_counter[r["status_cell_idx4"] or "<empty>"] += 1
                 page_entry = {
@@ -333,7 +343,9 @@ def main(argv: list[str] | None = None) -> int:
             (
                 r
                 for r in all_rows
-                if r["project_number"] == num or num in " ".join(r["cells"]) or num in r["full_text_sample"]
+                if r["project_number"] == num
+                or num in " ".join(r["cells"])
+                or num in r["full_text_sample"]
             ),
             None,
         )
@@ -350,13 +362,18 @@ def main(argv: list[str] | None = None) -> int:
             else {"found_in_scan": False}
         )
 
-    out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     print("\n=== SUMMARY ===", flush=True)
-    print(f"keyword={args.keyword!r}  rows_scanned={report['totals']['rows_scanned']}  "
-          f"eligible={report['totals']['eligible']}  "
-          f"divergent_row_drops={report['totals']['divergent_row_drops']}  "
-          f"skip_hits={report['totals']['skip_keyword_hits']}", flush=True)
+    print(
+        f"keyword={args.keyword!r}  rows_scanned={report['totals']['rows_scanned']}  "
+        f"eligible={report['totals']['eligible']}  "
+        f"divergent_row_drops={report['totals']['divergent_row_drops']}  "
+        f"skip_hits={report['totals']['skip_keyword_hits']}",
+        flush=True,
+    )
     print("status buckets (cells[4] text -> count):", flush=True)
     for status, count in status_counter.most_common():
         print(f"  {count:4d}  {status}", flush=True)

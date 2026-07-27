@@ -113,7 +113,9 @@ class DocumentIngestService:
     ) -> tuple[str, str | None]:
         if self._project_repository is None:
             return (source_status_text, project_state)
-        project = self._project_repository.get_project(tenant_id=tenant_id, project_id=project_id)
+        project = self._project_repository.get_project(
+            tenant_id=tenant_id, project_id=project_id
+        )
         if project is None:
             return (source_status_text, project_state)
         resolved_status_text = source_status_text or (project.source_status_text or "")
@@ -238,7 +240,9 @@ class DocumentIngestService:
         tenant_id: str,
         project_id: str,
     ) -> DocumentListResult:
-        documents = list(self.list_documents(tenant_id=tenant_id, project_id=project_id))
+        documents = list(
+            self.list_documents(tenant_id=tenant_id, project_id=project_id)
+        )
         attempt = (
             self._capture_attempt_repository.get_latest_attempt_for_project(
                 tenant_id=tenant_id,
@@ -305,7 +309,9 @@ class DocumentIngestService:
             note=note,
         )
         approved_event_count = sum(
-            1 for event in detail.events if event.event_type is DocumentReviewEventType.APPROVED
+            1
+            for event in detail.events
+            if event.event_type is DocumentReviewEventType.APPROVED
         )
         if (
             approved_event_count == 1
@@ -317,7 +323,10 @@ class DocumentIngestService:
                 tenant_id=tenant_id,
                 document_id=detail.diff.new_document_id,
             )
-            if new_document is not None and new_document.document_type is DocumentType.TOR:
+            if (
+                new_document is not None
+                and new_document.document_type is DocumentType.TOR
+            ):
                 project = self._project_repository.get_project(
                     tenant_id=tenant_id,
                     project_id=detail.project_id,
@@ -413,7 +422,9 @@ class DocumentIngestService:
                 tenant_id=tenant_id,
                 capability="document_downloads",
             )
-        document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
+        document = self._repository.get_document(
+            tenant_id=tenant_id, document_id=document_id
+        )
         if document is None:
             raise KeyError(document_id)
         return document
@@ -439,7 +450,9 @@ class DocumentIngestService:
                 tenant_id=tenant_id,
                 capability="document_downloads",
             )
-        document = self._repository.get_document(tenant_id=tenant_id, document_id=document_id)
+        document = self._repository.get_document(
+            tenant_id=tenant_id, document_id=document_id
+        )
         if document is None:
             raise KeyError(document_id)
 
@@ -457,7 +470,10 @@ class DocumentIngestService:
                 signed_url = (
                     candidate
                     if isinstance(candidate, str)
-                    and (candidate.startswith("https://") or candidate.startswith("http://"))
+                    and (
+                        candidate.startswith("https://")
+                        or candidate.startswith("http://")
+                    )
                     else None
                 )
 

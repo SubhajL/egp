@@ -546,7 +546,9 @@ def test_operator_cloudflare_wait_emits_status_and_invalidates_profile_state(
     profile_dir = tmp_path / "profile"
     profile_dir.mkdir()
     state_path = profile_dir / ".egp-profile-state.json"
-    state_path.write_text('{"last_success_at":"2026-06-16T00:00:00+00:00"}', encoding="utf-8")
+    state_path.write_text(
+        '{"last_success_at":"2026-06-16T00:00:00+00:00"}', encoding="utf-8"
+    )
     settings = BrowserDiscoverySettings(
         browser_profile_dir=profile_dir,
         cloudflare_timeout_ms=500,
@@ -1619,7 +1621,13 @@ def test_collect_keyword_projects_reopens_reordered_row_by_marker(
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1697,7 +1705,13 @@ def test_collect_keyword_projects_raises_when_marker_missing_after_restore(
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1769,7 +1783,13 @@ def test_collect_keyword_projects_continues_after_marker_missing_when_results_pa
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1840,7 +1860,13 @@ def test_collect_keyword_projects_continues_after_project_level_restore_error_wh
     restore_calls = 0
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1909,7 +1935,13 @@ def test_collect_keyword_projects_continues_after_row_level_site_state_error_whe
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -1977,7 +2009,13 @@ def test_collect_keyword_projects_skips_timed_out_project_and_restores_results(
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         eligible_names: list[str] = []
         for row in page._tables[0].query_selector_all("tbody tr"):
@@ -2040,7 +2078,13 @@ def test_collect_keyword_projects_keeps_metadata_when_document_collection_times_
     restore_markers: list[str] = []
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         include_document_flags.append(include_documents)
         return {
@@ -2203,7 +2247,10 @@ def test_collect_documents_for_payload_marks_zero_documents_as_no_documents(
     assert updated["document_collection_reason"] == "document_collection_empty"
     assert updated["downloaded_documents"] == []
     assert updated["raw_snapshot"]["document_collection_status"] == "no_documents"
-    assert updated["raw_snapshot"]["document_collection_reason"] == "document_collection_empty"
+    assert (
+        updated["raw_snapshot"]["document_collection_reason"]
+        == "document_collection_empty"
+    )
 
 
 def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_error(
@@ -2235,7 +2282,13 @@ def test_collect_keyword_projects_reaches_next_page_after_row_level_site_state_e
         }
 
     def fake_open_and_extract_project(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ) -> dict[str, object]:
         active_page = getattr(page, "_active_page", "1")
         row = rows_by_page[active_page][row_index]
@@ -2778,7 +2831,9 @@ def test_close_check_document_revisit_collects_documents_after_prelim_status(
         def __init__(self) -> None:
             self.goto_calls: list[tuple[str, str | None, int | None]] = []
 
-        def goto(self, url: str, wait_until: str | None = None, timeout: int | None = None):
+        def goto(
+            self, url: str, wait_until: str | None = None, timeout: int | None = None
+        ):
             self.goto_calls.append((url, wait_until, timeout))
 
         def query_selector_all(self, selector: str):
@@ -2979,7 +3034,10 @@ def test_open_and_extract_project_marks_zero_documents_as_no_documents(
     assert payload["document_collection_status"] == "no_documents"
     assert payload["document_collection_reason"] == "document_collection_empty"
     assert payload["raw_snapshot"]["document_collection_status"] == "no_documents"
-    assert payload["raw_snapshot"]["document_collection_reason"] == "document_collection_empty"
+    assert (
+        payload["raw_snapshot"]["document_collection_reason"]
+        == "document_collection_empty"
+    )
 
 
 def test_open_and_extract_project_preserves_row_search_name_when_detail_title_differs(
@@ -3042,14 +3100,16 @@ def test_open_and_extract_project_skips_preliminary_pricing_from_source_status(
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.extract_project_info",
-        lambda page: extract_calls.append(page)
-        or {
-            "project_name": "ควรไม่ถูกอ่าน",
-            "organization": "กรมตัวอย่าง",
-            "project_number": "69010000010",
-            "proposal_submission_date": "10/04/2569",
-            "budget": "1,000,000.00",
-        },
+        lambda page: (
+            extract_calls.append(page)
+            or {
+                "project_name": "ควรไม่ถูกอ่าน",
+                "organization": "กรมตัวอย่าง",
+                "project_number": "69010000010",
+                "proposal_submission_date": "10/04/2569",
+                "budget": "1,000,000.00",
+            }
+        ),
     )
 
     payload = open_and_extract_project(
@@ -3448,7 +3508,8 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
     collect_calls: list[str] = []
 
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+        "egp_worker.browser_discovery.launch_real_chrome",
+        lambda settings, **kwargs: chrome,
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.sync_playwright",
@@ -3527,7 +3588,9 @@ def test_resolve_results_columns_raises_when_required_header_missing() -> None:
         resolve_results_columns(table)
 
 
-def test_collect_keyword_projects_finds_invitation_row_in_shifted_layout(monkeypatch) -> None:
+def test_collect_keyword_projects_finds_invitation_row_in_shifted_layout(
+    monkeypatch,
+) -> None:
     # Regression for the column-drift bug: the invitation row sits at status
     # index 5 (budget at 4). The old cells[4] code read budget and found nothing.
     page = FakeResultsPage(
@@ -3769,7 +3832,9 @@ def test_collect_keyword_projects_emits_no_eligible_canary_summary() -> None:
         _LIVE_PROGRESS_CALLBACK.reset(token)
 
     assert results == []
-    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    summary = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert summary["rows_scanned"] == 2
     assert summary["eligible"] == 0
     assert summary["rejected_by_status"] == 2
@@ -3819,7 +3884,9 @@ def test_collect_keyword_projects_emits_ok_summary_when_eligible(monkeypatch) ->
         _LIVE_PROGRESS_CALLBACK.reset(token)
 
     assert [result["project_name"] for result in results] == ["โครงการวิเคราะห์ข้อมูล"]
-    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    summary = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert summary["eligible"] == 1
     assert summary["accepted"] == 1
     assert summary["rows_scanned"] == 1
@@ -3859,7 +3926,9 @@ def test_collect_keyword_projects_all_skip_rows_is_not_a_canary() -> None:
         _LIVE_PROGRESS_CALLBACK.reset(token)
 
     assert results == []
-    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    summary = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert summary["rows_scanned"] == 1
     assert summary["eligible"] == 1
     assert summary["accepted"] == 0

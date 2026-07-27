@@ -28,7 +28,14 @@ class _FakeJobStore:
         self._seen: set[tuple[str, str, str, str]] = set()
 
     def create_pending_discovery_job_if_absent(
-        self, *, tenant_id, profile_id, profile_type, keyword, trigger_type="profile_created", live=True
+        self,
+        *,
+        tenant_id,
+        profile_id,
+        profile_type,
+        keyword,
+        trigger_type="profile_created",
+        live=True,
     ):
         self.calls.append(
             {

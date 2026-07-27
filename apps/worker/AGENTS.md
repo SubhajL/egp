@@ -9,7 +9,8 @@
 ## Setup & Run
 
 ```bash
-cd apps/worker && python -m pip install -e ".[dev]"
+./scripts/bootstrap_python_env.sh
+uv sync --frozen --all-packages --all-extras
 cd apps/worker && ../../.venv/bin/python -m src.main
 ./.venv/bin/python -m compileall apps/worker/src
 ./.venv/bin/ruff check apps/worker packages

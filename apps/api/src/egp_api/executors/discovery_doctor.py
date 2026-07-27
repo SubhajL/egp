@@ -126,9 +126,7 @@ def inspect_browser_profile(
 
     state = _read_profile_state(profile_dir)
     try:
-        consecutive_failures = int(
-            (state or {}).get("consecutive_warm_failures", 0)
-        )
+        consecutive_failures = int((state or {}).get("consecutive_warm_failures", 0))
     except (TypeError, ValueError):
         consecutive_failures = 0
     operator_action_required = bool(
@@ -160,9 +158,7 @@ def inspect_browser_profile(
         status=status,
         lock_status="busy" if locked else "free",
         state_present=state is not None,
-        last_success_at=(
-            last_success.isoformat() if last_success is not None else None
-        ),
+        last_success_at=(last_success.isoformat() if last_success is not None else None),
         last_success_age_seconds=age_seconds,
         consecutive_warm_failures=max(0, consecutive_failures),
         operator_action_required=operator_action_required,
@@ -260,26 +256,26 @@ def build_discovery_doctor_snapshot(
     if circuit.is_open:
         blockers.append(CrawlerBlockerCode.CIRCUIT_OPEN.value)
     if profile.status == "operator_action_required":
-        blockers.append(
-            CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED.value
-        )
+        blockers.append(CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED.value)
     elif profile.status == "busy":
         defer_reasons.append(CrawlerBlockerCode.PROFILE_BUSY.value)
     elif profile.status in {"warm_required", "unconfigured"}:
         defer_reasons.append(CrawlerBlockerCode.PROFILE_WARM_RETRY.value)
 
     if heartbeat is not None:
-        heartbeat_blocker = (
-            str(heartbeat.blocker_code) if heartbeat.blocker_code else None
-        )
+        heartbeat_blocker = str(heartbeat.blocker_code) if heartbeat.blocker_code else None
         if heartbeat.heartbeat_status == "offline":
             heartbeat_blocker = CrawlerBlockerCode.AGENT_OFFLINE.value
-        if heartbeat_blocker in {
-            CrawlerBlockerCode.AGENT_OFFLINE.value,
-            CrawlerBlockerCode.DATABASE_UNREACHABLE.value,
-            CrawlerBlockerCode.CIRCUIT_OPEN.value,
-            CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED.value,
-        } and heartbeat_blocker not in blockers:
+        if (
+            heartbeat_blocker
+            in {
+                CrawlerBlockerCode.AGENT_OFFLINE.value,
+                CrawlerBlockerCode.DATABASE_UNREACHABLE.value,
+                CrawlerBlockerCode.CIRCUIT_OPEN.value,
+                CrawlerBlockerCode.PROFILE_OPERATOR_ACTION_REQUIRED.value,
+            }
+            and heartbeat_blocker not in blockers
+        ):
             blockers.append(heartbeat_blocker)
 
     status: DoctorStatus
@@ -342,9 +338,7 @@ def collect_discovery_doctor_snapshot(
                 stale_after_seconds=get_browser_warmup_stale_after_seconds(),
                 pause_threshold=get_browser_warmup_failure_pause_threshold(),
             ),
-            circuit_probe=(
-                get_default_rate_limiter().peek_circuit_snapshot
-            ),
+            circuit_probe=(get_default_rate_limiter().peek_circuit_snapshot),
         )
     finally:
         if engine is not None:

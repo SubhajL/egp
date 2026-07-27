@@ -93,9 +93,7 @@ def test_pg_tunnel_overlay_binds_loopback_only() -> None:
         assert str(mapping).endswith(":5432")
 
 
-@pytest.mark.parametrize(
-    "label", ["com.egp.pg-tunnel", "com.egp.remote-crawl"]
-)
+@pytest.mark.parametrize("label", ["com.egp.pg-tunnel", "com.egp.remote-crawl"])
 def test_launchd_plist_parses_keepalive_and_runs_guarded_runner(label: str) -> None:
     raw = (REPO_ROOT / "deploy" / "launchd" / f"{label}.plist").read_bytes()
     parsed = plistlib.loads(raw)
@@ -114,9 +112,9 @@ def test_systemd_enqueue_service_is_oneshot_and_browserless() -> None:
 
 
 def test_systemd_enqueue_timer_is_periodic() -> None:
-    text = (
-        REPO_ROOT / "deploy" / "systemd" / "egp-scheduled-enqueue.timer"
-    ).read_text(encoding="utf-8")
+    text = (REPO_ROOT / "deploy" / "systemd" / "egp-scheduled-enqueue.timer").read_text(
+        encoding="utf-8"
+    )
     assert "[Timer]" in text
     assert "OnUnitActiveSec=" in text
 
@@ -132,15 +130,15 @@ def test_env_example_is_production_safe_template() -> None:
     assert "EGP_BROWSER_PREDISPATCH_WARM_SECONDS=0" in text
     # The template must NOT pre-acknowledge production: copying it alone must not
     # satisfy the guard. The exact ack value appears only as comment guidance.
-    assert "EGP_REMOTECRAWL_PRODUCTION_ACK=I_UNDERSTAND_THIS_WRITES_PRODUCTION" not in text
+    assert (
+        "EGP_REMOTECRAWL_PRODUCTION_ACK=I_UNDERSTAND_THIS_WRITES_PRODUCTION" not in text
+    )
     assert "EGP_REMOTECRAWL_PRODUCTION_ACK=CHANGE_ME" in text
     assert "I_UNDERSTAND_THIS_WRITES_PRODUCTION" in text  # shown in a comment
 
 
 def test_remote_crawl_runbook_documents_doctor_summary_and_typed_decisions() -> None:
-    text = (REPO_ROOT / "docs" / "REMOTE_LOCAL_CRAWLER.md").read_text(
-        encoding="utf-8"
-    )
+    text = (REPO_ROOT / "docs" / "REMOTE_LOCAL_CRAWLER.md").read_text(encoding="utf-8")
 
     assert "scripts/run_remote_crawl.sh doctor" in text
     assert "scripts/run_remote_crawl.sh wait-database" in text

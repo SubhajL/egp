@@ -19,7 +19,9 @@ def _run_git(repo_root: Path, *args: str) -> str:
         text=True,
     )
     if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
+        detail = (
+            completed.stderr.strip() or completed.stdout.strip() or "git command failed"
+        )
         raise RuntimeError(f"`git {' '.join(args)}` failed: {detail}")
     return completed.stdout.rstrip("\n")
 
@@ -32,8 +34,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path(__file__).resolve().parents[1],
         help="Git repository root to inspect.",
     )
-    parser.add_argument("--remote", default="origin", help="Remote name to compare against.")
-    parser.add_argument("--branch", default="main", help="Local branch name to compare.")
+    parser.add_argument(
+        "--remote", default="origin", help="Remote name to compare against."
+    )
+    parser.add_argument(
+        "--branch", default="main", help="Local branch name to compare."
+    )
     parser.add_argument(
         "--no-fetch",
         action="store_true",
@@ -58,7 +64,9 @@ def _build_payload(
     local_sha = _run_git(repo_root, "rev-parse", branch)
     remote_ref = f"{remote}/{branch}"
     remote_sha = _run_git(repo_root, "rev-parse", remote_ref)
-    ahead_raw = _run_git(repo_root, "rev-list", "--left-right", "--count", f"{branch}...{remote_ref}")
+    ahead_raw = _run_git(
+        repo_root, "rev-list", "--left-right", "--count", f"{branch}...{remote_ref}"
+    )
     ahead_str, behind_str = ahead_raw.split()
     worktree_raw = _run_git(repo_root, "status", "--short")
     worktree_entries = [line for line in worktree_raw.splitlines() if line]
@@ -91,7 +99,9 @@ def _emit_human(payload: dict[str, object]) -> None:
         print(f"OK: {target} matches {remote_ref} and the worktree is clean.")
         return
     if bool(payload["branch_synced"]) and not bool(payload["worktree_clean"]):
-        print(f"DIRTY: {target} matches {remote_ref}, but the worktree has local changes.")
+        print(
+            f"DIRTY: {target} matches {remote_ref}, but the worktree has local changes."
+        )
         for entry in payload["worktree_entries"]:
             print(f"  {entry}")
         return
@@ -126,7 +136,11 @@ def main() -> int:
         )
     except RuntimeError as exc:
         if args.json:
-            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+            print(
+                json.dumps(
+                    {"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2
+                )
+            )
         else:
             print(f"ERROR: {exc}", file=sys.stderr)
         return 2

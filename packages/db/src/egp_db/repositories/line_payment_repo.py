@@ -56,10 +56,14 @@ def _slip_from_mapping(row) -> PaymentSlipRecord:
         id=str(row["id"]),
         tenant_id=str(row["tenant_id"]) if row["tenant_id"] is not None else None,
         billing_record_id=(
-            str(row["billing_record_id"]) if row["billing_record_id"] is not None else None
+            str(row["billing_record_id"])
+            if row["billing_record_id"] is not None
+            else None
         ),
         payment_request_id=(
-            str(row["payment_request_id"]) if row["payment_request_id"] is not None else None
+            str(row["payment_request_id"])
+            if row["payment_request_id"] is not None
+            else None
         ),
         line_user_id=str(row["line_user_id"]),
         line_message_id=str(row["line_message_id"]),
@@ -69,7 +73,9 @@ def _slip_from_mapping(row) -> PaymentSlipRecord:
         image_sha256=row["image_sha256"],
         verification_status=str(row["verification_status"]),
         verified_by_user_id=(
-            str(row["verified_by_user_id"]) if row["verified_by_user_id"] is not None else None
+            str(row["verified_by_user_id"])
+            if row["verified_by_user_id"] is not None
+            else None
         ),
         verified_at=_iso(row["verified_at"]),
         verification_notes=row["verification_notes"],
@@ -86,7 +92,9 @@ def _context_from_mapping(row) -> LinePaymentContextRecord:
         reference_code=str(row["reference_code"]),
         tenant_id=str(row["tenant_id"]) if row["tenant_id"] is not None else None,
         billing_record_id=(
-            str(row["billing_record_id"]) if row["billing_record_id"] is not None else None
+            str(row["billing_record_id"])
+            if row["billing_record_id"] is not None
+            else None
         ),
         plan_code=row["plan_code"],
         source_message_id=str(row["source_message_id"]),
@@ -143,7 +151,10 @@ class LinePaymentRepository:
             row = (
                 connection.execute(
                     select(PAYMENT_SLIPS_TABLE)
-                    .where(PAYMENT_SLIPS_TABLE.c.line_message_id == str(line_message_id).strip())
+                    .where(
+                        PAYMENT_SLIPS_TABLE.c.line_message_id
+                        == str(line_message_id).strip()
+                    )
                     .limit(1)
                 )
                 .mappings()
@@ -257,7 +268,12 @@ class LinePaymentRepository:
         return updated
 
     def _mark(
-        self, *, slip_id: str, status: str, verified_by_user_id: str | None, notes: str | None
+        self,
+        *,
+        slip_id: str,
+        status: str,
+        verified_by_user_id: str | None,
+        notes: str | None,
     ) -> PaymentSlipRecord:
         with self._engine.begin() as connection:
             connection.execute(
@@ -293,7 +309,11 @@ class LinePaymentRepository:
                     PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id),
                     PAYMENT_SLIPS_TABLE.c.verification_status == "matched",
                 )
-                .values(verification_status="verifying", verified_at=_now(), updated_at=_now())
+                .values(
+                    verification_status="verifying",
+                    verified_at=_now(),
+                    updated_at=_now(),
+                )
             )
         return result.rowcount == 1
 
@@ -318,7 +338,9 @@ class LinePaymentRepository:
             raise KeyError(slip_id)
         return updated
 
-    def revert_stale_verifying_to_matched(self, *, slip_id: str, stale_before: datetime) -> bool:
+    def revert_stale_verifying_to_matched(
+        self, *, slip_id: str, stale_before: datetime
+    ) -> bool:
         """Atomically reclaim a STALE 'verifying' slip back to 'matched'.
 
         Returns True iff this caller won the reclaim (conditional on the lease
@@ -334,7 +356,9 @@ class LinePaymentRepository:
                     PAYMENT_SLIPS_TABLE.c.verification_status == "verifying",
                     PAYMENT_SLIPS_TABLE.c.verified_at < stale_before,
                 )
-                .values(verification_status="matched", verified_at=None, updated_at=_now())
+                .values(
+                    verification_status="matched", verified_at=None, updated_at=_now()
+                )
             )
         return result.rowcount == 1
 
@@ -347,21 +371,29 @@ class LinePaymentRepository:
                     PAYMENT_SLIPS_TABLE.c.id == normalize_uuid_string(slip_id),
                     PAYMENT_SLIPS_TABLE.c.verification_status == "verifying",
                 )
-                .values(verification_status="matched", verified_at=None, updated_at=_now())
+                .values(
+                    verification_status="matched", verified_at=None, updated_at=_now()
+                )
             )
 
     def mark_verified(
         self, *, slip_id: str, verified_by_user_id: str | None, notes: str | None
     ) -> PaymentSlipRecord:
         return self._mark(
-            slip_id=slip_id, status="verified", verified_by_user_id=verified_by_user_id, notes=notes
+            slip_id=slip_id,
+            status="verified",
+            verified_by_user_id=verified_by_user_id,
+            notes=notes,
         )
 
     def mark_rejected(
         self, *, slip_id: str, verified_by_user_id: str | None, notes: str | None
     ) -> PaymentSlipRecord:
         return self._mark(
-            slip_id=slip_id, status="rejected", verified_by_user_id=verified_by_user_id, notes=notes
+            slip_id=slip_id,
+            status="rejected",
+            verified_by_user_id=verified_by_user_id,
+            notes=notes,
         )
 
     def list_pending_slips_for_user(self, line_user_id: str) -> list[PaymentSlipRecord]:
@@ -385,7 +417,11 @@ class LinePaymentRepository:
         return [_slip_from_mapping(row) for row in rows]
 
     def list_slips(
-        self, *, status: str | None = None, tenant_id: str | None = None, limit: int = 100
+        self,
+        *,
+        status: str | None = None,
+        tenant_id: str | None = None,
+        limit: int = 100,
     ) -> list[PaymentSlipRecord]:
         query = select(PAYMENT_SLIPS_TABLE)
         if status is not None:
@@ -394,7 +430,9 @@ class LinePaymentRepository:
             query = query.where(
                 PAYMENT_SLIPS_TABLE.c.tenant_id == normalize_uuid_string(tenant_id)
             )
-        query = query.order_by(desc(PAYMENT_SLIPS_TABLE.c.received_at)).limit(max(1, int(limit)))
+        query = query.order_by(desc(PAYMENT_SLIPS_TABLE.c.received_at)).limit(
+            max(1, int(limit))
+        )
         with self._engine.begin() as connection:
             rows = connection.execute(query).mappings().all()
         return [_slip_from_mapping(row) for row in rows]
@@ -482,14 +520,17 @@ class LinePaymentRepository:
             )
         return _context_from_mapping(row)
 
-    def latest_context_for_user(self, line_user_id: str) -> LinePaymentContextRecord | None:
+    def latest_context_for_user(
+        self, line_user_id: str
+    ) -> LinePaymentContextRecord | None:
         now = _now()
         with self._engine.begin() as connection:
             row = (
                 connection.execute(
                     select(LINE_PAYMENT_CONTEXTS_TABLE)
                     .where(
-                        LINE_PAYMENT_CONTEXTS_TABLE.c.line_user_id == str(line_user_id).strip(),
+                        LINE_PAYMENT_CONTEXTS_TABLE.c.line_user_id
+                        == str(line_user_id).strip(),
                         or_(
                             LINE_PAYMENT_CONTEXTS_TABLE.c.expires_at.is_(None),
                             LINE_PAYMENT_CONTEXTS_TABLE.c.expires_at > now,
@@ -505,7 +546,11 @@ class LinePaymentRepository:
 
     # ------------------------------------------------------------ subscribers
     def add_admin_subscriber(
-        self, *, line_user_id: str, tenant_id: str | None = None, display_name: str | None = None
+        self,
+        *,
+        line_user_id: str,
+        tenant_id: str | None = None,
+        display_name: str | None = None,
     ) -> LineAdminSubscriberRecord:
         normalized_user = str(line_user_id).strip()
         existing = self._get_subscriber(normalized_user)
@@ -537,7 +582,10 @@ class LinePaymentRepository:
             row = (
                 connection.execute(
                     select(LINE_ADMIN_SUBSCRIBERS_TABLE)
-                    .where(LINE_ADMIN_SUBSCRIBERS_TABLE.c.line_user_id == str(line_user_id).strip())
+                    .where(
+                        LINE_ADMIN_SUBSCRIBERS_TABLE.c.line_user_id
+                        == str(line_user_id).strip()
+                    )
                     .limit(1)
                 )
                 .mappings()
@@ -553,7 +601,8 @@ class LinePaymentRepository:
         if tenant_id is not None:
             condition = or_(
                 condition,
-                LINE_ADMIN_SUBSCRIBERS_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                LINE_ADMIN_SUBSCRIBERS_TABLE.c.tenant_id
+                == normalize_uuid_string(tenant_id),
             )
         with self._engine.begin() as connection:
             rows = (

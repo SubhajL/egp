@@ -40,7 +40,9 @@ DISCOVERY_KEYWORD_SCANS_TOTAL: Final[str] = "egp_discovery_keyword_scans_total"
 DISCOVERY_ROWS_SCANNED_TOTAL: Final[str] = "egp_discovery_rows_scanned_total"
 DISCOVERY_ELIGIBLE_ROWS_TOTAL: Final[str] = "egp_discovery_eligible_rows_total"
 DISCOVERY_ANOMALIES_TOTAL: Final[str] = "egp_discovery_anomalies_total"
-DISCOVERY_HEADER_SIGNATURE_DRIFT_TOTAL: Final[str] = "egp_discovery_header_signature_drift_total"
+DISCOVERY_HEADER_SIGNATURE_DRIFT_TOTAL: Final[str] = (
+    "egp_discovery_header_signature_drift_total"
+)
 
 EXPECTED_METRIC_NAMES: Final[tuple[str, ...]] = (
     API_HTTP_REQUESTS_TOTAL,

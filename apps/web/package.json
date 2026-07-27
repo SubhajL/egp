@@ -7,14 +7,15 @@
     "dev:web": "./scripts/dev-web.sh",
     "build": "rm -rf .next && next build",
     "start": "node .next/standalone/server.js",
-    "lint": "next lint",
+    "lint": "eslint src tests --max-warnings=0",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "generate:openapi": "./scripts/generate-openapi-schema.sh",
     "generate:api-types": "./scripts/generate-api-types.sh",
     "check:api-types": "./scripts/check-api-types.sh",
     "test:unit": "vitest run",
     "test": "playwright test",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:critical": "playwright test --grep @critical"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.2",
@@ -23,8 +24,8 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
-    "next": "^15.0.0",
-    "nodemailer": "^8.0.4",
+    "next": "^16.2.12",
+    "nodemailer": "^9.0.3",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -38,11 +39,17 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "eslint": "^9.0.0",
-    "eslint-config-next": "^15.0.0",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.12",
     "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.1.6"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "8.5.23",
+      "sharp": "0.35.3"
+    }
   }
 }

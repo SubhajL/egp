@@ -491,7 +491,7 @@ async function mockProjectsApp(page: Page) {
   });
 }
 
-test("projects page shows worker-backed crawl activity after manual recrawl", async ({
+test("projects page shows worker-backed crawl activity after manual recrawl @critical", async ({
   page,
 }) => {
   await mockProjectsApp(page);

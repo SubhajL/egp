@@ -105,7 +105,9 @@ class BillingInvoiceMixin:
                 .mappings()
                 .all()
             )
-        return [(str(row["tenant_id"]), str(row["id"]), str(row["status"])) for row in rows]
+        return [
+            (str(row["tenant_id"]), str(row["id"]), str(row["status"])) for row in rows
+        ]
 
     def _require_record_for_tenant(
         self, *, tenant_id: str, record_id: str
@@ -206,7 +208,9 @@ class BillingInvoiceMixin:
             if row.status not in _TERMINAL_BILLING_STATUSES:
                 open_records += 1
 
-        page_rows = visible_rows[normalized_offset : normalized_offset + normalized_limit]
+        page_rows = visible_rows[
+            normalized_offset : normalized_offset + normalized_limit
+        ]
         page_ids = [row.id for row in page_rows]
         page_requests_by_record = _group_payment_requests(
             self._load_payment_requests_for_records(page_ids)

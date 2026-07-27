@@ -202,7 +202,9 @@ def test_second_payment_on_active_record_does_not_renotify(harness) -> None:
     )
     assert second.status_code == 200, second.text
 
-    activation_pushes = [to for to, _ in fake_messaging.pushed if to == CUSTOMER_LINE_ID]
+    activation_pushes = [
+        to for to, _ in fake_messaging.pushed if to == CUSTOMER_LINE_ID
+    ]
     assert len(activation_pushes) == 1
 
 

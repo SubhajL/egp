@@ -71,7 +71,9 @@ def test_warm_page_succeeds_when_cloudflare_clears(tmp_path) -> None:
     settings = warmup_settings_from_env(
         {"EGP_BROWSER_PERSISTENT_PROFILE_DIR": str(tmp_path)}
     )
-    warm_page(page, settings, wait=lambda *a, **k: True, controls_ready=lambda *a, **k: True)
+    warm_page(
+        page, settings, wait=lambda *a, **k: True, controls_ready=lambda *a, **k: True
+    )
     assert len(page.gotos) == 2  # main + search
 
 
@@ -91,5 +93,10 @@ def test_warm_page_raises_when_search_controls_never_enable(tmp_path) -> None:
         {"EGP_BROWSER_PERSISTENT_PROFILE_DIR": str(tmp_path)}
     )
     with pytest.raises(RuntimeError, match="search controls not enabled"):
-        warm_page(page, settings, wait=lambda *a, **k: True, controls_ready=lambda *a, **k: False)
+        warm_page(
+            page,
+            settings,
+            wait=lambda *a, **k: True,
+            controls_ready=lambda *a, **k: False,
+        )
     assert len(page.gotos) == 2

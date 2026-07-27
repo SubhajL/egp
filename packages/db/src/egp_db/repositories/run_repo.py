@@ -550,7 +550,7 @@ class SqlRunRepository:
                     summary_json=_merge_summary_json(
                         current["summary_json"],
                         summary_json,
-                    )
+                    ),
                 )
             )
             row = (
@@ -901,9 +901,7 @@ class SqlRunRepository:
         stale_after_seconds: float = ACTIVE_RUN_STALE_AFTER_SECONDS,
     ) -> int:
         normalized_tenant_id = normalize_uuid_string(tenant_id)
-        active_since = _now() - timedelta(
-            seconds=max(1.0, float(stale_after_seconds))
-        )
+        active_since = _now() - timedelta(seconds=max(1.0, float(stale_after_seconds)))
         with self._engine.connect() as connection:
             return int(
                 connection.execute(

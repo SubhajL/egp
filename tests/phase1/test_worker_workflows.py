@@ -122,7 +122,9 @@ def _seed_subscription(
 
 
 def _seed_profile(*, database_url: str, keywords: list[str]) -> None:
-    project_repository = SqlProjectRepository(database_url=database_url, bootstrap_schema=True)
+    project_repository = SqlProjectRepository(
+        database_url=database_url, bootstrap_schema=True
+    )
     with project_repository._engine.begin() as connection:
         connection.execute(
             text(

@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Integer, Table, insert, select
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Table,
+    insert,
+    select,
+)
 from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
@@ -26,8 +35,18 @@ TENANT_ENTITLEMENTS_TABLE = Table(
         ForeignKey(TENANTS_TABLE.c.id, ondelete="CASCADE"),
         primary_key=True,
     ),
-    Column("max_concurrent_runs", Integer, nullable=False, default=DEFAULT_MAX_CONCURRENT_RUNS),
-    Column("max_queued_keywords", Integer, nullable=False, default=DEFAULT_MAX_QUEUED_KEYWORDS),
+    Column(
+        "max_concurrent_runs",
+        Integer,
+        nullable=False,
+        default=DEFAULT_MAX_CONCURRENT_RUNS,
+    ),
+    Column(
+        "max_queued_keywords",
+        Integer,
+        nullable=False,
+        default=DEFAULT_MAX_QUEUED_KEYWORDS,
+    ),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     CheckConstraint(
@@ -91,7 +110,9 @@ class SqlTenantEntitlementRepository:
             row = (
                 connection.execute(
                     select(TENANT_ENTITLEMENTS_TABLE)
-                    .where(TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(
+                        TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
                     .limit(1)
                 )
                 .mappings()
@@ -119,7 +140,9 @@ class SqlTenantEntitlementRepository:
             existing = (
                 connection.execute(
                     select(TENANT_ENTITLEMENTS_TABLE.c.tenant_id)
-                    .where(TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(
+                        TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
                     .limit(1)
                 )
                 .mappings()
@@ -130,7 +153,9 @@ class SqlTenantEntitlementRepository:
             else:
                 connection.execute(
                     TENANT_ENTITLEMENTS_TABLE.update()
-                    .where(TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id)
+                    .where(
+                        TENANT_ENTITLEMENTS_TABLE.c.tenant_id == normalized_tenant_id
+                    )
                     .values(
                         max_concurrent_runs=values["max_concurrent_runs"],
                         max_queued_keywords=values["max_queued_keywords"],

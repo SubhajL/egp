@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 import sqlite3
 from time import monotonic
@@ -10,9 +11,33 @@ from psycopg import connect
 import pytest
 
 from egp_api.main import create_app
+from egp_api.services.readiness_service import ReadinessService
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 from egp_db.migration_runner import apply_migrations, list_migration_files
 from tests.support.app_factory import create_test_app
+
+
+def test_ci_postgres_readiness_accepts_exact_migration_set(repo_root: Path) -> None:
+    if os.environ.get("EGP_CI_POSTGRES_CONTRACT") != "1":
+        pytest.skip("CI PostgreSQL contract is opt-in")
+
+    snapshot = ReadinessService(
+        database_url=os.environ["DATABASE_URL"],
+        migrations_dir=repo_root / "packages/db/src/migrations",
+    ).build_readiness_snapshot()
+
+    assert snapshot.is_ready
+    assert snapshot.to_payload() == {
+        "status": "ready",
+        "checks": {
+            "database": {"status": "ok"},
+            "migrations": {
+                "status": "ok",
+                "pending_count": 0,
+                "unexpected_count": 0,
+            },
+        },
+    }
 
 
 def test_live_and_health_are_public_database_independent_aliases(

@@ -32,7 +32,10 @@ def test_retries_then_succeeds_on_navigation_destroyed() -> None:
             raise RuntimeError(NAV_ERR)
         return "ok"
 
-    assert run_with_navigation_retry(op, retries=2, on_retry=lambda: retried.append(1)) == "ok"
+    assert (
+        run_with_navigation_retry(op, retries=2, on_retry=lambda: retried.append(1))
+        == "ok"
+    )
     assert len(calls) == 2
     assert len(retried) == 1
 

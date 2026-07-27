@@ -151,9 +151,7 @@ class RulesService:
         self._recrawl_request_repository = recrawl_request_repository
         self._crawler_runtime_repository = crawler_runtime_repository
         self._background_runtime_mode = background_runtime_mode
-        self._crawler_heartbeat_stale_after_seconds = (
-            crawler_heartbeat_stale_after_seconds
-        )
+        self._crawler_heartbeat_stale_after_seconds = crawler_heartbeat_stale_after_seconds
 
     def create_profile(
         self,
@@ -190,12 +188,9 @@ class RulesService:
                 snapshot.keyword_limit
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
-            existing_keyword_keys = {
-                keyword.casefold() for keyword in snapshot.quota_keywords
-            }
+            existing_keyword_keys = {keyword.casefold() for keyword in snapshot.quota_keywords}
             requested_keyword_count = sum(
-                keyword.casefold() not in existing_keyword_keys
-                for keyword in normalized_keywords
+                keyword.casefold() not in existing_keyword_keys for keyword in normalized_keywords
             )
             if requested_keyword_count:
                 self._entitlement_service.check_runs_admission(
@@ -261,9 +256,7 @@ class RulesService:
             normalized_keywords if normalized_keywords is not None else current_keywords
         )
         effective_enabled = (
-            existing.profile.enabled_by_user
-            if enabled_by_user is None
-            else enabled_by_user
+            existing.profile.enabled_by_user if enabled_by_user is None else enabled_by_user
         )
         if enabled_by_user is False and normalized_keywords == [] and current_keywords:
             normalized_keywords = None
@@ -289,9 +282,7 @@ class RulesService:
             if (
                 snapshot.has_active_subscription
                 and snapshot.keyword_limit is not None
-                and len(prospective_keywords) > int(
-                snapshot.keyword_limit
-                )
+                and len(prospective_keywords) > int(snapshot.keyword_limit)
             ):
                 raise EntitlementError("active keyword configuration exceeds plan limit")
             admission_existing_keywords = _merge_keywords(
@@ -302,8 +293,7 @@ class RulesService:
                 keyword.casefold() for keyword in admission_existing_keywords
             }
             requested_keyword_count = sum(
-                keyword.casefold() not in admission_existing_keys
-                for keyword in effective_keywords
+                keyword.casefold() not in admission_existing_keys for keyword in effective_keywords
             )
             if snapshot.has_active_subscription and requested_keyword_count:
                 self._entitlement_service.check_runs_admission(
@@ -430,9 +420,7 @@ class RulesService:
                 for item in snapshot.runnable_profile_keywords
             ]
         else:
-            for detail in self._repository.list_enabled_profiles_with_keywords(
-                tenant_id=tenant_id
-            ):
+            for detail in self._repository.list_enabled_profiles_with_keywords(tenant_id=tenant_id):
                 for keyword in detail.keywords:
                     normalized_keyword = keyword.keyword.strip()
                     if normalized_keyword:
@@ -457,9 +445,7 @@ class RulesService:
                 selected_keyword_keys.add(keyword_key)
                 selected_active_jobs.append(active_job)
             active_jobs = selected_active_jobs
-            stored_jobs = self._discovery_job_repository.list_discovery_jobs(
-                tenant_id=tenant_id
-            )
+            stored_jobs = self._discovery_job_repository.list_discovery_jobs(tenant_id=tenant_id)
             pending_job_keys = {
                 (job.profile_id, job.keyword.casefold())
                 for job in stored_jobs
@@ -590,9 +576,7 @@ class RulesService:
             return
         previous_keyword_keys = {keyword.casefold() for keyword in previous_keywords}
         keywords_to_queue = [
-            item.keyword
-            for item in runnable_profile_keywords
-            if item.profile_id == updated.id
+            item.keyword for item in runnable_profile_keywords if item.profile_id == updated.id
         ]
         if previous_is_active and keywords_were_replaced:
             keywords_to_queue = [
@@ -669,9 +653,7 @@ def _resolve_profile_presentation_status(
             KeywordGroupEffectiveStatus.BLOCKED_QUOTA,
             KeywordGroupStatusReason.KEYWORD_LIMIT_EXCEEDED,
         )
-    entitled_keyword_keys = {
-        keyword.casefold() for keyword in entitlements.active_keywords
-    }
+    entitled_keyword_keys = {keyword.casefold() for keyword in entitlements.active_keywords}
     if any(
         keyword.keyword.strip().casefold() in entitled_keyword_keys
         for keyword in detail.keywords

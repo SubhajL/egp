@@ -24,14 +24,20 @@ def test_browser_settings_defaults_are_backward_compatible() -> None:
     settings = BrowserDiscoverySettings()
     assert settings.proxy_server is None
     assert settings.use_xvfb is False
-    assert settings.chrome_path == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    assert (
+        settings.chrome_path
+        == "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    )
 
 
 def test_resolve_chrome_binary_prefers_env_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EGP_BROWSER_CHROME_PATH", "/opt/chrome/chrome")
-    assert resolve_chrome_binary("/Applications/Google Chrome.app/...") == "/opt/chrome/chrome"
+    assert (
+        resolve_chrome_binary("/Applications/Google Chrome.app/...")
+        == "/opt/chrome/chrome"
+    )
 
 
 def test_resolve_chrome_binary_uses_configured_when_it_exists(
@@ -50,7 +56,14 @@ def test_resolve_chrome_binary_falls_back_to_bundled_when_configured_missing(
 ) -> None:
     monkeypatch.delenv("EGP_BROWSER_CHROME_PATH", raising=False)
     # Fake a Playwright bundled Chromium under a fake HOME.
-    bundled = tmp_path / ".cache" / "ms-playwright" / "chromium-1223" / "chrome-linux64" / "chrome"
+    bundled = (
+        tmp_path
+        / ".cache"
+        / "ms-playwright"
+        / "chromium-1223"
+        / "chrome-linux64"
+        / "chrome"
+    )
     bundled.parent.mkdir(parents=True)
     bundled.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -59,7 +72,9 @@ def test_resolve_chrome_binary_falls_back_to_bundled_when_configured_missing(
 
 
 def test_build_launch_command_default_matches_existing_args() -> None:
-    settings = replace(BrowserDiscoverySettings(), cdp_port=9222, browser_profile_dir=Path("/p"))
+    settings = replace(
+        BrowserDiscoverySettings(), cdp_port=9222, browser_profile_dir=Path("/p")
+    )
     command = build_chrome_launch_command(settings, "/bin/chrome")
     assert command[0] == "/bin/chrome"
     assert "--remote-debugging-port=9222" in command
@@ -86,8 +101,13 @@ def test_build_launch_command_wraps_with_xvfb_and_adds_no_sandbox() -> None:
 
 
 def test_redact_proxy_for_log_masks_credentials() -> None:
-    assert redact_proxy_for_log("http://user:pass@1.2.3.4:8000") == "http://***@1.2.3.4:8000"
-    assert redact_proxy_for_log("socks5://user:pass@host:1080") == "socks5://***@host:1080"
+    assert (
+        redact_proxy_for_log("http://user:pass@1.2.3.4:8000")
+        == "http://***@1.2.3.4:8000"
+    )
+    assert (
+        redact_proxy_for_log("socks5://user:pass@host:1080") == "socks5://***@host:1080"
+    )
     assert redact_proxy_for_log("user:pass@1.2.3.4:8000") == "***@1.2.3.4:8000"
     assert redact_proxy_for_log("http://1.2.3.4:8000") == "http://1.2.3.4:8000"
     assert redact_proxy_for_log(None) is None

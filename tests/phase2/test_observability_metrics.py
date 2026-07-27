@@ -218,7 +218,8 @@ def test_discovery_anomaly_metric_helper_records_reason() -> None:
     record_discovery_anomaly(reason="no_eligible_rows")
 
     assert (
-        'egp_discovery_anomalies_total{reason="no_eligible_rows"} 1.0' in _metric_output()
+        'egp_discovery_anomalies_total{reason="no_eligible_rows"} 1.0'
+        in _metric_output()
     )
 
 

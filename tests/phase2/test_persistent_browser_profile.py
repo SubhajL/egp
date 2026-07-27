@@ -225,7 +225,9 @@ def test_persistent_mode_does_not_record_failed_crawl_as_recent_use(
     warm_dir.mkdir(parents=True)
     state_path = warm_dir / ".egp-profile-state.json"
     state_path.write_text(
-        json.dumps({"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}),
+        json.dumps(
+            {"last_success_at": datetime.now(UTC).isoformat(), "source": "warm"}
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(

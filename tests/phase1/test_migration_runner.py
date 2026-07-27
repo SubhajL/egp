@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 from shutil import copy2
 from uuid import UUID
@@ -11,6 +12,25 @@ import pytest
 
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 from egp_shared_types.enums import DiscoveryFailureCode
+
+
+def test_ci_postgres_records_exact_migration_set(repo_root: Path) -> None:
+    if os.environ.get("EGP_CI_POSTGRES_CONTRACT") != "1":
+        pytest.skip("CI PostgreSQL contract is opt-in")
+
+    from egp_db.migration_runner import list_migration_files
+
+    database_url = os.environ["DATABASE_URL"]
+    expected_versions = [
+        path.name
+        for path in list_migration_files(repo_root / "packages/db/src/migrations")
+    ]
+    with connect(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
+            applied_versions = [str(row[0]) for row in cursor.fetchall()]
+
+    assert applied_versions == expected_versions
 
 
 def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> None:

@@ -1077,7 +1077,9 @@ def test_run_discover_workflow_persists_ok_keyword_scan_summary(monkeypatch) -> 
     assert "live_crawl_anomaly_count" not in summary
 
 
-def test_run_discover_workflow_records_header_drift_without_failing(monkeypatch) -> None:
+def test_run_discover_workflow_records_header_drift_without_failing(
+    monkeypatch,
+) -> None:
     run_repository = FakeRunRepository()
     sink = FakeProjectEventSink()
 

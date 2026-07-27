@@ -380,9 +380,9 @@ def test_create_request_card_payment_link_is_restricted_to_single_use() -> None:
     )
 
     payload = captured["payload"]
-    assert (
-        payload.get("restrictions[completed_sessions][limit]") == "1"
-    ), "Payment Link must be single-use to prevent repeat charges per invoice"
+    assert payload.get("restrictions[completed_sessions][limit]") == "1", (
+        "Payment Link must be single-use to prevent repeat charges per invoice"
+    )
 
 
 def test_create_request_promptpay_passes_confirm_and_payment_method_data() -> None:

@@ -15,7 +15,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from tests.support.app_factory import create_test_app as create_app
 from egp_api.services.line_slip_service import LineSlipService
@@ -25,12 +25,16 @@ TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 CHANNEL_SECRET = "line-webhook-secret"
 ADMIN_LINE_ID = "Uadmin"
-JWT_SECRET = "line-test-jwt-secret"
+JWT_SECRET = "line-test-jwt-secret-at-least-32-bytes"
 
 
 def _auth_headers(tenant_id: str, *, role: str = "admin") -> dict[str, str]:
     token = jwt.encode(
-        {"sub": "00000000-0000-0000-0000-0000000000aa", "tenant_id": tenant_id, "role": role},
+        {
+            "sub": "00000000-0000-0000-0000-0000000000aa",
+            "tenant_id": tenant_id,
+            "role": role,
+        },
         JWT_SECRET,
         algorithm="HS256",
     )
@@ -53,7 +57,9 @@ class FakeArtifactStore:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
 
-    def put_bytes(self, *, key: str, data: bytes, content_type: str | None = None) -> str:
+    def put_bytes(
+        self, *, key: str, data: bytes, content_type: str | None = None
+    ) -> str:
         self.objects[key] = data
         return key
 
@@ -160,7 +166,9 @@ def test_webhook_image_stores_and_matches_then_admin_verifies(harness) -> None:
     _create_record(client)
 
     # 1. Customer sends the reference text -> context recorded + resolved.
-    text_resp = _post_webhook(client, {"events": [_text_event("Reference: INV-2026-0001", "m-text")]})
+    text_resp = _post_webhook(
+        client, {"events": [_text_event("Reference: INV-2026-0001", "m-text")]}
+    )
     assert text_resp.status_code == 200
     assert text_resp.json()["text_events"] == 1
 
@@ -248,7 +256,9 @@ def test_webhook_does_not_auto_match_paid_or_ambiguous_reference(harness) -> Non
         currency="THB",
         received_at="2026-05-29T10:00:00+00:00",
     )
-    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=payment.id, status="reconciled")
+    billing.reconcile_payment(
+        tenant_id=TENANT_ID, payment_id=payment.id, status="reconciled"
+    )
 
     # Same number under two tenants, ONE already paid -> still ambiguous; the
     # paid duplicate must NOT collapse this into a false unique match on the
@@ -263,16 +273,22 @@ def test_webhook_does_not_auto_match_paid_or_ambiguous_reference(harness) -> Non
         currency="THB",
         received_at="2026-05-29T10:00:00+00:00",
     )
-    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=dup_pay.id, status="reconciled")
+    billing.reconcile_payment(
+        tenant_id=TENANT_ID, payment_id=dup_pay.id, status="reconciled"
+    )
 
     _post_webhook(client, {"events": [_text_event("INV-2026-0950", "t-paid", "Upaid")]})
     _post_webhook(client, {"events": [_image_event("i-paid", "Upaid")]})
     _post_webhook(client, {"events": [_text_event("INV-2026-0960", "t-amb", "Uamb")]})
     _post_webhook(client, {"events": [_image_event("i-amb", "Uamb")]})
 
-    matched = client.get("/v1/billing/slips", params={"status": "matched"}).json()["slips"]
+    matched = client.get("/v1/billing/slips", params={"status": "matched"}).json()[
+        "slips"
+    ]
     assert matched == []
-    pending = client.get("/v1/billing/slips", params={"status": "pending"}).json()["slips"]
+    pending = client.get("/v1/billing/slips", params={"status": "pending"}).json()[
+        "slips"
+    ]
     assert len(pending) == 2
 
 
@@ -292,20 +308,26 @@ def _match_one_slip(client) -> str:
     _create_record(client)
     _post_webhook(client, {"events": [_text_event("Reference: INV-2026-0001", "m-t")]})
     _post_webhook(client, {"events": [_image_event("m-i")]})
-    return client.get("/v1/billing/slips", params={"status": "matched"}).json()["slips"][0]["id"]
+    return client.get("/v1/billing/slips", params={"status": "matched"}).json()[
+        "slips"
+    ][0]["id"]
 
 
 def test_verify_with_short_amount_does_not_fully_pay_or_activate(harness) -> None:
     client, *_ = harness
     slip_id = _match_one_slip(client)
-    before = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    before = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()[
+        "records"
+    ][0]
     outstanding = before["record"]["outstanding_balance"]
     # Admin enters a value SMALLER than what's owed -> recorded as exactly that,
     # not silently normalised to the full balance; record stays short of PAID and
     # the subscription is not activated.
     verify = client.post(f"/v1/billing/slips/{slip_id}/verify", json={"amount": "1.00"})
     assert verify.status_code == 200, verify.text
-    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()[
+        "records"
+    ][0]
     assert outstanding != "1.00"  # sanity: the invoice owed more than 1.00
     assert detail["record"]["status"] != "paid"
     assert detail["subscription"] is None
@@ -319,7 +341,9 @@ def test_verify_is_idempotent_no_double_payment(harness) -> None:
     second = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
     assert second.status_code == 200
     assert second.json()["verification_status"] == "verified"
-    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()[
+        "records"
+    ][0]
     # Exactly one payment recorded despite two verify calls.
     assert len(detail["payments"]) == 1
     assert detail["record"]["status"] == "paid"
@@ -352,7 +376,9 @@ def test_verify_recovers_stale_verifying_claim(harness) -> None:
     recovered = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["verification_status"] == "verified"
-    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()[
+        "records"
+    ][0]
     assert detail["record"]["status"] == "paid"
 
 
@@ -377,7 +403,9 @@ def test_verify_recovery_does_not_double_record_underpayment(harness) -> None:
         received_at="2026-05-29T10:00:00+00:00",
         note=f"manual [slip:{slip_id}]",
     )
-    billing.reconcile_payment(tenant_id=TENANT_ID, payment_id=pay.id, status="reconciled")
+    billing.reconcile_payment(
+        tenant_id=TENANT_ID, payment_id=pay.id, status="reconciled"
+    )
 
     # Stale-lease recovery must NOT record a second payment (slip-idempotent),
     # even though the record is not 'paid'.
@@ -393,7 +421,9 @@ def test_verify_recovery_does_not_double_record_underpayment(harness) -> None:
     recovered = client.post(f"/v1/billing/slips/{slip_id}/verify", json={})
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["verification_status"] == "verified"
-    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()["records"][0]
+    detail = client.get("/v1/billing/records", params={"tenant_id": TENANT_ID}).json()[
+        "records"
+    ][0]
     assert len(detail["payments"]) == 1  # the crashed payment, not doubled
 
 
@@ -437,7 +467,9 @@ def _auth_harness(tmp_path, monkeypatch):
     return TestClient(app)
 
 
-def test_slip_routes_are_tenant_scoped_for_non_operator_admins(tmp_path, monkeypatch) -> None:
+def test_slip_routes_are_tenant_scoped_for_non_operator_admins(
+    tmp_path, monkeypatch
+) -> None:
     client = _auth_harness(tmp_path, monkeypatch)
 
     # Tenant A admin creates a record; the public webhook matches a slip to it.

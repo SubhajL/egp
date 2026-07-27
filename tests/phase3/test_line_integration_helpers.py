@@ -17,13 +17,17 @@ CHANNEL_SECRET = "line-channel-secret-test"
 
 
 def _sign(secret: str, body: bytes) -> str:
-    return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+    return base64.b64encode(
+        hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    ).decode()
 
 
 def test_verify_signature_accepts_valid_hmac() -> None:
     body = b'{"events":[]}'
     assert verify_line_signature(
-        channel_secret=CHANNEL_SECRET, raw_body=body, signature_header=_sign(CHANNEL_SECRET, body)
+        channel_secret=CHANNEL_SECRET,
+        raw_body=body,
+        signature_header=_sign(CHANNEL_SECRET, body),
     )
 
 
@@ -37,14 +41,19 @@ def test_verify_signature_rejects_tampered_body() -> None:
 
 def test_verify_signature_fails_closed_without_secret_or_header() -> None:
     body = b"{}"
-    assert not verify_line_signature(channel_secret=None, raw_body=body, signature_header="x")
+    assert not verify_line_signature(
+        channel_secret=None, raw_body=body, signature_header="x"
+    )
     assert not verify_line_signature(
         channel_secret=CHANNEL_SECRET, raw_body=body, signature_header=None
     )
 
 
 def test_extract_reference_finds_inv_pattern() -> None:
-    assert extract_reference_code("ขอชำระเงิน Reference: INV-2026-0001 ครับ") == "INV-2026-0001"
+    assert (
+        extract_reference_code("ขอชำระเงิน Reference: INV-2026-0001 ครับ")
+        == "INV-2026-0001"
+    )
     assert extract_reference_code("inv-2026-0123") == "INV-2026-0123"
 
 

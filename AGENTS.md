@@ -11,6 +11,9 @@
 
 ```bash
 ./scripts/bootstrap_python_env.sh
+# Equivalent when uv 0.11.32 is already installed:
+uv sync --frozen --all-packages --all-extras
+uv run --frozen python -m compileall apps packages
 docker compose -f docker-compose-localdev.yml up -d postgres
 ./.venv/bin/python -m egp_db.migration_runner --database-url postgresql://egp:egp_dev@localhost:5432/egp --migrations-dir packages/db/src/migrations
 ./.venv/bin/python scripts/run_phase1_postgres_smoke.py
@@ -25,6 +28,8 @@ docker compose -f docker-compose-localdev.yml up -d postgres
 ## Universal Conventions
 
 - Python uses 3.12+. Add type hints on all public functions.
+- `uv.lock` is the Python release source of truth. Do not use ad hoc dependency installs in CI
+  or Docker builds; regenerate the lock deliberately and validate it with `uv lock --check`.
 - Frontend code uses TypeScript strict mode; `@/*` imports are configured in `apps/web/tsconfig.json`.
 - Keep `ruff` line length at 100 for Python changes.
 - Do not push directly to `main`; use a feature branch and open a PR with passing checks.

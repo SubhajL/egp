@@ -274,7 +274,9 @@ class SqlCrawlerRuntimeRepository:
             row = (
                 connection.execute(
                     select(CRAWLER_RUNTIME_HEARTBEATS_TABLE)
-                    .where(CRAWLER_RUNTIME_HEARTBEATS_TABLE.c.runtime_mode == "external")
+                    .where(
+                        CRAWLER_RUNTIME_HEARTBEATS_TABLE.c.runtime_mode == "external"
+                    )
                     .order_by(
                         CRAWLER_RUNTIME_HEARTBEATS_TABLE.c.reported_at.desc(),
                         CRAWLER_RUNTIME_HEARTBEATS_TABLE.c.agent_id,

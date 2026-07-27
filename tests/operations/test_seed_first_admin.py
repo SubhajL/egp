@@ -330,9 +330,7 @@ def test_seed_first_admin_concurrent_runs_only_one_creates_admin() -> None:
         from psycopg import connect
 
         with connect(database_url) as conn, conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM users WHERE role IN ('owner', 'admin')"
-            )
+            cur.execute("SELECT COUNT(*) FROM users WHERE role IN ('owner', 'admin')")
             admin_count = int(cur.fetchone()[0])
         assert admin_count == 1, (
             f"expected exactly 1 owner/admin in DB, got {admin_count}"

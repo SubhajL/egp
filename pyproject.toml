@@ -16,6 +16,11 @@ dependencies = [
     "prometheus-client>=0.20",
 ]
 
+[dependency-groups]
+dev = [
+    "pip-audit>=2.9,<3",
+]
+
 [tool.setuptools]
 include-package-data = false
 py-modules = ["egp_metrics"]
@@ -25,19 +30,15 @@ py-modules = ["egp_metrics"]
 
 [tool.setuptools.packages.find]
 where = [
-    "apps/api/src",
     "packages/observability/src",
     "packages/shared-types/src",
     "packages/crawler-core/src",
     "packages/domain/src",
     "packages/document-classifier/src",
     "packages/db/src",
-    "apps/worker/src",
     "packages/notification-core/src",
 ]
 include = [
-    "egp_api",
-    "egp_api.*",
     "egp_observability",
     "egp_observability.*",
     "egp_shared_types",
@@ -50,8 +51,15 @@ include = [
     "egp_document_classifier.*",
     "egp_db",
     "egp_db.*",
-    "egp_worker",
-    "egp_worker.*",
     "egp_notifications",
     "egp_notifications.*",
+]
+
+[tool.uv]
+required-version = "==0.11.32"
+
+[tool.uv.workspace]
+members = [
+    "apps/api",
+    "apps/worker",
 ]

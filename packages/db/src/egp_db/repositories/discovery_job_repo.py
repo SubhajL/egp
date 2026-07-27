@@ -401,18 +401,22 @@ class SqlDiscoveryJobRepository:
             DISCOVERY_JOBS_TABLE.c.next_attempt_at > resolved_now,
         )
         with self._engine.connect() as connection:
-            row = connection.execute(
-                select(
-                    func.sum(case((pending, 1), else_=0)).label("pending_count"),
-                    func.sum(case((claimable, 1), else_=0)).label(
-                        "claimable_count"
-                    ),
-                    func.sum(case((leased, 1), else_=0)).label("leased_count"),
-                    func.sum(case((retry_scheduled, 1), else_=0)).label(
-                        "retry_scheduled_count"
-                    ),
-                ).select_from(DISCOVERY_JOBS_TABLE)
-            ).mappings().one()
+            row = (
+                connection.execute(
+                    select(
+                        func.sum(case((pending, 1), else_=0)).label("pending_count"),
+                        func.sum(case((claimable, 1), else_=0)).label(
+                            "claimable_count"
+                        ),
+                        func.sum(case((leased, 1), else_=0)).label("leased_count"),
+                        func.sum(case((retry_scheduled, 1), else_=0)).label(
+                            "retry_scheduled_count"
+                        ),
+                    ).select_from(DISCOVERY_JOBS_TABLE)
+                )
+                .mappings()
+                .one()
+            )
         return DiscoveryQueueSnapshot(
             pending_count=int(row["pending_count"] or 0),
             claimable_count=int(row["claimable_count"] or 0),
@@ -462,9 +466,7 @@ class SqlDiscoveryJobRepository:
         exclude_job_ids: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
-        lease_expires_at = now + timedelta(
-            seconds=max(0.01, float(lease_seconds))
-        )
+        lease_expires_at = now + timedelta(seconds=max(0.01, float(lease_seconds)))
         normalized_limit = max(1, int(limit))
         excluded_job_ids = {
             normalize_uuid_string(job_id) for job_id in (exclude_job_ids or ())
@@ -573,9 +575,7 @@ class SqlDiscoveryJobRepository:
         normalized_job_id = normalize_uuid_string(job_id)
         normalized_claim_token = normalize_uuid_string(claim_token)
         now = _now()
-        lease_expires_at = now + timedelta(
-            seconds=max(0.01, float(lease_seconds))
-        )
+        lease_expires_at = now + timedelta(seconds=max(0.01, float(lease_seconds)))
         with self._engine.begin() as connection:
             renewed = connection.execute(
                 update(DISCOVERY_JOBS_TABLE)
@@ -584,8 +584,7 @@ class SqlDiscoveryJobRepository:
                         DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
                         DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
                         DISCOVERY_JOBS_TABLE.c.job_status == "pending",
-                        DISCOVERY_JOBS_TABLE.c.claim_token
-                        == normalized_claim_token,
+                        DISCOVERY_JOBS_TABLE.c.claim_token == normalized_claim_token,
                         DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_not(None),
                         DISCOVERY_JOBS_TABLE.c.lease_expires_at > now,
                     )
@@ -604,8 +603,7 @@ class SqlDiscoveryJobRepository:
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE).where(
                         and_(
-                            DISCOVERY_JOBS_TABLE.c.tenant_id
-                            == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
                             DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
                         )
                     )
@@ -682,8 +680,7 @@ class SqlDiscoveryJobRepository:
             if current_claim_token is not None:
                 attempt_filters.extend(
                     [
-                        DISCOVERY_JOBS_TABLE.c.claim_token
-                        == normalized_claim_token,
+                        DISCOVERY_JOBS_TABLE.c.claim_token == normalized_claim_token,
                         DISCOVERY_JOBS_TABLE.c.lease_expires_at > now,
                     ]
                 )

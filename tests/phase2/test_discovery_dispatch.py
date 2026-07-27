@@ -269,7 +269,9 @@ def test_discovery_queue_snapshot_distinguishes_due_leased_and_retrying(
     )
 
 
-def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(tmp_path) -> None:
+def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(
+    tmp_path,
+) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-pool.sqlite3'}",
         bootstrap_schema=True,
@@ -330,7 +332,9 @@ def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(tmp_pat
     }
 
 
-def test_discovery_dispatch_processor_preserves_serial_mode_with_one_worker(tmp_path) -> None:
+def test_discovery_dispatch_processor_preserves_serial_mode_with_one_worker(
+    tmp_path,
+) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-serial.sqlite3'}",
         bootstrap_schema=True,
@@ -425,7 +429,9 @@ def test_discovery_dispatch_processor_observes_only_confirmed_readiness() -> Non
     assert store.events[:3] == ["probe", "prepare", "claim"]
 
 
-def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimable() -> None:
+def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimable() -> (
+    None
+):
     store = RecordingClaimStore([])
     dispatcher = RecordingDiscoveryDispatcher()
     preparer = RecordingPreDispatchPreparer(store.events)
@@ -441,7 +447,9 @@ def test_discovery_dispatch_processor_does_not_prepare_when_no_jobs_are_claimabl
     assert dispatcher.requests == []
 
 
-def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false() -> None:
+def test_discovery_dispatch_processor_defers_claim_when_preparer_returns_false() -> (
+    None
+):
     store = RecordingClaimStore(
         [_job_record("11111111-1111-1111-1111-111111111111", keyword="one")]
     )

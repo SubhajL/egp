@@ -1235,3 +1235,166 @@ LOW
   Gate S1.
 - Formal disposition: no unresolved finding prevents committing the partial-S1 evidence while Gate
   S1 remains closed.
+
+## 2026-07-27 10:34:32 +0700 — Phase 2 U5 reproducible release gates
+
+### Goal and boundary
+
+- Implement U5 from the frozen soft-launch plan on
+  `build/reproducible-release-gates`, based on merged partial-S1 SHA
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b`.
+- Scope: one frozen Python workspace, immutable SQL migration manifest, real PostgreSQL
+  migration/readiness contracts, a critical browser lane, and enforced dependency vulnerability
+  policy.
+- U6 runtime-image separation/hardening is deliberately deferred to its own sequential PR.
+- E0 is still billing-blocked and Gate S1 remains CLOSED.
+- Auggie was skipped because the available interface cannot enforce the required real two-second
+  timeout; direct exact-string and file inspection was used.
+
+### TDD record
+
+- Initial RED:
+  `./.venv/bin/python -m pytest -q tests/operations/test_reproducible_release_gates.py`
+  failed all 5 initial tests because `uv.lock`/workspace wiring, the migration-manifest checker,
+  enforced CI audits/PostgreSQL contracts, and the critical Playwright lane did not exist.
+- Docker validation exposed a second wiring defect: the runtime stage invoked system Python before
+  the frozen virtualenv was on `PATH`; the first API build failed with
+  `No module named playwright`. Both runtime stages now set `PATH` before dependency-assisted
+  install commands.
+- The first web image validation transferred a 653.68 MB host context, including local build
+  artifacts. A sixth RED test proved `apps/web/.dockerignore` was absent; the added ignore contract
+  reduced the verified context to 9.64 kB.
+- Current focused GREEN:
+  `6 passed` in `tests/operations/test_reproducible_release_gates.py`.
+
+### Implementation and wiring
+
+| Producer | Consumer / enforced path | Evidence |
+|---|---|---|
+| Root `pyproject.toml`, API/worker workspace members, `uv.lock` | Bootstrap, all Python CI jobs, API and worker Docker builds | uv 0.11.32 and setup action pinned; every sync/export is frozen |
+| `packages/db/src/migrations/manifest.sha256` | `scripts/check_migration_manifest.py`, migration CI job | Exact 35-file checksum set verified; drift unit test passes |
+| PostgreSQL ledger/readiness contracts | Migration CI job with `EGP_CI_POSTGRES_CONTRACT=1` | Isolated temporary PostgreSQL run passed both opt-in contracts |
+| `@critical` launch-path tags | `test:e2e:critical`, dedicated CI job | Login/MFA, worker-backed recrawl, and PromptPay tests each passed 3 consecutive runs |
+| Python runtime export | `pip-audit --strict --disable-pip` | No known vulnerabilities |
+| Frontend production/all-dependency audits | Frontend build CI job | Runtime high/critical: 0; all dependencies: no critical findings |
+| Web `.dockerignore` | Web Docker build context | Host dependencies, generated builds, reports, and env files excluded |
+
+### Security and compatibility changes
+
+- Replaced vulnerable `python-jose`/`ecdsa` with `PyJWT[crypto]`; API exception handling and all JWT
+  tests now use PyJWT. The frozen runtime audit is clean.
+- Test-only HMAC keys were lengthened to at least 32 bytes so PyJWT's key-strength warnings identify
+  real configuration problems rather than fixtures.
+- Upgraded the frontend to patched Next.js 16.2.12 and nodemailer 9.0.3, migrated to Next's flat
+  ESLint configuration, and retained only a documented compatibility exception for existing
+  controlled-form hydration.
+- The production npm audit is clean. Eleven high-severity findings remain in development-only
+  ESLint/OpenAPI transitive packages; CI fails on critical findings across all dependencies without
+  an allowlist or `continue-on-error`.
+
+### Validation evidence so far
+
+- Frozen lock, migration manifest, Ruff lint, and Ruff format: green. The newly executable format
+  gate found latent billing-hidden drift; 79 Python files were normalized mechanically and the
+  final declared scope reports `310 files already formatted`.
+- Three consecutive full Python suites before the final fixture/dockerignore additions:
+  `1424 passed, 2 skipped` each, in 180.04 s, 179.69 s, and 176.27 s. A final post-review triple run
+  is still required before commit.
+- Frontend unit tests: 3 consecutive runs, each `51 passed`; critical Playwright: 3 consecutive
+  runs, each `3 passed`; full Playwright: `43 passed`.
+- OpenAPI generated types current; TypeScript, ESLint, Next production build, compileall, and both
+  Compose config validations passed.
+- API, worker, and web images build. API/worker frozen-runtime import smokes passed.
+- Shared local PostgreSQL was inspected but not modified after revealing pre-existing drift
+  (`crawler_runtime_heartbeats` present while migration `033` was absent from the ledger).
+  An isolated `TempPostgresCluster` applied the complete migration set and passed both CI contracts.
+
+### Remaining lifecycle work
+
+- Inspect the complete semantic and mechanical diff, run Claude read-only review, QCHECK, and formal
+  `g-check`; remediate any findings.
+- Run final post-remediation gates and three consecutive full suites.
+- Commit, push, open U5 PR, record the expected billing-blocked GitHub checks, use the user's
+  engineering-PR admin-merge authorization, and land exact merged `origin/main` locally.
+- Start U6 only from that landed U5 main SHA.
+
+## Review (2026-07-27 10:49:17 +0700) - Phase 2 U5 staged working tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: staged working tree based on
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b`
+- Commands Run: bounded staged diff/status/stat inspection; exact-string dependency and wiring
+  searches; lock and manifest checks; Ruff lint/format; focused and full pytest; isolated
+  PostgreSQL contracts; OpenAPI type check; TypeScript; ESLint; Vitest; critical and full
+  Playwright; npm and pip audits; Compose config; API/worker/web image builds and runtime imports;
+  Claude Code 2.1.220 read-only semantic review
+
+### Findings
+
+CRITICAL
+
+- No unresolved findings. Claude identified that `apps/web/next-env.d.ts` had captured the local
+  `.next-playwright` dist directory, which could couple clean type generation to a local
+  Playwright artifact. The declaration is now the build-generated `.next/types/routes.d.ts` form
+  at `apps/web/next-env.d.ts:3`, and
+  `tests/operations/test_reproducible_release_gates.py:194` prevents regression. Clean-directory
+  typecheck and production build both pass.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- GitHub billing still prevents hosted jobs from starting, so the new
+  `Critical Playwright Smoke` job cannot yet provide hosted runtime evidence. Admin-merging this
+  engineering PR under the user's explicit billing override does not open Gate S1.
+- The branch-protection required-check set is external configuration. After billing restoration,
+  confirm the new job is required before treating it as a release gate.
+- The 79-file Ruff normalization was reviewed as mechanical-only and is covered by the full suite;
+  semantic review focused on the release-gate files.
+
+### Recommended Tests / Validation
+
+- Complete the final post-review triple full-suite run after all review remediation.
+- Re-run the frozen lock, manifest, lint/format, audits, frontend matrix, exact PostgreSQL
+  contracts, and all three image builds on the final staged state.
+- On the PR, inspect every hosted job annotation and do not describe zero-step billing failures as
+  passing checks.
+
+### Rollout Notes
+
+- U5 changes build/test/release contracts and dependency implementations but performs no
+  deployment or production mutation.
+- The PyJWT replacement preserves HS256 bearer behavior and rejects invalid tokens through
+  `jwt.PyJWTError`; runtime dependency auditing is clean.
+- U6 remains a separate sequential PR for lean non-root images, executor isolation, resource/log
+  limits, and formal image smoke gates.
+- Gate S1 remains CLOSED until exact deployed U1-U6 evidence and every live requirement pass.
+
+### Final post-review validation closure
+
+- Three consecutive full final-tree Python suites passed identically:
+  `1426 passed, 2 skipped`, in 184.42 s, 184.51 s, and 177.84 s.
+- The warning count fell to 113 after strengthening test-only HMAC fixtures; remaining warnings are
+  the known Starlette/httpx and SQLite datetime deprecations.
+- Final frozen lock, 35-file migration manifest, Ruff lint/format over 310 files, compileall,
+  OpenAPI types, TypeScript, ESLint, Vitest, critical Playwright, Next production build, npm
+  policy audits, Python runtime audit, and both Compose configurations passed.
+- Final images built from the staged tree:
+  API `sha256:4b30acdbd2107b27fcd678b4952af8e62a841dc4ba22a9148df06099dc97055f`,
+  worker `sha256:f80c9d1fdb6081200685d0feb9dce019f7061417e269758641992198d3457672`,
+  web `sha256:4da61432f0cd02a0782c18cc401109a14e51825892624a1ad091da9055b34295`.
+  API and worker frozen-runtime import smokes passed.
+- Final formal disposition: no unresolved QCHECK or g-check finding blocks the U5 commit.

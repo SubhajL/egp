@@ -246,18 +246,14 @@ class FileLockRateLimiter:
                 if is_open
                 else None
             ),
-            reset_in_seconds=(
-                max(0.0, circuit_open_until - now) if is_open else 0.0
-            ),
+            reset_in_seconds=(max(0.0, circuit_open_until - now) if is_open else 0.0),
             last_outcome=(
                 str(state["last_outcome"])
                 if state.get("last_outcome") is not None
                 else None
             ),
             consecutive_429=int(state.get("consecutive_429") or 0),
-            consecutive_site_errors=int(
-                state.get("consecutive_site_errors") or 0
-            ),
+            consecutive_site_errors=int(state.get("consecutive_site_errors") or 0),
             site_error_trip_count=int(state.get("site_error_trip_count") or 0),
         )
 

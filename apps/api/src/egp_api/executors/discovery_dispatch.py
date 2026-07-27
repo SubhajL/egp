@@ -225,9 +225,7 @@ class RuntimeHeartbeatState:
     def update_from_error(self, exc: BaseException) -> None:
         with self._lock:
             self.watcher_status = "error"
-            self.database_status = (
-                "unreachable" if isinstance(exc, OperationalError) else "unknown"
-            )
+            self.database_status = "unreachable" if isinstance(exc, OperationalError) else "unknown"
             self.blocker_code = (
                 CrawlerBlockerCode.DATABASE_UNREACHABLE
                 if isinstance(exc, OperationalError)
@@ -542,9 +540,7 @@ def _start_runtime_heartbeat_thread(
     if reporter is None:
         return stop_event, None, delivery_lock
     first_attempt_started = threading.Event()
-    interval_seconds = float(
-        getattr(reporter, "minimum_interval_seconds", 30.0)
-    )
+    interval_seconds = float(getattr(reporter, "minimum_interval_seconds", 30.0))
     heartbeat_thread = threading.Thread(
         target=_run_periodic_runtime_heartbeats_sync,
         kwargs={
@@ -659,9 +655,7 @@ def main(
 ) -> int:
     args = _build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    runtime_reporter: CrawlerRuntimeReporter | None = (
-        build_crawler_runtime_reporter_from_env()
-    )
+    runtime_reporter: CrawlerRuntimeReporter | None = build_crawler_runtime_reporter_from_env()
     try:
         runtime = runtime_factory(
             args.database_url,
@@ -682,11 +676,9 @@ def main(
     resolved_owner_pid = os.getpid() if owner_pid is None else owner_pid
     if args.once:
         runtime_state = RuntimeHeartbeatState()
-        heartbeat_stop, heartbeat_thread, heartbeat_delivery_lock = (
-            _start_runtime_heartbeat_thread(
-                reporter=runtime_reporter,
-                state=runtime_state,
-            )
+        heartbeat_stop, heartbeat_thread, heartbeat_delivery_lock = _start_runtime_heartbeat_thread(
+            reporter=runtime_reporter,
+            state=runtime_state,
         )
         try:
             processed = run_discovery_dispatch_once(

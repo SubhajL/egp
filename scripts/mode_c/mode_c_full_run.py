@@ -192,7 +192,9 @@ final = samples[-1] if samples else None
 print("\n--- PR-06 gate assertions ---")
 if final:
     if final["wait_count"] > 0:
-        print(f"  PASS: rate_limiter_wait_seconds_count = {final['wait_count']:.0f} (>0)")
+        print(
+            f"  PASS: rate_limiter_wait_seconds_count = {final['wait_count']:.0f} (>0)"
+        )
     else:
         print("  FAIL: rate_limiter_wait_seconds_count == 0 (limiter never engaged)")
     print(

@@ -429,7 +429,11 @@ def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
         max_attempts=3,
         retry_delay_seconds=0.0,
     )
-    processed_runs = [processor.process_pending(), processor.process_pending(), processor.process_pending()]
+    processed_runs = [
+        processor.process_pending(),
+        processor.process_pending(),
+        processor.process_pending(),
+    ]
 
     assert sent == ["owner@example.com"]
     assert created.channel == "in_app,email,webhook"

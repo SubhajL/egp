@@ -90,9 +90,11 @@ def require_discovery_authorization(
     entitled_keywords = {value.casefold() for value in snapshot.active_keywords}
     if not normalized_keyword or normalized_keyword.casefold() not in entitled_keywords:
         raise DiscoveryAuthorizationError("discover keyword is not entitled for tenant")
-    if profile_id is not None and (
-        str(profile_id), normalized_keyword.casefold()
-    ) not in snapshot.runnable_profile_keywords:
+    if (
+        profile_id is not None
+        and (str(profile_id), normalized_keyword.casefold())
+        not in snapshot.runnable_profile_keywords
+    ):
         raise DiscoveryAuthorizationError(
             "discover profile keyword is not entitled for tenant"
         )
@@ -142,9 +144,9 @@ def build_discovery_authorization_snapshot(
 
     resolved_active_keywords = list(active_keywords or [])
     keyword_limit = entitlement.keyword_limit
-    over_keyword_limit = keyword_limit is not None and len(resolved_active_keywords) > int(
-        keyword_limit
-    )
+    over_keyword_limit = keyword_limit is not None and len(
+        resolved_active_keywords
+    ) > int(keyword_limit)
     return DiscoveryAuthorizationSnapshot(
         has_active_subscription=entitlement.has_active_subscription,
         over_keyword_limit=over_keyword_limit,
@@ -206,9 +208,8 @@ def build_runnable_profile_keywords(
         entitlement=entitlement,
         effective_cycle_only=True,
     )
-    if (
-        entitlement.keyword_limit is not None
-        and len(enabled_keywords) > int(entitlement.keyword_limit)
+    if entitlement.keyword_limit is not None and len(enabled_keywords) > int(
+        entitlement.keyword_limit
     ):
         return []
     runnable: list[RunnableProfileKeyword] = []
@@ -311,7 +312,8 @@ def resolve_effective_discovery_entitlement(
         and current_plan_code in _EXPIRED_PLAN_CODES_THAT_FALL_BACK_TO_TRIAL
     ):
         fallback_start = datetime.combine(
-            date.fromisoformat(str(current_subscription.billing_period_end)) + timedelta(days=1),
+            date.fromisoformat(str(current_subscription.billing_period_end))
+            + timedelta(days=1),
             time.min,
             tzinfo=UTC,
         )
@@ -344,7 +346,10 @@ def _profile_cycle_start_for_active_subscription(
     current_subscription: SubscriptionLike,
     subscriptions: list[SubscriptionLike],
 ) -> datetime | None:
-    if str(getattr(current_subscription, "plan_code", "") or "") != "one_time_search_pack":
+    if (
+        str(getattr(current_subscription, "plan_code", "") or "")
+        != "one_time_search_pack"
+    ):
         return None
     current_id = str(getattr(current_subscription, "id", "") or "")
     current_period_start = _subscription_date_ordinal(

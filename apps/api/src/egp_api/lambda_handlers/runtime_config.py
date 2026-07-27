@@ -99,12 +99,16 @@ def load_runtime_config(
     opn_secret_key = str(
         source_env.get("EGP_OPN_SECRET_KEY") or bundle.get("opn_secret_key") or ""
     ).strip()
-    opn_public_key = str(
-        source_env.get("EGP_OPN_PUBLIC_KEY") or bundle.get("opn_public_key") or ""
-    ).strip() or None
-    opn_webhook_secret = str(
-        source_env.get("EGP_OPN_WEBHOOK_SECRET") or bundle.get("opn_webhook_secret") or ""
-    ).strip() or None
+    opn_public_key = (
+        str(source_env.get("EGP_OPN_PUBLIC_KEY") or bundle.get("opn_public_key") or "").strip()
+        or None
+    )
+    opn_webhook_secret = (
+        str(
+            source_env.get("EGP_OPN_WEBHOOK_SECRET") or bundle.get("opn_webhook_secret") or ""
+        ).strip()
+        or None
+    )
 
     if not database_url:
         raise LambdaConfigurationError("DATABASE_URL is required")

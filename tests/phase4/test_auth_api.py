@@ -9,7 +9,7 @@ import time
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 import pytest
 from sqlalchemy import text
 
@@ -18,7 +18,7 @@ from egp_shared_types.enums import BillingRecordStatus
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
-JWT_SECRET = "phase4-auth-secret"
+JWT_SECRET = "phase4-auth-test-secret-at-least-32-bytes"
 PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = (
     "pbkdf2_sha256$390000$testsalt12345678$nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
