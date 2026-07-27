@@ -29,25 +29,25 @@ new value in use.
 
 ---
 
-## 2. `EGP_JWT_SECRET` — API JWT signing key
+## 2. `EGP_JWT_SECRET` — machine-bearer JWT key
 
-Used by `apps/api` to sign session JWTs.
+Used by `apps/api` to verify HS256 machine bearer tokens. Browser sessions are
+opaque, database-backed cookies and do not use this secret.
 
 - **Generate**: `openssl rand -hex 32`
 - **Roll**: edit `/etc/egp/egp.env`; replace the `EGP_JWT_SECRET=` line.
 - **Restart**: `sudo systemctl restart egp-api.service` (or the API container
   / `pm2 reload egp-api` depending on deploy).
-- **Verify**: after restart, log in as any test user — the new session cookie
-  contains a JWT signed with the new secret. Existing sessions issued under
-  the previous secret are invalidated (this is expected; see Window).
-- **Window**: **zero overlap**. Rotating this secret invalidates all in-flight
-  sessions. Schedule for off-peak. Communicate to users that they'll be
-  re-prompted to log in.
+- **Verify**: after restart, a test bearer signed by the trusted issuer with the
+  new secret succeeds; a bearer signed with the previous secret returns 401.
+  Confirm that an existing browser session still succeeds.
+- **Window**: **zero overlap** for machine bearer tokens. Rotating this secret
+  invalidates bearers signed with the previous value. Database-backed browser
+  sessions remain valid.
 - **Frequency**: quarterly, or immediately if leaked.
 
-> **Note**: the API falls back to `SUPABASE_JWT_SECRET` if `EGP_JWT_SECRET` is
-> empty. Don't rely on the fallback in production — set `EGP_JWT_SECRET`
-> explicitly.
+The API has no fallback bearer secret. Auth-enabled startup fails unless
+`EGP_JWT_SECRET` is set explicitly.
 
 ---
 

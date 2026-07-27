@@ -819,3 +819,158 @@ LOW
 - Web unit tests: 12 files and 51 tests passed.
 - Web typecheck, lint, and production build: passed.
 - QCHECK/formal `g-check`: no unresolved findings.
+
+## U3 merge and local landing (2026-07-27 08:42:17 +0700)
+
+- PR: `#180`, `https://github.com/SubhajL/egp/pull/180`.
+- Reviewed head: `a9972cb8c5af84afa6b57d385c35d79cf3e53d75`.
+- Required checks: all six failed with zero steps; exact annotation remained
+  `The job was not started because your account is locked due to a billing issue.`
+- Admin squash merge: `178fe531903a66d64d2f5b8cdef5a0f388033dfc`.
+- The merge command completed the remote merge, then returned nonzero only because the isolated
+  worktree could not check out the primary worktree's `main` branch.
+- Primary checkout fast-forwarded without touching its three protected dirty files.
+- Verified local `main == origin/main == 178fe531903a66d64d2f5b8cdef5a0f388033dfc`.
+- Exact merged-SHA post-merge gate returned `32 passed`; touched-scope Ruff passed.
+- Disposition: U3 is landed. E0 and Gate S1 remain blocked independently.
+
+## Implementation (2026-07-27 08:45:03 +0700) - U4 bearer authorization trust
+
+### Goal
+
+Accept bearer tenant and role authorization only from direct EGP-controlled claims, require the
+dedicated EGP signing secret whenever authentication is enabled, and preserve database-backed
+cookie sessions.
+
+### TDD evidence
+
+- RED command:
+  `python -m pytest tests/phase4/test_auth_api.py -k
+  'metadata_cannot_elevate_role_or_tenant or login_sets_http_only_session_cookie_and_me_reads_session
+  or bearer_tokens_remain_supported_for_me' tests/phase1/test_high_risk_architecture.py -k
+  'auth_enabled_startup_requires_explicit_egp_jwt_secret or
+  auth_disabled_startup_does_not_require_jwt_secret or metadata_cannot_elevate_role_or_tenant or
+  login_sets_http_only_session_cookie_and_me_reads_session or
+  bearer_tokens_remain_supported_for_me' -q`
+- RED result: `3 failed, 3 passed`.
+- Confirmed causes: both `user_metadata.role` and `app_metadata.role` elevated a direct-tenant
+  bearer to support access; `get_jwt_secret()` silently accepted `SUPABASE_JWT_SECRET`.
+- Existing direct bearer and cookie-session compatibility tests remained green in RED.
+
+### What changed
+
+- Added one authorization-claim extractor for bearer tokens. It accepts `tenant_id` and optional
+  `role` only as direct claims; nested `user_metadata` and `app_metadata` are never authorization
+  sources.
+- Role checks now use the normalized role already stored in `AuthContext`. This preserves
+  database-backed cookie-session roles while preventing later code from re-reading untrusted
+  bearer metadata.
+- Removed the `SUPABASE_JWT_SECRET` fallback. Auth-enabled startup now fails closed unless
+  `EGP_JWT_SECRET` is explicitly configured; auth-disabled local/test startup remains supported
+  without a JWT secret.
+- Added the local auth controls to `.env.example` and aligned the frontend handoff and secret
+  rotation runbooks with the direct-claim and opaque-session runtime behavior.
+
+### GREEN and regression evidence
+
+- Focused GREEN: `6 passed, 49 deselected`.
+- Affected authentication, authorization, registration, webhook, rules, observability, internal
+  worker, and high-risk architecture matrix: `171 passed, 5 warnings` three consecutive times.
+- Full repository Python run: `1262 passed, 112 warnings`.
+- Repository Ruff, touched-file format check, compileall, both Compose config validations, env
+  template tests, diff whitespace check, and generated OpenAPI/TypeScript contract check passed.
+- Web unit tests: 12 files and 51 tests passed; typecheck, lint, and production build passed.
+
+### Wiring verification
+
+| Component | Runtime entry point | Authorization source | Regression coverage |
+|---|---|---|---|
+| Machine bearer | auth middleware -> `authenticate_bearer_request()` | direct `sub`, `tenant_id`, optional `role` | nested metadata rejection and direct bearer `/v1/me` |
+| Browser session | auth middleware -> `AuthService.authenticate_session()` | database session user and tenant role | login cookie and authenticated `/v1/me` |
+| Admin authorization | `request_has_support_role()` | normalized `AuthContext.role` | nested metadata receives 403 |
+| JWT configuration | repository bootstrap -> `get_jwt_secret()` | `EGP_JWT_SECRET` only | enabled startup failure and disabled startup compatibility |
+
+### Behavior and risk
+
+- A direct tenant claim always wins because nested tenant values are ignored rather than merged.
+  A token with only nested tenant metadata receives 401.
+- Rotating `EGP_JWT_SECRET` invalidates old machine bearer tokens but does not invalidate
+  database-backed browser sessions.
+- The API remains an HS256 verifier; the trusted machine-token issuer must be rotated in lockstep.
+- E0 and Gate S1 remain blocked by the GitHub billing lock.
+
+## Review (2026-07-27 08:55:36 +0700) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase1-u1`
+- Branch: `fix/bearer-authorization-claims`
+- Scope: staged U4 changes at base `178fe531903a66d64d2f5b8cdef5a0f388033dfc`
+- Commands Run: staged source/test/docs patch inspection; bearer and session authorization-source
+  tracing; JWT configuration caller inventory; legacy secret and metadata authority searches;
+  focused and affected tests; full Python suite; Ruff/format/compile; Compose and env-template
+  validation; generated contract check; web unit/type/lint/build
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No unresolved findings. During QCHECK, the touched secret-rotation runbook still described
+  browser sessions as JWTs signed with `EGP_JWT_SECRET`. It now correctly documents HS256 machine
+  bearer verification, zero-overlap bearer rotation, and continuity of opaque database sessions.
+
+### Open Questions / Assumptions
+
+- Assumption: every machine bearer issuer is EGP-controlled and can place `tenant_id` and optional
+  `role` at the JWT top level.
+- Assumption: auth-disabled startup without a JWT secret is retained solely for explicit local and
+  test use; the production template keeps authentication enabled and the secret required.
+- Residual risk: HS256 rotation has no dual-key overlap, so issuers and the API require a
+  coordinated cutover.
+- Residual risk: GitHub required jobs still execute zero steps because of the account billing lock;
+  local gates cannot certify the remote runner or image-publish environment.
+
+### Recommended Tests / Validation
+
+- Keep both nested metadata variants in required tests and preserve the direct-claim tenant result,
+  absent direct-tenant 401, and support-route 403 assertions.
+- Keep direct bearer and database-cookie session compatibility tests together in the auth matrix.
+- After deployment, rotate a non-production bearer key and prove new-key success, old-key 401, and
+  uninterrupted browser-session access on the exact deployed SHA.
+- Rerun real required GitHub checks when E0 is restored.
+
+### Rollout Notes
+
+- Configure `EGP_JWT_SECRET` explicitly before starting any auth-enabled API.
+- Update every HS256 machine-token issuer in the same cutover window.
+- Do not migrate browser login to bearer tokens; existing sessions remain database-backed.
+- Formal disposition: no unresolved product-code findings require remediation. Proceed to final
+  exact-tree gates, commit, and PR.
+
+## U4 final pre-commit gates (2026-07-27 08:56:30 +0700)
+
+- Exact reviewed tree full Python suite: `1262 passed, 112 warnings`.
+- Focused direct-bearer, nested-metadata, cookie-session, and JWT-startup matrix: `6 passed`.
+- Affected matrix: `171 passed, 5 warnings` three consecutive times.
+- `ruff check apps packages tests scripts`: passed.
+- Touched Python `ruff format --check`: passed.
+- `python -m compileall -q apps packages`: passed.
+- Production and local-development Compose configurations: passed.
+- Env-template test suite: `15 passed`.
+- Staged diff whitespace check: passed.
+- Generated OpenAPI/TypeScript contract check: current.
+- Web unit tests: 12 files and 51 tests passed.
+- Web typecheck, lint, and production build: passed.
+- QCHECK/formal `g-check`: no unresolved findings.

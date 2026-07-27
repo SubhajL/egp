@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 from jose import jwt
+import pytest
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
@@ -639,6 +640,61 @@ def test_bearer_tokens_remain_supported_for_me(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["tenant"]["id"] == TENANT_ID
     assert response.json()["user"]["subject"] == "user-123"
+
+
+@pytest.mark.parametrize("metadata_key", ("user_metadata", "app_metadata"))
+def test_metadata_cannot_elevate_role_or_tenant(
+    tmp_path,
+    metadata_key: str,
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+
+    role_elevation_token = jwt.encode(
+        {
+            "sub": "metadata-attacker",
+            "tenant_id": TENANT_ID,
+            metadata_key: {
+                "tenant_id": OTHER_TENANT_ID,
+                "role": "support",
+            },
+        },
+        JWT_SECRET,
+        algorithm="HS256",
+    )
+    role_elevation_headers = {
+        "Authorization": f"Bearer {role_elevation_token}",
+    }
+
+    me_response = client.get("/v1/me", headers=role_elevation_headers)
+    admin_response = client.get("/v1/admin", headers=role_elevation_headers)
+
+    assert me_response.status_code == 200
+    assert me_response.json()["tenant"]["id"] == TENANT_ID
+    assert me_response.json()["user"]["role"] is None
+    assert admin_response.status_code == 403
+
+    nested_tenant_only_token = jwt.encode(
+        {
+            "sub": "metadata-attacker",
+            metadata_key: {
+                "tenant_id": TENANT_ID,
+                "role": "support",
+            },
+        },
+        JWT_SECRET,
+        algorithm="HS256",
+    )
+
+    nested_tenant_response = client.get(
+        "/v1/me",
+        headers={"Authorization": f"Bearer {nested_tenant_only_token}"},
+    )
+
+    assert nested_tenant_response.status_code == 401
+    assert nested_tenant_response.json() == {
+        "detail": "tenant claim missing from token",
+    }
 
 
 def test_passwordless_or_suspended_user_cannot_login(tmp_path) -> None:

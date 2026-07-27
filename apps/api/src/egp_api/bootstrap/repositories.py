@@ -74,7 +74,7 @@ class RepositoryBundle:
     resolved_supabase_service_role_key: str | None
     resolved_auth_required: bool
     resolved_internal_worker_token: str | None
-    resolved_jwt_secret: str
+    resolved_jwt_secret: str | None
     resolved_storage_credentials_secret: str | None
     resolved_google_drive_oauth_config: GoogleDriveOAuthConfig | None
     resolved_google_drive_client: object
@@ -131,6 +131,8 @@ def build_repository_bundle(
     resolved_auth_required = get_auth_required(auth_required)
     resolved_internal_worker_token = get_internal_worker_token(internal_worker_token)
     resolved_jwt_secret = get_jwt_secret(jwt_secret)
+    if resolved_auth_required and resolved_jwt_secret is None:
+        raise RuntimeError("EGP_JWT_SECRET is required when authentication is enabled")
     resolved_storage_credentials_secret = (
         get_storage_credentials_secret(storage_credentials_secret) or resolved_jwt_secret
     )

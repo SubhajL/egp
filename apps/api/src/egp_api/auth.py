@@ -30,6 +30,12 @@ class AuthContext:
     tenant_plan_code: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AuthorizationClaims:
+    tenant_id: str
+    role: str | None
+
+
 def _extract_bearer_token(header_value: str | None) -> str:
     if header_value is None:
         raise HTTPException(status_code=401, detail="missing bearer token")
@@ -39,20 +45,16 @@ def _extract_bearer_token(header_value: str | None) -> str:
     return token.strip()
 
 
-def _extract_claim_tenant_id(claims: dict[str, Any]) -> str:
+def extract_authorization_claims(claims: dict[str, Any]) -> AuthorizationClaims:
+    """Extract only direct EGP-controlled tenant and role claims."""
+
     direct = claims.get("tenant_id")
-    if direct:
-        return normalize_uuid_string(str(direct))
-
-    app_metadata = claims.get("app_metadata")
-    if isinstance(app_metadata, dict) and app_metadata.get("tenant_id"):
-        return normalize_uuid_string(str(app_metadata["tenant_id"]))
-
-    user_metadata = claims.get("user_metadata")
-    if isinstance(user_metadata, dict) and user_metadata.get("tenant_id"):
-        return normalize_uuid_string(str(user_metadata["tenant_id"]))
-
-    raise HTTPException(status_code=401, detail="tenant claim missing from token")
+    if not direct:
+        raise HTTPException(status_code=401, detail="tenant claim missing from token")
+    return AuthorizationClaims(
+        tenant_id=normalize_uuid_string(str(direct)),
+        role=_normalize_optional_claim(claims.get("role")),
+    )
 
 
 def authenticate_bearer_request(
@@ -72,15 +74,16 @@ def authenticate_bearer_request(
     subject = str(claims.get("sub") or "").strip()
     if not subject:
         raise HTTPException(status_code=401, detail="subject claim missing from token")
+    authorization_claims = extract_authorization_claims(claims)
 
     return AuthContext(
-        tenant_id=_extract_claim_tenant_id(claims),
+        tenant_id=authorization_claims.tenant_id,
         subject=subject,
         claims=claims,
         user_id=_normalize_optional_claim(claims.get("user_id")),
         email=_normalize_optional_claim(claims.get("email")),
         full_name=_normalize_optional_claim(claims.get("full_name")),
-        role=_normalize_optional_claim(claims.get("role")),
+        role=authorization_claims.role,
         email_verified_at=_normalize_optional_claim(claims.get("email_verified_at")),
         mfa_enabled=_normalize_bool_claim(claims.get("mfa_enabled")),
     )
@@ -149,24 +152,7 @@ def extract_request_role(request: Request) -> str | None:
     auth_context = getattr(request.state, "auth_context", None)
     if auth_context is None:
         return None
-    claims = auth_context.claims
-    direct = claims.get("role")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
-
-    app_metadata = claims.get("app_metadata")
-    if isinstance(app_metadata, dict):
-        role = app_metadata.get("role")
-        if isinstance(role, str) and role.strip():
-            return role.strip()
-
-    user_metadata = claims.get("user_metadata")
-    if isinstance(user_metadata, dict):
-        role = user_metadata.get("role")
-        if isinstance(role, str) and role.strip():
-            return role.strip()
-
-    return None
+    return auth_context.role
 
 
 def request_has_support_role(request: Request) -> bool:

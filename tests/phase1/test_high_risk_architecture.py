@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from egp_api.main import create_app as create_runtime_app
+from egp_api.config import get_jwt_secret
 from egp_db.artifact_store import S3ArtifactStore, SupabaseArtifactStore
 from egp_db.repositories.project_repo import (
     PROJECTS_TABLE,
@@ -167,6 +168,43 @@ def test_create_app_default_does_not_create_sqlite_schema(tmp_path) -> None:
         }
 
     assert table_names == set()
+
+
+def test_auth_enabled_startup_requires_explicit_egp_jwt_secret(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_JWT_SECRET", raising=False)
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "legacy-supabase-fallback")
+
+    assert get_jwt_secret() is None
+    with pytest.raises(RuntimeError, match="EGP_JWT_SECRET"):
+        create_runtime_app(
+            artifact_root=tmp_path,
+            database_url=f"sqlite+pysqlite:///{tmp_path / 'missing-jwt.sqlite3'}",
+            auth_required=True,
+            payment_callback_secret="phase1-callback-secret",
+            background_runtime_mode="external",
+        )
+
+
+def test_auth_disabled_startup_does_not_require_jwt_secret(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("EGP_JWT_SECRET", raising=False)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+
+    app = create_runtime_app(
+        artifact_root=tmp_path,
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'auth-disabled.sqlite3'}",
+        auth_required=False,
+        payment_callback_secret="phase1-callback-secret",
+        background_runtime_mode="external",
+    )
+
+    assert app.state.auth_required is False
+    assert app.state.jwt_secret is None
 
 
 def test_create_app_explicit_test_bootstrap_creates_sqlite_schema(tmp_path) -> None:
