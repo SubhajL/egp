@@ -12,19 +12,42 @@ This is the **landing page** for production deployment guidance. For end-to-end 
 | `EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS` | `20` | Renewal interval while a worker subprocess is active. It must be positive and shorter than the lease. |
 | `EGP_BROWSER_CDP_PORT_BASE` | `9222` | First Chrome remote-debugging port available for discovery workers. |
 | `EGP_BROWSER_CDP_PORT_RANGE` | `200` | Number of deterministic per-run CDP ports reserved on each host. |
-| `EGP_BROWSER_PROFILE_ROOT` | `~/.egp/profiles` | Root for per-run Chrome user-data directories; keep this outside synced folders. |
+| `EGP_BROWSER_PROFILE_ROOT` | `/var/lib/egp/browser-profiles` in Compose | Root for per-run Chrome user-data directories. Compose supplies a bounded tmpfs at this path; direct host processes may use another non-synced path. |
 | `EGP_EGP_SITE_ERROR_THRESHOLD` | `2` | Open the host-shared e-GP circuit after repeated site-error toasts. |
 | `EGP_EGP_SITE_ERROR_BASE_SECONDS` | `300` | Initial cooldown after the site-error threshold is reached. |
 | `EGP_EGP_SITE_ERROR_MAX_SECONDS` | `1800` | Cap exponential site-error cooldowns at 30 minutes. |
 
-Both compose files in this repo (`docker-compose.yml`, `docker-compose-localdev.yml`) default to the safe worker-count value. The browser isolation env vars have code defaults, but production should set them explicitly so operators know which host ports and profile root are reserved. Do not raise `EGP_DISCOVERY_WORKER_COUNT` in production until the prerequisites in [When worker_count can increase](#when-worker_count-can-increase) are met.
+Both compose files in this repo (`docker-compose.yml`, `docker-compose-localdev.yml`) default to
+the safe worker-count value. They run the Python services with read-only root filesystems and
+bounded writable tmpfs mounts, set per-service memory/CPU/PID limits, and rotate `json-file` logs.
+The browser isolation port vars retain code defaults; Compose fixes the ephemeral per-run profile
+root to its bounded container tmpfs. Do not raise `EGP_DISCOVERY_WORKER_COUNT` in production until
+the prerequisites in [When worker_count can increase](#when-worker_count-can-increase) are met.
+
+### Non-root volume upgrade
+
+Fresh named volumes inherit UID/GID `10001:10001` from the image mount points. Before replacing
+older root-running containers, stop the API and executors, back up the volumes, and correct any
+existing named volumes once:
+
+```bash
+docker compose run --rm --no-deps --user 0:0 --entrypoint sh api \
+  -c 'chown -R 10001:10001 /var/lib/egp/artifacts'
+docker compose run --rm --no-deps --user 0:0 --entrypoint sh discovery-executor \
+  -c 'chown -R 10001:10001 /var/lib/egp/artifacts /var/lib/egp/browser-profile'
+```
+
+These are rollout commands, not routine startup steps. Do not run them concurrently with API or
+browser processes.
 
 ## Process topology
 
 The production compose stack runs the discovery dispatcher as a separate service:
 
 - `api` - serves HTTP, `EGP_BACKGROUND_RUNTIME_MODE=external` disables the embedded dispatch loop.
-- `discovery-executor` - runs `python -m egp_api.executors.discovery_dispatch`, claims discovery jobs from the outbox, spawns one worker subprocess per job.
+- `discovery-executor` - uses the browser-capable worker image and runs `python -m
+  egp_api.executors.discovery_dispatch`, claims discovery jobs from the outbox, and spawns one
+  worker subprocess per job.
 - `webhook-executor` - runs `python -m egp_api.executors.webhook_delivery` for outbound webhook delivery.
 
 This is implemented as the `api`, `discovery-executor`, and `webhook-executor` services in [`docker-compose.yml`](../docker-compose.yml).

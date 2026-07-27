@@ -76,7 +76,13 @@ Lightsail Linux bundles (always verify current pricing at <https://aws.amazon.co
 
 **Region**: `ap-southeast-1` (Singapore) — closest to Thai customers and to gprocurement.go.th (~30–45 ms RTT).
 
-**Why not the $3.50 / $5 / $7 bundles**: this repo's API and worker images both bake Chromium via `playwright install chromium --with-deps` (see `apps/api/Dockerfile:23`, `apps/worker/Dockerfile:21`). A single Chromium process with a populated profile is ~500 MB RSS, and the rest of the stack (Postgres + API + executors + Caddy + optional in-Compose Next.js) lands around 1.5 GB. The $5 bundle (512 MB) OOM-kills on the first crawl and the $7 bundle (1 GB / 2 GB depending on AWS's current tiering) swap-thrashes.
+**Why not the $3.50 / $5 / $7 bundles**: the API image excludes Chromium, Playwright,
+and worker source, while the worker image contains Playwright and Chromium for the discovery
+executor. This removes duplicate browser payload from the control plane, but it does not reduce
+the live browser's peak memory requirement. A single Chromium process with a populated profile is
+~500 MB RSS, and the rest of the stack (Postgres + API + executors + Caddy + optional in-Compose
+Next.js) still lands around 1.5 GB. The $5 bundle (512 MB) OOM-kills on the first crawl and the $7
+bundle (1 GB / 2 GB depending on AWS's current tiering) swap-thrashes.
 
 If crawling bursts at `EGP_DISCOVERY_WORKER_COUNT=1` already pressure the box, move to the next size up before raising the worker count further.
 
@@ -342,11 +348,14 @@ The local development file is now separate and should not be used for production
 
 - [`docker-compose-localdev.yml`](../docker-compose-localdev.yml)
 
-Use the existing API Dockerfile:
+The stack uses separate runtime Dockerfiles:
 
 - [`apps/api/Dockerfile`](../apps/api/Dockerfile)
+- [`apps/worker/Dockerfile`](../apps/worker/Dockerfile)
 
-The API image already contains the repo’s Python package layout and browser-related dependencies. That is one reason this VM approach fits the codebase well.
+The API image contains only the control-plane runtime. `discovery-executor` uses the worker image,
+which also contains the API executor package plus the Playwright browser payload it dispatches.
+Both images run as UID/GID `10001:10001`.
 
 A typical launch command on the VM will look like:
 

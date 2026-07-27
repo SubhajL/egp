@@ -1,7 +1,17 @@
+x-egp-logging: &egp-logging
+  driver: json-file
+  options:
+    max-size: "${EGP_LOG_MAX_SIZE:-10m}"
+    max-file: "${EGP_LOG_MAX_FILES:-3}"
+
 services:
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
+    mem_limit: ${EGP_POSTGRES_MEMORY_LIMIT:-512m}
+    cpus: ${EGP_POSTGRES_CPU_LIMIT:-1.0}
+    pids_limit: ${EGP_POSTGRES_PIDS_LIMIT:-256}
+    logging: *egp-logging
     environment:
       POSTGRES_DB: ${EGP_POSTGRES_DB:-egp}
       POSTGRES_USER: ${EGP_POSTGRES_USER:-egp}
@@ -21,6 +31,13 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: "no"
+    mem_limit: ${EGP_MIGRATE_MEMORY_LIMIT:-256m}
+    cpus: ${EGP_MIGRATE_CPU_LIMIT:-0.5}
+    pids_limit: ${EGP_MIGRATE_PIDS_LIMIT:-128}
+    logging: *egp-logging
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
     environment:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
     depends_on:
@@ -40,6 +57,13 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    mem_limit: ${EGP_API_MEMORY_LIMIT:-768m}
+    cpus: ${EGP_API_CPU_LIMIT:-1.0}
+    pids_limit: ${EGP_API_PIDS_LIMIT:-256}
+    logging: *egp-logging
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
     environment:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
@@ -112,6 +136,13 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    mem_limit: ${EGP_WEBHOOK_EXECUTOR_MEMORY_LIMIT:-256m}
+    cpus: ${EGP_WEBHOOK_EXECUTOR_CPU_LIMIT:-0.5}
+    pids_limit: ${EGP_WEBHOOK_EXECUTOR_PIDS_LIMIT:-128}
+    logging: *egp-logging
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
     environment:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
     depends_on:
@@ -124,7 +155,7 @@ services:
       - -m
       - egp_api.executors.webhook_delivery
     # Background worker (no HTTP server): the apps/api/Dockerfile HEALTHCHECK
-    # curls :8000/health, which never succeeds here and reports a permanent
+    # curls :8000/ready, which never succeeds here and reports a permanent
     # false 'unhealthy'. Disable it — the container running-state already
     # reflects worker liveness (PID 1 is the worker; if it exits the container
     # stops and is restarted by `restart: unless-stopped`).
@@ -134,8 +165,16 @@ services:
   discovery-executor:
     build:
       context: .
-      dockerfile: apps/api/Dockerfile
+      dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
+    mem_limit: ${EGP_DISCOVERY_EXECUTOR_MEMORY_LIMIT:-2g}
+    cpus: ${EGP_DISCOVERY_EXECUTOR_CPU_LIMIT:-2.0}
+    pids_limit: ${EGP_DISCOVERY_EXECUTOR_PIDS_LIMIT:-512}
+    logging: *egp-logging
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=256m,mode=1777
+      - /var/lib/egp/browser-profiles:rw,nosuid,size=256m,uid=10001,gid=10001,mode=0700
     environment:
       DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
       EGP_ARTIFACT_ROOT: /var/lib/egp/artifacts
@@ -160,7 +199,7 @@ services:
       EGP_CRAWLER_HEARTBEAT_INTERVAL_SECONDS: ${EGP_CRAWLER_HEARTBEAT_INTERVAL_SECONDS:-30}
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
       EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
-      EGP_BROWSER_PROFILE_ROOT: ${EGP_BROWSER_PROFILE_ROOT:-~/.egp/profiles}
+      EGP_BROWSER_PROFILE_ROOT: /var/lib/egp/browser-profiles
       # Headful Chrome under Xvfb (this is a Linux container with no display).
       EGP_BROWSER_USE_XVFB: ${EGP_BROWSER_USE_XVFB:-true}
       # Outbound proxy for headful Chrome (creds-free; points at proxy-relay
@@ -189,7 +228,7 @@ services:
       - python
       - -m
       - egp_api.executors.discovery_dispatch
-    # Background worker (no HTTP server): disable the inherited :8000/health
+    # Background worker (no HTTP server): disable the inherited :8000/ready
     # probe (see webhook-executor above) — container running-state reflects
     # worker liveness.
     healthcheck:
@@ -204,6 +243,10 @@ services:
     profiles: ["proxy"]
     image: ginuerzh/gost
     restart: unless-stopped
+    mem_limit: ${EGP_PROXY_RELAY_MEMORY_LIMIT:-256m}
+    cpus: ${EGP_PROXY_RELAY_CPU_LIMIT:-0.5}
+    pids_limit: ${EGP_PROXY_RELAY_PIDS_LIMIT:-128}
+    logging: *egp-logging
     command:
       - "-L=http://:8118"
       - "-F=${EGP_PROXY_UPSTREAM_URL:-}"
@@ -221,6 +264,10 @@ services:
         NEXT_PUBLIC_EGP_API_BASE_URL: ${NEXT_PUBLIC_EGP_API_BASE_URL:?set NEXT_PUBLIC_EGP_API_BASE_URL in your environment}
         NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in your environment}
     restart: unless-stopped
+    mem_limit: ${EGP_WEB_MEMORY_LIMIT:-512m}
+    cpus: ${EGP_WEB_CPU_LIMIT:-1.0}
+    pids_limit: ${EGP_WEB_PIDS_LIMIT:-256}
+    logging: *egp-logging
     environment:
       NEXT_PUBLIC_EGP_API_BASE_URL: ${NEXT_PUBLIC_EGP_API_BASE_URL:?set NEXT_PUBLIC_EGP_API_BASE_URL in your environment}
       NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL in your environment}
@@ -238,6 +285,10 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: ${EGP_CADDY_MEMORY_LIMIT:-256m}
+    cpus: ${EGP_CADDY_CPU_LIMIT:-0.5}
+    pids_limit: ${EGP_CADDY_PIDS_LIMIT:-128}
+    logging: *egp-logging
     environment:
       EGP_API_DOMAIN: ${EGP_API_DOMAIN:?set EGP_API_DOMAIN in your environment}
       EGP_APP_DOMAIN: ${EGP_APP_DOMAIN:?set EGP_APP_DOMAIN in your environment}
