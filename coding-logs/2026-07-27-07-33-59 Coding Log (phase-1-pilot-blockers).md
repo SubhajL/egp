@@ -974,3 +974,122 @@ LOW
 - Web unit tests: 12 files and 51 tests passed.
 - Web typecheck, lint, and production build: passed.
 - QCHECK/formal `g-check`: no unresolved findings.
+
+## U4 merge and local landing (2026-07-27 08:57:48 +0700)
+
+- PR: `#181`, `https://github.com/SubhajL/egp/pull/181`.
+- Reviewed head: `1ced1eab5e013f51cc0f4538be3b0536345fdd3c`.
+- Required checks and `claude-review` all failed with zero steps; the exact annotation was
+  `The job was not started because your account is locked due to a billing issue.`
+- Vercel preview completed successfully, but it is not a substitute for the required jobs.
+- Admin squash merge: `a356b15d247214359240f2cccd4ceeaa6de78f62`.
+- The merge command completed the remote merge, then returned nonzero only because the isolated
+  worktree could not check out the primary worktree's `main` branch.
+- Primary checkout fast-forwarded without touching its three protected dirty files.
+- Verified local `main == origin/main == a356b15d247214359240f2cccd4ceeaa6de78f62`.
+- Exact merged-SHA post-merge bearer, metadata, session, and startup matrix returned `6 passed`;
+  touched-scope Ruff passed.
+- Disposition: U4 is landed. E0 and Gate S1 remain blocked independently.
+
+## Phase 1 exact-main completion audit (2026-07-27 09:03:25 +0700)
+
+### Audited release tree
+
+- Product-code SHA: `a356b15d247214359240f2cccd4ceeaa6de78f62`.
+- Primary `main` and `origin/main` are identical with `ahead=0`, `behind=0`, and
+  `branch_synced=true`.
+- `scripts/check_main_sync.py --json` reports `ok=false` only because the primary checkout retains
+  the same three protected pre-existing dirty files. The isolated audit worktree was clean at the
+  audited SHA before this evidence-only log update.
+- No deployment was attempted: the source plan requires E0 and live Gate S1 evidence first.
+
+### Phase 1 PR disposition
+
+| Unit | PR | Merge SHA | Code gate |
+|---|---:|---|---|
+| U1 internal worker auth boundary | #178 | `ae90f374b27a90ddc779848e6eb688151019f388` | missing/wrong/valid worker-token route matrix green |
+| U2 migration-only API bootstrap | #179 | `3fa826a5f0c878167d702c9d345a8e972d8573b1` | blank DB remains blank; migrated PostgreSQL starts |
+| U3 API readiness and runtime topology | #180 | `178fe531903a66d64d2f5b8cdef5a0f388033dfc` | liveness/readiness, exact migration ledger, and external PostgreSQL topology green |
+| U4 bearer authorization claims | #181 | `a356b15d247214359240f2cccd4ceeaa6de78f62` | nested metadata elevation denied; direct bearer and cookie session remain compatible |
+
+### Exact-main validation
+
+- Full Python suite: `1262 passed, 112 warnings` in 174.73 seconds.
+- Consolidated U1-U4 defect-sensitive matrix: `53 passed`.
+  It includes the complete internal-route token inventory, no-DDL/factory defaults, migrated
+  PostgreSQL startup, readiness states/assets, explicit PostgreSQL topology, direct/nested bearer
+  claims, and cookie-session compatibility.
+- `ruff check apps packages tests scripts`: passed.
+- `python -m compileall -q apps packages`: passed.
+- Production and local-development Compose configurations: passed.
+- Env-template tests: `15 passed`.
+- Generated OpenAPI and TypeScript API contracts: current.
+- Web unit tests: 12 files and 51 tests passed.
+- Web typecheck, lint, and production build: passed.
+
+### Acceptance decision
+
+- **Phase 1 code-level pilot blockers U1-U4: COMPLETE.**
+- **External prerequisite E0: BLOCKED.** The six required jobs on PR #181 each had zero steps and
+  the GitHub billing-lock annotation. Local tests, the admin merge, and Vercel success do not
+  satisfy E0.
+- **Gate S1: CLOSED.** No real pilot is authorized until E0 is restored and the exact deployed SHA
+  passes every live migration/readiness, login/admin/project/rule/recrawl/document/export, worker,
+  payment, notification, artifact, backup/restore, Mac doctor, terminal-request, and operator
+  rollback/observation requirement without mandatory skips.
+- Next lifecycle action is external: restore GitHub billing, rerun required checks with real job
+  steps on current `main`, then execute and record Gate S1 against the exact deployed SHA.
+
+## Review (2026-07-27 09:05:29 +0700) - Phase 1 completion audit
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase1-u1`
+- Branch: `docs/phase1-completion-audit`
+- Scope: evidence-only completion record for product-code SHA
+  `a356b15d247214359240f2cccd4ceeaa6de78f62`
+- Commands Run: source-plan Phase 1 and Gate S1 reread; U1-U4 Coding Log and merge-SHA audit;
+  GitHub PR/check/job/annotation inspection; exact-main full and defect-sensitive Python tests;
+  Ruff/compile; Compose/env-template validation; generated-contract check; web unit/type/lint/build;
+  primary/main synchronization and protected-dirty-file verification
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The completion decision applies only to Phase 1 code-level blockers U1-U4; it does not satisfy
+  the external E0 prerequisite or any live Gate S1 item.
+- The three primary-checkout dirty files predate and remain outside all Phase 1 commits. Their
+  presence makes the sync script's aggregate `ok` false even though local and remote SHAs match.
+- Residual risk: GitHub required jobs and `claude-review` did not run any steps, so remote-runner,
+  image-build, and independent hosted-review evidence is absent.
+
+### Recommended Tests / Validation
+
+- Restore billing and rerun all six required checks with non-empty job steps on current `main`.
+- Deploy only the resulting exact checked SHA, then run every Gate S1 live test without skips.
+- Preserve the 53-test U1-U4 matrix as a fast regression gate alongside the full repository suite.
+
+### Rollout Notes
+
+- Phase 1 code can remain landed while E0 is repaired; keep Gate S1 closed.
+- Do not reinterpret the audit PR, local evidence, admin merges, or Vercel preview as launch
+  approval.
+- Formal disposition: no unresolved finding changes the Phase 1 code-complete/E0-blocked/S1-closed
+  decision. Proceed to merge this evidence record.
