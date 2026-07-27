@@ -1,24 +1,20 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTypeScript from "eslint-config-next/typescript";
+import { FlatCompat } from "@eslint/eslintrc";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export default defineConfig([
-  ...nextVitals,
-  ...nextTypeScript,
+const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
+const compat = new FlatCompat({ baseDirectory: currentDirectory });
+
+export default [
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
   {
-    rules: {
-      // Existing forms intentionally hydrate controlled state from fetched or
-      // persisted external state. Refactor those flows separately from the
-      // release-tooling migration.
-      "react-hooks/set-state-in-effect": "off",
-    },
+    ignores: [
+      ".next/**",
+      ".next-dev/**",
+      ".next-playwright/**",
+      "out/**",
+      "build/**",
+      "next-env.d.ts",
+    ],
   },
-  globalIgnores([
-    ".next/**",
-    ".next-dev/**",
-    ".next-playwright/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-  ]),
-]);
+];

@@ -1559,3 +1559,102 @@ LOW
   TypeScript; ESLint; `51` Vitest tests; critical Playwright `3 passed`; clean production npm
   audit; no all-dependency critical finding; self-hosted and Vercel-mode Next builds; and web image
   `sha256:87a2b764bb737dc66f8f88f6cb283694a07ff6d2d19a57f5844b416776a90b3a`.
+
+## 2026-07-27 11:33:27 +0700 — U5 patched Next 15 compatibility correction
+
+- Third replacement deployment `dpl_3YGpaRu5JiN24UktLFYqRx2zk5Qj` at exact
+  `2390febf2b1f4403c9b8617eb72e20c93f1a9f3a` disproved the standalone-output hypothesis:
+  Next 16.2.12 compiled, typechecked, prerendered, traced, ran Vercel `onBuildComplete`, emitted
+  zero deployment outputs, and ended `ERROR` without an error code/message.
+- Exact last-READY deployment `dpl_AWLHzqRoYGRHRMk8bKmcxUvCfsuM` at
+  `0b8b02d142fa503b42a6f6346a398ab9910bf15b` used the repository's unconditional
+  `output: "standalone"` contract with Next 15. The experimental webpack and output-mode changes
+  are therefore reverted instead of retained as ineffective complexity.
+- The compatibility correction selects the patched Next 15.5 release line required by Vercel's
+  May 2026 security advisory:
+  <https://vercel.com/changelog/next-js-may-2026-security-release>. The lock resolves Next and
+  `eslint-config-next` to `15.5.22`, above the advisory's `15.5.18` patched floor.
+- TDD RED/GREEN: the release contract failed on Next 16.2.12, then passed with `^15.5.18`, one
+  canonical build command, Vercel using `npm run build`, and the Docker standalone output restored.
+- Next 15 uses the legacy ESLint shareable config format. The flat ESLint 9 entry point now uses
+  the directly declared `@eslint/eslintrc` `FlatCompat`; strict ESLint passes.
+- Independent Claude review raised five items. Disposition:
+  - The Vercel/standalone critical concern is rejected by the exact last-READY Next 15 deployment
+    above; the fourth preview remains the required behavioral proof.
+  - The `.next-playwright` declaration leak was reproduced and fixed. Browser commands now use a
+    trap-protected wrapper that restores the exact pre-run `next-env.d.ts`; the file checksum
+    remained `85ae5aee75f011967cf2d25cbc342f62d69314e9d925f7f4aa3456fc2cffcca6`
+    across the critical browser run.
+  - The security-audit concern is already covered by CI and static contracts:
+    production dependencies fail on high findings and the full tree fails on critical findings.
+    Local production audit is clean; the full tree has no critical finding.
+  - The React Hooks rule-set and JSX-mode notes are non-blocking compatibility consequences of the
+    matched Next 15 toolchain; strict ESLint, TypeScript, build, unit, and browser gates pass.
+- Local behavioral evidence on the corrected tree: Next 15.5.22 production build, TypeScript,
+  ESLint, `51` Vitest tests, critical Playwright `3 passed`, full Playwright `43 passed`, clean
+  production npm audit, and no all-dependency critical finding. The canonical web image builds as
+  non-root user `nextjs` with standalone server:
+  `sha256:01355ce4646cdd0e5bbee7103bd39d4931cbe938fa2fa3a292b88e0e9a1343ff`
+  (`313,969,395` bytes).
+- Merge remains blocked on a fourth Vercel preview reaching `READY` with non-empty deployment
+  outputs. No production deployment or pilot activation is part of this correction.
+
+## Review (2026-07-27 11:35:06 +0700) - patched Next 15 compatibility correction
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-phase2-u5`
+- Branch: `build/reproducible-release-gates`
+- Scope: uncommitted follow-up against
+  `2390febf2b1f4403c9b8617eb72e20c93f1a9f3a`
+- Commands Run: exact last-READY source inspection; bounded diff/stat/check; Ruff lint/format;
+  focused release contracts three consecutive times; shell syntax; npm lock install; production
+  and full-tree audits; Next production build; TypeScript; ESLint; Vitest; critical and full
+  Playwright; canonical web image build; independent Claude read-only review
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No unresolved findings. Claude identified the Playwright declaration leak. It is remediated by
+  `scripts/run-playwright.sh`, with static contract coverage and checksum-verified runtime proof
+  across the browser lane.
+
+MEDIUM
+
+- No findings. The resolved Next 15.5.22 package is above the published 15.5.18 patched floor,
+  production dependencies have no audit finding, and CI retains the stricter production-high and
+  all-dependency-critical audit policy.
+
+LOW
+
+- No findings. The matched Next 15 ESLint/JSX compatibility changes pass strict lint, typecheck,
+  build, unit, and browser gates.
+
+### Open Questions / Assumptions
+
+- Vercel adapter behavior cannot be inferred from local build success. The fourth preview must
+  reach `READY` and expose non-empty deployment outputs before merge.
+- GitHub-hosted checks remain subject to the account billing lock and must be reported as zero-step
+  infrastructure failures if the lock persists.
+
+### Recommended Tests / Validation
+
+- Push the exact reviewed tree and inspect both Vercel deployment metadata/output count and every
+  latest-SHA GitHub check annotation.
+- Merge only after Vercel is behaviorally green and no newly started GitHub job reports a product
+  failure.
+
+### Rollout Notes
+
+- Formal disposition: no unresolved local QCHECK or g-check finding.
+- Final local gate summary: release contracts `8 passed` three consecutive times; Ruff and shell
+  syntax; TypeScript; ESLint; `51` Vitest tests; critical Playwright `3 passed` three consecutive
+  times; full Playwright `43 passed`; production Next build; clean production npm audit; no
+  all-dependency critical finding; and non-root standalone web image
+  `sha256:01355ce4646cdd0e5bbee7103bd39d4931cbe938fa2fa3a292b88e0e9a1343ff`.
+- No production deployment or pilot activation is authorized by this review.

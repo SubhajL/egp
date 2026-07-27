@@ -166,7 +166,10 @@ def test_ci_enforces_postgres_browser_and_vulnerability_gates() -> None:
 
 def test_critical_playwright_lane_covers_launch_paths() -> None:
     package_json = (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
-    assert '"test:e2e:critical": "playwright test --grep @critical"' in package_json
+    assert (
+        '"test:e2e:critical": "./scripts/run-playwright.sh --grep @critical"'
+        in package_json
+    )
 
     critical_titles: list[str] = []
     for spec_path in sorted((REPO_ROOT / "apps/web/tests/e2e").glob("*.spec.ts")):
@@ -194,11 +197,25 @@ def test_web_image_excludes_host_build_artifacts() -> None:
 
 def test_next_type_declarations_do_not_capture_playwright_dist_dir() -> None:
     next_env = (REPO_ROOT / "apps/web/next-env.d.ts").read_text(encoding="utf-8")
+    package_config = json.loads(
+        (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
+    )
+    playwright_wrapper = (REPO_ROOT / "apps/web/scripts/run-playwright.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert ".next-playwright" not in next_env
+    assert package_config["scripts"]["test"] == "./scripts/run-playwright.sh"
+    assert package_config["scripts"]["test:e2e"] == "./scripts/run-playwright.sh"
+    assert (
+        package_config["scripts"]["test:e2e:critical"]
+        == "./scripts/run-playwright.sh --grep @critical"
+    )
+    assert "trap cleanup EXIT HUP INT TERM" in playwright_wrapper
+    assert 'cp "$next_env_backup" "$next_env_file"' in playwright_wrapper
 
 
-def test_next_16_release_build_separates_vercel_and_docker_output_modes() -> None:
+def test_frontend_uses_patched_vercel_compatible_next_release() -> None:
     package_config = json.loads(
         (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
     )
@@ -206,13 +223,11 @@ def test_next_16_release_build_separates_vercel_and_docker_output_modes() -> Non
         (REPO_ROOT / "apps/web/vercel.json").read_text(encoding="utf-8")
     )
     next_config = (REPO_ROOT / "apps/web/next.config.mjs").read_text(encoding="utf-8")
-    standalone_build = "rm -rf .next && EGP_BUILD_STANDALONE=true next build"
-    vercel_build = "rm -rf .next && next build"
+    release_build = "rm -rf .next && next build"
 
-    assert package_config["scripts"]["build"] == standalone_build
-    assert package_config["scripts"]["build:vercel"] == vercel_build
-    assert vercel_config["buildCommand"] == "npm run build:vercel"
-    assert (
-        'process.env.EGP_BUILD_STANDALONE === "true" ? "standalone" : undefined'
-        in next_config
-    )
+    assert package_config["dependencies"]["next"] == "^15.5.18"
+    assert package_config["devDependencies"]["eslint-config-next"] == "^15.5.18"
+    assert package_config["scripts"]["build"] == release_build
+    assert "build:vercel" not in package_config["scripts"]
+    assert vercel_config["buildCommand"] == "npm run build"
+    assert 'output: "standalone"' in next_config

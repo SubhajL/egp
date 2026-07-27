@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "./scripts/dev.sh",
     "dev:web": "./scripts/dev-web.sh",
-    "build": "rm -rf .next && EGP_BUILD_STANDALONE=true next build",
-    "build:vercel": "rm -rf .next && next build",
+    "build": "rm -rf .next && next build",
     "start": "node .next/standalone/server.js",
     "lint": "eslint src tests --max-warnings=0",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
@@ -14,9 +13,9 @@
     "generate:api-types": "./scripts/generate-api-types.sh",
     "check:api-types": "./scripts/check-api-types.sh",
     "test:unit": "vitest run",
-    "test": "playwright test",
-    "test:e2e": "playwright test",
-    "test:e2e:critical": "playwright test --grep @critical"
+    "test": "./scripts/run-playwright.sh",
+    "test:e2e": "./scripts/run-playwright.sh",
+    "test:e2e:critical": "./scripts/run-playwright.sh --grep @critical"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.2",
@@ -25,7 +24,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
-    "next": "^16.2.12",
+    "next": "^15.5.18",
     "nodemailer": "^9.0.3",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
@@ -34,6 +33,7 @@
     "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
     "@playwright/test": "^1.56.1",
     "@types/node": "^25.5.2",
     "@types/nodemailer": "^8.0.0",
@@ -41,7 +41,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.12",
+    "eslint-config-next": "^15.5.18",
     "openapi-typescript": "^7.13.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
