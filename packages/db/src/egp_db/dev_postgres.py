@@ -53,6 +53,7 @@ def _create_phase1_smoke_app(*, artifact_root: Path, database_url: str) -> FastA
         database_url=database_url,
         auth_required=False,
         payment_callback_secret=LOCAL_PHASE1_SMOKE_PAYMENT_CALLBACK_SECRET,
+        background_runtime_mode="external",
     )
 
 

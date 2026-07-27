@@ -89,6 +89,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live */
+        get: operations["live_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Ready */
+        get: operations["ready_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin": {
         parameters: {
             query?: never;
@@ -2610,6 +2644,14 @@ export interface components {
             /** Documents */
             documents: components["schemas"]["DocumentResponse"][];
         };
+        /** LivenessResponse */
+        LivenessResponse: {
+            /**
+             * Status
+             * @constant
+             */
+            status: "ok";
+        };
         /** LoginRequest */
         LoginRequest: {
             /** Email */
@@ -2995,6 +3037,42 @@ export interface components {
         /** ProjectStatusUpdateResponse */
         ProjectStatusUpdateResponse: {
             project: components["schemas"]["ProjectResponse"];
+        };
+        /** ReadinessChecksResponse */
+        ReadinessChecksResponse: {
+            database: components["schemas"]["ReadinessDatabaseCheckResponse"];
+            migrations: components["schemas"]["ReadinessMigrationCheckResponse"];
+        };
+        /** ReadinessDatabaseCheckResponse */
+        ReadinessDatabaseCheckResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "error" | "unknown";
+        };
+        /** ReadinessMigrationCheckResponse */
+        ReadinessMigrationCheckResponse: {
+            /** Pending Count */
+            pending_count: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "error" | "unknown";
+            /** Unexpected Count */
+            unexpected_count: number | null;
+        };
+        /** ReadinessResponse */
+        ReadinessResponse: {
+            checks: components["schemas"]["ReadinessChecksResponse"];
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "not_ready";
         };
         /** ReconcileBillingPaymentRequest */
         ReconcileBillingPaymentRequest: {
@@ -3580,7 +3658,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["LivenessResponse"];
                 };
             };
         };
@@ -3713,6 +3791,55 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    live_live_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LivenessResponse"];
+                };
+            };
+        };
+    };
+    ready_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
                 };
             };
         };

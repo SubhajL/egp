@@ -23,6 +23,7 @@ from egp_api.config import (
     get_background_runtime_mode,
     get_web_allow_origin_regex,
     get_web_allowed_origins,
+    validate_background_runtime_topology,
 )
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatcher,
@@ -159,7 +160,6 @@ def create_app(
 ) -> FastAPI:
     resolved_web_allowed_origins = get_web_allowed_origins(web_allowed_origins)
     resolved_web_allow_origin_regex = get_web_allow_origin_regex(None)
-    resolved_background_runtime_mode = get_background_runtime_mode(background_runtime_mode)
     repository_bundle = build_repository_bundle(
         artifact_root=artifact_root,
         database_url=database_url,
@@ -179,6 +179,10 @@ def create_app(
         onedrive_client=onedrive_client,
         internal_worker_token=internal_worker_token,
         bootstrap_schema=bootstrap_schema,
+    )
+    resolved_background_runtime_mode = validate_background_runtime_topology(
+        database_url=repository_bundle.resolved_database_url,
+        background_runtime_mode=get_background_runtime_mode(background_runtime_mode),
     )
     app = FastAPI(
         title="e-GP Intelligence Platform",

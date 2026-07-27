@@ -50,6 +50,7 @@ from egp_shared_types.billing_plans import get_billing_plan_definition
 from egp_domain.document_ingest import DocumentIngestService
 from egp_domain.project_ingest import ProjectIngestService
 from egp_api.services.project_service import ProjectService
+from egp_api.services.readiness_service import ReadinessService
 from egp_api.services.rules_service import RulesService
 from egp_api.services.run_service import RunService
 from egp_api.services.storage_settings_service import StorageSettingsService
@@ -146,6 +147,9 @@ def configure_services(
         onedrive_client=bundle.resolved_onedrive_client,
     )
     app.state.db_engine = bundle.shared_engine
+    app.state.readiness_service = ReadinessService(
+        database_url=bundle.resolved_database_url,
+    )
     app.state.admin_repository = bundle.admin_repository
     app.state.auth_repository = bundle.auth_repository
     app.state.audit_repository = bundle.audit_repository
@@ -199,9 +203,7 @@ def configure_services(
 
     app.state.billing_service.set_subscription_activated_notifier(_notify_subscription_activated)
     app.state.entitlement_service = entitlement_service
-    app.state.document_capture_attempt_repository = (
-        bundle.document_capture_attempt_repository
-    )
+    app.state.document_capture_attempt_repository = bundle.document_capture_attempt_repository
     app.state.document_repository = bundle.document_repository
     app.state.notification_repository = bundle.notification_repository
     app.state.discovery_job_repository = bundle.discovery_job_repository

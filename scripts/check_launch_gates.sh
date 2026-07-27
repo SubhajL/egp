@@ -83,6 +83,26 @@ section() {
 }
 
 # -----------------------------------------------------------------------------
+section "Gate: API liveness"
+LIVE_RAW="$(curl -sf -m 10 "$API_URL/live" 2>/dev/null || true)"
+if [[ -z "$LIVE_RAW" ]]; then
+    report_fail "API /live reachable at $API_URL" \
+        "process or HTTP pipeline is unavailable"
+else
+    report_pass "API /live reachable at $API_URL"
+fi
+
+# -----------------------------------------------------------------------------
+section "Gate: API database and migration readiness"
+READY_RAW="$(curl -sf -m 10 "$API_URL/ready" 2>/dev/null || true)"
+if [[ -z "$READY_RAW" ]]; then
+    report_fail "API /ready reachable at $API_URL" \
+        "database is unavailable or the exact migration set is not applied"
+else
+    report_pass "API /ready reachable at $API_URL"
+fi
+
+# -----------------------------------------------------------------------------
 section "Gate: API /metrics endpoint reachable"
 METRICS_RAW="$(curl -sf -m 10 "$API_URL/metrics" 2>/dev/null || true)"
 if [[ -z "$METRICS_RAW" ]]; then

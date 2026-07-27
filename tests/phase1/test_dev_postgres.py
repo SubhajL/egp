@@ -72,6 +72,7 @@ def test_create_phase1_smoke_app_uses_local_callback_secret(
         captured["payment_callback_secret"]
         == "local-phase1-postgres-smoke-callback-secret"
     )
+    assert captured["background_runtime_mode"] == "external"
 
 
 def test_build_local_dev_postgres_config_uses_repo_data_dir_defaults(tmp_path) -> None:

@@ -67,7 +67,7 @@ cmd_up() {
   # The in-container discovery-executor crawls headless-in-Linux and fails
   # Cloudflare (Chrome CDP unreachable) — stop it; we crawl natively instead.
   "${COMPOSE[@]}" stop discovery-executor >/dev/null 2>&1 || true
-  echo "UI:  http://localhost:3002    API: http://localhost:8010/health    PG: localhost:5434"
+  echo "UI:  http://localhost:3002    API: http://localhost:8010/ready    PG: localhost:5434"
 }
 
 cmd_crawl() {

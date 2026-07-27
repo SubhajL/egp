@@ -29,6 +29,14 @@ The production compose stack runs the discovery dispatcher as a separate service
 
 This is implemented as the `api`, `discovery-executor`, and `webhook-executor` services in [`docker-compose.yml`](../docker-compose.yml).
 
+## Health endpoints
+
+- `GET /live` proves only that the API process and HTTP pipeline are responsive.
+- `GET /ready` proves the database is reachable and its `schema_migrations` ledger exactly matches
+  every checked-in migration file.
+- `GET /health` remains a temporary compatibility alias for `/live`; do not use it for traffic
+  admission.
+
 ## Renewable claims and typed failures
 
 Every claimed `discovery_jobs` row receives a unique claim token and expiring lease. The
@@ -109,14 +117,18 @@ Next-PR gate:
 
 ## Rollback
 
-If the external dispatcher misbehaves and you need to fall back to embedded mode temporarily:
+PostgreSQL API startup requires `EGP_BACKGROUND_RUNTIME_MODE=external`. Do not fall back to
+embedded mode: that would make API and executor ownership ambiguous. Roll back the application
+release while keeping the external topology:
 
 ```bash
 docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor
-# edit .deploy/egp.env: set EGP_BACKGROUND_RUNTIME_MODE=embedded
-docker compose --env-file .deploy/egp.env up -d api
+git switch --detach <previous-release-sha>
+docker compose --env-file .deploy/egp.env up -d --build api webhook-executor discovery-executor
+curl -fsS https://api.example.com/ready
 ```
 
-**Do not run the external executor services while the API is in embedded mode**. Both will compete for the same outbox jobs.
+Keep the failed release SHA and logs for diagnosis, and return to the normal tracked deployment
+branch after the incident.
 
-Full rollback procedure: [`LIGHTSAIL_LOW_COST_LAUNCH.md` Rollback to embedded mode](LIGHTSAIL_LOW_COST_LAUNCH.md#rollback-to-embedded-mode).
+Full rollback procedure: [`LIGHTSAIL_LOW_COST_LAUNCH.md` Roll back the application release](LIGHTSAIL_LOW_COST_LAUNCH.md#roll-back-the-application-release).

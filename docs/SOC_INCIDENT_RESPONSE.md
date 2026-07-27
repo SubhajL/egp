@@ -34,7 +34,8 @@ If the blast radius is unknown after 15 minutes, treat it as SEV-2 or higher.
 3. Capture the production runtime shape:
    ```bash
    ssh <lightsail-host> 'cd /srv/egp && docker compose --env-file /etc/egp/egp.env -f docker-compose.yml -f docker-compose.pg-tunnel.yml ps'
-   curl -fsS https://api.egptracker.com/health
+   curl -fsS https://api.egptracker.com/live
+   curl -fsS https://api.egptracker.com/ready
    curl -fsS https://api.egptracker.com/metrics | head -n 40
    scripts/run_remote_crawl.sh check
    scripts/install_launchd.sh status
@@ -109,7 +110,7 @@ claimer while gprocurement.go.th requires real Mac Chrome.
 Verify from your workstation:
 
 ```bash
-curl -fsS https://api.egptracker.com/health
+curl -fsS https://api.egptracker.com/ready
 scripts/run_remote_crawl.sh check
 ```
 

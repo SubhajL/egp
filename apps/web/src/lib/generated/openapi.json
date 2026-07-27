@@ -4034,6 +4034,20 @@
         "title": "ListDocumentsResponse",
         "type": "object"
       },
+      "LivenessResponse": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "LivenessResponse",
+        "type": "object"
+      },
       "LoginRequest": {
         "properties": {
           "email": {
@@ -5288,6 +5302,114 @@
           "project"
         ],
         "title": "ProjectStatusUpdateResponse",
+        "type": "object"
+      },
+      "ReadinessChecksResponse": {
+        "properties": {
+          "database": {
+            "$ref": "#/components/schemas/ReadinessDatabaseCheckResponse"
+          },
+          "migrations": {
+            "$ref": "#/components/schemas/ReadinessMigrationCheckResponse"
+          }
+        },
+        "required": [
+          "database",
+          "migrations"
+        ],
+        "title": "ReadinessChecksResponse",
+        "type": "object"
+      },
+      "ReadinessDatabaseCheckResponse": {
+        "properties": {
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "ReadinessDatabaseCheckResponse",
+        "type": "object"
+      },
+      "ReadinessMigrationCheckResponse": {
+        "properties": {
+          "pending_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Count"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unexpected_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unexpected Count"
+          }
+        },
+        "required": [
+          "status",
+          "pending_count",
+          "unexpected_count"
+        ],
+        "title": "ReadinessMigrationCheckResponse",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/ReadinessChecksResponse"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not_ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
         "type": "object"
       },
       "ReconcileBillingPaymentRequest": {
@@ -7281,7 +7403,9 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -7452,6 +7576,52 @@
         "tags": [
           "internal-worker"
         ]
+      }
+    },
+    "/live": {
+      "get": {
+        "operationId": "live_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Live"
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Ready"
       }
     },
     "/v1/admin": {

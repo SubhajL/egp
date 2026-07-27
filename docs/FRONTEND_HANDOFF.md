@@ -111,13 +111,20 @@ For normal tenant-scoped pages, do not pass `tenant_id` from the frontend; rely 
 
 ## Health
 
-### `GET /health`
+### `GET /live`
 
 Response:
 
 ```json
 { "status": "ok" }
 ```
+
+`GET /health` remains a temporary compatibility alias for `/live`.
+
+### `GET /ready`
+
+Returns HTTP `200` only when the database is reachable and its migration ledger exactly matches
+the checked-in migration set; otherwise it returns HTTP `503` with a stable readiness reason.
 
 ---
 

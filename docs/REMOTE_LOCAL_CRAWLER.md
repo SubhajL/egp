@@ -114,7 +114,7 @@ After a full deploy to #139+, delete the override (the base compose then carries
      -f docker-compose.yml -f docker-compose.pg-tunnel.yml \
      up -d --build --scale discovery-executor=0
    docker compose --env-file /etc/egp/egp.env ps discovery-executor   # → 0 replicas
-   curl -fsS https://api.<domain>/health
+   curl -fsS https://api.<domain>/ready
    ```
    Scaling `discovery-executor=0` is **critical**: if the Lightsail executor runs it will
    claim jobs and crawl headless → Cloudflare `401`. The Mac must be the only crawler.
