@@ -181,6 +181,16 @@ services:
       EGP_CRAWLER_AGENT_PROTOCOL: ${EGP_CRAWLER_AGENT_PROTOCOL:-off}
       EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS:-300}
       EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS:-60}
+      # U8a: this process now dispatches NEW_PROJECT notifications through the
+      # same entitlement-gated stack as the API. Without these the in-app row and
+      # webhook delivery still happen but email is SILENTLY skipped — which is the
+      # exact class of drift U8a exists to remove.
+      EGP_SMTP_HOST: ${EGP_SMTP_HOST:-}
+      EGP_SMTP_PORT: ${EGP_SMTP_PORT:-587}
+      EGP_SMTP_USERNAME: ${EGP_SMTP_USERNAME:-}
+      EGP_SMTP_PASSWORD: ${EGP_SMTP_PASSWORD:-}
+      EGP_SMTP_FROM: ${EGP_SMTP_FROM:-}
+      EGP_SMTP_USE_TLS: ${EGP_SMTP_USE_TLS:-true}
     depends_on:
       postgres:
         condition: service_healthy

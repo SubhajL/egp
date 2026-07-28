@@ -19,22 +19,49 @@ Delivery is **at-least-once**, and the *effects* are only partially idempotent:
 * `status` envelopes apply a state transition, also convergent.
 * Everything downstream of the project write is **not** covered: notification
   dispatch, audit rows and run creation are separate effects in separate
-  transactions. A crash after those effects but before `inbox_status='applied'`
-  will re-run them on retry, so a duplicate notification is possible.
+  transactions, committed after the project row.
 
 Closing that gap needs an effect ledger or transactional outbox keyed by inbox
 result id. That is deliberately NOT attempted here; this module does not claim a
 guarantee it cannot keep. See the U7c coding log.
 
-## Notifications are SUPPRESSED for agent-sourced projects
+## Notifications reach parity with the API ingest path (U8a)
 
-The API wires `ProjectIngestService` with an entitlement-aware notification
-dispatcher; this executor does not, because that dispatcher needs the entitlement,
-notification and SMTP stack. So a project first seen through an agent result is
-persisted **without** the `NEW_PROJECT` notification the ordinary ingest path
-sends. That is a deliberate, logged gap for U8 to close when agent-sourced work
-actually exists — not an oversight. It also means notification duplication is not
-currently reachable through this path.
+This executor builds its notification stack through
+`egp_api.bootstrap.notifications.build_notification_stack` — the *same* builder the
+API bootstrap uses — so a project first seen through an agent result produces the
+same `NEW_PROJECT` in-app row, email and webhook delivery, gated by the same
+entitlement capability check. U7c shipped this path with no dispatcher at all and
+recorded it as a known gap; that gap is closed.
+
+### The residual notification gap is LOSS, not duplication
+
+An earlier draft of this docstring said retries make a *duplicate* notification
+possible. That is wrong, and the truth matters more because it is the less
+obvious failure. `ingest_discovered_project` dispatches only when the pre-upsert
+lookup found no project (`project_ingest.py:68,79`), and the project row commits
+*before* the dispatch. So:
+
+1. the project upsert commits;
+2. entitlement lookup, recipient resolution, the in-app insert or webhook enqueue
+   raises (or the process dies);
+3. the inbox row is re-queued and retried;
+4. the retry now finds the project **exists**, so `existing is not None`;
+5. dispatch is skipped and the row is marked `applied`.
+
+The notification is then **permanently lost** — silently, with the inbox row in a
+successful terminal state. A failure part-way through dispatch loses whichever
+channels had not yet been written (e.g. the webhook, after the in-app row).
+
+Duplication *is* reachable, but only through a genuine concurrency race: two
+processors handling first-sightings of the same canonical project can both observe
+`existing is None` before either upsert commits, and both dispatch.
+
+Both properties are inherited from `ProjectIngestService` and are shared with the
+API ingest path — U8a does not introduce either one, it makes them reachable from
+agent-result processing. `test_a_dispatch_failure_after_project_commit_currently_
+loses_the_notification` pins the loss window so it cannot regress unnoticed, and
+that test must be **inverted** by the effect-ledger work that closes it.
 
 ## Document envelopes are rejected, not half-applied
 
@@ -311,8 +338,18 @@ def build_crawler_agent_inbox_runtime(
     Deliberately does not read `app.state`: this runs as its own container.
     """
 
+    from egp_api.bootstrap.notifications import build_notification_stack
+    from egp_api.config import get_smtp_config
+    from egp_db.repositories.billing_repo import create_billing_repository
+    from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
     from egp_db.repositories.document_repo import create_artifact_store
+    from egp_db.repositories.notification_repo import create_notification_repository
+    from egp_db.repositories.profile_repo import create_profile_repository
     from egp_db.repositories.project_repo import create_project_repository
+    from egp_db.repositories.run_repo import create_run_repository
+    from egp_db.repositories.tenant_entitlement_repo import (
+        create_tenant_entitlement_repository,
+    )
     from egp_domain.project_ingest import ProjectIngestService
 
     resolved_artifact_root = get_artifact_root(artifact_root)
@@ -324,12 +361,38 @@ def build_crawler_agent_inbox_runtime(
     project_repository = create_project_repository(
         database_url=resolved_database_url, engine=shared_engine
     )
-    # No notification dispatcher: see the module docstring. Logged so this is a
-    # visible operational fact rather than silent behavioural drift from the API.
-    project_ingest_service = ProjectIngestService(project_repository)
+    # Every repository is bound to THIS process's engine. A builder that resolved
+    # them from DATABASE_URL itself would open a second engine here and diverge
+    # from the connection the processor's own transactions use.
+    notification_stack = build_notification_stack(
+        notification_repository=create_notification_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        billing_repository=create_billing_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        profile_repository=create_profile_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        run_repository=create_run_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        discovery_job_repository=create_discovery_job_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        tenant_entitlement_repository=create_tenant_entitlement_repository(
+            database_url=resolved_database_url, engine=shared_engine
+        ),
+        smtp_config=get_smtp_config(None),
+        email_sender=None,
+    )
+    project_ingest_service = ProjectIngestService(
+        project_repository,
+        notification_dispatcher=notification_stack.gated_dispatcher,
+    )
     _logger.info(
-        "crawler agent inbox: NEW_PROJECT notifications are suppressed for "
-        "agent-sourced projects (see U7c coding log; U8 owns closing this)"
+        "crawler agent inbox: NEW_PROJECT notifications are wired through the "
+        "shared entitlement-gated dispatcher (parity with the API ingest path)"
     )
     repository = create_crawler_agent_repository(
         database_url=resolved_database_url, engine=shared_engine

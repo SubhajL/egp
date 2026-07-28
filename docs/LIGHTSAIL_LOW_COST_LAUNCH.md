@@ -375,6 +375,12 @@ The production-oriented Compose file runs background work outside the API proces
   still **drains any already-accepted backlog** — turning ingress off must not strand
   results accepted while it was on. Rolling back past U7c: stop this service first, then
   restart with `--remove-orphans`, since a pre-U7c SHA does not define it.
+  **From U8a this drain also sends customer-visible notifications** (in-app, email,
+  webhook) for agent-sourced projects. Combined with the always-drain behaviour above,
+  the first deploy carrying U8a can notify on a pre-U8a backlog. Run the backlog
+  preflight in [`DEPLOYMENT.md`](DEPLOYMENT.md) — stop the service, count non-terminal
+  `crawler_agent_results` rows, decide deliberately — before that deploy. Sent messages
+  survive a rollback.
 - `discovery-executor` runs `python -m egp_api.executors.discovery_dispatch`
 - the discovery executor claims discovery jobs and spawns worker subprocesses locally
 
