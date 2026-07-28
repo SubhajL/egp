@@ -12,6 +12,7 @@ from egp_db.repositories.crawler_runtime_repo import CrawlerRuntimeSnapshot
 from egp_db.repositories.profile_repo import CrawlProfileDetail, SqlProfileRepository
 from egp_db.repositories.recrawl_request_repo import RecrawlJobInput, RecrawlRequestStatus
 from egp_shared_types.enums import (
+    IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES,
     KeywordGroupEffectiveStatus,
     KeywordGroupStatusReason,
     NotificationType,
@@ -449,7 +450,10 @@ class RulesService:
             pending_job_keys = {
                 (job.profile_id, job.keyword.casefold())
                 for job in stored_jobs
-                if job.job_status == "pending" and job.live
+                # In-flight, not merely pending: a job whose result is awaiting
+                # application still covers this keyword. Treating it as absent
+                # would enqueue a duplicate.
+                if job.job_status in IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES and job.live
             }
             desired_job_keys = {
                 (profile_id, normalized_keyword.casefold())
@@ -459,7 +463,7 @@ class RulesService:
                 job.recrawl_request_id
                 for job in stored_jobs
                 if job.recrawl_request_id is not None
-                and job.job_status == "pending"
+                and job.job_status in IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
                 and (job.profile_id, job.keyword.casefold()) in desired_job_keys
             }
             if len(active_request_ids) == 1:

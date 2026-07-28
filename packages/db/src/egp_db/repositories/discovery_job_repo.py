@@ -31,7 +31,11 @@ from sqlalchemy.engine import Engine, RowMapping
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
-from egp_shared_types.enums import DiscoveryFailureCode, ExecutionBackend
+from egp_shared_types.enums import (
+    IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES,
+    DiscoveryFailureCode,
+    ExecutionBackend,
+)
 
 
 METADATA = DB_METADATA
@@ -319,7 +323,13 @@ class SqlDiscoveryJobRepository:
                             DISCOVERY_JOBS_TABLE.c.trigger_type
                             == values["trigger_type"],
                             DISCOVERY_JOBS_TABLE.c.live == values["live"],
-                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                            # In-flight, not merely pending: a job whose result is
+                            # awaiting application already covers this
+                            # (profile, keyword). Checking only `pending` would
+                            # read it as absent and enqueue a duplicate.
+                            DISCOVERY_JOBS_TABLE.c.job_status.in_(
+                                IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
+                            ),
                         )
                     )
                     .order_by(
@@ -386,6 +396,14 @@ class SqlDiscoveryJobRepository:
                     .where(
                         and_(
                             DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                            # Deliberately PENDING-only, not the in-flight set.
+                            # This feeds entitlement_service's `queued_keyword_count`,
+                            # which is compared against `max_queued_keywords` — a
+                            # QUEUE-DEPTH cap, not a concurrency cap (concurrency is
+                            # `inflight_run_count >= max_concurrent_runs`, counted
+                            # separately from runs). A `result_received` job has
+                            # already executed, so it is no longer queued; counting it
+                            # here would silently tighten a customer-facing quota.
                             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
                         )
                     )

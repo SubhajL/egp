@@ -26,6 +26,31 @@ def get_background_runtime_mode(
     raise RuntimeError("EGP_BACKGROUND_RUNTIME_MODE must be one of: embedded, external")
 
 
+CrawlerAgentProtocol = Literal["off", "shadow", "primary"]
+
+
+def get_crawler_agent_protocol(
+    override: str | None = None,
+) -> CrawlerAgentProtocol:
+    """Resolve the crawler-agent contract mode.
+
+    Defaults to ``off`` so the V1 agent endpoints ship dark: they authenticate
+    but refuse work until an operator explicitly opts in.
+    """
+
+    if override is not None:
+        raw = override.strip().lower()
+    else:
+        raw = os.getenv("EGP_CRAWLER_AGENT_PROTOCOL", "off").strip().lower()
+    if not raw:
+        return "off"
+    if raw in {"off", "shadow", "primary"}:
+        return raw
+    raise RuntimeError(
+        "EGP_CRAWLER_AGENT_PROTOCOL must be one of: off, shadow, primary"
+    )
+
+
 def validate_background_runtime_topology(
     *,
     database_url: str,
