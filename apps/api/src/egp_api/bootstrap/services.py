@@ -7,7 +7,9 @@ from collections.abc import Callable
 from fastapi import FastAPI
 
 from egp_api.bootstrap.repositories import RepositoryBundle
+from egp_api.services.crawler_agent_service import CrawlerAgentService
 from egp_api.config import (
+    CrawlerAgentProtocol,
     BackgroundRuntimeMode,
     get_admin_console_base_url,
     get_line_add_url,
@@ -84,6 +86,7 @@ def configure_services(
     discovery_loop_enabled: Callable[..., bool],
     discovery_route_kick_enabled: Callable[..., bool],
     background_runtime_mode: BackgroundRuntimeMode,
+    crawler_agent_protocol: CrawlerAgentProtocol = "off",
 ) -> None:
     notification_service = NotificationService(
         smtp_config=get_smtp_config(smtp_config),
@@ -145,6 +148,12 @@ def configure_services(
         google_drive_client=bundle.resolved_google_drive_client,
         onedrive_oauth_config=bundle.resolved_onedrive_oauth_config,
         onedrive_client=bundle.resolved_onedrive_client,
+    )
+    app.state.crawler_agent_protocol = crawler_agent_protocol
+    app.state.crawler_agent_repository = bundle.crawler_agent_repository
+    app.state.crawler_agent_service = CrawlerAgentService(
+        repository=bundle.crawler_agent_repository,
+        protocol=crawler_agent_protocol,
     )
     app.state.db_engine = bundle.shared_engine
     app.state.readiness_service = ReadinessService(

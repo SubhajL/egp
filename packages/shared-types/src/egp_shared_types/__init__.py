@@ -29,9 +29,21 @@ from .enums import (
     ProjectState,
     UserRole,
 )
+from .crawler_agent import (
+    CRAWLER_AGENT_CONTRACT_VERSION,
+    AgentClaim,
+    AgentResultEnvelope,
+    InboxSubmission,
+    canonical_envelope_sha256,
+)
 from .project_events import CloseCheckProjectEvent, DiscoveredProjectEvent
 
 __all__ = [
+    "CRAWLER_AGENT_CONTRACT_VERSION",
+    "AgentClaim",
+    "AgentResultEnvelope",
+    "InboxSubmission",
+    "canonical_envelope_sha256",
     "BillingPlanDefinition",
     "BillingEventType",
     "BillingPaymentProvider",

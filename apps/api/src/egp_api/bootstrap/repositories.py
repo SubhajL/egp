@@ -46,6 +46,7 @@ from egp_db.repositories.audit_repo import create_audit_repository
 from egp_db.repositories.admin_repo import create_admin_repository
 from egp_db.repositories.auth_repo import create_auth_repository
 from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.crawler_agent_repo import create_crawler_agent_repository
 from egp_db.repositories.crawler_runtime_repo import create_crawler_runtime_repository
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.document_capture_attempt_repo import (
@@ -98,6 +99,7 @@ class RepositoryBundle:
     notification_repository: object
     discovery_job_repository: object
     recrawl_request_repository: object
+    crawler_agent_repository: object
     tenant_entitlement_repository: object
     support_repository: object
     line_payment_repository: object
@@ -237,6 +239,11 @@ def build_repository_bundle(
         session_cookie_samesite=session_cookie_samesite,
         storage_credential_cipher=storage_credential_cipher,
         shared_engine=shared_engine,
+        crawler_agent_repository=create_crawler_agent_repository(
+            database_url=resolved_database_url,
+            engine=shared_engine,
+            bootstrap_schema=bootstrap_schema,
+        ),
         admin_repository=admin_repository,
         document_capture_attempt_repository=create_document_capture_attempt_repository(
             database_url=resolved_database_url,

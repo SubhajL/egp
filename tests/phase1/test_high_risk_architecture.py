@@ -32,6 +32,7 @@ NO_DDL_FACTORY_TARGETS = (
     ("egp_db.repositories.audit_repo", "create_audit_repository"),
     ("egp_db.repositories.auth_repo", "create_auth_repository"),
     ("egp_db.repositories.billing_repo", "create_billing_repository"),
+    ("egp_db.repositories.crawler_agent_repo", "create_crawler_agent_repository"),
     ("egp_db.repositories.crawler_runtime_repo", "create_crawler_runtime_repository"),
     ("egp_db.repositories.discovery_job_repo", "create_discovery_job_repository"),
     (
