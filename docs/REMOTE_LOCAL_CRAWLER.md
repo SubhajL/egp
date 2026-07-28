@@ -116,6 +116,12 @@ After a full deploy to #139+, delete the override (the base compose then carries
    docker compose --env-file /etc/egp/egp.env ps discovery-executor   # → 0 replicas
    curl -fsS https://api.<domain>/ready
    ```
+   > **U7c note.** `crawler-agent-inbox-executor` is a *different* service and must NOT be
+   > scaled to zero alongside `discovery-executor`. It only drains the crawler-agent result
+   > inbox; it never claims discovery jobs, so it cannot contend with the Mac crawler. While
+   > `EGP_CRAWLER_AGENT_PROTOCOL=off` nothing new is produced for it, but it still drains
+   > any already-accepted backlog — turning ingress off must not strand accepted results.
+
    Scaling `discovery-executor=0` is **critical**: if the Lightsail executor runs it will
    claim jobs and crawl headless → Cloudflare `401`. The Mac must be the only crawler.
 3. (Optional) Install the scheduled-enqueue timer so interval crawls keep getting queued

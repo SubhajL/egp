@@ -335,6 +335,7 @@ It includes:
 - `migrate`
 - `api`
 - `webhook-executor`
+- `crawler-agent-inbox-executor`
 - `discovery-executor`
 - `web`
 - `caddy`
@@ -369,6 +370,11 @@ The production-oriented Compose file runs background work outside the API proces
 
 - `api` serves HTTP with `EGP_BACKGROUND_RUNTIME_MODE=external`
 - `webhook-executor` runs `python -m egp_api.executors.webhook_delivery`
+- `crawler-agent-inbox-executor` runs `python -m egp_api.executors.crawler_agent_results`
+  (U7c result-inbox drain). It has no work while `EGP_CRAWLER_AGENT_PROTOCOL=off`, but it
+  still **drains any already-accepted backlog** — turning ingress off must not strand
+  results accepted while it was on. Rolling back past U7c: stop this service first, then
+  restart with `--remove-orphans`, since a pre-U7c SHA does not define it.
 - `discovery-executor` runs `python -m egp_api.executors.discovery_dispatch`
 - the discovery executor claims discovery jobs and spawns worker subprocesses locally
 

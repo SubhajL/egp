@@ -243,3 +243,58 @@ def test_create_app_embedded_dispatch_preserves_typed_preparation_result(
 
     assert result.processed_count == 1
     assert [request.keyword for request in dispatched] == ["analytics"]
+
+
+def test_crawler_agent_inbox_executor_is_wired_in_both_compose_files() -> None:
+    """The U7c processor must exist as its own service in both topologies.
+
+    Production runs `EGP_BACKGROUND_RUNTIME_MODE=external`, so nothing drains the
+    result inbox unless this container exists. Compose also does not pass the env
+    file wholesale — every variable the process reads has to be enumerated on the
+    service or it simply will not be present in the container.
+    """
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    for compose_name in ("docker-compose.yml", "docker-compose-localdev.yml"):
+        compose = yaml.safe_load((repo_root / compose_name).read_text())
+        service = compose["services"]["crawler-agent-inbox-executor"]
+
+        assert service["build"]["dockerfile"] == "apps/api/Dockerfile"
+        assert service["command"] == [
+            "python",
+            "-m",
+            "egp_api.executors.crawler_agent_results",
+        ]
+        # Must wait for migrations: the inbox table arrives in migration 034.
+        assert (
+            service["depends_on"]["migrate"]["condition"]
+            == "service_completed_successfully"
+        )
+        for required in (
+            "DATABASE_URL",
+            "EGP_CRAWLER_AGENT_PROTOCOL",
+            "EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS",
+            "EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS",
+        ):
+            assert required in service["environment"], (
+                f"{compose_name}: {required} missing from the executor environment"
+            )
+
+
+def test_localdev_compose_does_not_require_a_production_password() -> None:
+    """The local stack must render with documented defaults.
+
+    A `${VAR:?...}` interpolation in the localdev file makes EVERY local compose
+    command fail, not just starting the new service. Parsing the YAML alone would
+    not catch it, so the interpolation form is asserted directly.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    localdev = (repo_root / "docker-compose-localdev.yml").read_text()
+
+    assert "EGP_POSTGRES_PASSWORD:?" not in localdev, (
+        "docker-compose-localdev.yml requires EGP_POSTGRES_PASSWORD; use a default"
+    )
+    assert "${EGP_POSTGRES_PASSWORD:-egp_dev}" in localdev
