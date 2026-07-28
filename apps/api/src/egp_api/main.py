@@ -19,6 +19,7 @@ from egp_api.bootstrap.middleware import configure_http_pipeline
 from egp_api.bootstrap.repositories import build_repository_bundle
 from egp_api.bootstrap.services import configure_services
 from egp_api.config import (
+    get_crawler_agent_protocol,
     BackgroundRuntimeMode,
     get_background_runtime_mode,
     get_web_allow_origin_regex,
@@ -125,6 +126,7 @@ def _make_discovery_dispatcher(
 
 def create_app(
     *,
+    crawler_agent_protocol: str | None = None,
     artifact_root: Path | None = None,
     database_url: str | None = None,
     artifact_storage_backend: str | None = None,
@@ -193,6 +195,7 @@ def create_app(
     configure_services(
         app=app,
         bundle=repository_bundle,
+        crawler_agent_protocol=get_crawler_agent_protocol(crawler_agent_protocol),
         smtp_config=smtp_config,
         notification_email_sender=notification_email_sender,
         payment_provider=payment_provider,

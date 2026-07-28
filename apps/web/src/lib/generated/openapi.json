@@ -758,6 +758,218 @@
         "title": "AdminUserResponse",
         "type": "object"
       },
+      "AgentClaimRequest": {
+        "properties": {
+          "agent_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "lease_seconds": {
+            "default": 300.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 3600.0,
+            "title": "Lease Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "AgentClaimRequest",
+        "type": "object"
+      },
+      "AgentClaimResponse": {
+        "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "claim_token": {
+            "title": "Claim Token",
+            "type": "string"
+          },
+          "contract_version": {
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "keyword": {
+            "title": "Keyword",
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "title": "Lease Expires At",
+            "type": "string"
+          },
+          "live": {
+            "title": "Live",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "profile_type": {
+            "title": "Profile Type",
+            "type": "string"
+          },
+          "recrawl_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recrawl Request Id"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "trigger_type": {
+            "title": "Trigger Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "job_id",
+          "tenant_id",
+          "profile_id",
+          "profile_type",
+          "keyword",
+          "trigger_type",
+          "live",
+          "recrawl_request_id",
+          "claim_token",
+          "lease_expires_at",
+          "attempt_count"
+        ],
+        "title": "AgentClaimResponse",
+        "type": "object"
+      },
+      "AgentRenewRequest": {
+        "properties": {
+          "claim_token": {
+            "minLength": 1,
+            "title": "Claim Token",
+            "type": "string"
+          },
+          "job_id": {
+            "minLength": 1,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "lease_seconds": {
+            "default": 300.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 3600.0,
+            "title": "Lease Seconds",
+            "type": "number"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "job_id",
+          "claim_token"
+        ],
+        "title": "AgentRenewRequest",
+        "type": "object"
+      },
+      "AgentResultRequest": {
+        "properties": {
+          "claim_token": {
+            "minLength": 1,
+            "title": "Claim Token",
+            "type": "string"
+          },
+          "contract_version": {
+            "default": "v1",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "envelope": {
+            "additionalProperties": true,
+            "title": "Envelope",
+            "type": "object"
+          },
+          "idempotency_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "job_id": {
+            "minLength": 1,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "job_id",
+          "claim_token",
+          "idempotency_key",
+          "envelope"
+        ],
+        "title": "AgentResultRequest",
+        "type": "object"
+      },
+      "AgentResultResponse": {
+        "properties": {
+          "inbox_status": {
+            "title": "Inbox Status",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "received_at": {
+            "title": "Received At",
+            "type": "string"
+          },
+          "replayed": {
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "result_id": {
+            "title": "Result Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_id",
+          "job_id",
+          "tenant_id",
+          "inbox_status",
+          "replayed",
+          "received_at"
+        ],
+        "title": "AgentResultResponse",
+        "type": "object"
+      },
       "ApplyDocumentReviewActionRequest": {
         "properties": {
           "action": {
@@ -7412,6 +7624,169 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/internal/worker/agent/v1/claim": {
+      "post": {
+        "operationId": "claim_agent_job_internal_worker_agent_v1_claim_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentClaimRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/AgentClaimResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Claim Agent Job Internal Worker Agent V1 Claim Post"
+                }
+              }
+            },
+            "description": "A job was claimed."
+          },
+          "204": {
+            "description": "No agent-backed work is currently due."
+          },
+          "401": {
+            "description": "Missing internal worker token."
+          },
+          "403": {
+            "description": "Invalid internal worker token."
+          },
+          "404": {
+            "description": "Crawler-agent protocol is disabled."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Agent Job",
+        "tags": [
+          "crawler-agent"
+        ]
+      }
+    },
+    "/internal/worker/agent/v1/renew": {
+      "post": {
+        "operationId": "renew_agent_claim_internal_worker_agent_v1_renew_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRenewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentClaimResponse"
+                }
+              }
+            },
+            "description": "Lease extended."
+          },
+          "401": {
+            "description": "Missing internal worker token."
+          },
+          "403": {
+            "description": "Invalid internal worker token."
+          },
+          "404": {
+            "description": "Crawler-agent protocol is disabled."
+          },
+          "409": {
+            "description": "Claim token is stale, expired, or superseded."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Renew Agent Claim",
+        "tags": [
+          "crawler-agent"
+        ]
+      }
+    },
+    "/internal/worker/agent/v1/result": {
+      "post": {
+        "operationId": "submit_agent_result_internal_worker_agent_v1_result_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentResultRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Identical delivery replayed; original row returned."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentResultResponse"
+                }
+              }
+            },
+            "description": "Result accepted into the inbox."
+          },
+          "401": {
+            "description": "Missing internal worker token."
+          },
+          "403": {
+            "description": "Invalid internal worker token."
+          },
+          "404": {
+            "description": "Crawler-agent protocol is disabled."
+          },
+          "409": {
+            "description": "Stale claim, or a different result already recorded for this claim attempt."
+          },
+          "422": {
+            "description": "Unsupported contract version or malformed envelope."
+          }
+        },
+        "summary": "Submit Agent Result",
+        "tags": [
+          "crawler-agent"
+        ]
       }
     },
     "/internal/worker/crawler-runtime/heartbeat": {

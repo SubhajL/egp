@@ -55,3 +55,40 @@ def _check_vocabulary(column: str) -> set[str]:
 )
 def test_enum_matches_migration_check_vocabulary(column: str, enum_type) -> None:
     assert {member.value for member in enum_type} == _check_vocabulary(column)
+
+
+def test_inbox_table_columns_match_migration_034() -> None:
+    """The SQLAlchemy table and the SQL migration must declare the same columns.
+
+    Tests bootstrap their schema from SQLAlchemy metadata while production applies
+    the SQL migrations, so the two can drift silently: a column present in only one
+    of them makes tests pass against a schema production does not have. There is no
+    general migration-vs-metadata oracle in this repository, so this pins the one
+    table U7 introduces.
+    """
+
+    from egp_db.repositories.crawler_agent_repo import CRAWLER_AGENT_RESULTS_TABLE
+
+    migration = (
+        Path(__file__).resolve().parents[2]
+        / "packages/db/src/migrations/034_crawler_agent_results.sql"
+    )
+    body = migration.read_text(encoding="utf-8").split(
+        "CREATE TABLE crawler_agent_results (", 1
+    )[1]
+
+    declared: set[str] = set()
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("--") or line.upper().startswith("CONSTRAINT"):
+            continue
+        match = re.match(
+            r"([a-z0-9_]+)\s+(UUID|TEXT|JSONB|INTEGER|TIMESTAMPTZ)\b", line
+        )
+        if match:
+            declared.add(match.group(1))
+
+    modelled = {column.name for column in CRAWLER_AGENT_RESULTS_TABLE.columns}
+
+    assert declared, "failed to parse any column out of migration 034"
+    assert declared == modelled

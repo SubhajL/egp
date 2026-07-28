@@ -21,6 +21,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/worker/agent/v1/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim Agent Job */
+        post: operations["claim_agent_job_internal_worker_agent_v1_claim_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/worker/agent/v1/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew Agent Claim */
+        post: operations["renew_agent_claim_internal_worker_agent_v1_renew_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/worker/agent/v1/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Agent Result */
+        post: operations["submit_agent_result_internal_worker_agent_v1_result_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/worker/crawler-runtime/heartbeat": {
         parameters: {
             query?: never;
@@ -1601,6 +1652,92 @@ export interface components {
             status: string;
             /** Updated At */
             updated_at: string;
+        };
+        /** AgentClaimRequest */
+        AgentClaimRequest: {
+            /** Agent Id */
+            agent_id: string;
+            /**
+             * Lease Seconds
+             * @default 300
+             */
+            lease_seconds: number;
+        };
+        /** AgentClaimResponse */
+        AgentClaimResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Claim Token */
+            claim_token: string;
+            /** Contract Version */
+            contract_version: string;
+            /** Job Id */
+            job_id: string;
+            /** Keyword */
+            keyword: string;
+            /** Lease Expires At */
+            lease_expires_at: string;
+            /** Live */
+            live: boolean;
+            /** Profile Id */
+            profile_id: string;
+            /** Profile Type */
+            profile_type: string;
+            /** Recrawl Request Id */
+            recrawl_request_id: string | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Trigger Type */
+            trigger_type: string;
+        };
+        /** AgentRenewRequest */
+        AgentRenewRequest: {
+            /** Claim Token */
+            claim_token: string;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Lease Seconds
+             * @default 300
+             */
+            lease_seconds: number;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** AgentResultRequest */
+        AgentResultRequest: {
+            /** Claim Token */
+            claim_token: string;
+            /**
+             * Contract Version
+             * @default v1
+             */
+            contract_version: string;
+            /** Envelope */
+            envelope: {
+                [key: string]: unknown;
+            };
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Job Id */
+            job_id: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** AgentResultResponse */
+        AgentResultResponse: {
+            /** Inbox Status */
+            inbox_status: string;
+            /** Job Id */
+            job_id: string;
+            /** Received At */
+            received_at: string;
+            /** Replayed */
+            replayed: boolean;
+            /** Result Id */
+            result_id: string;
+            /** Tenant Id */
+            tenant_id: string;
         };
         /** ApplyDocumentReviewActionRequest */
         ApplyDocumentReviewActionRequest: {
@@ -3660,6 +3797,194 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["LivenessResponse"];
                 };
+            };
+        };
+    };
+    claim_agent_job_internal_worker_agent_v1_claim_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description A job was claimed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentClaimResponse"] | null;
+                };
+            };
+            /** @description No agent-backed work is currently due. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing internal worker token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid internal worker token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Crawler-agent protocol is disabled. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    renew_agent_claim_internal_worker_agent_v1_renew_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRenewRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease extended. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentClaimResponse"];
+                };
+            };
+            /** @description Missing internal worker token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid internal worker token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Crawler-agent protocol is disabled. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Claim token is stale, expired, or superseded. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_agent_result_internal_worker_agent_v1_result_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Identical delivery replayed; original row returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Result accepted into the inbox. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentResultResponse"];
+                };
+            };
+            /** @description Missing internal worker token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid internal worker token. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Crawler-agent protocol is disabled. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Stale claim, or a different result already recorded for this claim attempt. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unsupported contract version or malformed envelope. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

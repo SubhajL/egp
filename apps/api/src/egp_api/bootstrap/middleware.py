@@ -17,6 +17,9 @@ from egp_api.auth import authenticate_request
 from egp_api.routes.admin import router as admin_router
 from egp_api.routes.auth import router as auth_router
 from egp_api.routes.billing import router as billing_router
+from egp_api.routes.crawler_agent import (
+    internal_router as crawler_agent_internal_router,
+)
 from egp_api.routes.crawler_runtime import (
     internal_router as crawler_runtime_internal_router,
 )
@@ -234,6 +237,7 @@ def _register_routes(app: FastAPI) -> None:
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(billing_router)
+    app.include_router(crawler_agent_internal_router)
     app.include_router(crawler_runtime_internal_router)
     app.include_router(crawler_runtime_router)
     app.include_router(dashboard_router)

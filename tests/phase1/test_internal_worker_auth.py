@@ -45,6 +45,37 @@ INTERNAL_ROUTE_CASES = (
         },
         {404},
     ),
+    # Crawler-agent V1 (U7b). The protocol defaults to `off`, so a valid token
+    # reaches the router dependency and gets 404 — the dark-by-default contract.
+    # Proof that the endpoints actually WORK when enabled lives in
+    # tests/phase3/test_crawler_agent_endpoints.py; this table only pins the
+    # auth matrix and the route inventory.
+    (
+        "/internal/worker/agent/v1/claim",
+        {"agent_id": "matrix-agent"},
+        {404},
+    ),
+    (
+        "/internal/worker/agent/v1/renew",
+        {
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": PROJECT_ID,
+            "claim_token": "44444444-4444-4444-4444-444444444444",
+        },
+        {404},
+    ),
+    (
+        "/internal/worker/agent/v1/result",
+        {
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": PROJECT_ID,
+            "claim_token": "44444444-4444-4444-4444-444444444444",
+            "idempotency_key": "matrix-delivery",
+            "contract_version": "v1",
+            "envelope": {"kind": "discovery", "payload": {}},
+        },
+        {404},
+    ),
     (
         "/internal/worker/crawler-runtime/heartbeat",
         {
