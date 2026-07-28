@@ -23,6 +23,7 @@ from sqlalchemy import (
     insert,
     or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import Engine, RowMapping
@@ -30,7 +31,7 @@ from sqlalchemy.engine import Engine, RowMapping
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
-from egp_shared_types.enums import DiscoveryFailureCode
+from egp_shared_types.enums import DiscoveryFailureCode, ExecutionBackend
 
 
 METADATA = DB_METADATA
@@ -38,6 +39,8 @@ DISCOVERY_FAILURE_CODE_VALUES = tuple(code.value for code in DiscoveryFailureCod
 DISCOVERY_FAILURE_CODE_SQL = ", ".join(
     f"'{value}'" for value in DISCOVERY_FAILURE_CODE_VALUES
 )
+EXECUTION_BACKEND_VALUES = tuple(backend.value for backend in ExecutionBackend)
+EXECUTION_BACKEND_SQL = ", ".join(f"'{value}'" for value in EXECUTION_BACKEND_VALUES)
 
 DISCOVERY_JOBS_TABLE = Table(
     "discovery_jobs",
@@ -61,6 +64,13 @@ DISCOVERY_JOBS_TABLE = Table(
         nullable=True,
     ),
     Column("job_status", String, nullable=False, default="pending"),
+    Column(
+        "execution_backend",
+        String,
+        nullable=False,
+        default=ExecutionBackend.LEGACY.value,
+        server_default=text(f"'{ExecutionBackend.LEGACY.value}'"),
+    ),
     Column("attempt_count", Integer, nullable=False, default=0),
     Column("last_error", String, nullable=True),
     Column("last_error_code", String, nullable=True),
@@ -75,6 +85,13 @@ DISCOVERY_JOBS_TABLE = Table(
     CheckConstraint(
         f"last_error_code IS NULL OR last_error_code IN ({DISCOVERY_FAILURE_CODE_SQL})",
         name="discovery_jobs_last_error_code_check",
+    ),
+    # Mirrors migration 034. Without it the SQLite bootstrap used by tests would
+    # accept a backend value PostgreSQL rejects, and such a row would be
+    # invisible to every claimer.
+    CheckConstraint(
+        f"execution_backend IN ({EXECUTION_BACKEND_SQL})",
+        name="discovery_jobs_execution_backend_check",
     ),
 )
 
@@ -195,6 +212,7 @@ def build_discovery_job_values(
     trigger_type: str = "profile_created",
     live: bool = True,
     recrawl_request_id: str | None = None,
+    execution_backend: str = ExecutionBackend.LEGACY.value,
     now: datetime | None = None,
 ) -> dict[str, object]:
     created_at = now or _now()
@@ -210,6 +228,7 @@ def build_discovery_job_values(
             normalize_uuid_string(recrawl_request_id) if recrawl_request_id else None
         ),
         "job_status": "pending",
+        "execution_backend": str(execution_backend),
         "attempt_count": 0,
         "last_error": None,
         "last_error_code": None,
@@ -378,10 +397,24 @@ class SqlDiscoveryJobRepository:
         *,
         now: datetime | None = None,
     ) -> DiscoveryQueueSnapshot:
-        """Return global operational counts without tenant or keyword payloads."""
+        """Return legacy-queue operational counts without tenant or keyword payloads.
+
+        Scoped to ``execution_backend='legacy'`` because every consumer of this
+        snapshot is the legacy dispatcher: ``build_discovery_one_shot_summary``
+        derives ``exit_reason`` from these counts (``pending_count == 0`` means
+        ``queue_drained``), and ``discovery_doctor`` reports them as operator
+        diagnostics. Counting agent-owned rows here would make a bounded one-shot
+        crawl report ``work_remains`` forever, and a caller looping until
+        ``queue_drained`` would never terminate, because the legacy consumer
+        correctly refuses to claim those rows. An agent-queue snapshot is separate
+        work (U7b+).
+        """
 
         resolved_now = _as_utc(now or _now())
-        pending = DISCOVERY_JOBS_TABLE.c.job_status == "pending"
+        pending = and_(
+            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+            DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
+        )
         claimable = and_(
             pending,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= resolved_now,
@@ -435,6 +468,10 @@ class SqlDiscoveryJobRepository:
         }
         claimable_conditions = [
             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+            # U7: the legacy consumer owns only legacy-backed rows. Without this
+            # predicate the legacy executor and a crawler agent race for the
+            # same jobs.
+            DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
             or_(
                 DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
@@ -473,6 +510,9 @@ class SqlDiscoveryJobRepository:
         }
         pending_conditions = [
             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+            # U7: see has_claimable_discovery_jobs — the legacy consumer must not
+            # claim agent-owned rows.
+            DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
         ]
         if excluded_job_ids:
@@ -529,6 +569,12 @@ class SqlDiscoveryJobRepository:
                         and_(
                             DISCOVERY_JOBS_TABLE.c.id == job_id,
                             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                            # Repeated from the candidate query on purpose: this is
+                            # the compare-and-swap. Without it, a row rerouted to
+                            # the agent backend between selection and update would
+                            # still be leased by the legacy executor.
+                            DISCOVERY_JOBS_TABLE.c.execution_backend
+                            == ExecutionBackend.LEGACY.value,
                             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
                             or_(
                                 DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),

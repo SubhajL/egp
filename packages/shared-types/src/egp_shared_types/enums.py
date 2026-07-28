@@ -250,3 +250,67 @@ class BillingPaymentRequestStatus(StrEnum):
     EXPIRED = "expired"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class DiscoveryJobStatus(StrEnum):
+    """Discovery-job lifecycle states.
+
+    Kept in sync with the ``discovery_jobs_status_check`` CHECK constraint
+    (migrations 015 and 034). ``RESULT_RECEIVED`` is the non-claimable state a
+    job enters once an agent result has been accepted, so that a lease which is
+    later reclaimed cannot have a stale result applied on top of it.
+    """
+
+    PENDING = "pending"
+    DISPATCHED = "dispatched"
+    FAILED = "failed"
+    RESULT_RECEIVED = "result_received"
+
+
+class ExecutionBackend(StrEnum):
+    """Which consumer owns a discovery job.
+
+    Partitions the job queue so the legacy external discovery executor and a
+    crawler agent can never claim the same row. Defaults to ``LEGACY`` in the
+    schema, so introducing the column changes no deployed behaviour.
+    """
+
+    LEGACY = "legacy"
+    AGENT = "agent"
+
+
+class AgentContractVersion(StrEnum):
+    """Versioned crawler-agent wire contract."""
+
+    V1 = "v1"
+
+
+class AgentInboxStatus(StrEnum):
+    """Durable result-inbox row lifecycle.
+
+    Kept in sync with ``crawler_agent_results_status_check`` (migration 034).
+    """
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    APPLIED = "applied"
+    FAILED = "failed"
+    REJECTED = "rejected"
+
+
+class AgentInboxErrorCode(StrEnum):
+    """Typed inbox failure reasons.
+
+    Kept in sync with ``crawler_agent_results_error_code_check`` (migration 034).
+    Free-form errors are deliberately not stored here.
+    """
+
+    STALE_CLAIM_TOKEN = "stale_claim_token"
+    ENVELOPE_INVALID = "envelope_invalid"
+    ENVELOPE_CONFLICT = "envelope_conflict"
+    CONTRACT_VERSION_UNSUPPORTED = "contract_version_unsupported"
+    TENANT_MISMATCH = "tenant_mismatch"
+    JOB_NOT_FOUND = "job_not_found"
+    APPLY_FAILED_TRANSIENT = "apply_failed_transient"
+    APPLY_FAILED_PERMANENT = "apply_failed_permanent"
+    PROCESSOR_LEASE_LOST = "processor_lease_lost"
