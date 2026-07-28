@@ -162,10 +162,10 @@ artifact exists in R2, and the API download route streams bytes.
    )
    INSERT INTO discovery_jobs (
      id, tenant_id, profile_id, profile_type, keyword, trigger_type, live,
-     job_status, attempt_count, next_attempt_at, created_at, updated_at
+     job_status, execution_backend, attempt_count, next_attempt_at, created_at, updated_at
    )
    SELECT gen_random_uuid(), tenant_id, profile_id, profile_type, project_number,
-          'backfill', TRUE, 'pending', 0, NOW(), NOW(), NOW()
+          'backfill', TRUE, 'pending', 'legacy', 0, NOW(), NOW(), NOW()
    FROM target_project
    WHERE NOT EXISTS (
      SELECT 1 FROM discovery_jobs dj
@@ -175,7 +175,11 @@ artifact exists in R2, and the API download route streams bytes.
       AND tp.project_number = dj.keyword
      WHERE dj.trigger_type = 'backfill'
        AND dj.live IS TRUE
-       AND dj.job_status = 'pending'
+       -- In-flight, not merely pending: a job whose agent result is awaiting
+       -- application (job_status = 'result_received') already covers this
+       -- keyword. Checking only 'pending' would let this operator backfill
+       -- enqueue a duplicate on top of it.
+       AND dj.job_status IN ('pending', 'result_received')
    );
    ```
 

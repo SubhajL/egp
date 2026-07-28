@@ -13,6 +13,7 @@ from egp_api.config import get_database_url
 from egp_db.connection import create_shared_engine
 from egp_db.db_utils import normalize_uuid_string
 from egp_db.repositories.discovery_job_repo import DISCOVERY_JOBS_TABLE
+from egp_shared_types.enums import IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
 from egp_db.repositories.profile_repo import CRAWL_PROFILES_TABLE
 from egp_db.repositories.recrawl_request_repo import (
     RecrawlJobInput,
@@ -252,7 +253,9 @@ def build_recovery_plan(
                         DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
                         DISCOVERY_JOBS_TABLE.c.profile_id.in_(target_profile_ids),
                         DISCOVERY_JOBS_TABLE.c.live.is_(True),
-                        DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                        DISCOVERY_JOBS_TABLE.c.job_status.in_(
+                            IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
+                        ),
                     )
                 )
             )

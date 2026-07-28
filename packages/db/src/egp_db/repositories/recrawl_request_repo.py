@@ -21,6 +21,7 @@ from sqlalchemy.engine import Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
+from egp_shared_types.enums import IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
 
 
 METADATA = DB_METADATA
@@ -255,7 +256,9 @@ class SqlRecrawlRequestRepository:
                                 DISCOVERY_JOBS_TABLE.c.profile_id == desired.profile_id,
                                 DISCOVERY_JOBS_TABLE.c.keyword == desired.keyword,
                                 DISCOVERY_JOBS_TABLE.c.live.is_(True),
-                                DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                                DISCOVERY_JOBS_TABLE.c.job_status.in_(
+                                    IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
+                                ),
                             )
                         )
                         .order_by(
@@ -293,7 +296,9 @@ class SqlRecrawlRequestRepository:
                                     {desired.profile_id for desired in desired_jobs}
                                 ),
                                 DISCOVERY_JOBS_TABLE.c.live.is_(True),
-                                DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                                DISCOVERY_JOBS_TABLE.c.job_status.in_(
+                                    IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES
+                                ),
                             )
                         )
                     )
@@ -605,6 +610,16 @@ class SqlRecrawlRequestRepository:
                 return "running"
             if run_status in {"failed", "cancelled"}:
                 return "retrying" if job_status == "pending" else "failed"
+        if job_status == "result_received":
+            # The agent finished and submitted a result; the inbox processor has
+            # not applied it yet. Reporting this as "queued" would be the opposite
+            # of the truth ("queued" means not started). Mapped to the existing
+            # "running" value rather than a new one because these strings are
+            # published through OpenAPI and the frontend filters on them
+            # (apps/web/src/app/(app)/projects/page.tsx) — a new value would be a
+            # contract and UI change. It also correctly keeps the request
+            # non-terminal until the run lands.
+            return "running"
         if job_status == "pending" and job["processing_started_at"] is not None:
             return "running"
         if job_status == "pending" and int(job["attempt_count"]) > 0:

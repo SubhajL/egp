@@ -267,6 +267,22 @@ class DiscoveryJobStatus(StrEnum):
     RESULT_RECEIVED = "result_received"
 
 
+# Discovery-job statuses that represent work still owned by the system: either
+# waiting to be claimed/executed, or executed with a result awaiting application.
+#
+# Every site that answers "is there outstanding work for this tenant / profile /
+# keyword?" must use this set rather than testing for PENDING alone. Counting only
+# PENDING once RESULT_RECEIVED exists frees a tenant's concurrency budget early and
+# lets dedupe paths enqueue a duplicate while the first result sits in the inbox.
+IN_FLIGHT_DISCOVERY_JOB_STATUSES: frozenset[DiscoveryJobStatus] = frozenset(
+    {DiscoveryJobStatus.PENDING, DiscoveryJobStatus.RESULT_RECEIVED}
+)
+
+IN_FLIGHT_DISCOVERY_JOB_STATUS_VALUES: tuple[str, ...] = tuple(
+    sorted(status.value for status in IN_FLIGHT_DISCOVERY_JOB_STATUSES)
+)
+
+
 class ExecutionBackend(StrEnum):
     """Which consumer owns a discovery job.
 
