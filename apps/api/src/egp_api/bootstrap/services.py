@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from fastapi import FastAPI
 
+from egp_api.bootstrap.notifications import build_notification_stack
 from egp_api.bootstrap.repositories import RepositoryBundle
 from egp_api.services.crawler_agent_service import CrawlerAgentService
 from egp_api.config import (
@@ -40,10 +41,6 @@ from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
 from egp_api.services.discovery_dispatch import DiscoveryDispatcher
-from egp_api.services.entitlement_service import (
-    EntitlementAwareNotificationDispatcher,
-    TenantEntitlementService,
-)
 from egp_api.services.export_service import ExportService
 from egp_api.services.line_integration import HttpLineMessagingClient
 from egp_api.services.line_slip_service import LineSlipService
@@ -59,9 +56,7 @@ from egp_api.services.storage_settings_service import StorageSettingsService
 from egp_api.services.support_service import SupportService
 from egp_api.services.webhook_service import WebhookService
 from egp_db.db_utils import is_sqlite_url
-from egp_notifications.dispatcher import NotificationDispatcher
-from egp_notifications.service import EmailSender, NotificationService, SmtpConfig
-from egp_notifications.webhook_delivery import WebhookDeliveryProcessor, WebhookDeliveryService
+from egp_notifications.service import EmailSender, SmtpConfig
 
 
 def configure_services(
@@ -88,25 +83,25 @@ def configure_services(
     background_runtime_mode: BackgroundRuntimeMode,
     crawler_agent_protocol: CrawlerAgentProtocol = "off",
 ) -> None:
-    notification_service = NotificationService(
-        smtp_config=get_smtp_config(smtp_config),
-        in_app_store=bundle.notification_repository,
-        email_sender=notification_email_sender,
-    )
-    webhook_delivery_service = WebhookDeliveryService(repository=bundle.notification_repository)
-    webhook_delivery_processor = WebhookDeliveryProcessor(repository=bundle.notification_repository)
-    notification_dispatcher = NotificationDispatcher(
-        service=notification_service,
-        recipient_resolver=bundle.notification_repository,
-        webhook_delivery_service=webhook_delivery_service,
-    )
-    entitlement_service = TenantEntitlementService(
-        bundle.billing_repository,
-        bundle.profile_repository,
+    # One construction path, shared with the standalone crawler-agent inbox
+    # processor — see egp_api.bootstrap.notifications for why the collaborators
+    # are no longer named individually here.
+    notification_stack = build_notification_stack(
+        notification_repository=bundle.notification_repository,
+        billing_repository=bundle.billing_repository,
+        profile_repository=bundle.profile_repository,
         run_repository=bundle.run_repository,
         discovery_job_repository=bundle.discovery_job_repository,
         tenant_entitlement_repository=bundle.tenant_entitlement_repository,
+        smtp_config=get_smtp_config(smtp_config),
+        email_sender=notification_email_sender,
     )
+    # Only the collaborators this module still binds to app.state are unpacked;
+    # the raw (ungated) dispatcher is deliberately NOT one of them — every
+    # consumer below takes the entitlement-gated wrapper.
+    notification_service = notification_stack.notification_service
+    webhook_delivery_processor = notification_stack.webhook_delivery_processor
+    entitlement_service = notification_stack.entitlement_service
     resolved_web_base_url = get_web_base_url(None, allowed_origins=resolved_web_allowed_origins)
     resolved_payment_provider = payment_provider or build_payment_provider(
         provider_name=get_payment_provider(None),
@@ -123,10 +118,7 @@ def configure_services(
     resolved_payment_callback_secret = get_payment_callback_secret(payment_callback_secret)
     if resolved_payment_callback_secret is None:
         raise RuntimeError("payment callback secret is required")
-    gated_notification_dispatcher = EntitlementAwareNotificationDispatcher(
-        notification_dispatcher,
-        entitlement_service,
-    )
+    gated_notification_dispatcher = notification_stack.gated_dispatcher
     auth_service = AuthService(
         bundle.auth_repository,
         bundle.admin_repository,

@@ -54,6 +54,26 @@ The production compose stack runs the discovery dispatcher as a separate service
   `EGP_CRAWLER_AGENT_PROTOCOL` is switched off `off`, because nothing produces results
   until then; it is deployed ahead of that so the queue is never accepted-but-undrained.
 
+> **Preflight before the FIRST deploy that includes U8a.** From U8a this service
+> dispatches `NEW_PROJECT` notifications — in-app, email and webhook — for
+> agent-sourced projects. It also drains **regardless of
+> `EGP_CRAWLER_AGENT_PROTOCOL`**, by design, so that turning ingress off cannot
+> strand already-accepted results. Those two facts combine: a routine
+> `docker compose up -d --build` can immediately email and webhook customers about
+> a backlog accepted *before* U8a, and entitlement and recipients are evaluated at
+> drain time, not at acceptance time. `EGP_CRAWLER_AGENT_PROTOCOL=off` is **not**
+> the emergency stop for this service — stopping the container is.
+>
+> ```bash
+> docker compose --env-file /etc/egp/egp.env stop crawler-agent-inbox-executor
+> psql "$DATABASE_URL" -c "SELECT inbox_status, count(*) FROM crawler_agent_results GROUP BY 1;"
+> ```
+>
+> If that returns nothing outside `applied`/`rejected`, deploy normally. Otherwise
+> decide explicitly whether to drain the backlog on the old image (no
+> notifications), drain it on the new image (notifications sent), or hold it — then
+> start the service. Messages already sent cannot be retracted by a rollback.
+
 This is implemented as the `api`, `discovery-executor`, `webhook-executor`, and
 `crawler-agent-inbox-executor` services in [`docker-compose.yml`](../docker-compose.yml).
 
