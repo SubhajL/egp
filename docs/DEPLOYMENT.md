@@ -49,8 +49,13 @@ The production compose stack runs the discovery dispatcher as a separate service
   egp_api.executors.discovery_dispatch`, claims discovery jobs from the outbox, and spawns one
   worker subprocess per job.
 - `webhook-executor` - runs `python -m egp_api.executors.webhook_delivery` for outbound webhook delivery.
+- `crawler-agent-inbox-executor` - runs `python -m egp_api.executors.crawler_agent_results`,
+  draining `crawler_agent_results` into the project services (U7c). Inert until
+  `EGP_CRAWLER_AGENT_PROTOCOL` is switched off `off`, because nothing produces results
+  until then; it is deployed ahead of that so the queue is never accepted-but-undrained.
 
-This is implemented as the `api`, `discovery-executor`, and `webhook-executor` services in [`docker-compose.yml`](../docker-compose.yml).
+This is implemented as the `api`, `discovery-executor`, `webhook-executor`, and
+`crawler-agent-inbox-executor` services in [`docker-compose.yml`](../docker-compose.yml).
 
 ## Health endpoints
 
@@ -140,14 +145,23 @@ Next-PR gate:
 
 ## Rollback
 
+> When rolling back **past** the U7c release, stop `crawler-agent-inbox-executor`
+> first, then restart only the services the rollback SHA defines and pass
+> `--remove-orphans` so the retired container is removed rather than left running
+> against the older schema.
+
 PostgreSQL API startup requires `EGP_BACKGROUND_RUNTIME_MODE=external`. Do not fall back to
 embedded mode: that would make API and executor ownership ambiguous. Roll back the application
 release while keeping the external topology:
 
 ```bash
-docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor
+# Stop BEFORE checking out the rollback SHA. `crawler-agent-inbox-executor` was
+# introduced in U7c, so a pre-U7c SHA does not define it — naming it in a restart
+# command against that SHA makes Compose reject the whole command, and omitting it
+# leaves the container running as an orphan.
+docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor crawler-agent-inbox-executor
 git switch --detach <previous-release-sha>
-docker compose --env-file .deploy/egp.env up -d --build api webhook-executor discovery-executor
+docker compose --env-file .deploy/egp.env up -d --build --remove-orphans api webhook-executor discovery-executor crawler-agent-inbox-executor
 curl -fsS https://api.example.com/ready
 ```
 

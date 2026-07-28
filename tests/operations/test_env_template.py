@@ -74,6 +74,11 @@ TEMPLATE_ONLY_VARS: frozenset[str] = frozenset(
         "EGP_API_MEMORY_LIMIT",
         "EGP_API_CPU_LIMIT",
         "EGP_API_PIDS_LIMIT",
+        # Compose-only resource bounds for the U7c crawler-agent inbox executor:
+        # consumed by docker-compose interpolation, never read by Python.
+        "EGP_CRAWLER_AGENT_INBOX_MEMORY_LIMIT",
+        "EGP_CRAWLER_AGENT_INBOX_CPU_LIMIT",
+        "EGP_CRAWLER_AGENT_INBOX_PIDS_LIMIT",
         "EGP_WEBHOOK_EXECUTOR_MEMORY_LIMIT",
         "EGP_WEBHOOK_EXECUTOR_CPU_LIMIT",
         "EGP_WEBHOOK_EXECUTOR_PIDS_LIMIT",

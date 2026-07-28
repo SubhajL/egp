@@ -162,6 +162,41 @@ services:
     healthcheck:
       disable: true
 
+  crawler-agent-inbox-executor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    mem_limit: ${EGP_CRAWLER_AGENT_INBOX_MEMORY_LIMIT:-256m}
+    cpus: ${EGP_CRAWLER_AGENT_INBOX_CPU_LIMIT:-0.5}
+    pids_limit: ${EGP_CRAWLER_AGENT_INBOX_PIDS_LIMIT:-128}
+    logging: *egp-logging
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    environment:
+      # Compose does not pass the env file wholesale; every variable this process
+      # reads must be enumerated here or it will not exist in the container.
+      DATABASE_URL: postgresql://${EGP_POSTGRES_USER:-egp}:${EGP_POSTGRES_PASSWORD:?set EGP_POSTGRES_PASSWORD in your environment}@postgres:5432/${EGP_POSTGRES_DB:-egp}
+      EGP_CRAWLER_AGENT_PROTOCOL: ${EGP_CRAWLER_AGENT_PROTOCOL:-off}
+      EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS:-300}
+      EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS:-60}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command:
+      - python
+      - -m
+      - egp_api.executors.crawler_agent_results
+    # Background worker (no HTTP server) — same reasoning as webhook-executor:
+    # the apps/api/Dockerfile HEALTHCHECK curls :8000/ready, which never succeeds
+    # here. A running PID is not proof the processor can drain; that signal
+    # belongs with the U8 observability work.
+    healthcheck:
+      disable: true
+
   discovery-executor:
     build:
       context: .
