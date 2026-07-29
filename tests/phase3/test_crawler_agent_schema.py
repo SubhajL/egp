@@ -401,8 +401,13 @@ def test_migration_034_upgrades_a_database_that_already_has_jobs(
     staged_dir.mkdir()
     all_sql = sorted(MIGRATIONS_DIR.glob("*.sql"))
     target = next(path for path in all_sql if path.name.startswith("034_"))
+    # Stage everything BEFORE 034, not "everything except 034". Later migrations
+    # legitimately build on the tables 034 creates (036 alters
+    # `crawler_agent_results`), so applying them first fails with UndefinedTable —
+    # a limitation of the staging technique, not of the property under test, which
+    # is only that 034 backfills pre-existing discovery_jobs rows.
     for path in all_sql:
-        if path is not target:
+        if path.name < target.name:
             copy2(path, staged_dir / path.name)
 
     with TempPostgresCluster() as cluster:

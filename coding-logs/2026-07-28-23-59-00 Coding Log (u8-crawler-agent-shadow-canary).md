@@ -346,6 +346,85 @@ be listed there. Asked, approved, applied.
 
 Net new tests: **24**.
 
+---
+
+# S3 — `feat/crawler-agent-shadow-parity`
+
+## Stop line: **none — Q0 (migration 036 + a write path that must not corrupt live jobs)**
+
+## Design, and the two things the plan review forced
+
+Shadow observes a real crawl without disturbing it: the Mac executes an ordinary
+**legacy** job and, while still holding that claim, additionally reports the agent
+envelope it *would* have sent. One crawl, two reports, no extra e-GP load.
+
+1. **The shadow report must not consume the legacy claim.** The naive design reuses
+   the primary path, which transitions the job to `result_received` and clears its
+   lease — actively breaking the crawl it was meant to observe. The shadow branch
+   instead LOCKS the job row (`SELECT … FOR UPDATE`) and re-checks the claim under
+   the lock. A plain guard read is a TOCTOU under READ COMMITTED: the lease can
+   expire and another worker reclaim between read and insert.
+2. **`delivery_mode` is derived SERVER-side and stamped at ACCEPTANCE.**
+   `/internal/worker/*` carries one global token with no identity, so a
+   caller-supplied mode would let any holder submit `primary` during a shadow
+   rollout. Stamping at acceptance also means flipping the protocol between
+   acceptance and drain cannot turn an observation into a real write — pinned by
+   `test_delivery_mode_is_decided_at_acceptance_not_at_processing`.
+
+## The parity oracle, and why the two obvious sources are both wrong
+
+`list_run_discovered_project_identities` reads the per-project `crawl_tasks` row the
+discovery workflow writes on success. Both shortcuts are broken:
+
+- `project_status_events.run_id` is **incomplete** — an unchanged status signature
+  suppresses the event entirely (`project_aliases.py:122-133`).
+- `projects.last_run_id` is **latest-writer state**, overwritten by any later run
+  (`project_persistence.py:133`). Not a historical ledger.
+
+Also note `crawl_tasks.project_id` is NOT populated by `mark_task_finished`, so the
+id must come out of `result_json`. Tenant scoping comes from the owning run —
+`crawl_tasks` has no tenant column.
+
+Parity detail is **counts only**. An envelope diff would put tenant procurement
+detail into a column operator tooling reads across tenants.
+
+## Mutation evidence
+
+| Mutation | Observed |
+|---|---|
+| Remove the shadow branch entirely (shadow reuses the primary path) | **exactly** `test_shadow_result_does_not_consume_the_legacy_claim` fails |
+| Keep the branch, drop the liveness checks from the guard | **exactly** `test_shadow_result_is_rejected_when_the_legacy_claim_is_not_live` fails |
+
+The second mutation matters: the first one left the stale-claim test green, which
+would have made its "mutation-proved" docstring a false claim. The targeted
+mutation is what actually establishes it.
+
+## Two frozen tests corrected — disclosed, because they are on the do-not-touch list
+
+Migration 036 legitimately alters `crawler_agent_results`, and two existing tests
+could not coexist with *any* migration that builds on 034. Both were corrected in
+**technique**, with their intent preserved — neither was weakened:
+
+1. `test_inbox_table_columns_match_migration_034` read 034 alone, so any later
+   `ADD COLUMN` looked like metadata drift. It now also scans later migrations'
+   `ALTER TABLE crawler_agent_results` statements. The scan is **statement-scoped**;
+   a first attempt matched per file and wrongly pulled in `execution_backend`,
+   which 034 adds to `discovery_jobs`.
+2. `test_migration_034_upgrades_a_database_that_already_has_jobs` staged "every
+   migration except 034", so 036 ran before the table existed. It now stages
+   everything *before* 034. The property under test — that 034 backfills
+   pre-existing rows — is unchanged.
+
+## Scope boundary — stated rather than implied
+
+This slice delivers the shadow **contract and comparison**: acceptance, storage,
+server-derived mode, and the compare-only processor path, all reachable only when
+`EGP_CRAWLER_AGENT_PROTOCOL=shadow`. The **producer** — the worker-side dual-report
+that actually emits shadow envelopes from the legacy path — lands with the worker
+changes, because it needs the claim token plumbed into the discovery subprocess
+(`DiscoveryDispatchRequest` has no `claim_token`, and the child receives its context
+as a JSON stdin payload). So shadow parity is not yet end-to-end in production.
+
 ## Progress
 
 - [x] Worktree + branch + coding log + pointer
@@ -353,8 +432,7 @@ Net new tests: **24**.
 - [x] Codex adversarial plan pass — **rejected v1**; re-sliced into S1a…S5
 - [x] **S1a** — notification parity (PR #190, `51c7f8c1`)
 - [x] **S1b** — inbox drain health
-- [ ] S2 — typed dispatch outcome + durable run→projects parity oracle
-- [ ] S3 — shadow observational recording + comparison
+- [x] **S3** — shadow contract + parity oracle + comparison (S2 folded in: shipping the oracle without its consumer would have been an orphaned export)
 - [ ] S4 — routing + guarded reroute + canary CLI (activation step)
 - [ ] S5 — agent runtime on the worker image + Mac wiring + canary
 - [ ] S1b — inbox health

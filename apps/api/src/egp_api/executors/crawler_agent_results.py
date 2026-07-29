@@ -99,9 +99,11 @@ from egp_shared_types.crawler_agent import (
     SUPPORTED_AGENT_RESULT_KINDS,
 )
 from egp_shared_types.enums import (
+    AgentDeliveryMode,
     AgentInboxDrainOutcome,
     AgentInboxErrorCode,
     AgentInboxProcessorStatus,
+    AgentParityVerdict,
 )
 
 
@@ -222,6 +224,21 @@ class CrawlerAgentInboxProcessor:
         outcome.claimed = True
 
         try:
+            if record.delivery_mode == AgentDeliveryMode.SHADOW.value:
+                # Observation only. Never touches product state, and terminates
+                # through the shadow-specific mark so it does not try to release a
+                # job that was never in `result_received`.
+                parity = self._compare_shadow(record)
+                outcome.applied = self._repository.mark_shadow_compared(
+                    result_id=record.result_id,
+                    processor_token=processor_token,
+                    parity_verdict=parity[0],
+                    parity_detail=parity[1],
+                )
+                outcome.error_code = None if outcome.applied else (
+                    AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value
+                )
+                return outcome
             self._apply(record)
         except PermanentApplyError as exc:
             outcome.rejected = True
@@ -328,6 +345,74 @@ class CrawlerAgentInboxProcessor:
             )
         except Exception:  # noqa: BLE001 - telemetry must not break the drain
             _logger.warning("crawler agent inbox: heartbeat failed", exc_info=True)
+
+    def _compare_shadow(
+        self, record: InboxRecord
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Compare a shadow envelope against what the legacy run durably recorded.
+
+        MUTATES NOTHING. The envelope is decoded exactly as `_apply_discovery`
+        would decode it, so what is compared is the thing that *would* have been
+        applied — a decode that diverged would make the whole exercise worthless.
+
+        Detail is COUNTS ONLY. A diff of project names would put tenant
+        procurement data into a column operator tooling reads across tenants.
+        """
+
+        from egp_crawler_core.canonical_id import generate_canonical_id
+
+        envelope = record.envelope or {}
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict):
+            raise PermanentApplyError("shadow envelope payload must be an object")
+
+        projects = payload.get("projects") or []
+        if not isinstance(projects, list):
+            raise PermanentApplyError("shadow payload 'projects' must be a list")
+
+        run_ids = {
+            str(entry.get("run_id"))
+            for entry in projects
+            if isinstance(entry, dict) and entry.get("run_id")
+        }
+        if len(run_ids) != 1:
+            # No single run to compare against. NOT a mismatch: reporting one
+            # would manufacture false alarms during rollout, when the honest
+            # answer is that the evidence could not be resolved.
+            return (
+                AgentParityVerdict.UNAVAILABLE.value,
+                {"envelope_count": len(projects), "run_id_count": len(run_ids)},
+            )
+
+        envelope_identities = {
+            generate_canonical_id(
+                project_number=entry.get("project_number"),
+                organization_name=entry.get("organization_name"),
+                project_name=entry.get("project_name"),
+                proposal_submission_date=entry.get("proposal_submission_date"),
+                budget_amount=entry.get("budget_amount"),
+            )
+            for entry in projects
+            if isinstance(entry, dict)
+        }
+        durable_identities = self._repository.list_run_discovered_project_identities(
+            tenant_id=record.tenant_id, run_id=run_ids.pop()
+        )
+
+        missing = durable_identities - envelope_identities
+        extra = envelope_identities - durable_identities
+        detail = {
+            "envelope_count": len(envelope_identities),
+            "durable_count": len(durable_identities),
+            "missing_count": len(missing),
+            "extra_count": len(extra),
+        }
+        verdict = (
+            AgentParityVerdict.MATCH.value
+            if not missing and not extra
+            else AgentParityVerdict.MISMATCH.value
+        )
+        return verdict, detail
 
     def _apply(self, record: InboxRecord) -> None:
         envelope = record.envelope or {}
