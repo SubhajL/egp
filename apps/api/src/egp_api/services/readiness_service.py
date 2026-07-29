@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -190,5 +191,45 @@ class ReadinessService:
         return {str(row[0]) for row in rows}
 
 
+_MIGRATIONS_SUFFIX = "packages/db/src/migrations"
+
+
+def resolve_migrations_dir(*, module_file: Path | str | None = None) -> Path:
+    """Locate the migrations directory without assuming a fixed module depth.
+
+    The previous implementation was `parents[5] / "packages/db/src/migrations"`,
+    which silently depends on where this module happens to sit relative to the
+    repository root. That is true for a source checkout and FALSE once the package
+    is installed — in the runtime images the module lives under
+    `<root>/.venv/lib/pythonX/site-packages/egp_api/…`, so `parents[5]` landed on
+    `<root>/.venv` and `/ready` returned a permanent
+    `migration_manifest_unavailable` that had nothing to do with migrations.
+
+    So: walk up from the module looking for the directory, which handles both
+    layouts and any future one, then fall back to the working directory (the
+    images set WORKDIR to the app root). `EGP_MIGRATIONS_DIR` overrides everything,
+    as an operator escape hatch for a layout nobody anticipated — precisely the
+    class of problem this replaced.
+    """
+
+    override = os.getenv("EGP_MIGRATIONS_DIR", "").strip()
+    if override:
+        return Path(override)
+
+    start = Path(module_file if module_file is not None else __file__).resolve()
+    for ancestor in start.parents:
+        candidate = ancestor / _MIGRATIONS_SUFFIX
+        if candidate.is_dir():
+            return candidate
+
+    cwd_candidate = Path.cwd() / _MIGRATIONS_SUFFIX
+    if cwd_candidate.is_dir():
+        return cwd_candidate
+
+    # Nothing found. Return the historical guess so the caller still reports
+    # `migration_manifest_unavailable` rather than raising during startup.
+    return start.parents[min(5, len(start.parents) - 1)] / _MIGRATIONS_SUFFIX
+
+
 def _default_migrations_dir() -> Path:
-    return Path(__file__).resolve().parents[5] / "packages/db/src/migrations"
+    return resolve_migrations_dir()
