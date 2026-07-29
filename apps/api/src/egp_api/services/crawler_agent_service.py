@@ -22,6 +22,7 @@ from typing import Any
 
 from egp_api.config import CrawlerAgentProtocol
 from egp_shared_types.crawler_agent import AgentClaim, InboxSubmission
+from egp_shared_types.enums import AgentDeliveryMode
 
 
 class ProtocolDisabledError(RuntimeError):
@@ -80,6 +81,22 @@ class CrawlerAgentService:
             lease_seconds=lease_seconds,
         )
 
+    @property
+    def delivery_mode(self) -> str:
+        """The delivery mode this deployment accepts, derived from the protocol.
+
+        SERVER-side on purpose. `/internal/worker/*` authenticates with a single
+        global token that carries no identity, so accepting a caller-supplied mode
+        would let any token holder submit `primary` while the operator believed the
+        system was in shadow — the exact failure a shadow rollout exists to prevent.
+        """
+
+        return (
+            AgentDeliveryMode.SHADOW.value
+            if self._protocol == "shadow"
+            else AgentDeliveryMode.PRIMARY.value
+        )
+
     def submit_result(
         self,
         *,
@@ -98,4 +115,5 @@ class CrawlerAgentService:
             idempotency_key=idempotency_key,
             contract_version=contract_version,
             envelope=envelope,
+            delivery_mode=self.delivery_mode,
         )

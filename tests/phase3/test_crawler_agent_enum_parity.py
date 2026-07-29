@@ -69,13 +69,10 @@ def test_inbox_table_columns_match_migration_034() -> None:
 
     from egp_db.repositories.crawler_agent_repo import CRAWLER_AGENT_RESULTS_TABLE
 
-    migration = (
-        Path(__file__).resolve().parents[2]
-        / "packages/db/src/migrations/034_crawler_agent_results.sql"
-    )
-    body = migration.read_text(encoding="utf-8").split(
-        "CREATE TABLE crawler_agent_results (", 1
-    )[1]
+    migrations_dir = Path(__file__).resolve().parents[2] / "packages/db/src/migrations"
+    body = (migrations_dir / "034_crawler_agent_results.sql").read_text(
+        encoding="utf-8"
+    ).split("CREATE TABLE crawler_agent_results (", 1)[1]
 
     declared: set[str] = set()
     for raw in body.splitlines():
@@ -88,7 +85,30 @@ def test_inbox_table_columns_match_migration_034() -> None:
         if match:
             declared.add(match.group(1))
 
+    assert declared, "failed to parse any column out of migration 034"
+
+    # Later migrations legitimately extend this table (036 adds the shadow
+    # delivery columns), so the oracle has to follow them. Reading 034 alone was a
+    # technique limitation, not the intent: the property under test is
+    # "metadata and SQL declare the same columns", and pinning it to one file
+    # would force either deleting the oracle or freezing the table forever.
+    for path in sorted(migrations_dir.glob("*.sql")):
+        # Statement-scoped: a migration may ALTER several tables (034 itself also
+        # alters discovery_jobs), so matching per file would pull in columns that
+        # belong to a different table entirely.
+        for statement in path.read_text(encoding="utf-8").split(";"):
+            if not re.search(
+                r"ALTER\s+TABLE\s+crawler_agent_results\b", statement, re.IGNORECASE
+            ):
+                continue
+            for match in re.finditer(
+                r"ADD\s+COLUMN\s+([a-z0-9_]+)\s+"
+                r"(UUID|TEXT|JSONB|INTEGER|TIMESTAMPTZ)\b",
+                statement,
+                re.IGNORECASE,
+            ):
+                declared.add(match.group(1))
+
     modelled = {column.name for column in CRAWLER_AGENT_RESULTS_TABLE.columns}
 
-    assert declared, "failed to parse any column out of migration 034"
     assert declared == modelled

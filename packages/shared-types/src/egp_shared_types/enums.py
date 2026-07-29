@@ -332,6 +332,37 @@ class AgentInboxErrorCode(StrEnum):
     PROCESSOR_LEASE_LOST = "processor_lease_lost"
 
 
+class AgentDeliveryMode(StrEnum):
+    """How a submitted result envelope is to be treated.
+
+    Kept in sync with ``crawler_agent_results.delivery_mode`` (migration 036).
+
+    Derived SERVER-SIDE from ``EGP_CRAWLER_AGENT_PROTOCOL`` and stamped on the row
+    at acceptance. It is never accepted from the caller: ``/internal/worker/*``
+    authenticates with one global token, so a caller-supplied mode would let any
+    token holder submit ``PRIMARY`` while the operator believed the system was in
+    shadow. Stamping at acceptance also means flipping the protocol between
+    acceptance and drain cannot turn a shadow report into a real write.
+    """
+
+    PRIMARY = "primary"
+    SHADOW = "shadow"
+
+
+class AgentParityVerdict(StrEnum):
+    """Outcome of comparing a shadow envelope against the legacy run's durable result.
+
+    Kept in sync with ``crawler_agent_results.parity_verdict`` (migration 036).
+    ``UNAVAILABLE`` is not a failure: it means the run's durable evidence could not
+    be resolved (e.g. the envelope carried no usable run reference), and conflating
+    that with ``MISMATCH`` would manufacture false alarms during rollout.
+    """
+
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    UNAVAILABLE = "unavailable"
+
+
 class AgentInboxProcessorStatus(StrEnum):
     """Liveness reported by the standalone inbox processor.
 

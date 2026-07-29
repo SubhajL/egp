@@ -66,6 +66,8 @@ from egp_shared_types.crawler_agent import (
 )
 from egp_shared_types.enums import (
     AgentContractVersion,
+    AgentDeliveryMode,
+    AgentParityVerdict,
     DiscoveryFailureCode,
     AgentInboxDrainOutcome,
     AgentInboxDrainStatus,
@@ -89,6 +91,8 @@ _PROCESSOR_STATUS_SQL = ", ".join(
     f"'{status.value}'" for status in AgentInboxProcessorStatus
 )
 _DRAIN_OUTCOME_SQL = ", ".join(f"'{o.value}'" for o in AgentInboxDrainOutcome)
+_DELIVERY_MODE_SQL = ", ".join(f"'{m.value}'" for m in AgentDeliveryMode)
+_PARITY_VERDICT_SQL = ", ".join(f"'{v.value}'" for v in AgentParityVerdict)
 
 # JSONB on PostgreSQL, plain JSON on the SQLite bootstrap used by tests.
 ENVELOPE_JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
@@ -114,6 +118,27 @@ CRAWLER_AGENT_RESULTS_TABLE = Table(
     Column("received_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
     Column("applied_at", DateTime(timezone=True), nullable=True),
+    Column(
+        "delivery_mode",
+        String,
+        nullable=False,
+        default=AgentDeliveryMode.PRIMARY.value,
+        server_default=text(f"'{AgentDeliveryMode.PRIMARY.value}'"),
+    ),
+    Column("parity_verdict", String, nullable=True),
+    Column("parity_detail", ENVELOPE_JSON_TYPE, nullable=True),
+    CheckConstraint(
+        f"delivery_mode IN ({_DELIVERY_MODE_SQL})",
+        name="crawler_agent_results_delivery_mode_check",
+    ),
+    CheckConstraint(
+        f"parity_verdict IS NULL OR parity_verdict IN ({_PARITY_VERDICT_SQL})",
+        name="crawler_agent_results_parity_verdict_check",
+    ),
+    CheckConstraint(
+        "delivery_mode = 'shadow' OR parity_verdict IS NULL",
+        name="crawler_agent_results_primary_has_no_verdict_check",
+    ),
     CheckConstraint(
         f"contract_version IN ({_CONTRACT_VERSION_SQL})",
         name="crawler_agent_results_contract_version_check",
@@ -200,6 +225,7 @@ class InboxRecord:
     envelope_sha256: str
     attempt_count: int
     processor_token: str
+    delivery_mode: str = AgentDeliveryMode.PRIMARY.value
 
 
 class StaleAgentClaimError(RuntimeError):
@@ -432,7 +458,24 @@ class SqlCrawlerAgentRepository:
         idempotency_key: str,
         contract_version: str,
         envelope: dict[str, Any],
+        delivery_mode: str = AgentDeliveryMode.PRIMARY.value,
     ) -> InboxSubmission:
+        """Accept a result envelope.
+
+        ``primary`` consumes the claim and moves the job to ``result_received``.
+
+        ``shadow`` does NOT: the job is still being executed by the legacy path
+        that owns that claim token, and consuming it would break the very crawl
+        being observed. The guard instead LOCKS the job row (``FOR UPDATE``) and
+        re-checks the claim while holding the lock. A plain read is not safe under
+        READ COMMITTED — between reading a live claim and inserting, the lease can
+        expire and another worker can reclaim the job, leaving a shadow row bound
+        to an obsolete claim.
+
+        ``delivery_mode`` is supplied by the service from the configured protocol,
+        never by the remote caller. See ``AgentDeliveryMode``.
+        """
+        resolved_mode = AgentDeliveryMode(delivery_mode)
         if contract_version not in {v.value for v in AgentContractVersion}:
             raise UnsupportedContractVersionError(
                 f"unsupported crawler-agent contract version: {contract_version}"
@@ -457,11 +500,67 @@ class SqlCrawlerAgentRepository:
             )
             if existing is not None:
                 if existing["envelope_sha256"] == envelope_sha256:
+                    # Mode must agree: identical bytes offered as an observation
+                    # and as a real write are different requests, and silently
+                    # replaying one as the other is how a shadow rollout would
+                    # start applying.
+                    if str(existing["delivery_mode"]) != resolved_mode.value:
+                        raise IdempotencyConflictError(
+                            f"job {job_id} already has a "
+                            f"{existing['delivery_mode']} result; refusing to "
+                            f"replay it as {resolved_mode.value}"
+                        )
                     return _submission_from_row(existing, replayed=True)
                 # Same claim attempt, different body. Never overwrite: one claim
                 # attempt yields exactly one terminal result.
                 raise IdempotencyConflictError(
                     f"a different result was already recorded for job {job_id}"
+                )
+
+            if resolved_mode is AgentDeliveryMode.SHADOW:
+                # SHADOW: observe without disturbing. The legacy path still owns
+                # this claim and is still running, so the claim must NOT be
+                # consumed. Lock the job row and re-check under the lock — a plain
+                # read is a TOCTOU under READ COMMITTED, because the lease can
+                # expire and another worker can reclaim between the read and the
+                # insert. The lock is held until this transaction commits, so the
+                # inbox row can never be bound to an obsolete claim.
+                live = (
+                    connection.execute(
+                        select(DISCOVERY_JOBS_TABLE)
+                        .where(
+                            and_(
+                                DISCOVERY_JOBS_TABLE.c.tenant_id
+                                == normalized_tenant_id,
+                                DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                            )
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .first()
+                )
+                if (
+                    live is None
+                    or str(live["claim_token"] or "") != normalized_claim_token
+                    or str(live["job_status"]) != DiscoveryJobStatus.PENDING.value
+                    or live["lease_expires_at"] is None
+                    or _as_utc(live["lease_expires_at"]) <= now
+                ):
+                    raise StaleAgentClaimError(
+                        f"shadow claim is stale for job {job_id}; report rejected"
+                    )
+                return self._insert_inbox_row(
+                    connection,
+                    tenant_id=normalized_tenant_id,
+                    job_id=normalized_job_id,
+                    claim_token=normalized_claim_token,
+                    idempotency_key=idempotency_key,
+                    contract_version=contract_version,
+                    envelope=envelope,
+                    envelope_sha256=envelope_sha256,
+                    delivery_mode=resolved_mode.value,
+                    now=now,
                 )
 
             # 2. Consume the claim and make the job non-claimable, atomically with
@@ -513,55 +612,100 @@ class SqlCrawlerAgentRepository:
                     f"agent claim is stale for job {job_id}; result rejected"
                 )
 
-            result_id = str(uuid4())
-            values = {
-                "id": result_id,
-                "tenant_id": normalized_tenant_id,
-                "job_id": normalized_job_id,
-                "claim_token": normalized_claim_token,
-                "contract_version": contract_version,
-                "idempotency_key": str(idempotency_key),
-                "envelope": envelope,
-                "envelope_sha256": envelope_sha256,
-                "inbox_status": AgentInboxStatus.PENDING.value,
-                "attempt_count": 0,
-                "next_attempt_at": now,
-                "last_error_code": None,
-                "processor_token": None,
-                "processing_expires_at": None,
-                "processing_heartbeat_at": None,
-                "received_at": now,
-                "updated_at": now,
-                "applied_at": None,
-            }
-            try:
-                # SAVEPOINT: a UNIQUE violation aborts the enclosing PostgreSQL
-                # transaction, so a bare try/except around a plain INSERT could
-                # not recover and re-read.
-                with connection.begin_nested():
-                    connection.execute(insert(CRAWLER_AGENT_RESULTS_TABLE), values)
-            except IntegrityError:
-                raced = _select_inbox_row(
-                    connection,
-                    tenant_id=normalized_tenant_id,
-                    job_id=normalized_job_id,
-                    claim_token=normalized_claim_token,
-                )
-                if raced is not None and raced["envelope_sha256"] == envelope_sha256:
-                    return _submission_from_row(raced, replayed=True)
-                raise IdempotencyConflictError(
-                    f"a different result was already recorded for job {job_id}"
-                ) from None
-
-            row = (
-                connection.execute(
-                    select(CRAWLER_AGENT_RESULTS_TABLE).where(
-                        CRAWLER_AGENT_RESULTS_TABLE.c.id == result_id
-                    )
-                )
-                .mappings()
-                .one()
+            return self._insert_inbox_row(
+                connection,
+                tenant_id=normalized_tenant_id,
+                job_id=normalized_job_id,
+                claim_token=normalized_claim_token,
+                idempotency_key=idempotency_key,
+                contract_version=contract_version,
+                envelope=envelope,
+                envelope_sha256=envelope_sha256,
+                delivery_mode=resolved_mode.value,
+                now=now,
             )
+
+    def _insert_inbox_row(
+        self,
+        connection,
+        *,
+        tenant_id: str,
+        job_id: str,
+        claim_token: str,
+        idempotency_key: str,
+        contract_version: str,
+        envelope: dict[str, Any],
+        envelope_sha256: str,
+        delivery_mode: str,
+        now: datetime,
+    ) -> InboxSubmission:
+        """Insert the inbox row on the caller's connection and transaction.
+
+        Shared by both delivery modes so the SAVEPOINT/replay recovery cannot
+        drift between them.
+        """
+
+        result_id = str(uuid4())
+        values = {
+            "id": result_id,
+            "tenant_id": tenant_id,
+            "job_id": job_id,
+            "claim_token": claim_token,
+            "contract_version": contract_version,
+            "idempotency_key": str(idempotency_key),
+            "envelope": envelope,
+            "envelope_sha256": envelope_sha256,
+            "inbox_status": AgentInboxStatus.PENDING.value,
+            "attempt_count": 0,
+            "next_attempt_at": now,
+            "last_error_code": None,
+            "processor_token": None,
+            "processing_expires_at": None,
+            "processing_heartbeat_at": None,
+            "received_at": now,
+            "updated_at": now,
+            "applied_at": None,
+            # Stamped at ACCEPTANCE. Reading the protocol at processing time would
+            # let a flip turn a shadow report into a real write.
+            "delivery_mode": delivery_mode,
+            "parity_verdict": None,
+            "parity_detail": None,
+        }
+        try:
+            # SAVEPOINT: a UNIQUE violation aborts the enclosing PostgreSQL
+            # transaction, so a bare try/except around a plain INSERT could
+            # not recover and re-read.
+            with connection.begin_nested():
+                connection.execute(insert(CRAWLER_AGENT_RESULTS_TABLE), values)
+        except IntegrityError:
+            raced = _select_inbox_row(
+                connection,
+                tenant_id=tenant_id,
+                job_id=job_id,
+                claim_token=claim_token,
+            )
+            if raced is not None and raced["envelope_sha256"] == envelope_sha256:
+                # A replay must agree on MODE too: the same bytes submitted as a
+                # shadow observation and as a primary write are different requests.
+                if str(raced["delivery_mode"]) != delivery_mode:
+                    raise IdempotencyConflictError(
+                        f"job {job_id} already has a {raced['delivery_mode']} result; "
+                        f"refusing to replay it as {delivery_mode}"
+                    ) from None
+                return _submission_from_row(raced, replayed=True)
+            raise IdempotencyConflictError(
+                f"a different result was already recorded for job {job_id}"
+            ) from None
+
+        row = (
+            connection.execute(
+                select(CRAWLER_AGENT_RESULTS_TABLE).where(
+                    CRAWLER_AGENT_RESULTS_TABLE.c.id == result_id
+                )
+            )
+            .mappings()
+            .one()
+        )
         return _submission_from_row(row, replayed=False)
 
 
@@ -877,6 +1021,136 @@ class SqlCrawlerAgentRepository:
                     "was not in result_received"
                 )
         return True
+
+    def mark_shadow_compared(
+        self,
+        *,
+        result_id: str,
+        processor_token: str,
+        parity_verdict: str,
+        parity_detail: dict[str, Any] | None = None,
+    ) -> bool:
+        """Terminate a SHADOW row with its verdict, mutating no product state.
+
+        Deliberately NOT ``mark_result_applied``: that also transitions the job out
+        of ``result_received``, and a shadow row's job was never in that state — it
+        is still being executed by the legacy path that owns the claim. Calling the
+        primary terminal here would raise ``JobReleaseFailedError`` at best, and
+        corrupt a live job's state at worst.
+        """
+
+        now = _now()
+        with self._engine.begin() as connection:
+            updated = connection.execute(
+                update(CRAWLER_AGENT_RESULTS_TABLE)
+                .where(
+                    and_(
+                        CRAWLER_AGENT_RESULTS_TABLE.c.id
+                        == normalize_uuid_string(result_id),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processor_token
+                        == normalize_uuid_string(processor_token),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
+                        == AgentInboxStatus.PROCESSING.value,
+                        CRAWLER_AGENT_RESULTS_TABLE.c.delivery_mode
+                        == AgentDeliveryMode.SHADOW.value,
+                        # Lease liveness, same rule as the primary terminals: a
+                        # matching token is not enough between expiry and reclaim.
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at > now,
+                    )
+                )
+                .values(
+                    inbox_status=AgentInboxStatus.APPLIED.value,
+                    parity_verdict=AgentParityVerdict(parity_verdict).value,
+                    parity_detail=parity_detail,
+                    processor_token=None,
+                    processing_expires_at=None,
+                    applied_at=now,
+                    updated_at=now,
+                )
+            )
+        return bool(updated.rowcount)
+
+    def list_run_discovered_project_identities(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+    ) -> set[str]:
+        """Canonical project identities a discovery run DURABLY recorded.
+
+        This is the shadow-parity oracle, and the two tempting shortcuts are both
+        wrong:
+
+        * ``project_status_events.run_id`` is incomplete — an unchanged status
+          signature suppresses the event entirely (``project_aliases.py``), so a
+          re-discovered project leaves no row.
+        * ``projects.last_run_id`` is latest-writer state, overwritten by any later
+          run. It is not a historical ledger.
+
+        The durable evidence is the per-project ``crawl_tasks`` row the discovery
+        workflow writes on success, whose ``result_json`` carries the project id.
+        Note ``crawl_tasks.project_id`` is NOT populated by ``mark_task_finished``,
+        so the id must come from ``result_json``.
+        """
+
+        from egp_db.repositories.project_schema import PROJECTS_TABLE
+        from egp_db.repositories.run_repo import CRAWL_RUNS_TABLE, CRAWL_TASKS_TABLE
+
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_run_id = normalize_uuid_string(run_id)
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    select(CRAWL_TASKS_TABLE.c.result_json)
+                    .select_from(
+                        CRAWL_TASKS_TABLE.join(
+                            CRAWL_RUNS_TABLE,
+                            CRAWL_RUNS_TABLE.c.id == CRAWL_TASKS_TABLE.c.run_id,
+                        )
+                    )
+                    .where(
+                        and_(
+                            # Tenant scoping comes from the RUN, which owns it;
+                            # crawl_tasks has no tenant column.
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                            CRAWL_TASKS_TABLE.c.task_type == "discover",
+                            CRAWL_TASKS_TABLE.c.status == "succeeded",
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+
+        project_ids: set[str] = set()
+        for row in rows:
+            payload = row["result_json"]
+            if isinstance(payload, str):  # SQLite JSON round-trips as text
+                payload = json.loads(payload)
+            if not isinstance(payload, dict):
+                continue
+            project_id = payload.get("project_id")
+            if project_id:
+                project_ids.add(normalize_uuid_string(str(project_id)))
+        if not project_ids:
+            return set()
+
+        with self._engine.connect() as connection:
+            identities = (
+                connection.execute(
+                    select(PROJECTS_TABLE.c.canonical_project_id).where(
+                        and_(
+                            PROJECTS_TABLE.c.tenant_id == normalized_tenant_id,
+                            PROJECTS_TABLE.c.id.in_(project_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return {str(value) for value in identities}
 
     # ------------------------------------------------------------------
     # liveness and health (U8b)
@@ -1287,6 +1561,7 @@ def _inbox_record_from_row(row) -> InboxRecord:
         envelope_sha256=str(row["envelope_sha256"]),
         attempt_count=int(row["attempt_count"]),
         processor_token=str(row["processor_token"]),
+        delivery_mode=str(row["delivery_mode"]),
     )
 
 
