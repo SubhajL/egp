@@ -418,3 +418,60 @@ the owning profile rather than hardcoding `'legacy'` — otherwise a manual repa
 silently drags a routed profile back onto the legacy crawler. The backfill snippet
 in [`SOC_INCIDENT_RESPONSE.md`](SOC_INCIDENT_RESPONSE.md) does this correctly; copy
 its join.
+
+## Running the agent runtime (U8)
+
+`CrawlerAgentApiClient` is a library; `egp_worker.agent_runtime` is the process
+that uses it. It must run on the **Mac** — the container cannot pass e-GP
+attestation — and on the **worker** image, because `apps/api/Dockerfile`
+deliberately excludes `egp_worker`.
+
+```bash
+export EGP_INTERNAL_API_BASE_URL=https://<api-host>
+export EGP_INTERNAL_WORKER_TOKEN=...          # authority over EVERY tenant's queue
+export EGP_CRAWLER_AGENT_ID=primary-mac-crawler
+
+# one job, then exit — the safe first run
+./.venv/bin/python -m egp_worker.agent_runtime --once
+
+# continuous
+./.venv/bin/python -m egp_worker.agent_runtime
+```
+
+The base URL **must** be `https`. The runtime refuses plain HTTP at construction
+because the worker token is a bearer credential with authority over every tenant's
+queue; `--allow-insecure-transport` exists for loopback development only.
+
+What it does per iteration: claim → crawl with the existing discovery workflow →
+renew the lease on a background timer while the browser works → submit the result.
+Behaviour worth knowing before you watch the logs:
+
+| Situation | Runtime does | Why |
+|---|---|---|
+| Nothing due | sleeps, keeps going | normal |
+| Control plane 5xx / timeout | backs off, keeps going | a brief outage must not stop crawling |
+| 401 / 403 | **stops** | retrying cannot fix credentials |
+| 404 (protocol off) | **stops** | nothing to claim; hammering it is pointless |
+| Lease lost mid-crawl (409 on renew) | abandons, submits nothing | someone else owns the job; the result would be refused |
+| Crawl fails | submits nothing | the lease expires and the job is reclaimed — existing at-least-once behaviour |
+
+### Shadow dual-report
+
+Set `EGP_CRAWLER_AGENT_SHADOW_REPORTING=true` on the **legacy** crawler (not the
+agent runtime) and `EGP_CRAWLER_AGENT_PROTOCOL=shadow` on the API. Ordinary legacy
+crawls then additionally report the envelope the agent path *would* have sent,
+under that job's own claim. The API records it without applying it and compares it
+against what the run durably wrote.
+
+Default off. It is fail-open by construction — a parity observation can never fail
+a real crawl — so the only symptom of a misconfiguration is missing verdicts, not
+lost crawls. Read verdicts with:
+
+```sql
+SELECT parity_verdict, count(*), sum((parity_detail->>'missing_count')::int)
+FROM crawler_agent_results WHERE delivery_mode = 'shadow' GROUP BY 1;
+```
+
+Expect `match`. `unavailable` means the envelope had no single run reference —
+not a mismatch, and not an alarm. Investigate `mismatch` before flipping any
+profile to `agent`.

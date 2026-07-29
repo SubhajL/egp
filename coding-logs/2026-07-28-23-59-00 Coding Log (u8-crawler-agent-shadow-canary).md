@@ -524,6 +524,73 @@ work, which is why they are grouped rather than half-done here.
 ruff clean · **pytest 1389 × 3 consecutive**, 2 skipped, 0 failed (baseline 1382).
 Net new tests: 7.
 
+---
+
+# S6 — `feat/crawler-agent-runtime-loop`
+
+## Why this slice exists
+
+S3 landed the shadow *contract* with no producer, and S5 landed the agent *client*
+with nothing running it. Both gaps needed the same worker-runtime surface, so they
+are closed together rather than half-done twice.
+
+## The agent runtime (`egp_worker.agent_runtime`)
+
+`python -m egp_worker.agent_runtime [--once]`, on the **worker** image — the API
+image excludes `egp_worker`, and the container cannot pass e-GP attestation anyway.
+
+Two behaviours are the substance:
+
+**The lease is renewed while the browser works.** A crawl outlasts a lease, so a
+background timer renews for the duration. It stops the moment renewal returns 409:
+someone else owns the job, and continuing would burn e-GP traffic on a result the
+API will refuse.
+
+**Failure handling is deliberately asymmetric**, which is what the typed client
+errors were for: transport failure backs off and continues (a brief control-plane
+outage must not stop crawling), while auth failure and protocol-disabled **stop the
+loop** (retrying cannot fix either). A failed crawl submits nothing — the lease
+expires and the job is reclaimed, which is the existing at-least-once behaviour.
+
+I relaxed the renewal-interval floor from 1.0s to 0.01s. The floor only guards
+against a zero/negative interval spinning the thread; a 1s "sensible minimum"
+protected nothing that validation doesn't, and only prevented tests driving the
+loop quickly.
+
+## The shadow producer (`egp_worker.agent_shadow`)
+
+**It had to live in the child process.** The parent cannot build the envelope:
+`dispatch()` returns `None`, and the result it decodes from the subprocess carries
+ids and counts, not project bodies. So `DiscoveryDispatchRequest` gained
+`claim_token`, the child's JSON stdin payload gained the agent fields, and the
+discover command reports after a successful crawl.
+
+Gated on `EGP_CRAWLER_AGENT_SHADOW_REPORTING` (default **off**) and on the parent
+having supplied claim context. **Fail-open throughout**: the crawl it observes has
+already succeeded, and a parity probe that can fail a production crawl is worse
+than no parity probe.
+
+`test_the_shadow_envelope_matches_what_the_comparison_expects` is the one that
+matters: it derives canonical identities from the envelope and from the source
+projects and asserts they are equal. A field dropped from the envelope would
+otherwise produce permanent `mismatch` verdicts that look like a real parity
+failure.
+
+## Two consequential changes outside the new files
+
+- `tests/phase2/test_discovery_dispatch.py` asserted the dispatch request by exact
+  equality, so adding `claim_token` broke it. Updated to expect the field **and**
+  to assert it is non-empty — the child cannot dual-report without it. Not on the
+  do-not-touch list.
+- `deploy/.env.production.example` gained `EGP_CRAWLER_AGENT_SHADOW_REPORTING`
+  (same operator approval as the earlier template edit; the AST drift test requires
+  it).
+
+## Gates
+
+ruff clean · **pytest 1408 × 3 consecutive**, 2 skipped, 0 failed (baseline 1389).
+Net new tests: 19.
+
 ## Progress
 
 - [x] Worktree + branch + coding log + pointer
@@ -533,7 +600,8 @@ Net new tests: 7.
 - [x] **S1b** — inbox drain health
 - [x] **S3** — shadow contract + parity oracle + comparison (S2 folded in: shipping the oracle without its consumer would have been an orphaned export)
 - [x] **S4** — routing + guarded reroute + canary CLI
-- [x] **S5** — HTTPS agent client (runtime loop + worker-side shadow reporter remain)
+- [x] **S5** — HTTPS agent client
+- [x] **S6** — executable agent runtime + worker-side shadow producer
 - [ ] S1b — inbox health
 - [ ] S2 — dispatch outcome + parity oracle
 - [ ] S3 — shadow parity
