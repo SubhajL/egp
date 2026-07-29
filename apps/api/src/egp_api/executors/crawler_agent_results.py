@@ -98,7 +98,11 @@ from egp_shared_types.crawler_agent import (
     AGENT_RESULT_KIND_STATUS,
     SUPPORTED_AGENT_RESULT_KINDS,
 )
-from egp_shared_types.enums import AgentInboxErrorCode
+from egp_shared_types.enums import (
+    AgentInboxDrainOutcome,
+    AgentInboxErrorCode,
+    AgentInboxProcessorStatus,
+)
 
 
 _logger = logging.getLogger(__name__)
@@ -107,6 +111,30 @@ DEFAULT_LEASE_SECONDS = 300.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_BACKOFF_SECONDS = 60.0
 MAX_ATTEMPTS_BEFORE_REJECT = 5
+DEFAULT_PROCESSOR_ID = "crawler-agent-inbox"
+
+
+def _drain_outcome(outcome: "ProcessOutcome") -> AgentInboxDrainOutcome:
+    """Map one iteration to the bounded heartbeat vocabulary.
+
+    Ordered most- to least-specific: what the iteration *did* to a row beats the
+    fact that it reclaimed some, which beats "nothing was due".
+    """
+
+    if outcome.applied:
+        return AgentInboxDrainOutcome.APPLIED
+    if outcome.rejected:
+        return AgentInboxDrainOutcome.REJECTED
+    if outcome.retried:
+        return AgentInboxDrainOutcome.RETRIED
+    if outcome.error_code == AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value:
+        return AgentInboxDrainOutcome.LEASE_LOST
+    if outcome.claimed:
+        # Claimed but no terminal transition: the lease was lost mid-flight.
+        return AgentInboxDrainOutcome.LEASE_LOST
+    if outcome.reclaimed:
+        return AgentInboxDrainOutcome.RECLAIMED
+    return AgentInboxDrainOutcome.IDLE
 
 
 class TransientApplyError(RuntimeError):
@@ -144,17 +172,45 @@ class CrawlerAgentInboxProcessor:
         lease_seconds: float = DEFAULT_LEASE_SECONDS,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
         max_attempts: int = MAX_ATTEMPTS_BEFORE_REJECT,
+        processor_id: str = DEFAULT_PROCESSOR_ID,
     ) -> None:
         self._repository = repository
         self._project_ingest_service = project_ingest_service
         self._lease_seconds = lease_seconds
         self._backoff_seconds = backoff_seconds
         self._max_attempts = max_attempts
+        self._processor_id = processor_id
 
     def process_once(self) -> ProcessOutcome:
-        """Reclaim stranded rows, then claim and apply at most one result."""
+        """Reclaim stranded rows, then claim and apply at most one result.
+
+        Every exit path reports a heartbeat — including the one that claims
+        nothing. That is not symmetry for its own sake: with an empty queue, a
+        dead processor and a healthy idle one are indistinguishable from the
+        queue side, so the idle iteration is precisely the one whose heartbeat
+        carries information.
+        """
 
         outcome = ProcessOutcome()
+        try:
+            result = self._process_once_inner(outcome)
+        except BaseException:
+            # A processing failure must NEVER be reported as healthy. Reporting
+            # `running`/`idle` from a blanket `finally` was a real defect: a
+            # processor that raises from reclaim/claim on every iteration would
+            # write a fresh healthy heartbeat, die, be restarted by Compose, and
+            # refresh it again — so the operator route reads `idle` forever while
+            # nothing drains. Telemetry stays fail-open, but it tells the truth.
+            self._report_heartbeat(
+                outcome,
+                status=AgentInboxProcessorStatus.ERROR,
+                drain_outcome=AgentInboxDrainOutcome.ERROR,
+            )
+            raise
+        self._report_heartbeat(outcome)
+        return result
+
+    def _process_once_inner(self, outcome: ProcessOutcome) -> ProcessOutcome:
         outcome.reclaimed = self._repository.reclaim_expired_processing()
 
         processor_token = str(uuid4())
@@ -235,6 +291,43 @@ class CrawlerAgentInboxProcessor:
         return outcome
 
     # ------------------------------------------------------------------
+
+    def _report_heartbeat(
+        self,
+        outcome: ProcessOutcome,
+        *,
+        status: AgentInboxProcessorStatus = AgentInboxProcessorStatus.RUNNING,
+        drain_outcome: AgentInboxDrainOutcome | None = None,
+    ) -> None:
+        """Publish liveness. Never allowed to interrupt draining.
+
+        Telemetry that can break the thing it observes is worse than no
+        telemetry, so every failure here is logged and swallowed — the same
+        fail-open rule `CrawlerRuntimeReporter` follows for HTTP heartbeats.
+
+        The backlog is a cheap COUNT over the partial drain index, NOT the full
+        health aggregate. Calling `get_inbox_health()` here was a real defect: its
+        SUM/MIN/MAX span the whole table with no WHERE, and this runs once every
+        idle poll AND once per drained row — so the observability feature would
+        have made draining progressively slower as applied history grew. The API
+        recomputes the rich aggregate on the operator request path, where it is
+        paid for once per human.
+        """
+
+        try:
+            backlog_depth = int(self._repository.count_queued_results())
+        except Exception:  # noqa: BLE001 - telemetry must not break the drain
+            _logger.warning("crawler agent inbox: backlog probe failed", exc_info=True)
+            backlog_depth = 0
+        try:
+            self._repository.record_inbox_heartbeat(
+                processor_id=self._processor_id,
+                status=status.value,
+                backlog_depth=backlog_depth,
+                last_outcome=(drain_outcome or _drain_outcome(outcome)).value,
+            )
+        except Exception:  # noqa: BLE001 - telemetry must not break the drain
+            _logger.warning("crawler agent inbox: heartbeat failed", exc_info=True)
 
     def _apply(self, record: InboxRecord) -> None:
         envelope = record.envelope or {}
@@ -406,6 +499,10 @@ def build_crawler_agent_inbox_runtime(
             lease_seconds=_env_float("EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS", DEFAULT_LEASE_SECONDS),
             backoff_seconds=_env_float(
                 "EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS", DEFAULT_BACKOFF_SECONDS
+            ),
+            processor_id=(
+                os.getenv("EGP_CRAWLER_AGENT_INBOX_PROCESSOR_ID", "").strip()
+                or DEFAULT_PROCESSOR_ID
             ),
         ),
         protocol=get_crawler_agent_protocol(None),

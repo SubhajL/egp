@@ -40,9 +40,12 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     and_,
+    case,
+    func,
     insert,
     or_,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -52,7 +55,10 @@ from sqlalchemy.types import JSON
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
-from egp_db.repositories.discovery_job_repo import DISCOVERY_JOBS_TABLE
+from egp_db.repositories.discovery_job_repo import (
+    DISCOVERY_JOBS_TABLE,
+    DiscoveryQueueSnapshot,
+)
 from egp_shared_types.crawler_agent import (
     AgentClaim,
     InboxSubmission,
@@ -61,7 +67,10 @@ from egp_shared_types.crawler_agent import (
 from egp_shared_types.enums import (
     AgentContractVersion,
     DiscoveryFailureCode,
+    AgentInboxDrainOutcome,
+    AgentInboxDrainStatus,
     AgentInboxErrorCode,
+    AgentInboxProcessorStatus,
     AgentInboxStatus,
     DiscoveryJobStatus,
     ExecutionBackend,
@@ -76,6 +85,10 @@ _CLAIM_CONTENTION_RETRIES = 5
 _INBOX_STATUS_SQL = ", ".join(f"'{status.value}'" for status in AgentInboxStatus)
 _CONTRACT_VERSION_SQL = ", ".join(f"'{v.value}'" for v in AgentContractVersion)
 _INBOX_ERROR_CODE_SQL = ", ".join(f"'{code.value}'" for code in AgentInboxErrorCode)
+_PROCESSOR_STATUS_SQL = ", ".join(
+    f"'{status.value}'" for status in AgentInboxProcessorStatus
+)
+_DRAIN_OUTCOME_SQL = ", ".join(f"'{o.value}'" for o in AgentInboxDrainOutcome)
 
 # JSONB on PostgreSQL, plain JSON on the SQLite bootstrap used by tests.
 ENVELOPE_JSON_TYPE = JSONB().with_variant(JSON(), "sqlite")
@@ -124,6 +137,55 @@ CRAWLER_AGENT_RESULTS_TABLE = Table(
 )
 
 
+CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE = Table(
+    "crawler_agent_inbox_heartbeats",
+    METADATA,
+    Column("processor_id", String, primary_key=True),
+    Column("status", String, nullable=False),
+    Column("backlog_depth", Integer, nullable=False, default=0, server_default=text("0")),
+    Column("last_outcome", String, nullable=False),
+    Column("reported_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+    # Mirrored onto the metadata so the SQLite bootstrap rejects what PostgreSQL
+    # rejects. U7a shipped a table where it did not, and SQLite happily stored a
+    # value invisible to every consumer.
+    CheckConstraint(
+        f"status IN ({_PROCESSOR_STATUS_SQL})",
+        name="crawler_agent_inbox_heartbeats_status_check",
+    ),
+    CheckConstraint(
+        f"last_outcome IN ({_DRAIN_OUTCOME_SQL})",
+        name="crawler_agent_inbox_heartbeats_outcome_check",
+    ),
+    CheckConstraint(
+        "backlog_depth >= 0",
+        name="crawler_agent_inbox_heartbeats_backlog_check",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class InboxHealthSnapshot:
+    """Operator answer to "can the processor drain?".
+
+    Global, not tenant-scoped — this is runtime state of the same class as
+    ``crawler_runtime_heartbeats``. It returns COUNTS ONLY: no tenant ids, no
+    project names, no envelopes.
+    """
+
+    backlog_depth: int
+    due_backlog_depth: int
+    stuck_processing_count: int
+    oldest_pending_age_seconds: int | None
+    last_applied_at: str | None
+    heartbeat_processor_id: str | None
+    heartbeat_status: str | None
+    heartbeat_last_outcome: str | None
+    heartbeat_reported_at: str | None
+    heartbeat_age_seconds: int | None
+    drain_status: str
+
+
 @dataclass(frozen=True)
 class InboxRecord:
     """A claimed inbox row, as handed to the processor."""
@@ -158,6 +220,17 @@ class UnsupportedContractVersionError(ValueError):
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat a naive timestamp as UTC.
+
+    The SQLite bootstrap returns naive datetimes where PostgreSQL returns aware
+    ones, and subtracting one from the other raises. Same idiom as
+    ``discovery_job_repo``.
+    """
+
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
 
 
 def _iso(value: datetime | None) -> str:
@@ -804,6 +877,373 @@ class SqlCrawlerAgentRepository:
                     "was not in result_received"
                 )
         return True
+
+    # ------------------------------------------------------------------
+    # liveness and health (U8b)
+    # ------------------------------------------------------------------
+
+    def record_inbox_heartbeat(
+        self,
+        *,
+        processor_id: str,
+        status: str,
+        backlog_depth: int,
+        last_outcome: str,
+        now: datetime | None = None,
+    ) -> None:
+        """Report one drain iteration. UPSERT on ``processor_id``.
+
+        `now` is injectable so tests can age a heartbeat without sleeping; nothing
+        in production passes it.
+        """
+
+        resolved_now = _as_utc(now or _now())
+        values = {
+            "processor_id": str(processor_id),
+            "status": AgentInboxProcessorStatus(status).value,
+            "backlog_depth": max(0, int(backlog_depth)),
+            "last_outcome": AgentInboxDrainOutcome(last_outcome).value,
+            "reported_at": resolved_now,
+            "updated_at": resolved_now,
+        }
+        with self._engine.begin() as connection:
+            # A genuine atomic upsert. UPDATE-then-INSERT-if-zero-rows looks
+            # equivalent but is not: two replicas writing their FIRST heartbeat
+            # under the same processor id both see zero rows and then race on the
+            # primary key, so one of them raises.
+            statement = _dialect_insert(
+                CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE, connection
+            ).values(**values)
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE.c.processor_id
+                    ],
+                    set_={
+                        "status": values["status"],
+                        "backlog_depth": values["backlog_depth"],
+                        "last_outcome": values["last_outcome"],
+                        "reported_at": values["reported_at"],
+                        "updated_at": values["updated_at"],
+                    },
+                )
+            )
+
+    def count_queued_results(self, *, now: datetime | None = None) -> int:
+        """Cheap backlog count for the heartbeat path.
+
+        Deliberately NOT ``get_inbox_health()``: this runs on every drain
+        iteration, and the health aggregate spans the whole table. This predicate
+        matches ``idx_crawler_agent_results_drain``.
+        """
+
+        del now  # accepted for symmetry with the other probes
+        with self._engine.connect() as connection:
+            return int(
+                connection.execute(
+                    select(func.count())
+                    .select_from(CRAWLER_AGENT_RESULTS_TABLE)
+                    .where(
+                        CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status.in_(
+                            (
+                                AgentInboxStatus.PENDING.value,
+                                AgentInboxStatus.FAILED.value,
+                            )
+                        )
+                    )
+                ).scalar()
+                or 0
+            )
+
+    def get_inbox_health(
+        self,
+        *,
+        stale_after_seconds: float = 120.0,
+        now: datetime | None = None,
+    ) -> InboxHealthSnapshot:
+        """Answer "can the processor drain?" from durable state alone.
+
+        See ``AgentInboxDrainStatus`` for the precedence, which is total: every
+        input maps to exactly one status. The two rules worth restating here
+        because they are the non-obvious ones:
+
+        * ``idle`` requires a FRESH heartbeat. An empty queue is not evidence of
+          health — a dead processor looks exactly the same from the queue side,
+          and that is the case this whole table exists to detect.
+        * Health aggregates on the FRESHEST heartbeat across processors. Taking
+          the oldest would leave the fleet permanently ``wedged`` after a replica
+          is scaled down and its final heartbeat is left behind.
+        """
+
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be positive")
+
+        resolved_now = _as_utc(now or _now())
+        queued = CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status.in_(
+            (AgentInboxStatus.PENDING.value, AgentInboxStatus.FAILED.value)
+        )
+        stuck = and_(
+            CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
+            == AgentInboxStatus.PROCESSING.value,
+            or_(
+                CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_(None),
+                CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at <= resolved_now,
+            ),
+        )
+        with self._engine.connect() as connection:
+            counts = (
+                connection.execute(
+                    select(
+                        func.sum(case((queued, 1), else_=0)).label("backlog"),
+                        func.sum(
+                            case(
+                                (
+                                    and_(
+                                        queued,
+                                        CRAWLER_AGENT_RESULTS_TABLE.c.next_attempt_at
+                                        <= resolved_now,
+                                    ),
+                                    1,
+                                ),
+                                else_=0,
+                            )
+                        ).label("due_backlog"),
+                        func.sum(case((stuck, 1), else_=0)).label("stuck"),
+                        func.min(
+                            case(
+                                (queued, CRAWLER_AGENT_RESULTS_TABLE.c.received_at),
+                                else_=None,
+                            )
+                        ).label("oldest_queued_at"),
+                        func.max(CRAWLER_AGENT_RESULTS_TABLE.c.applied_at).label(
+                            "last_applied_at"
+                        ),
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            heartbeats = (
+                connection.execute(
+                    select(CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE).order_by(
+                        CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE.c.reported_at.desc()
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        heartbeat = _select_fleet_heartbeat(
+            heartbeats,
+            now=resolved_now,
+            stale_after_seconds=float(stale_after_seconds),
+        )
+
+        backlog_depth = int(counts["backlog"] or 0)
+        due_backlog_depth = int(counts["due_backlog"] or 0)
+        stuck_processing_count = int(counts["stuck"] or 0)
+        oldest_queued_at = counts["oldest_queued_at"]
+        oldest_pending_age_seconds = (
+            max(0, int((resolved_now - _as_utc(oldest_queued_at)).total_seconds()))
+            if oldest_queued_at is not None
+            else None
+        )
+
+        heartbeat_age_seconds: int | None = None
+        if heartbeat is not None:
+            heartbeat_age_seconds = max(
+                0,
+                int(
+                    (resolved_now - _as_utc(heartbeat["reported_at"])).total_seconds()
+                ),
+            )
+
+        heartbeat_usable = heartbeat is not None and _heartbeat_is_usable(
+            heartbeat, now=resolved_now, stale_after_seconds=float(stale_after_seconds)
+        )
+        drain_status = _derive_drain_status(
+            stuck_processing_count=stuck_processing_count,
+            heartbeat=heartbeat,
+            heartbeat_age_seconds=heartbeat_age_seconds,
+            heartbeat_usable=heartbeat_usable,
+            # DUE work, not total. A backlog whose retries are all scheduled far
+            # in the future is not being actively drained, and calling it
+            # `draining` while `last_outcome=idle` contradicted itself — and hid
+            # an accidentally far-future retry schedule.
+            due_backlog_depth=due_backlog_depth,
+        )
+
+        return InboxHealthSnapshot(
+            backlog_depth=backlog_depth,
+            due_backlog_depth=due_backlog_depth,
+            stuck_processing_count=stuck_processing_count,
+            oldest_pending_age_seconds=oldest_pending_age_seconds,
+            last_applied_at=_iso_or_none(counts["last_applied_at"]),
+            heartbeat_processor_id=(
+                str(heartbeat["processor_id"]) if heartbeat is not None else None
+            ),
+            heartbeat_status=(
+                str(heartbeat["status"]) if heartbeat is not None else None
+            ),
+            heartbeat_last_outcome=(
+                str(heartbeat["last_outcome"]) if heartbeat is not None else None
+            ),
+            heartbeat_reported_at=(
+                _iso_or_none(heartbeat["reported_at"]) if heartbeat is not None else None
+            ),
+            heartbeat_age_seconds=heartbeat_age_seconds,
+            drain_status=drain_status,
+        )
+
+    def get_agent_queue_snapshot(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> DiscoveryQueueSnapshot:
+        """Agent-queue counts, the mirror of the legacy queue snapshot.
+
+        A separate method rather than a widened one: ``get_discovery_queue_snapshot``
+        is scoped to ``execution_backend='legacy'`` deliberately, because the
+        bounded one-shot crawl derives its terminal contract from those counts.
+        Counting agent rows there would make it loop forever (U7a Tier-1 HIGH).
+        """
+
+        resolved_now = _as_utc(now or _now())
+        pending = and_(
+            DISCOVERY_JOBS_TABLE.c.job_status == DiscoveryJobStatus.PENDING.value,
+            DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.AGENT.value,
+        )
+        claimable = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= resolved_now,
+            _lease_is_free(resolved_now),
+        )
+        leased = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.claim_token.is_not(None),
+            DISCOVERY_JOBS_TABLE.c.lease_expires_at > resolved_now,
+        )
+        retry_scheduled = and_(
+            pending,
+            DISCOVERY_JOBS_TABLE.c.next_attempt_at > resolved_now,
+        )
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(
+                        func.sum(case((pending, 1), else_=0)).label("pending_count"),
+                        func.sum(case((claimable, 1), else_=0)).label("claimable_count"),
+                        func.sum(case((leased, 1), else_=0)).label("leased_count"),
+                        func.sum(case((retry_scheduled, 1), else_=0)).label(
+                            "retry_scheduled_count"
+                        ),
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        return DiscoveryQueueSnapshot(
+            pending_count=int(row["pending_count"] or 0),
+            claimable_count=int(row["claimable_count"] or 0),
+            leased_count=int(row["leased_count"] or 0),
+            retry_scheduled_count=int(row["retry_scheduled_count"] or 0),
+        )
+
+
+_MAX_FUTURE_HEARTBEAT_SKEW_SECONDS = 60.0
+
+
+def _heartbeat_is_usable(row, *, now: datetime, stale_after_seconds: float) -> bool:
+    """Fresh, not implausibly future-dated, and self-reporting as running.
+
+    The future-dating guard matters: the executor writes its own application
+    clock and the API compares against its own. A heartbeat stamped an hour ahead
+    would otherwise stay "fresh" for an hour AND sort first, masking every
+    genuinely dead processor behind it.
+    """
+
+    reported_at = _as_utc(row["reported_at"])
+    delta_seconds = (now - reported_at).total_seconds()
+    if delta_seconds < -_MAX_FUTURE_HEARTBEAT_SKEW_SECONDS:
+        return False
+    if delta_seconds > stale_after_seconds:
+        return False
+    return str(row["status"]) == AgentInboxProcessorStatus.RUNNING.value
+
+
+def _select_fleet_heartbeat(rows, *, now: datetime, stale_after_seconds: float):
+    """Pick the row that represents the fleet.
+
+    Availability means "at least one fresh running processor", not "the single
+    newest row is running". Taking the newest row outright reported the fleet
+    wedged when a replica that was shutting down happened to heartbeat one second
+    after a healthy one.
+
+    Falls back to the newest row when nothing is usable, so the response still
+    carries something for the operator to look at.
+    """
+
+    ordered = list(rows)
+    if not ordered:
+        return None
+    for row in ordered:
+        if _heartbeat_is_usable(
+            row, now=now, stale_after_seconds=stale_after_seconds
+        ):
+            return row
+    return ordered[0]
+
+
+def _derive_drain_status(
+    *,
+    stuck_processing_count: int,
+    heartbeat,
+    heartbeat_age_seconds: int | None,
+    heartbeat_usable: bool,
+    due_backlog_depth: int,
+) -> str:
+    """Total function over the health inputs — see ``AgentInboxDrainStatus``."""
+
+    # 1. A stranded `processing` row means work is already lost to a dead
+    #    processor, regardless of what any live replica reports.
+    if stuck_processing_count > 0:
+        return AgentInboxDrainStatus.WEDGED.value
+    # 2. Never observed. Distinct from wedged: nothing is known either way.
+    if heartbeat is None or heartbeat_age_seconds is None:
+        return AgentInboxDrainStatus.UNKNOWN.value
+    # 3. `heartbeat` is the fleet representative chosen by
+    #    `_select_fleet_heartbeat`, so if it is not usable then NO processor is:
+    #    stale, future-dated beyond the skew allowance, or self-reporting
+    #    error/stopping.
+    if not heartbeat_usable:
+        return AgentInboxDrainStatus.WEDGED.value
+    # 4/5. At least one fresh running processor.
+    return (
+        AgentInboxDrainStatus.DRAINING.value
+        if due_backlog_depth > 0
+        else AgentInboxDrainStatus.IDLE.value
+    )
+
+
+def _iso_or_none(value: datetime | None) -> str | None:
+    return _iso(value) if value is not None else None
+
+
+
+def _dialect_insert(table, connection):
+    """PostgreSQL/SQLite-aware INSERT supporting ON CONFLICT.
+
+    Same idiom as `project_aliases.py`; both dialects implement
+    `on_conflict_do_update`, so the atomic upsert works on the SQLite bootstrap
+    used by tests as well as in production.
+    """
+
+    if connection.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(table)
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    return sqlite_insert(table)
 
 
 def _lease_is_free(now: datetime):
