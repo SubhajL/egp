@@ -2229,6 +2229,139 @@
         "title": "ConnectTenantStorageRequest",
         "type": "object"
       },
+      "CrawlerAgentInboxHealthResponse": {
+        "description": "Counts only — no tenant ids, project names, or envelope payloads.",
+        "properties": {
+          "agent_queue_claimable_count": {
+            "title": "Agent Queue Claimable Count",
+            "type": "integer"
+          },
+          "agent_queue_leased_count": {
+            "title": "Agent Queue Leased Count",
+            "type": "integer"
+          },
+          "agent_queue_pending_count": {
+            "title": "Agent Queue Pending Count",
+            "type": "integer"
+          },
+          "agent_queue_retry_scheduled_count": {
+            "title": "Agent Queue Retry Scheduled Count",
+            "type": "integer"
+          },
+          "backlog_depth": {
+            "title": "Backlog Depth",
+            "type": "integer"
+          },
+          "drain_status": {
+            "title": "Drain Status",
+            "type": "string"
+          },
+          "due_backlog_depth": {
+            "title": "Due Backlog Depth",
+            "type": "integer"
+          },
+          "heartbeat_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Age Seconds"
+          },
+          "heartbeat_last_outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Last Outcome"
+          },
+          "heartbeat_processor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Processor Id"
+          },
+          "heartbeat_reported_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Reported At"
+          },
+          "heartbeat_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat Status"
+          },
+          "last_applied_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Applied At"
+          },
+          "oldest_pending_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending Age Seconds"
+          },
+          "stuck_processing_count": {
+            "title": "Stuck Processing Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "backlog_depth",
+          "due_backlog_depth",
+          "stuck_processing_count",
+          "oldest_pending_age_seconds",
+          "last_applied_at",
+          "heartbeat_processor_id",
+          "heartbeat_status",
+          "heartbeat_last_outcome",
+          "heartbeat_reported_at",
+          "heartbeat_age_seconds",
+          "drain_status",
+          "agent_queue_pending_count",
+          "agent_queue_claimable_count",
+          "agent_queue_leased_count",
+          "agent_queue_retry_scheduled_count"
+        ],
+        "title": "CrawlerAgentInboxHealthResponse",
+        "type": "object"
+      },
       "CrawlerBlockerCode": {
         "description": "Shared crawler conditions that stop dispatch before a job claim.",
         "enum": [
@@ -11388,6 +11521,34 @@
         "summary": "Get Rules",
         "tags": [
           "rules"
+        ]
+      }
+    },
+    "/v1/rules/crawler-agent-inbox": {
+      "get": {
+        "description": "Answer \"can the inbox processor drain?\" from durable state.\n\nA running PID is not proof; `drain_status` distinguishes an idle processor\nfrom a dead one by requiring a fresh heartbeat, which is why this exists.",
+        "operationId": "get_crawler_agent_inbox_health_v1_rules_crawler_agent_inbox_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrawlerAgentInboxHealthResponse"
+                }
+              }
+            },
+            "description": "Inbox drain health and agent queue depth."
+          },
+          "401": {
+            "description": "Not authenticated."
+          },
+          "403": {
+            "description": "Run operator role required."
+          }
+        },
+        "summary": "Get Crawler Agent Inbox Health",
+        "tags": [
+          "crawler-agent"
         ]
       }
     },

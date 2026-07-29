@@ -235,12 +235,128 @@ environment variables and would not have caught the missing `EGP_SMTP_*`. It is 
 the Do-Not-Touch list, so rather than edit it I asserted the new requirement in
 the slice's own test file and left the frozen oracle byte-identical.
 
+---
+
+# S1b — `feat/crawler-agent-inbox-health`
+
+## Stop line: **none — Q0 fired again** (this slice carries migration 035)
+
+## What it closes
+
+The `crawler-agent-inbox-executor` compose block already stated the gap:
+*"A running PID is not proof the processor can drain; that signal belongs with the
+U8 observability work."* This is that work.
+
+The design decision worth recording is **why a backlog gauge is not enough**: with
+an empty queue, a dead processor and a healthy idle one are indistinguishable from
+the queue side. So liveness must come from the processor itself, and the heartbeat
+has to be written on *every* iteration — the idle one is precisely the one that
+carries information. `process_once` therefore reports from a `try/finally`, and
+`drain_status` treats `idle` as requiring a **fresh heartbeat**, never merely an
+empty queue.
+
+Aggregation across replicas takes the **freshest** heartbeat. Taking the oldest
+would leave the fleet permanently `wedged` after any replica is scaled down and
+its final heartbeat is left behind.
+
+## Files
+
+| File | Change |
+|---|---|
+| `packages/db/src/migrations/035_crawler_agent_inbox_heartbeats.sql` | **NEW** — global liveness table, bounded vocabularies, no free-form error payload |
+| `packages/db/src/migrations/manifest.sha256` | regenerated (36 → 37) |
+| `packages/shared-types/…/enums.py` | `AgentInboxProcessorStatus`, `AgentInboxDrainOutcome`, `AgentInboxDrainStatus` |
+| `packages/db/…/crawler_agent_repo.py` | heartbeat table + `record_inbox_heartbeat`, `get_inbox_health`, `get_agent_queue_snapshot`, `_derive_drain_status` |
+| `apps/api/…/executors/crawler_agent_results.py` | heartbeat on every exit path; `processor_id` |
+| `apps/api/…/routes/crawler_agent.py` | operator router + `GET /v1/rules/crawler-agent-inbox` |
+| `apps/api/…/bootstrap/{middleware,services}.py`, `config.py` | registration + staleness threshold |
+| `deploy/.env.production.example`, both compose files | 2 new vars, in the services that actually read them |
+| `docs/OBSERVABILITY.md` | how to read `drain_status`, and the two rules that are easy to misread |
+| `apps/web/src/lib/generated/{openapi.json,api-types.ts}` | regenerated for the new route |
+| `tests/phase3/test_crawler_agent_inbox_health.py` | **NEW** — 17 tests |
+
+## TDD evidence
+
+RED: `psycopg.errors.UndefinedTable: relation "crawler_agent_inbox_heartbeats" does
+not exist` — the predicted missing-schema cause, cluster up in ~2s, no harness
+error. GREEN: 17/17.
+
+## A real defect the gate caught in my own migration
+
+The full suite failed on an **existing** test,
+`test_migration_034_upgrades_a_database_that_already_has_jobs`. Cause: my 035 added
+an index on `crawler_agent_results`, a table 034 creates — and that test stages
+every migration **except** 034, so 035 ran first and hit `UndefinedTable`.
+
+The fix belonged in my migration, not the test: the index I added was an exact
+duplicate of `idx_crawler_agent_results_processing_lease` from 034
+(`034_crawler_agent_results.sql:129`). Removing it fixed the failure *and* deleted a
+redundant index. Recorded because the tempting move — editing the frozen test to
+accommodate a duplicate index — would have been wrong twice over.
+
+## QCHECK — Tier 2 (Codex `gpt-5.6-sol`, xhigh, read-only)
+
+Verdict: **no CRITICAL; two HIGH, four MEDIUM, two LOW.** Both HIGHs were real, and
+the first would have defeated the entire feature.
+
+| # | Finding | Sev | Disposition |
+|---|---|---|---|
+| Q1 | **A crash loop reports false health.** The heartbeat fired from a blanket `finally` with a hardcoded `status="running"`, so a processor raising on every iteration would write a fresh `running`/`idle` heartbeat, die, be restarted by Compose, and refresh it again — the operator route reads `idle` forever while nothing drains. | **HIGH** | **FIXED.** The exception path now reports `status=error`/`last_outcome=error` and re-raises; telemetry stays fail-open but no longer describes a processing failure as healthy. New test `test_a_crashing_processor_reports_error_not_health`; **mutation-proved** — restoring the blanket `finally` fails exactly that test and nothing else. |
+| Q2 | **The heartbeat ran a whole-table aggregate every iteration.** `_report_heartbeat` called `get_inbox_health()` (SUM/MIN/MAX over `crawler_agent_results` with no WHERE) once per idle poll *and* once per drained row — so the observability feature would make draining progressively slower as applied history grew. The stored `backlog_depth` was not even consumed by the health response, which recomputes it. | **HIGH** | **FIXED.** New `count_queued_results()` — a COUNT matching the partial `idx_crawler_agent_results_drain` index. New test asserts the heartbeat path calls `get_inbox_health` **zero** times. The rich aggregate stays on the operator-request path, where it is paid for once per human. |
+| Q3 | **"Freshest heartbeat wins" is not valid fleet aggregation.** A `stopping` replica heartbeating one second after a healthy `running` one reported the fleet `wedged`. | MED | **FIXED.** `_select_fleet_heartbeat` picks the freshest *usable* row — availability means "at least one fresh running processor". New test. |
+| Q4 | **Future clock skew can mask a dead fleet.** The executor stamps its own clock, the API compares against its own, and negative age was clamped to zero — so a heartbeat an hour ahead stays "fresh" for an hour *and* sorts first. | MED | **FIXED.** Heartbeats more than 60s in the future are not usable. New test. |
+| Q5 | **Future-scheduled work reported as `draining`.** `_derive_drain_status` took total backlog while `due_backlog_depth` was computed and unused, so an all-far-future retry schedule read `draining` with `last_outcome=idle` — self-contradictory, and it hid an accidental far-future schedule. | MED | **FIXED.** Derived from `due_backlog_depth`. New test. |
+| Q6 | **The operator-role test never reached the role guard** — auth middleware answers 401 first, so deleting `require_run_operator_role` would leave it green and the route open to any authenticated viewer. | MED | **FIXED.** Added viewer→403 / analyst→200, mirroring the crawler-runtime test. |
+| Q7 | The claimed UPSERT was racy (UPDATE-then-INSERT: two first writers both see zero rows and race the primary key). | LOW | **FIXED.** Atomic `ON CONFLICT DO UPDATE` via the `_dialect_insert` idiom already used by `project_aliases.py`. |
+| Q8 | `backlog_depth` had a PostgreSQL server default but only a client-side SQLAlchemy default. | LOW | **FIXED.** `server_default=text("0")` mirrored onto the metadata. |
+
+Vacuous tests Codex named — strengthened: the upsert test now asserts every field
+moves (not just the row count); the heartbeat-failure test now asserts reporting was
+**attempted** (it would previously have passed with reporting deleted outright); the
+compose check now asserts both new variables in the services that read them.
+
+Accepted-as-noted rather than fixed: `test_processor_heartbeats_even_when_it_claims_nothing`
+covers only the idle exit, and the route test seeds no agent jobs. Both are covered
+by neighbours in the same file; recorded rather than churned.
+
+Codex again could not append to the coding log (read-only sandbox); its analysis is
+static and all execution evidence here is local.
+
+## Deliberately deferred, with the reason
+
+**No Prometheus metric.** A gauge refreshed only when an operator hits the route is
+stale between visits, so the correct shape is a scrape-time collector; inventing a
+per-scrape database query at the end of a long session is how that becomes a new
+failure mode. The durable signal and the operator route land now; alert wiring is
+its own slice. Stated in `docs/OBSERVABILITY.md` rather than left implied.
+
+**Env template edit was operator-approved.** A `protect-files.sh` hook blocks
+`deploy/.env.production.example`; the repo's AST drift test requires the new var to
+be listed there. Asked, approved, applied.
+
+## Gates (local only — CI dead, E0)
+
+| Gate | Result |
+|---|---|
+| ruff | clean |
+| `check_migration_manifest.py --check` | 37 files verified |
+| `pytest tests/ -q` **3× consecutive on frozen code** | **1352 / 1352 / 1352** passed, 2 skipped, 0 failed |
+| Baseline (this branch's base, `51c7f8c1`) | 1328 passed, 2 skipped |
+| OpenAPI + `api-types.ts` | regenerated for the new operator route |
+
+Net new tests: **24**.
+
 ## Progress
 
 - [x] Worktree + branch + coding log + pointer
 - [x] DREP v1 (g2-planning §0–§10)
 - [x] Codex adversarial plan pass — **rejected v1**; re-sliced into S1a…S5
-- [x] **S1a** — notification parity
+- [x] **S1a** — notification parity (PR #190, `51c7f8c1`)
+- [x] **S1b** — inbox drain health
+- [ ] S2 — typed dispatch outcome + durable run→projects parity oracle
+- [ ] S3 — shadow observational recording + comparison
+- [ ] S4 — routing + guarded reroute + canary CLI (activation step)
+- [ ] S5 — agent runtime on the worker image + Mac wiring + canary
 - [ ] S1b — inbox health
 - [ ] S2 — dispatch outcome + parity oracle
 - [ ] S3 — shadow parity

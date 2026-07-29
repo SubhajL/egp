@@ -128,6 +128,26 @@ def get_crawler_heartbeat_stale_after_seconds(
     )
 
 
+def get_crawler_agent_inbox_stale_after_seconds(
+    override: float | str | None = None,
+) -> float:
+    """Return when the inbox processor's heartbeat means it is no longer draining.
+
+    Read by the **API** process, which derives health, not by the processor that
+    writes the heartbeat — so it needs its own entry in the API's environment
+    block, separate from the processor's heartbeat cadence.
+
+    Default is deliberately well above the drain loop's 5s idle poll, so a slow
+    iteration or a brief database blip does not read as wedged.
+    """
+
+    return _get_positive_float_env(
+        name="EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS",
+        default=120.0,
+        override=override,
+    )
+
+
 def get_crawler_heartbeat_interval_seconds(
     override: float | str | None = None,
 ) -> float:

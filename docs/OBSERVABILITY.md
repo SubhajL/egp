@@ -56,6 +56,52 @@ Alert rules (`infrastructure/grafana/alerts.yml`):
 while rows are scanned), `EGPDiscoveryZeroEligibleScans` (canary), and
 `EGPDiscoveryHeaderSignatureDrift` (early warning for the next layout drift).
 
+### Crawler-agent inbox drain health (U8b)
+
+`crawler-agent-inbox-executor` has no HTTP server and its container healthcheck is
+disabled, so **a running PID is not proof it can drain**. Its liveness is durable
+instead: the processor writes a row to `crawler_agent_inbox_heartbeats` on *every*
+drain iteration — including the ones that claim nothing, which is the case that
+carries the information — and the API derives a verdict from it.
+
+```bash
+curl -s -H "Cookie: $OPERATOR_SESSION" \
+  https://<api-host>/v1/rules/crawler-agent-inbox | jq
+```
+
+`drain_status` is a total function of the inputs, in this precedence:
+
+| Value | Means | Act on it? |
+|---|---|---|
+| `wedged` | a `processing` row is stranded past its lease, **or** the freshest heartbeat is stale, **or** the processor reports `error`/`stopping` | **yes** — inspect the executor container |
+| `unknown` | no heartbeat has ever been recorded | yes, if the service is supposed to be running |
+| `draining` | heartbeat fresh, work queued | no |
+| `idle` | heartbeat fresh, nothing queued | no |
+
+Two rules that are easy to get wrong when reading this:
+
+- **`idle` requires a FRESH heartbeat, not merely an empty queue.** With nothing
+  queued, a dead processor and a healthy idle one look identical from the queue
+  side — that asymmetry is the entire reason the heartbeat table exists.
+- **Health aggregates on the freshest heartbeat across processors.** A replica that
+  was scaled down leaves a stale row behind; taking the oldest would report the
+  fleet wedged forever.
+
+Staleness threshold: `EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS` (default 120s),
+read by the **API**. The processor's identity is
+`EGP_CRAWLER_AGENT_INBOX_PROCESSOR_ID`, read by the **executor**. They are separate
+variables in separate compose services on purpose.
+
+The response also carries the agent-backed discovery queue depth
+(`agent_queue_*`), which the legacy queue snapshot deliberately excludes.
+Everything on this surface is counts only — no tenant ids, project names or
+envelope payloads.
+
+**Not yet a Prometheus metric.** A route-driven gauge would be stale between
+operator visits, so the correct shape is a scrape-time collector; that is deferred
+rather than faked. Until then this is a pull-based operator check, not an alert
+source.
+
 ### What's NOT in PR-E
 
 - **Worker `/metrics` endpoint**: workers update Prometheus counters

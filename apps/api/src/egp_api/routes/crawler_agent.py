@@ -19,10 +19,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
-from egp_api.auth import require_internal_worker_token
+from egp_api.auth import require_internal_worker_token, require_run_operator_role
 from egp_api.services.crawler_agent_service import (
     CrawlerAgentService,
     ProtocolDisabledError,
@@ -54,6 +56,12 @@ internal_router = APIRouter(
         Depends(require_crawler_agent_enabled),
     ],
 )
+
+# Operator reads. Deliberately NOT under /internal/worker: this is answered for a
+# signed-in operator, not for the worker token, and it is NOT gated on the
+# protocol flag — "is the processor draining?" must stay answerable exactly when
+# the protocol is off, because the processor drains then too.
+router = APIRouter(tags=["crawler-agent"])
 
 
 class AgentClaimRequest(BaseModel):
@@ -212,3 +220,54 @@ def submit_agent_result(
         status.HTTP_200_OK if submission.replayed else status.HTTP_201_CREATED
     )
     return AgentResultResponse(**submission.__dict__)
+
+
+class CrawlerAgentInboxHealthResponse(BaseModel):
+    """Counts only — no tenant ids, project names, or envelope payloads."""
+
+    backlog_depth: int
+    due_backlog_depth: int
+    stuck_processing_count: int
+    oldest_pending_age_seconds: int | None
+    last_applied_at: str | None
+    heartbeat_processor_id: str | None
+    heartbeat_status: str | None
+    heartbeat_last_outcome: str | None
+    heartbeat_reported_at: str | None
+    heartbeat_age_seconds: int | None
+    drain_status: str
+    agent_queue_pending_count: int
+    agent_queue_claimable_count: int
+    agent_queue_leased_count: int
+    agent_queue_retry_scheduled_count: int
+
+
+@router.get(
+    "/v1/rules/crawler-agent-inbox",
+    response_model=CrawlerAgentInboxHealthResponse,
+    responses={
+        200: {"description": "Inbox drain health and agent queue depth."},
+        401: {"description": "Not authenticated."},
+        403: {"description": "Run operator role required."},
+    },
+)
+def get_crawler_agent_inbox_health(request: Request) -> CrawlerAgentInboxHealthResponse:
+    """Answer "can the inbox processor drain?" from durable state.
+
+    A running PID is not proof; `drain_status` distinguishes an idle processor
+    from a dead one by requiring a fresh heartbeat, which is why this exists.
+    """
+
+    require_run_operator_role(request)
+    repository = request.app.state.crawler_agent_repository
+    health = repository.get_inbox_health(
+        stale_after_seconds=request.app.state.crawler_agent_inbox_stale_after_seconds
+    )
+    queue = repository.get_agent_queue_snapshot()
+    return CrawlerAgentInboxHealthResponse(
+        **asdict(health),
+        agent_queue_pending_count=queue.pending_count,
+        agent_queue_claimable_count=queue.claimable_count,
+        agent_queue_leased_count=queue.leased_count,
+        agent_queue_retry_scheduled_count=queue.retry_scheduled_count,
+    )

@@ -111,6 +111,8 @@ services:
       EGP_SMTP_USE_TLS: ${EGP_SMTP_USE_TLS:-true}
       EGP_BACKGROUND_RUNTIME_MODE: ${EGP_BACKGROUND_RUNTIME_MODE:-external}
       EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS: ${EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS:-90}
+      # U8b: how long before the inbox processor's heartbeat reads as wedged.
+      EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS:-120}
       EGP_DISCOVERY_LEASE_SECONDS: ${EGP_DISCOVERY_LEASE_SECONDS:-60}
       EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS: ${EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS:-20}
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
@@ -181,6 +183,9 @@ services:
       EGP_CRAWLER_AGENT_PROTOCOL: ${EGP_CRAWLER_AGENT_PROTOCOL:-off}
       EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS:-300}
       EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS:-60}
+      # U8b: liveness identity. The executor WRITES the heartbeat; the API
+      # reads the staleness threshold, so they are enumerated separately.
+      EGP_CRAWLER_AGENT_INBOX_PROCESSOR_ID: ${EGP_CRAWLER_AGENT_INBOX_PROCESSOR_ID:-crawler-agent-inbox}
       # U8a: this process now dispatches NEW_PROJECT notifications through the
       # same entitlement-gated stack as the API. Without these the in-app row and
       # webhook delivery still happen but email is SILENTLY skipped — which is the

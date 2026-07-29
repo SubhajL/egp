@@ -77,6 +77,24 @@ The production compose stack runs the discovery dispatcher as a separate service
 This is implemented as the `api`, `discovery-executor`, `webhook-executor`, and
 `crawler-agent-inbox-executor` services in [`docker-compose.yml`](../docker-compose.yml).
 
+### Post-deploy check: can the inbox processor drain? (U8b)
+
+`crawler-agent-inbox-executor` has no HTTP server and a disabled healthcheck, so a
+running container proves nothing. After every deploy that touches it:
+
+```bash
+curl -s -H "Cookie: $OPERATOR_SESSION" \
+  https://<api-host>/v1/rules/crawler-agent-inbox | jq '.drain_status, .backlog_depth'
+```
+
+Expect `idle` or `draining`. `wedged` means a `processing` row is stranded past its
+lease, or no processor has heartbeated inside
+`EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS` — check the executor container.
+`unknown` means no processor has *ever* reported, which after a deploy means it did
+not start. Note `idle` requires a **fresh heartbeat**, not merely an empty queue:
+that distinction is the whole point, since a dead processor and an idle one look
+identical from the queue side. Full reference: [`OBSERVABILITY.md`](OBSERVABILITY.md).
+
 ## Health endpoints
 
 - `GET /live` proves only that the API process and HTTP pipeline are responsive.

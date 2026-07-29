@@ -330,3 +330,54 @@ class AgentInboxErrorCode(StrEnum):
     APPLY_FAILED_TRANSIENT = "apply_failed_transient"
     APPLY_FAILED_PERMANENT = "apply_failed_permanent"
     PROCESSOR_LEASE_LOST = "processor_lease_lost"
+
+
+class AgentInboxProcessorStatus(StrEnum):
+    """Liveness reported by the standalone inbox processor.
+
+    Kept in sync with ``crawler_agent_inbox_heartbeats.status`` (migration 035).
+    """
+
+    RUNNING = "running"
+    STOPPING = "stopping"
+    ERROR = "error"
+
+
+class AgentInboxDrainOutcome(StrEnum):
+    """What one drain iteration did.
+
+    A BOUNDED vocabulary, kept in sync with
+    ``crawler_agent_inbox_heartbeats.last_outcome`` (migration 035). Deliberately
+    not a free-form message: this table is global operator state, and an exception
+    string is exactly where tenant data would leak into it.
+    """
+
+    IDLE = "idle"
+    APPLIED = "applied"
+    RETRIED = "retried"
+    REJECTED = "rejected"
+    RECLAIMED = "reclaimed"
+    LEASE_LOST = "lease_lost"
+    ERROR = "error"
+
+
+class AgentInboxDrainStatus(StrEnum):
+    """Derived answer to "can the processor drain?".
+
+    Precedence is fixed and total — every input maps to exactly one value:
+
+    1. ``WEDGED``   — a stranded ``processing`` row exists (its processor died
+       mid-apply), OR the freshest heartbeat is stale, OR it reports
+       ``error``/``stopping``.
+    2. ``UNKNOWN``  — no heartbeat has ever been recorded.
+    3. ``DRAINING`` — heartbeat fresh and work is queued.
+    4. ``IDLE``     — heartbeat fresh and nothing is queued.
+
+    ``IDLE`` requires a FRESH heartbeat, never merely an empty queue: with nothing
+    queued, a dead processor and a healthy idle one are otherwise identical.
+    """
+
+    DRAINING = "draining"
+    IDLE = "idle"
+    WEDGED = "wedged"
+    UNKNOWN = "unknown"

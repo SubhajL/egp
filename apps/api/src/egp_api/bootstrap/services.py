@@ -23,6 +23,7 @@ from egp_api.config import (
     get_discovery_lease_heartbeat_seconds,
     get_discovery_lease_seconds,
     get_discovery_worker_count,
+    get_crawler_agent_inbox_stale_after_seconds,
     get_crawler_heartbeat_stale_after_seconds,
     get_promptpay_proxy_id,
     get_opn_public_key,
@@ -143,6 +144,9 @@ def configure_services(
     )
     app.state.crawler_agent_protocol = crawler_agent_protocol
     app.state.crawler_agent_repository = bundle.crawler_agent_repository
+    app.state.crawler_agent_inbox_stale_after_seconds = (
+        get_crawler_agent_inbox_stale_after_seconds()
+    )
     app.state.crawler_agent_service = CrawlerAgentService(
         repository=bundle.crawler_agent_repository,
         protocol=crawler_agent_protocol,

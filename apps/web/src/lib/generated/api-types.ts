@@ -1243,6 +1243,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rules/crawler-agent-inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Crawler Agent Inbox Health
+         * @description Answer "can the inbox processor drain?" from durable state.
+         *
+         *     A running PID is not proof; `drain_status` distinguishes an idle processor
+         *     from a dead one by requiring a fresh heartbeat, which is why this exists.
+         */
+        get: operations["get_crawler_agent_inbox_health_v1_rules_crawler_agent_inbox_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/rules/crawler-runtime": {
         parameters: {
             query?: never;
@@ -2122,6 +2145,42 @@ export interface components {
             provider: string;
             /** Tenant Id */
             tenant_id?: string | null;
+        };
+        /**
+         * CrawlerAgentInboxHealthResponse
+         * @description Counts only — no tenant ids, project names, or envelope payloads.
+         */
+        CrawlerAgentInboxHealthResponse: {
+            /** Agent Queue Claimable Count */
+            agent_queue_claimable_count: number;
+            /** Agent Queue Leased Count */
+            agent_queue_leased_count: number;
+            /** Agent Queue Pending Count */
+            agent_queue_pending_count: number;
+            /** Agent Queue Retry Scheduled Count */
+            agent_queue_retry_scheduled_count: number;
+            /** Backlog Depth */
+            backlog_depth: number;
+            /** Drain Status */
+            drain_status: string;
+            /** Due Backlog Depth */
+            due_backlog_depth: number;
+            /** Heartbeat Age Seconds */
+            heartbeat_age_seconds: number | null;
+            /** Heartbeat Last Outcome */
+            heartbeat_last_outcome: string | null;
+            /** Heartbeat Processor Id */
+            heartbeat_processor_id: string | null;
+            /** Heartbeat Reported At */
+            heartbeat_reported_at: string | null;
+            /** Heartbeat Status */
+            heartbeat_status: string | null;
+            /** Last Applied At */
+            last_applied_at: string | null;
+            /** Oldest Pending Age Seconds */
+            oldest_pending_age_seconds: number | null;
+            /** Stuck Processing Count */
+            stuck_processing_count: number;
         };
         /**
          * CrawlerBlockerCode
@@ -6197,6 +6256,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    get_crawler_agent_inbox_health_v1_rules_crawler_agent_inbox_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Inbox drain health and agent queue depth. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CrawlerAgentInboxHealthResponse"];
+                };
+            };
+            /** @description Not authenticated. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Run operator role required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
