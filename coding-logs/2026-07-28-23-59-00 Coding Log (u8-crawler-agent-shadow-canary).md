@@ -481,6 +481,49 @@ failed (baseline 1366). Notably the full suite passed unchanged: every existing
 producer already supplies a valid tenant/profile pair, so fail-closed routing broke
 nothing.
 
+---
+
+# S5 — `feat/crawler-agent-runtime-canary`
+
+## Stop line: **none — Q0 (the client carries the internal worker token)**
+
+`CrawlerAgentApiClient` is the seam that lets the Mac stop being a database
+client: claim / renew / submit over HTTPS, using only the internal worker token.
+
+Two guarantees are structural, not documentary, and both are enforced by tests:
+
+* **No database driver may be imported.** U9 removes the Mac's DB and storage
+  credentials on exactly this basis, so an AST scan enforces it — a stray
+  convenience import would silently undo the premise of the next slice.
+* **HTTPS only.** The worker token is a bearer credential with authority over
+  *every* tenant's queue, so a plaintext base URL is refused at construction rather
+  than warned about. `require_https=False` exists only for the loopback ASGI
+  transport used in tests, and the test asserts the https form is still accepted so
+  the check is not simply always-raise.
+
+**Failure modes are deliberately distinguished** — 404 disabled / 401-403 auth /
+5xx-timeout transport / 409 stale claim. An agent that cannot tell these apart
+either hammers a switched-off endpoint forever or abandons work over a fixable
+credential problem. Each maps to its own exception type and each has a test.
+
+The round trip drives the real FastAPI app over httpx's ASGI transport against a
+real PostgreSQL cluster: claim → renew → submit → replay, with no mocked HTTP and
+no mocked repository. It does not prove TLS, which is why the scheme check is
+asserted separately rather than being implied by the round trip.
+
+## Scope boundary — stated plainly
+
+This lands the **client**, not a deployed runtime. The always-on loop that runs it
+on the Mac (and its compose/launchd wiring on the *worker* image — the API image
+excludes `egp_worker`) is the remaining deployment step, together with the
+worker-side shadow dual-report noted in S3. Both need the same worker-runtime
+work, which is why they are grouped rather than half-done here.
+
+## Gates
+
+ruff clean · **pytest 1389 × 3 consecutive**, 2 skipped, 0 failed (baseline 1382).
+Net new tests: 7.
+
 ## Progress
 
 - [x] Worktree + branch + coding log + pointer
@@ -490,7 +533,7 @@ nothing.
 - [x] **S1b** — inbox drain health
 - [x] **S3** — shadow contract + parity oracle + comparison (S2 folded in: shipping the oracle without its consumer would have been an orphaned export)
 - [x] **S4** — routing + guarded reroute + canary CLI
-- [ ] S5 — agent runtime on the worker image + Mac wiring + canary
+- [x] **S5** — HTTPS agent client (runtime loop + worker-side shadow reporter remain)
 - [ ] S1b — inbox health
 - [ ] S2 — dispatch outcome + parity oracle
 - [ ] S3 — shadow parity
