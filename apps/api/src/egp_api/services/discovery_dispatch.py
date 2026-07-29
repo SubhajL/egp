@@ -82,6 +82,10 @@ class DiscoveryDispatchRequest:
     live: bool = True
     discovery_job_id: str | None = None
     recrawl_request_id: str | None = None
+    # Carried so the CHILD can dual-report a shadow envelope under this job's own
+    # claim. The parent cannot build that envelope: dispatch() returns None and the
+    # decoded subprocess result has ids and counts, not project bodies.
+    claim_token: str | None = None
 
 
 class DiscoveryDispatcher(Protocol):
@@ -366,6 +370,7 @@ class DiscoveryDispatchProcessor:
                         live=job.live,
                         discovery_job_id=job.id,
                         recrawl_request_id=job.recrawl_request_id,
+                        claim_token=job.claim_token,
                     )
                     cancellable_dispatch = getattr(
                         self.dispatcher,

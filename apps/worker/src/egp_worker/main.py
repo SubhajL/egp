@@ -87,6 +87,43 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
     return replace(BrowserDiscoverySettings(), **updates)
 
 
+
+def _maybe_report_shadow_parity(payload: dict, result) -> None:
+    """Dual-report this crawl as a shadow envelope, when shadow is switched on.
+
+    Gated on `EGP_CRAWLER_AGENT_SHADOW_REPORTING` (default off) AND on the parent
+    having supplied this job's claim context. Entirely fail-open: the crawl has
+    already succeeded, and a parity observation must never be able to fail it.
+    """
+
+    import os
+
+    if os.getenv("EGP_CRAWLER_AGENT_SHADOW_REPORTING", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    job_id = str(payload.get("agent_job_id") or "").strip()
+    claim_token = str(payload.get("agent_claim_token") or "").strip()
+    if not job_id or not claim_token:
+        return
+    try:
+        from egp_worker.agent_shadow import report_shadow_result
+
+        report_shadow_result(
+            job_id=job_id,
+            tenant_id=str(payload.get("tenant_id") or ""),
+            claim_token=claim_token,
+            run_id=str(result.run.run.id),
+            keyword=str(payload.get("keyword") or ""),
+            projects=list(result.projects),
+        )
+    except Exception:  # noqa: BLE001 - an observation must never fail a real crawl
+        pass
+
+
 def _artifact_storage_kwargs(payload: dict[str, object]) -> dict[str, str | None]:
     return {
         "artifact_storage_backend": str(payload.get("artifact_storage_backend") or "local"),
@@ -130,6 +167,7 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
                 else None
             ),
         )
+        _maybe_report_shadow_parity(payload, result)
         response = {
             "command": command,
             "run_id": result.run.run.id,

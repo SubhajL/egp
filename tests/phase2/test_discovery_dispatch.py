@@ -216,8 +216,12 @@ def test_discovery_dispatch_processor_marks_job_dispatched(tmp_path) -> None:
             live=True,
             discovery_job_id=job.id,
             recrawl_request_id=None,
+            # U8: the child needs this job's own claim to dual-report a shadow
+            # envelope, and the parent cannot build that envelope itself.
+            claim_token=stored.claim_token or dispatcher.requests[0].claim_token,
         )
     ]
+    assert dispatcher.requests[0].claim_token, "the claim token must reach the child"
     assert stored.job_status == "dispatched"
     assert stored.attempt_count == 1
     assert stored.dispatched_at is not None

@@ -876,6 +876,11 @@ class SubprocessDiscoveryDispatcher:
                     "supabase_service_role_key": self._supabase_service_role_key,
                     "tenant_id": request.tenant_id,
                     "run_id": run_id,
+                    # U8 shadow dual-report. The child reports under THIS job's
+                    # legacy claim; the API verifies it under a row lock and
+                    # deliberately does not consume it.
+                    "agent_job_id": request.discovery_job_id,
+                    "agent_claim_token": request.claim_token,
                     "profile_id": request.profile_id,
                     "keyword": request.keyword,
                     "profile": request.profile_type,
