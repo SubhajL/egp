@@ -369,6 +369,11 @@ def _communicate_with_cancellation(
                 timeout=min(WORKER_CANCELLATION_POLL_SECONDS, remaining_seconds),
             )
         except subprocess.TimeoutExpired as exc:
+            # The NORMAL path. This inner timeout is the poll interval, not a
+            # failure: it just means the worker is still running and we should
+            # check the cancellation event and wait again. Falling through from
+            # here reached `return result` with `result` unassigned, so the first
+            # poll killed any crawl that outlived one interval — i.e. all of them.
             pending_input = None
             if time.monotonic() >= deadline:
                 raise subprocess.TimeoutExpired(
@@ -377,6 +382,13 @@ def _communicate_with_cancellation(
                     output=exc.output,
                     stderr=exc.stderr,
                 ) from exc
+            if cancellation_event.is_set():
+                _kill_process_group(proc)
+                proc.communicate()
+                raise _DiscoveryLeaseCancellation(
+                    "discovery job lease ownership was lost"
+                )
+            continue
         if cancellation_event.is_set():
             _kill_process_group(proc)
             proc.communicate()
@@ -1046,6 +1058,20 @@ class SubprocessDiscoveryDispatcher:
                 )
                 raise
             finally:
+                # Last-resort reap. The named handlers below kill the process
+                # group for the failures they expect, but an UNEXPECTED exception
+                # escaped without killing anything — and every escape orphaned a
+                # real Chrome (plus its helpers) holding the persistent profile.
+                # Observed in production: one bug produced 27 stray processes and
+                # a permanently locked profile. Cleanup must not depend on having
+                # anticipated the exception.
+                try:
+                    if getattr(proc, "poll", None) is not None and proc.poll() is None:
+                        _kill_process_group(proc)
+                except Exception:  # noqa: BLE001 - cleanup must never mask the original error
+                    _logger.warning(
+                        "failed to reap discover worker process group", exc_info=True
+                    )
                 stdout_capture.close()
                 if log_handle is not None:
                     log_handle.close()
