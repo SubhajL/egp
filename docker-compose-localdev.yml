@@ -91,6 +91,12 @@ services:
       EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS: ${EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS:-90}
       # U8b: how long before the inbox processor's heartbeat reads as wedged.
       EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS: ${EGP_CRAWLER_AGENT_INBOX_STALE_AFTER_SECONDS:-120}
+      # The API SERVES the agent endpoints and derives delivery_mode from
+      # this, so it needs the flag as much as the executor does. Compose
+      # does not pass the env file wholesale: without this line the API
+      # always reads 'off', the V1 endpoints 404 forever, and shadow can
+      # never be enabled no matter what /etc/egp/egp.env says.
+      EGP_CRAWLER_AGENT_PROTOCOL: ${EGP_CRAWLER_AGENT_PROTOCOL:-off}
       EGP_DISCOVERY_LEASE_SECONDS: ${EGP_DISCOVERY_LEASE_SECONDS:-60}
       EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS: ${EGP_DISCOVERY_LEASE_HEARTBEAT_SECONDS:-20}
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
