@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    text,
     true,
     update,
 )
@@ -25,6 +27,7 @@ from sqlalchemy.engine import Engine, RowMapping
 from sqlalchemy.exc import IntegrityError
 
 from egp_db.connection import DB_METADATA, create_shared_engine
+from egp_shared_types.enums import ExecutionBackend
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
 
 
@@ -60,6 +63,10 @@ class CrawlProfileDetail:
 
 METADATA = DB_METADATA
 
+PROFILE_EXECUTION_BACKEND_SQL = ", ".join(
+    f"'{backend.value}'" for backend in ExecutionBackend
+)
+
 CRAWL_PROFILES_TABLE = Table(
     "crawl_profiles",
     METADATA,
@@ -76,6 +83,20 @@ CRAWL_PROFILES_TABLE = Table(
     Column("close_stale_after_days", Integer, nullable=False, default=45),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column(
+        "execution_backend",
+        String,
+        nullable=False,
+        default=ExecutionBackend.LEGACY.value,
+        server_default=text(f"'{ExecutionBackend.LEGACY.value}'"),
+    ),
+    # Mirrored onto the metadata so the SQLite bootstrap rejects what PostgreSQL
+    # rejects. U7a shipped a table where it did not, and SQLite happily stored a
+    # backend value that made rows invisible to every claimer.
+    CheckConstraint(
+        f"execution_backend IN ({PROFILE_EXECUTION_BACKEND_SQL})",
+        name="crawl_profiles_execution_backend_check",
+    ),
 )
 
 CRAWL_PROFILE_KEYWORDS_TABLE = Table(
