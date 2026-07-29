@@ -365,3 +365,56 @@ environment can never auto-loop against the wrong database.
 - **Rollback** → `scripts/install_launchd.sh uninstall` (or stop `watch`), close the tunnel,
   and leave `discovery-executor=0` (crawling paused, control-plane intact). Reverting to
   in-box crawling means accepting the known Cloudflare `401`.
+
+## Agent-backend canary: routing one profile (U8)
+
+`crawl_profiles.execution_backend` decides who executes a profile's discovery
+jobs. Default `legacy` — the Mac crawler claiming from the database, as today.
+Set it to `agent` and that profile's *new* jobs become claimable only through the
+V1 agent contract.
+
+### The trap: a flip is not self-reversing
+
+`discovery_jobs.execution_backend` is stamped per job **at insert** and is
+immutable afterwards, and the in-flight dedupe is backend-agnostic. So setting a
+profile back to `legacy`:
+
+- does **not** rescue jobs already queued as `agent` — they stay agent-owned; and
+- those rows then **block** the dedupe from creating legacy replacements for the
+  same `(profile, keyword)`.
+
+The keyword goes quiet and nothing reports an error. Always roll back with
+`--reroute-pending`.
+
+### Order of operations
+
+1. **Deploy** the agent runtime and confirm it is claiming. Flipping first means
+   the profile's jobs queue with nobody to drain them.
+2. **Preview**:
+   ```bash
+   ./.venv/bin/python scripts/set_profile_execution_backend.py \
+       --database-url "$DATABASE_URL" --tenant-id <uuid> --profile-id <uuid> \
+       --backend agent --dry-run
+   ```
+3. **Flip one profile** (add `--confirm`). Pick the lowest-volume profile.
+4. **Watch** `GET /v1/rules/crawler-agent-inbox`:
+   - `agent_queue_pending_count` rising with `agent_queue_claimable_count` staying
+     high ⇒ nothing is claiming; roll back.
+   - `drain_status` = `wedged` ⇒ results are arriving but not being applied.
+5. **Roll back** — always with the reroute:
+   ```bash
+   ./.venv/bin/python scripts/set_profile_execution_backend.py \
+       --database-url "$DATABASE_URL" --tenant-id <uuid> --profile-id <uuid> \
+       --backend legacy --reroute-pending --confirm
+   ```
+   The command reports `stranded_inflight_jobs`: rows already *claimed* keep the
+   old backend, because rewriting them would strand their claimant. Wait for those
+   leases to expire before expecting the profile to be fully back on legacy.
+
+### Manual SQL
+
+Any hand-written `INSERT INTO discovery_jobs` must select `execution_backend` from
+the owning profile rather than hardcoding `'legacy'` — otherwise a manual repair
+silently drags a routed profile back onto the legacy crawler. The backfill snippet
+in [`SOC_INCIDENT_RESPONSE.md`](SOC_INCIDENT_RESPONSE.md) does this correctly; copy
+its join.

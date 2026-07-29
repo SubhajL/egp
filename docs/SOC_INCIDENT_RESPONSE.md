@@ -164,9 +164,15 @@ artifact exists in R2, and the API download route streams bytes.
      id, tenant_id, profile_id, profile_type, keyword, trigger_type, live,
      job_status, execution_backend, attempt_count, next_attempt_at, created_at, updated_at
    )
-   SELECT gen_random_uuid(), tenant_id, profile_id, profile_type, project_number,
-          'backfill', TRUE, 'pending', 'legacy', 0, NOW(), NOW(), NOW()
-   FROM target_project
+   SELECT gen_random_uuid(), tp.tenant_id, tp.profile_id, tp.profile_type,
+          tp.project_number, 'backfill', TRUE, 'pending',
+          -- Route from the OWNING PROFILE, never hardcoded. A profile routed to
+          -- the agent backend must not receive a legacy job from a manual repair:
+          -- the legacy claimer would execute work the operator deliberately moved.
+          cp.execution_backend, 0, NOW(), NOW(), NOW()
+   FROM target_project tp
+   JOIN crawl_profiles cp
+     ON cp.id = tp.profile_id AND cp.tenant_id = tp.tenant_id
    WHERE NOT EXISTS (
      SELECT 1 FROM discovery_jobs dj
      JOIN target_project tp

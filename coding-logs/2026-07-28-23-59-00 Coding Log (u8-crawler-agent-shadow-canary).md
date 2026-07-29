@@ -425,6 +425,62 @@ changes, because it needs the claim token plumbed into the discovery subprocess
 (`DiscoveryDispatchRequest` has no `claim_token`, and the child receives its context
 as a JSON stdin payload). So shadow parity is not yet end-to-end in production.
 
+---
+
+# S4 — `feat/crawler-agent-job-routing`
+
+## Stop line: **none — Q0 (migration 037 + a tenant-isolation boundary)**
+
+Migration 037 adds `crawl_profiles.execution_backend` (default `legacy`). This is
+the switch that finally makes the V1 agent endpoints reachable: until now nothing
+created `execution_backend='agent'` jobs, so they claimed nothing even when enabled.
+
+## Two properties this slice is really about
+
+**1. Routing fails CLOSED.** `resolve_profile_execution_backend` raises
+`ProfileNotFoundForTenantError` rather than defaulting. This is tenant isolation,
+not caution: `discovery_jobs.profile_id` has a plain FK to `crawl_profiles(id)`
+that is **not** composite with `tenant_id` (015), so tenant A quoting tenant B's
+profile satisfies both foreign keys independently. A resolver that returned a
+default would silently create a cross-tenant job/profile association. Resolution
+and value construction both moved **inside** the insert transaction — previously
+values were built before the transaction opened.
+
+Because resolution happens in the repository, **every producer routes without
+naming `execution_backend`**: both `rules_service` paths, scheduled enqueue,
+document backfill, and the recrawl bulk insert. That is what makes the
+"no caller was forgotten" tests meaningful — they drive the executors, not the
+repository.
+
+**2. A flip is not self-reversing** — the finding that reordered all of U8.
+Per-job backend is immutable and the in-flight dedupe is backend-agnostic, so
+setting a profile back to `legacy` strands jobs already queued as `agent` **and**
+those rows block creation of legacy replacements for the same
+`(profile, keyword)`. The keyword simply goes quiet, with no error anywhere.
+`--reroute-pending` is the working rollback, and
+`test_rolling_back_without_reroute_strands_already_queued_agent_jobs` pins the trap
+so it cannot be quietly "simplified" away.
+
+Jobs already **claimed** are deliberately not rerouted — rewriting the backend of
+a job someone is executing would strand its claimant — so the CLI reports
+`stranded_inflight_jobs` instead of hiding them.
+
+## Files
+
+Migration 037 + manifest · `profile_repo` column and mirrored CHECK ·
+`discovery_job_repo` resolver + both insert paths · `recrawl_request_repo` bulk
+insert · `scripts/set_profile_execution_backend.py` (dry-run / --confirm /
+--reroute-pending) · `docs/SOC_INCIDENT_RESPONSE.md` manual SQL now joins the
+profile instead of hardcoding `'legacy'` · `docs/REMOTE_LOCAL_CRAWLER.md` canary
+runbook · 16 new tests.
+
+## Gates
+
+ruff clean · manifest 39 files · **pytest 1382 × 3 consecutive**, 2 skipped, 0
+failed (baseline 1366). Notably the full suite passed unchanged: every existing
+producer already supplies a valid tenant/profile pair, so fail-closed routing broke
+nothing.
+
 ## Progress
 
 - [x] Worktree + branch + coding log + pointer
@@ -433,7 +489,7 @@ as a JSON stdin payload). So shadow parity is not yet end-to-end in production.
 - [x] **S1a** — notification parity (PR #190, `51c7f8c1`)
 - [x] **S1b** — inbox drain health
 - [x] **S3** — shadow contract + parity oracle + comparison (S2 folded in: shipping the oracle without its consumer would have been an orphaned export)
-- [ ] S4 — routing + guarded reroute + canary CLI (activation step)
+- [x] **S4** — routing + guarded reroute + canary CLI
 - [ ] S5 — agent runtime on the worker image + Mac wiring + canary
 - [ ] S1b — inbox health
 - [ ] S2 — dispatch outcome + parity oracle

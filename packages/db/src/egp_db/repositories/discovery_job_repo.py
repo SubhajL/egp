@@ -207,6 +207,52 @@ def _job_from_mapping(row: RowMapping) -> DiscoveryJobRecord:
     )
 
 
+class ProfileNotFoundForTenantError(ValueError):
+    """The owning profile is absent, or belongs to a different tenant."""
+
+
+def resolve_profile_execution_backend(
+    connection,
+    *,
+    tenant_id: str,
+    profile_id: str,
+) -> str:
+    """Derive a job's execution backend from its owning profile. FAILS CLOSED.
+
+    Must run on the CALLER'S connection, inside the same transaction as the
+    insert, so routing cannot be decided against a profile that changes before the
+    row lands.
+
+    Failing closed is a tenant-isolation requirement, not caution.
+    ``discovery_jobs.profile_id`` has a plain FK to ``crawl_profiles(id)`` that is
+    NOT composite with ``tenant_id`` (015). So for tenant A and a profile owned by
+    tenant B, a tenant-scoped lookup finds nothing — and if that returned a default
+    instead of raising, the insert would still satisfy both foreign keys
+    independently and create a **cross-tenant job/profile association**.
+    """
+
+    from egp_db.repositories.profile_repo import CRAWL_PROFILES_TABLE
+
+    row = (
+        connection.execute(
+            select(CRAWL_PROFILES_TABLE.c.execution_backend).where(
+                and_(
+                    CRAWL_PROFILES_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                    CRAWL_PROFILES_TABLE.c.id == normalize_uuid_string(profile_id),
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if row is None:
+        raise ProfileNotFoundForTenantError(
+            f"profile {profile_id} does not exist for tenant {tenant_id}; "
+            "refusing to create a discovery job"
+        )
+    return str(row)
+
+
 def build_discovery_job_values(
     *,
     tenant_id: str,
@@ -278,16 +324,21 @@ class SqlDiscoveryJobRepository:
         live: bool = True,
         recrawl_request_id: str | None = None,
     ) -> DiscoveryJobRecord:
-        values = build_discovery_job_values(
-            tenant_id=tenant_id,
-            profile_id=profile_id,
-            profile_type=profile_type,
-            keyword=keyword,
-            trigger_type=trigger_type,
-            live=live,
-            recrawl_request_id=recrawl_request_id,
-        )
         with self._engine.begin() as connection:
+            # Resolution and construction both inside the transaction: routing must
+            # not be decided against a profile that can change before the row lands.
+            values = build_discovery_job_values(
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_type=profile_type,
+                keyword=keyword,
+                trigger_type=trigger_type,
+                live=live,
+                recrawl_request_id=recrawl_request_id,
+                execution_backend=resolve_profile_execution_backend(
+                    connection, tenant_id=tenant_id, profile_id=profile_id
+                ),
+            )
             connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
         return self.get_discovery_job(tenant_id=tenant_id, job_id=str(values["id"]))
 
@@ -302,16 +353,19 @@ class SqlDiscoveryJobRepository:
         live: bool = True,
         recrawl_request_id: str | None = None,
     ) -> DiscoveryJobEnqueueResult:
-        values = build_discovery_job_values(
-            tenant_id=tenant_id,
-            profile_id=profile_id,
-            profile_type=profile_type,
-            keyword=keyword,
-            trigger_type=trigger_type,
-            live=live,
-            recrawl_request_id=recrawl_request_id,
-        )
         with self._engine.begin() as connection:
+            values = build_discovery_job_values(
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+                profile_type=profile_type,
+                keyword=keyword,
+                trigger_type=trigger_type,
+                live=live,
+                recrawl_request_id=recrawl_request_id,
+                execution_backend=resolve_profile_execution_backend(
+                    connection, tenant_id=tenant_id, profile_id=profile_id
+                ),
+            )
             existing = (
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE)

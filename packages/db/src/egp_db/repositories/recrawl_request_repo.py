@@ -191,6 +191,7 @@ class SqlRecrawlRequestRepository:
         from egp_db.repositories.discovery_job_repo import (
             DISCOVERY_JOBS_TABLE,
             build_discovery_job_values,
+            resolve_profile_execution_backend,
         )
 
         normalized_tenant_id = normalize_uuid_string(tenant_id)
@@ -394,6 +395,13 @@ class SqlRecrawlRequestRepository:
                     live=True,
                     recrawl_request_id=request_id,
                     now=now,
+                    # Same routing rule as every other insert path, resolved on
+                    # this connection inside this transaction.
+                    execution_backend=resolve_profile_execution_backend(
+                        connection,
+                        tenant_id=normalized_tenant_id,
+                        profile_id=desired.profile_id,
+                    ),
                 )
                 connection.execute(insert(DISCOVERY_JOBS_TABLE).values(**values))
                 queued_keywords.append(desired.keyword)
