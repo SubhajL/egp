@@ -1,5 +1,13 @@
 """Observability helpers for e-GP services."""
 
+from .logging import (
+    RESULT_FRAME_BEGIN,
+    RESULT_FRAME_END,
+    make_event,
+    redact_preview,
+    rotate_log_copytruncate,
+    tail_bounded_preview,
+)
 from .metrics import (
     CONTENT_TYPE,
     EXPECTED_METRIC_NAMES,
@@ -21,6 +29,12 @@ from .metrics import (
 )
 
 __all__ = [
+    "RESULT_FRAME_BEGIN",
+    "RESULT_FRAME_END",
+    "make_event",
+    "redact_preview",
+    "rotate_log_copytruncate",
+    "tail_bounded_preview",
     "CONTENT_TYPE",
     "EXPECTED_METRIC_NAMES",
     "get_metrics_registry",

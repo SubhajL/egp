@@ -43,7 +43,10 @@ def test_worker_main_exits_nonzero_for_failed_discover_result(
         worker_main.main('{"command":"discover"}')
 
     assert exc_info.value.code == 1
-    assert json.loads(capsys.readouterr().out) == result
+    stdout_lines = capsys.readouterr().out.strip().splitlines()
+    assert stdout_lines[0] == "---EGP_RESULT_BEGIN---"
+    assert json.loads(stdout_lines[1]) == result
+    assert stdout_lines[2] == "---EGP_RESULT_END---"
 
 
 def test_discover_worker_result_includes_persisted_run_error(

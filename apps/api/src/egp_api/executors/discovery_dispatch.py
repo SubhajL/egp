@@ -13,6 +13,8 @@ from pathlib import Path
 import threading
 from typing import Callable, Literal, Protocol
 
+import sys
+
 from sqlalchemy.exc import OperationalError
 
 from egp_api.config import (
@@ -38,6 +40,7 @@ from egp_api.services.crawler_runtime_reporter import (
     build_crawler_runtime_reporter_from_env,
 )
 from egp_api.services.run_service import RunService
+from egp_observability.logging import make_event, rotate_log_copytruncate
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.profile_repo import create_profile_repository
@@ -655,6 +658,19 @@ def main(
 ) -> int:
     args = _build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO)
+    release_sha = os.environ.get("EGP_RELEASE_SHA") or None
+    aggregate_log = Path.home() / "Library" / "Logs" / "egp" / "crawl.log"
+    if aggregate_log.exists():
+        rotate_log_copytruncate(aggregate_log)
+    print(
+        make_event(
+            "executor_started",
+            owner_pid=os.getpid(),
+            release_sha=release_sha,
+            execution_backend="discovery_dispatch",
+        ),
+        file=sys.stderr,
+    )
     runtime_reporter: CrawlerRuntimeReporter | None = build_crawler_runtime_reporter_from_env()
     try:
         runtime = runtime_factory(
