@@ -645,6 +645,60 @@ def _drain_worker_stdout(
     return tail
 
 
+def _simulate_fault(
+    fault_mode: str,
+    run_id: str,
+    keyword: str,
+    pending_log_events: list[str],
+) -> None:
+    """Raise a deterministic fault for canary testing without spawning a worker.
+
+    Called from ``dispatch_cancellable()`` when ``request.fault_mode`` is set.
+    Writes a ``dispatch_failed`` event with ``reason="fault_injection"`` then
+    raises the exception that the real failure mode would produce.
+    """
+    try:
+        pending_log_events.append(make_event(
+            "dispatch_failed",
+            run_id=run_id,
+            reason="fault_injection",
+            injected_fault=fault_mode,
+        ))
+    except Exception:
+        pass
+
+    if fault_mode == "worker_timeout":
+        raise DiscoverySpawnError(
+            f"[fault_injection] simulated worker timeout for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+        )
+    if fault_mode == "nonzero_exit":
+        raise DiscoverySpawnError(
+            f"[fault_injection] simulated nonzero exit for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_EXIT_NONZERO,
+        )
+    if fault_mode == "missing_result":
+        raise DiscoverySpawnError(
+            f"[fault_injection] simulated missing result for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_RESULT_MISSING,
+        )
+    if fault_mode == "entitlement_denied":
+        raise NonRetriableDiscoveryDispatchError(
+            f"[fault_injection] simulated entitlement denial for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.ENTITLEMENT_DENIED,
+        )
+    if fault_mode == "worker_crash":
+        raise NonRetriableDiscoveryDispatchError(
+            f"[fault_injection] simulated worker crash for keyword {keyword!r}",
+            failure_code=DiscoveryFailureCode.WORKER_TERMINATED,
+        )
+    raise ValueError(
+        f"unknown fault_mode {fault_mode!r}; "
+        "valid modes: worker_timeout, nonzero_exit, missing_result, "
+        "entitlement_denied, worker_crash"
+    )
+
+
 class SubprocessDiscoveryDispatcher:
     """Dispatch discovery jobs by launching the existing worker subprocess."""
 
@@ -914,6 +968,13 @@ class SubprocessDiscoveryDispatcher:
             except Exception:
                 pass
             try:
+                if request.fault_mode is not None:
+                    _simulate_fault(
+                        request.fault_mode,
+                        run_id,
+                        request.keyword,
+                        pending_log_events,
+                    )
                 payload = json.dumps(
                     {
                         "command": "discover",

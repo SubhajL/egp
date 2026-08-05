@@ -86,6 +86,9 @@ class DiscoveryDispatchRequest:
     # claim. The parent cannot build that envelope: dispatch() returns None and the
     # decoded subprocess result has ids and counts, not project bodies.
     claim_token: str | None = None
+    # Deterministic fault injection for canary runs.  When set, the dispatcher
+    # raises the corresponding failure without spawning a subprocess.
+    fault_mode: str | None = None
 
 
 class DiscoveryDispatcher(Protocol):

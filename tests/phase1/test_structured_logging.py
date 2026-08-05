@@ -596,3 +596,290 @@ def test_log_handle_closed_on_payload_serialization_failure(
     assert "log_handle_closed" in close_tracker, (
         "log_handle must be closed even when payload serialization fails"
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for fault-injection tests (T16-T21)
+# ---------------------------------------------------------------------------
+def _parse_structured_events(log_dir: Path) -> list[dict[str, object]]:
+    """Read worker.log under *log_dir* and return parsed structured events."""
+    log_files = list(log_dir.rglob("worker.log"))
+    if not log_files:
+        return []
+    log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
+    events: list[dict[str, object]] = []
+    for line in log_content.strip().splitlines():
+        try:
+            parsed = json.loads(line)
+            if isinstance(parsed, dict) and "event" in parsed:
+                events.append(parsed)
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def _make_fault_request(fault_mode: str):
+    from egp_api.services.discovery_dispatch import DiscoveryDispatchRequest
+
+    return DiscoveryDispatchRequest(
+        tenant_id="t1",
+        profile_id="profile-1",
+        profile_type="custom",
+        keyword="test-keyword",
+        fault_mode=fault_mode,
+    )
+
+
+# ---------------------------------------------------------------------------
+# T16: fault injection — worker_timeout raises DiscoverySpawnError
+# ---------------------------------------------------------------------------
+def test_fault_injection_worker_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+    from egp_shared_types.enums import DiscoveryFailureCode
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Popen must not be called during fault injection")
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("worker_timeout")
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TIMEOUT
+
+    events = _parse_structured_events(tmp_path)
+    event_names = [e["event"] for e in events]
+    assert "dispatch_started" in event_names, (
+        f"dispatch_started must appear, got {event_names}"
+    )
+    assert "dispatch_failed" in event_names, (
+        f"dispatch_failed must appear, got {event_names}"
+    )
+    failed = next(e for e in events if e["event"] == "dispatch_failed")
+    assert failed["reason"] == "fault_injection"
+    assert failed["injected_fault"] == "worker_timeout"
+
+
+# ---------------------------------------------------------------------------
+# T17: fault injection — nonzero_exit raises DiscoverySpawnError
+# ---------------------------------------------------------------------------
+def test_fault_injection_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+    from egp_shared_types.enums import DiscoveryFailureCode
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Popen must not be called during fault injection")
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("nonzero_exit")
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_EXIT_NONZERO
+
+    events = _parse_structured_events(tmp_path)
+    event_names = [e["event"] for e in events]
+    assert "dispatch_started" in event_names
+    assert "dispatch_failed" in event_names
+    failed = next(e for e in events if e["event"] == "dispatch_failed")
+    assert failed["reason"] == "fault_injection"
+    assert failed["injected_fault"] == "nonzero_exit"
+
+
+# ---------------------------------------------------------------------------
+# T18: fault injection — missing_result raises DiscoverySpawnError
+# ---------------------------------------------------------------------------
+def test_fault_injection_missing_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+    from egp_shared_types.enums import DiscoveryFailureCode
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Popen must not be called during fault injection")
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("missing_result")
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_RESULT_MISSING
+
+    events = _parse_structured_events(tmp_path)
+    event_names = [e["event"] for e in events]
+    assert "dispatch_started" in event_names
+    assert "dispatch_failed" in event_names
+    failed = next(e for e in events if e["event"] == "dispatch_failed")
+    assert failed["reason"] == "fault_injection"
+    assert failed["injected_fault"] == "missing_result"
+
+
+# ---------------------------------------------------------------------------
+# T19: fault injection — entitlement_denied raises NonRetriableDispatchError
+# ---------------------------------------------------------------------------
+def test_fault_injection_entitlement_denied(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_dispatch import (
+        NonRetriableDiscoveryDispatchError,
+    )
+    from egp_shared_types.enums import DiscoveryFailureCode
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Popen must not be called during fault injection")
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("entitlement_denied")
+
+    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.ENTITLEMENT_DENIED
+
+    events = _parse_structured_events(tmp_path)
+    event_names = [e["event"] for e in events]
+    assert "dispatch_started" in event_names
+    assert "dispatch_failed" in event_names
+    failed = next(e for e in events if e["event"] == "dispatch_failed")
+    assert failed["reason"] == "fault_injection"
+    assert failed["injected_fault"] == "entitlement_denied"
+
+
+# ---------------------------------------------------------------------------
+# T20: fault injection — unknown mode fails closed with ValueError
+# ---------------------------------------------------------------------------
+def test_fault_injection_unknown_mode_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Popen must not be called during fault injection")
+        ),
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("bogus_fault_that_does_not_exist")
+
+    with pytest.raises(ValueError, match="unknown fault_mode"):
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+
+
+# ---------------------------------------------------------------------------
+# T21: no subprocess spawned during fault injection
+# ---------------------------------------------------------------------------
+def test_no_subprocess_spawned_during_fault_injection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+
+    popen_calls: list[bool] = []
+
+    class TrackingFakeProcess:
+        def __init__(self) -> None:
+            popen_calls.append(True)
+            self.returncode = 0
+            self.pid = 12345
+
+        def communicate(
+            self, *, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            return (b"", b"")
+
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *args, **kwargs: TrackingFakeProcess()
+    )
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+
+    for fault_mode in (
+        "worker_timeout",
+        "nonzero_exit",
+        "missing_result",
+        "entitlement_denied",
+        "worker_crash",
+    ):
+        request = _make_fault_request(fault_mode)
+        with pytest.raises(Exception):
+            spawner.dispatch_cancellable(request, cancellation_event=None)
+
+    assert len(popen_calls) == 0, (
+        f"Popen was called {len(popen_calls)} times during fault injection; "
+        "expected 0 calls"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T22: fault_injection worker_crash raises NonRetriableDiscoveryDispatchError
+# ---------------------------------------------------------------------------
+def test_fault_injection_worker_crash(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_dispatch import (
+        NonRetriableDiscoveryDispatchError,
+    )
+    from egp_shared_types.enums import DiscoveryFailureCode
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: None)
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    request = _make_fault_request("worker_crash")
+    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
+        spawner.dispatch_cancellable(request, cancellation_event=None)
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TERMINATED
