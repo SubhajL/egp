@@ -14,6 +14,8 @@ from egp_observability.logging import RESULT_FRAME_BEGIN, RESULT_FRAME_END
 from egp_observability.metrics import record_worker_job
 from egp_shared_types.enums import DiscoveryFailureCode
 
+from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
+
 from .browser_discovery import BrowserDiscoverySettings
 from .scheduler import run_scheduled_discovery
 from .workflows.close_check import run_close_check_workflow
@@ -146,9 +148,11 @@ def _artifact_storage_kwargs(payload: dict[str, object]) -> dict[str, str | None
 def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     command = str(payload.get("command") or "").strip()
     if command == "discover":
+        db_url = str(payload["database_url"])
         result = run_discover_workflow(
-            database_url=str(payload["database_url"]),
+            database_url=db_url,
             tenant_id=str(payload["tenant_id"]),
+            candidate_attempt_repo=create_candidate_attempt_repository(database_url=db_url),
             run_id=(str(payload["run_id"]) if payload.get("run_id") is not None else None),
             profile_id=(
                 str(payload["profile_id"]) if payload.get("profile_id") is not None else None

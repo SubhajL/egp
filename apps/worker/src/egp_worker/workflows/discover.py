@@ -15,9 +15,11 @@ from egp_crawler_core.discovery_authorization import (
     build_discovery_authorization_snapshot,
     require_discovery_authorization,
 )
+from egp_crawler_core.candidate_key import compute_candidate_key
 from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
+from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
 from egp_db.repositories.document_capture_attempt_repo import (
     SqlDocumentCaptureAttemptRepository,
     create_document_capture_attempt_repository,
@@ -338,6 +340,7 @@ def run_discover_workflow(
     project_repository: SqlProjectRepository | None = None,
     project_event_sink: ProjectEventSink | None = None,
     notification_dispatcher: NotificationDispatcher | None = None,
+    candidate_attempt_repo: SqlCandidateAttemptRepository | None = None,
     live: bool = False,
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
@@ -386,7 +389,6 @@ def run_discover_workflow(
                 database_url=database_url,
                 notification_dispatcher=notification_dispatcher,
             )
-
     if run_id is None:
         run = run_repository.create_run(
             tenant_id=tenant_id,
@@ -546,6 +548,25 @@ def run_discover_workflow(
                 keyword=task_keyword,
                 trigger_type=trigger_type,
             )
+        # -- candidate accounting: record acceptance before persistence --
+        candidate_key_value: str | None = None
+        if candidate_attempt_repo is not None:
+            page_num = discovered.get("page_number")
+            row_ord = discovered.get("row_ordinal")
+            candidate_key_value = compute_candidate_key(
+                keyword=task_keyword,
+                page_number=int(page_num) if page_num is not None else 0,
+                row_ordinal=int(row_ord) if row_ord is not None else 0,
+                project_name=str(discovered.get("project_name") or ""),
+            )
+            candidate_attempt_repo.record_accepted(
+                tenant_id=tenant_id,
+                run_id=run.id,
+                candidate_key=candidate_key_value,
+                keyword=task_keyword,
+                page_number=int(page_num) if page_num is not None else None,
+                row_ordinal=int(row_ord) if row_ord is not None else None,
+            )
         try:
             task = run_repository.create_task(
                 run_id=run.id,
@@ -612,12 +633,40 @@ def run_discover_workflow(
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
+            if candidate_attempt_repo is not None and candidate_key_value is not None:
+                try:
+                    candidate_attempt_repo.finalize_persisted(
+                        tenant_id=tenant_id,
+                        run_id=run.id,
+                        candidate_key=candidate_key_value,
+                        project_id=project.id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to finalize candidate attempt as persisted for %s",
+                        candidate_key_value,
+                        exc_info=True,
+                    )
             persisted_project_keys.add(project_key)
             persisted_projects.append(project)
             run_repository.update_run_summary(run.id, summary_json=_current_summary())
             return project
         except Exception as exc:
             error_count += 1
+            if candidate_attempt_repo is not None and candidate_key_value is not None:
+                try:
+                    candidate_attempt_repo.finalize_failed(
+                        tenant_id=tenant_id,
+                        run_id=run.id,
+                        candidate_key=candidate_key_value,
+                        terminal_reason=str(exc)[:500],
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to finalize candidate attempt as failed for %s",
+                        candidate_key_value,
+                        exc_info=True,
+                    )
             if project is not None and project.id not in backfill_recorded_project_ids:
                 try:
                     _record_backfill_capture_attempt(

@@ -1,5 +1,6 @@
 """Core crawler domain helpers extracted from the legacy crawler."""
 
+from .candidate_key import compute_candidate_key
 from .canonical_id import build_project_aliases, generate_canonical_id
 from .closure_rules import (
     check_consulting_timeout,
@@ -42,6 +43,7 @@ from .rate_limiter import (
 __all__ = [
     "acquire_profile_lock",
     "build_project_aliases",
+    "compute_candidate_key",
     "CircuitOpenError",
     "check_consulting_timeout",
     "check_stale_closure",

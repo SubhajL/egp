@@ -209,6 +209,7 @@ def _build_browser_executor():  # pragma: no cover - requires a real browser
 
     from pathlib import Path
 
+    from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
     from egp_worker.agent_shadow import build_shadow_envelope
     from egp_worker.workflows.discover import run_discover_workflow
 
@@ -216,8 +217,10 @@ def _build_browser_executor():  # pragma: no cover - requires a real browser
         from egp_api.config import get_artifact_root, get_database_url
 
         artifact_root = get_artifact_root(None)
+        db_url = get_database_url(None, artifact_root=artifact_root)
         result = run_discover_workflow(
-            database_url=get_database_url(None, artifact_root=artifact_root),
+            database_url=db_url,
+            candidate_attempt_repo=create_candidate_attempt_repository(database_url=db_url),
             tenant_id=claim.tenant_id,
             profile_id=claim.profile_id,
             keyword=claim.keyword,

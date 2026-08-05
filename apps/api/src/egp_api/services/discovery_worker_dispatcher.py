@@ -50,6 +50,7 @@ from egp_crawler_core.profile_lock import (
     ProfileLockedError,
     release_profile_lock as _shared_release_profile_lock,
 )
+from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
 from egp_crawler_core.rate_limiter import get_default_rate_limiter
 from egp_observability.logging import (
     RESULT_FRAME_BEGIN,
@@ -1130,6 +1131,9 @@ class SubprocessDiscoveryDispatcher:
                     ))
                 except Exception:
                     pass
+                self._reconcile_candidate_attempts(
+                    run_id=run_id, terminal_reason="lease_lost",
+                )
                 self._mark_active_run_failed(
                     run_id=run_id,
                     error=error_message,
@@ -1173,6 +1177,9 @@ class SubprocessDiscoveryDispatcher:
                     ))
                 except Exception:
                     pass
+                self._reconcile_candidate_attempts(
+                    run_id=run_id, terminal_reason="worker_timeout",
+                )
                 self._mark_active_run_failed(
                     run_id=run_id,
                     error=error_message,
@@ -1425,6 +1432,35 @@ class SubprocessDiscoveryDispatcher:
             data = data[-limit:]
         return data.decode("utf-8", errors="replace")
 
+    def _reconcile_candidate_attempts(
+        self,
+        *,
+        run_id: str,
+        terminal_reason: str = "worker_lost",
+    ) -> None:
+        """Mark any still-accepted discovery candidates as unknown."""
+        try:
+            repo = create_candidate_attempt_repository(
+                database_url=self._database_url,
+            )
+            count = repo.reconcile_open_candidates(
+                run_id=run_id,
+                terminal_reason=terminal_reason,
+            )
+            if count > 0:
+                _logger.info(
+                    "Reconciled %d open candidate attempts for run %s (reason=%s)",
+                    count,
+                    run_id,
+                    terminal_reason,
+                )
+        except Exception:
+            _logger.warning(
+                "Failed to reconcile candidate attempts for run %s",
+                run_id,
+                exc_info=True,
+            )
+
     def _mark_active_run_failed(
         self,
         *,
@@ -1469,6 +1505,9 @@ class SubprocessDiscoveryDispatcher:
             signal_name = f"SIG{signal_number}"
         error_message = (
             f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
+        )
+        self._reconcile_candidate_attempts(
+            run_id=run_id, terminal_reason="worker_terminated",
         )
         self._mark_active_run_failed(
             run_id=run_id,

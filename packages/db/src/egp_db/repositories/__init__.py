@@ -1,6 +1,12 @@
 """Repository exports."""
 
 from .audit_repo import AuditLogEventRecord, AuditLogPage, create_audit_repository
+from .candidate_attempt_repo import (
+    CandidateAttemptRecord,
+    CandidateRunSummary,
+    SqlCandidateAttemptRepository,
+    create_candidate_attempt_repository,
+)
 from .crawler_agent_repo import (
     SqlCrawlerAgentRepository,
     create_crawler_agent_repository,
@@ -52,6 +58,10 @@ from .recrawl_request_repo import (
 )
 
 __all__ = [
+    "CandidateAttemptRecord",
+    "CandidateRunSummary",
+    "SqlCandidateAttemptRepository",
+    "create_candidate_attempt_repository",
     "SqlCrawlerAgentRepository",
     "create_crawler_agent_repository",
     "AuditLogEventRecord",
