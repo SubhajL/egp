@@ -913,37 +913,43 @@ class SubprocessDiscoveryDispatcher:
                 ))
             except Exception:
                 pass
-            payload = json.dumps(
-                {
-                    "command": "discover",
-                    "database_url": self._database_url,
-                    "artifact_root": str(self._artifact_root),
-                    "artifact_storage_backend": self._artifact_storage_backend,
-                    "artifact_bucket": self._artifact_bucket,
-                    "artifact_prefix": self._artifact_prefix,
-                    "supabase_url": self._supabase_url,
-                    "supabase_service_role_key": self._supabase_service_role_key,
-                    "tenant_id": request.tenant_id,
-                    "run_id": run_id,
-                    # U8 shadow dual-report. The child reports under THIS job's
-                    # legacy claim; the API verifies it under a row lock and
-                    # deliberately does not consume it.
-                    "agent_job_id": request.discovery_job_id,
-                    "agent_claim_token": request.claim_token,
-                    "profile_id": request.profile_id,
-                    "keyword": request.keyword,
-                    "profile": request.profile_type,
-                    "trigger_type": run_trigger,
-                    "live": request.live,
-                    "live_include_documents": True,
-                    "browser_settings": browser_settings,
-                },
-                ensure_ascii=False,
-            ).encode()
-            stdout_capture = tempfile.SpooledTemporaryFile(
-                max_size=WORKER_STDOUT_SPOOL_LIMIT_BYTES,
-                mode="w+b",
-            )
+            try:
+                payload = json.dumps(
+                    {
+                        "command": "discover",
+                        "database_url": self._database_url,
+                        "artifact_root": str(self._artifact_root),
+                        "artifact_storage_backend": self._artifact_storage_backend,
+                        "artifact_bucket": self._artifact_bucket,
+                        "artifact_prefix": self._artifact_prefix,
+                        "supabase_url": self._supabase_url,
+                        "supabase_service_role_key": self._supabase_service_role_key,
+                        "tenant_id": request.tenant_id,
+                        "run_id": run_id,
+                        "agent_job_id": request.discovery_job_id,
+                        "agent_claim_token": request.claim_token,
+                        "profile_id": request.profile_id,
+                        "keyword": request.keyword,
+                        "profile": request.profile_type,
+                        "trigger_type": run_trigger,
+                        "live": request.live,
+                        "live_include_documents": True,
+                        "browser_settings": browser_settings,
+                    },
+                    ensure_ascii=False,
+                ).encode()
+                stdout_capture = tempfile.SpooledTemporaryFile(
+                    max_size=WORKER_STDOUT_SPOOL_LIMIT_BYTES,
+                    mode="w+b",
+                )
+            except Exception:
+                _flush_log_events(log_handle, pending_log_events)
+                if log_handle is not None:
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
+                raise
             proc = None
             try:
                 proc = subprocess.Popen(
@@ -1128,6 +1134,19 @@ class SubprocessDiscoveryDispatcher:
                 except Exception:
                     pass
                 raise
+            except NonRetriableDiscoveryDispatchError:
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_failed",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                        reason="non_retriable_error",
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
+                raise
             except Exception:
                 try:
                     pending_log_events.append(make_event(
@@ -1148,13 +1167,10 @@ class SubprocessDiscoveryDispatcher:
                 )
                 raise
             finally:
-                # Last-resort reap. The named handlers below kill the process
-                # group for the failures they expect, but an UNEXPECTED exception
-                # escaped without killing anything — and every escape orphaned a
-                # real Chrome (plus its helpers) holding the persistent profile.
-                # Observed in production: one bug produced 27 stray processes and
-                # a permanently locked profile. Cleanup must not depend on having
-                # anticipated the exception.
+                # Last-resort reap: kill any surviving process group before
+                # releasing the profile lock.  Observed in production: one bug
+                # produced 27 stray Chrome processes and a permanently locked
+                # persistent profile.
                 try:
                     if getattr(proc, "poll", None) is not None and proc.poll() is None:
                         _kill_process_group(proc)
@@ -1163,9 +1179,15 @@ class SubprocessDiscoveryDispatcher:
                         "failed to reap discover worker process group", exc_info=True
                     )
                 _flush_log_events(log_handle, pending_log_events)
-                stdout_capture.close()
+                try:
+                    stdout_capture.close()
+                except Exception:
+                    pass
                 if log_handle is not None:
-                    log_handle.close()
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
             if self._browser_profile_mode == "persistent":
                 self._record_persistent_profile_success(
                     profile_dir=browser_profile_dir,

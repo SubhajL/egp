@@ -407,3 +407,192 @@ def test_framed_result_fails_closed_on_malformed_content() -> None:
         "must return None (fail-closed) when frame markers are present "
         f"but content is malformed, got {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T13: NonRetriableDiscoveryDispatchError gets specific dispatch_failed reason
+# ---------------------------------------------------------------------------
+def test_non_retriable_error_gets_specific_dispatch_failed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_dispatch import (
+        NonRetriableDiscoveryDispatchError,
+    )
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = 1
+            self.pid = 66666
+
+        def communicate(
+            self, *, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            stderr = b'{"error_type":"entitlement_denied","detail":"subscription required"}\n'
+            return (b"", stderr)
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+
+    with pytest.raises(NonRetriableDiscoveryDispatchError):
+        spawner(
+            tenant_id="t1",
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="test-keyword",
+        )
+
+    log_files = list(tmp_path.rglob("worker.log"))
+    assert log_files, "worker.log must be created"
+    log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
+
+    events = []
+    for line in log_content.strip().splitlines():
+        try:
+            parsed = json.loads(line)
+            if isinstance(parsed, dict) and "event" in parsed:
+                events.append(parsed)
+        except json.JSONDecodeError:
+            continue
+
+    failed_events = [e for e in events if e.get("event") == "dispatch_failed"]
+    assert failed_events, f"dispatch_failed event must exist, got events: {[e['event'] for e in events]}"
+    failed = failed_events[0]
+    assert failed["reason"] == "non_retriable_error", (
+        f"reason must be 'non_retriable_error', got {failed['reason']!r}"
+    )
+    assert "child_pid" in failed, "dispatch_failed for non-retriable must include child_pid"
+
+
+# ---------------------------------------------------------------------------
+# T14: stdout_capture.close failure does not prevent log_handle.close
+# ---------------------------------------------------------------------------
+def test_stdout_capture_close_failure_does_not_prevent_log_handle_close(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import tempfile as _tempfile
+
+    from egp_api.main import _make_discover_spawner
+
+    expected_result = {
+        "command": "discover",
+        "run_status": "succeeded",
+        "project_count": 1,
+        "project_ids": ["p1"],
+    }
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.pid = 55555
+
+        def communicate(
+            self, *, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            payload = json.loads((input or b"{}").decode("utf-8"))
+            result = {**expected_result, "run_id": payload.get("run_id")}
+            framed_stdout = "\n".join([
+                RESULT_FRAME_BEGIN,
+                json.dumps(result, sort_keys=True),
+                RESULT_FRAME_END,
+            ])
+            return (framed_stdout.encode("utf-8"), b"")
+
+    close_calls = []
+
+    def bomb_close(self: _tempfile.SpooledTemporaryFile) -> None:
+        close_calls.append("spool_close_called")
+        raise OSError("simulated SpooledTemporaryFile.close failure")
+
+    log_handle_close_calls: list[str] = []
+    original_path_open = Path.open
+
+    def tracking_open(self: Path, *args: object, **kwargs: object):
+        fh = original_path_open(self, *args, **kwargs)
+        if self.name == "worker.log":
+            original_close = fh.close
+
+            def tracked_close() -> None:
+                log_handle_close_calls.append("log_handle_closed")
+                return original_close()
+
+            fh.close = tracked_close
+        return fh
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(_tempfile.SpooledTemporaryFile, "close", bomb_close)
+
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    spawner(
+        tenant_id="t1",
+        profile_id="profile-1",
+        profile_type="custom",
+        keyword="test-keyword",
+    )
+
+    assert close_calls, "SpooledTemporaryFile.close must have been called"
+    assert "log_handle_closed" in log_handle_close_calls, (
+        "log_handle.close() must still run even when stdout_capture.close() fails"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T15: log_handle closed on payload serialization failure
+# ---------------------------------------------------------------------------
+def test_log_handle_closed_on_payload_serialization_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+
+    original_json_dumps = json.dumps
+    call_count = {"n": 0}
+    close_tracker: list[str] = []
+
+    original_path_open = Path.open
+
+    def tracking_open(self: Path, *args: object, **kwargs: object):
+        fh = original_path_open(self, *args, **kwargs)
+        if self.name == "worker.log":
+            original_close = fh.close
+
+            def tracked_close() -> None:
+                close_tracker.append("log_handle_closed")
+                return original_close()
+
+            fh.close = tracked_close
+        return fh
+
+    def failing_dumps(*args: object, **kwargs: object) -> str:
+        call_count["n"] += 1
+        if call_count["n"] >= 2:
+            raise TypeError("simulated json.dumps failure")
+        return original_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    monkeypatch.setattr(json, "dumps", failing_dumps)
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+
+    with pytest.raises(TypeError, match="simulated"):
+        spawner(
+            tenant_id="t1",
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="test-keyword",
+        )
+
+    assert "log_handle_closed" in close_tracker, (
+        "log_handle must be closed even when payload serialization fails"
+    )
