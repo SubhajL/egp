@@ -54,6 +54,7 @@ from egp_crawler_core.rate_limiter import get_default_rate_limiter
 from egp_observability.logging import (
     RESULT_FRAME_BEGIN,
     RESULT_FRAME_END,
+    make_event,
     tail_bounded_preview,
 )
 from egp_observability.metrics import record_discovery_keyword_scan
@@ -61,6 +62,20 @@ from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
+_RELEASE_SHA: str | None = os.environ.get("EGP_RELEASE_SHA") or None
+
+
+def _flush_log_events(log_handle: BinaryIO | None, events: list[str]) -> None:
+    if log_handle is None or not events:
+        return
+    try:
+        for event_line in events:
+            log_handle.write(event_line.encode("utf-8") + b"\n")
+        log_handle.flush()
+    except Exception:
+        pass
+
+
 PROFILE_STATE_FILENAME = ".egp-profile-state.json"
 WORKER_STDOUT_SPOOL_LIMIT_BYTES = 1_048_576
 WORKER_RESULT_TAIL_BYTES = 65_536
@@ -559,6 +574,7 @@ def _decode_framed_or_fallback_result(
                 return payload
         except json.JSONDecodeError:
             pass
+        return None
     return _decode_discovery_worker_result(stdout)
 
 
@@ -886,6 +902,17 @@ class SubprocessDiscoveryDispatcher:
                         exc_info=True,
                     )
                     log_path = None
+            pending_log_events: list[str] = []
+            try:
+                pending_log_events.append(make_event(
+                    "dispatch_started",
+                    run_id=run_id,
+                    owner_pid=os.getpid(),
+                    execution_backend="subprocess",
+                    release_sha=_RELEASE_SHA,
+                ))
+            except Exception:
+                pass
             payload = json.dumps(
                 {
                     "command": "discover",
@@ -917,6 +944,7 @@ class SubprocessDiscoveryDispatcher:
                 max_size=WORKER_STDOUT_SPOOL_LIMIT_BYTES,
                 mode="w+b",
             )
+            proc = None
             try:
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "egp_worker.main"],
@@ -1010,11 +1038,31 @@ class SubprocessDiscoveryDispatcher:
                     tenant_id=request.tenant_id,
                     run_id=run_id,
                 )
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_finished",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        child_pid=getattr(proc, "pid", None),
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
             except _DiscoveryLeaseCancellation as exc:
                 error_message = (
                     f"discover worker stopped because lease ownership was lost "
                     f"for keyword {request.keyword!r}"
                 )
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_failed",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        reason="lease_lost",
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
                 self._mark_active_run_failed(
                     run_id=run_id,
                     error=error_message,
@@ -1047,6 +1095,17 @@ class SubprocessDiscoveryDispatcher:
                     exc.timeout,
                     preview,
                 )
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_failed",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        child_pid=getattr(proc, "pid", None),
+                        reason="worker_timeout",
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
                 self._mark_active_run_failed(
                     run_id=run_id,
                     error=error_message,
@@ -1057,8 +1116,29 @@ class SubprocessDiscoveryDispatcher:
                     failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
                 ) from exc
             except DiscoverySpawnError:
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_failed",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                        reason="spawn_error",
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
                 raise
             except Exception:
+                try:
+                    pending_log_events.append(make_event(
+                        "dispatch_failed",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        reason="unexpected_error",
+                        release_sha=_RELEASE_SHA,
+                    ))
+                except Exception:
+                    pass
                 _logger.warning(
                     "Failed to spawn discover for keyword %r (tenant_id=%s profile_id=%s)",
                     request.keyword,
@@ -1082,6 +1162,7 @@ class SubprocessDiscoveryDispatcher:
                     _logger.warning(
                         "failed to reap discover worker process group", exc_info=True
                     )
+                _flush_log_events(log_handle, pending_log_events)
                 stdout_capture.close()
                 if log_handle is not None:
                     log_handle.close()

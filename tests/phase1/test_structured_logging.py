@@ -252,3 +252,158 @@ def test_dispatcher_extracts_framed_result_from_fake_worker(
         profile_type="custom",
         keyword="test-keyword",
     )
+
+
+# ---------------------------------------------------------------------------
+# T10: dispatch events written to log_handle on success path
+# ---------------------------------------------------------------------------
+def test_dispatch_events_written_to_log_handle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+
+    expected_result = {
+        "command": "discover",
+        "run_status": "succeeded",
+        "project_count": 1,
+        "project_ids": ["p1"],
+    }
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = 0
+            self.pid = 88888
+
+        def communicate(
+            self, *, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            payload = json.loads((input or b"{}").decode("utf-8"))
+            result = {**expected_result, "run_id": payload.get("run_id")}
+            framed_stdout = "\n".join([
+                RESULT_FRAME_BEGIN,
+                json.dumps(result, sort_keys=True),
+                RESULT_FRAME_END,
+            ])
+            return (framed_stdout.encode("utf-8"), b"")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+    spawner(
+        tenant_id="t1",
+        profile_id="profile-1",
+        profile_type="custom",
+        keyword="test-keyword",
+    )
+
+    log_files = list(tmp_path.rglob("worker.log"))
+    assert log_files, "worker.log must be created under artifact_root"
+    log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
+    log_lines = log_content.strip().splitlines()
+
+    events = []
+    for line in log_lines:
+        try:
+            parsed = json.loads(line)
+            if isinstance(parsed, dict) and "event" in parsed:
+                events.append(parsed)
+        except json.JSONDecodeError:
+            continue
+
+    event_names = [e["event"] for e in events]
+    assert "dispatch_started" in event_names, (
+        f"dispatch_started event must appear in log, got events: {event_names}"
+    )
+    assert "dispatch_finished" in event_names, (
+        f"dispatch_finished event must appear in log, got events: {event_names}"
+    )
+
+    started = next(e for e in events if e["event"] == "dispatch_started")
+    assert "run_id" in started, "dispatch_started must include run_id"
+    assert "owner_pid" in started, "dispatch_started must include owner_pid"
+    assert started.get("execution_backend") == "subprocess", (
+        "dispatch_started must include execution_backend=subprocess"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T11: dispatch_failed event on nonzero exit
+# ---------------------------------------------------------------------------
+def test_dispatch_failed_event_on_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_api.main import _make_discover_spawner
+    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = 1
+            self.pid = 77777
+
+        def communicate(
+            self, *, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
+            return (b"not valid json output", b"some stderr output")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        artifact_root=tmp_path,
+    )
+
+    with pytest.raises(DiscoverySpawnError):
+        spawner(
+            tenant_id="t1",
+            profile_id="profile-1",
+            profile_type="custom",
+            keyword="test-keyword",
+        )
+
+    log_files = list(tmp_path.rglob("worker.log"))
+    assert log_files, "worker.log must be created under artifact_root"
+    log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
+    log_lines = log_content.strip().splitlines()
+
+    events = []
+    for line in log_lines:
+        try:
+            parsed = json.loads(line)
+            if isinstance(parsed, dict) and "event" in parsed:
+                events.append(parsed)
+        except json.JSONDecodeError:
+            continue
+
+    event_names = [e["event"] for e in events]
+    assert "dispatch_failed" in event_names, (
+        f"dispatch_failed event must appear in log on failure, got events: {event_names}"
+    )
+    failed = next(e for e in events if e["event"] == "dispatch_failed")
+    assert "reason" in failed, "dispatch_failed must include reason"
+
+
+# ---------------------------------------------------------------------------
+# T12: framed result fails closed on malformed content between markers
+# ---------------------------------------------------------------------------
+def test_framed_result_fails_closed_on_malformed_content() -> None:
+    from egp_api.services.discovery_worker_dispatcher import (
+        _decode_framed_or_fallback_result,
+    )
+
+    lastline_dict = {"run_id": "should-not-get-this", "run_status": "succeeded"}
+    stdout = "\n".join([
+        "some noise",
+        RESULT_FRAME_BEGIN,
+        "not valid json{{{",
+        RESULT_FRAME_END,
+        json.dumps(lastline_dict, sort_keys=True),
+    ])
+
+    result = _decode_framed_or_fallback_result(stdout)
+    assert result is None, (
+        "must return None (fail-closed) when frame markers are present "
+        f"but content is malformed, got {result!r}"
+    )
