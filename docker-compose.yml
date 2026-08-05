@@ -270,6 +270,7 @@ services:
       EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS: ${EGP_BROWSER_CLOUDFLARE_TIMEOUT_MS:-120000}
       EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES: ${EGP_BROWSER_CLOUDFLARE_RELOAD_RETRIES:-1}
       EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S: ${EGP_BROWSER_PROJECT_DETAIL_TIMEOUT_S:-240}
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:-}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
       # Warmed persistent Chrome profile (PR 3) — survives container recreation.

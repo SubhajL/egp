@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
+from egp_observability.logging import RESULT_FRAME_BEGIN, RESULT_FRAME_END
 from egp_observability.metrics import record_worker_job
 from egp_shared_types.enums import DiscoveryFailureCode
 
@@ -279,6 +280,12 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     raise ValueError(f"Unsupported worker command: {command}")
 
 
+def _emit_framed_result(result: dict[str, object]) -> None:
+    print(RESULT_FRAME_BEGIN)
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    print(RESULT_FRAME_END)
+
+
 def main(stdin_text: str | None = None) -> None:
     logging.basicConfig(level=logging.INFO)
     raw_input = stdin_text if stdin_text is not None else sys.stdin.read()
@@ -323,14 +330,17 @@ def main(stdin_text: str | None = None) -> None:
             outcome="failed",
             duration_seconds=time.perf_counter() - started_at,
         )
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        _emit_framed_result(result)
         raise SystemExit(1)
     record_worker_job(
         command=command,
         outcome="success",
         duration_seconds=time.perf_counter() - started_at,
     )
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if command == "discover":
+        _emit_framed_result(result)
+    else:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":

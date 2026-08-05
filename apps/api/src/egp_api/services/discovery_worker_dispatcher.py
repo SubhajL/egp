@@ -51,6 +51,11 @@ from egp_crawler_core.profile_lock import (
     release_profile_lock as _shared_release_profile_lock,
 )
 from egp_crawler_core.rate_limiter import get_default_rate_limiter
+from egp_observability.logging import (
+    RESULT_FRAME_BEGIN,
+    RESULT_FRAME_END,
+    tail_bounded_preview,
+)
 from egp_observability.metrics import record_discovery_keyword_scan
 from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
@@ -244,7 +249,7 @@ def _write_profile_warm_failure_state(
         **state,
         "consecutive_warm_failures": consecutive_failures,
         "last_failure_at": resolved_now.astimezone(UTC).isoformat(),
-        "last_failure_error": _stderr_preview(str(error), limit=300),
+        "last_failure_error": tail_bounded_preview(str(error), limit=300),
         "operator_action_required": (
             pause_threshold > 0 and consecutive_failures >= pause_threshold
         ),
@@ -270,7 +275,7 @@ def _write_profile_crawl_failure_state(
     payload = {
         **state,
         "last_crawl_failure_at": resolved_now.astimezone(UTC).isoformat(),
-        "last_crawl_failure_error": _stderr_preview(str(error), limit=300),
+        "last_crawl_failure_error": tail_bounded_preview(str(error), limit=300),
         "source": "crawl_failure",
     }
     payload.pop("last_success_at", None)
@@ -472,20 +477,6 @@ def _resolve_browser_settings_payload(
     return payload
 
 
-def _stderr_preview(stderr: bytes | str | None, *, limit: int = 500) -> str | None:
-    if stderr is None:
-        return None
-    if isinstance(stderr, bytes):
-        text = stderr.decode("utf-8", errors="replace")
-    else:
-        text = str(stderr)
-    normalized = text.strip()
-    if not normalized:
-        return None
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[:limit].rstrip()}..."
-
 
 def _parse_non_retriable_error(
     stderr: bytes | str | None,
@@ -550,6 +541,25 @@ def _decode_discovery_worker_result(stdout: bytes | str | None) -> dict[str, obj
         if isinstance(payload, dict):
             return payload
     return None
+
+
+def _decode_framed_or_fallback_result(
+    stdout: bytes | str | None,
+) -> dict[str, object] | None:
+    if stdout is None:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    begin_idx = text.rfind(RESULT_FRAME_BEGIN)
+    end_idx = text.rfind(RESULT_FRAME_END)
+    if begin_idx >= 0 and end_idx > begin_idx:
+        between = text[begin_idx + len(RESULT_FRAME_BEGIN) : end_idx].strip()
+        try:
+            payload = json.loads(between)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+    return _decode_discovery_worker_result(stdout)
 
 
 def _validate_discovery_worker_result(
@@ -943,7 +953,7 @@ class SubprocessDiscoveryDispatcher:
                 stderr_text = (
                     self._read_log_tail(log_path) if log_path is not None else None
                 ) or stderr
-                worker_result = _decode_discovery_worker_result(stdout)
+                worker_result = _decode_framed_or_fallback_result(stdout)
                 if proc.returncode is not None and proc.returncode < 0:
                     terminated = self._worker_termination_error(
                         returncode=int(proc.returncode),
@@ -975,7 +985,7 @@ class SubprocessDiscoveryDispatcher:
                             )
                         raise semantic_error
                 if proc.returncode not in {0, None}:
-                    preview = _stderr_preview(stderr_text)
+                    preview = tail_bounded_preview(stderr_text)
                     _logger.warning(
                         "Discover worker exited non-zero for keyword %r (tenant_id=%s profile_id=%s returncode=%s stderr=%r)",
                         request.keyword,
@@ -1027,7 +1037,7 @@ class SubprocessDiscoveryDispatcher:
                 stderr_text = (self._read_log_tail(log_path) if log_path is not None else None) or (
                     stderr or exc.stderr
                 )
-                preview = _stderr_preview(stderr_text)
+                preview = tail_bounded_preview(stderr_text)
                 error_message = f"discover worker timed out for keyword {request.keyword!r}"
                 _logger.warning(
                     "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",

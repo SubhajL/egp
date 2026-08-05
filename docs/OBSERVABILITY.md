@@ -397,3 +397,57 @@ These are explicitly **NOT** in PR-E and tracked for follow-up:
 - **Public read-only Grafana**: expose a redacted "status page" without
   SSH tunneling. Needs Grafana's Viewer-role + a public dashboard +
   Caddy proxy block.
+
+---
+
+## 8. Structured logging (PR-CANARY-01)
+
+The `egp_observability.logging` module provides structured logging primitives
+for the discovery dispatcher subprocess pipeline.
+
+### Event format
+
+Single-line JSON on stderr (executor) or the per-run log file (dispatcher).
+Never stdout (that carries machine-readable results).
+
+```json
+{"event": "executor_started", "execution_backend": "discovery_dispatch", "owner_pid": 12345, "release_sha": "abc123", "ts": "2026-08-05T14:00:00+00:00"}
+```
+
+Fields: `ts` (UTC ISO-8601), `event`, plus optional context (`run_id`, `job_id`,
+`owner_pid`, `child_pid`, `execution_backend`, `release_sha`). None-valued fields
+are omitted. Keys are sorted.
+
+### Result framing
+
+The discover command wraps its final JSON result on stdout in frame delimiters:
+
+```
+---EGP_RESULT_BEGIN---
+{"command": "discover", "run_id": "...", "run_status": "succeeded", ...}
+---EGP_RESULT_END---
+```
+
+The dispatcher extracts the framed result first, falling back to the existing
+reverse-line-scan when no frame markers are present (backward-compatible with
+unframed workers). Non-discover commands (noop, close_check, etc.) continue to
+emit bare JSON.
+
+### Secret redaction
+
+The `redact_preview` function replaces database URL passwords, JWTs, Bearer
+tokens, and Basic auth credentials with `[REDACTED]` before any preview is
+written to logs or profile state.
+
+### Log rotation
+
+The aggregate watcher log (`~/Library/Logs/egp/crawl.log`) is rotated at
+executor startup using copytruncate semantics (preserves the inode so launchd's
+open FD remains valid). Per-run logs (`worker.log`) are never rotated — the
+run-log API reads them by exact path.
+
+### EGP_RELEASE_SHA
+
+Optional env var stamped into structured log events. Set in CI/CD or manually
+in `.env.remotecrawl`. Passed through in `docker-compose.yml` and
+`docker-compose-localdev.yml` for the discovery-executor service.
