@@ -2967,3 +2967,188 @@ def test_run_worker_job_dispatches_scheduled_discovery_command(monkeypatch) -> N
         "executed_job_count": 2,
     }
     assert captured["database_url"] == "sqlite+pysqlite:///worker-schedule.sqlite3"
+
+
+# --- PR-CANARY-03 F2: pre-detail candidate ledger write --------------------
+
+
+def test_run_discover_workflow_durable_candidate_survives_post_acceptance_loss(
+    monkeypatch, tmp_path
+) -> None:
+    # F2/R2 + R5: run_discover_workflow passes a callable candidate_callback into
+    # crawl_live_discovery; invoking it (pre-detail) records a durable `accepted`
+    # row that survives a timeout/browser-death AFTER acceptance (project_callback
+    # never fires).
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "44444444-4444-4444-4444-444444444444"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f2-t4.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        cb = kwargs.get("candidate_callback")
+        assert callable(cb), "workflow must pass candidate_callback to crawl_live_discovery"
+        cb(
+            {
+                "keyword": "k",
+                "page_number": 1,
+                "eligible_ordinal": 0,
+                "row_marker": {"project_name": "P"},
+                "project_name": "P",
+                "project_number": "EGP-1",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        )
+        # simulate a timeout / browser death AFTER acceptance: never persist.
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        candidate_attempt_repo=repo,
+        live=True,
+    )
+
+    summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
+    assert summary.total == 1
+    assert summary.accepted == 1
+    assert summary.persisted == 0
+
+
+def test_run_discover_workflow_finalizes_threaded_key_and_hides_it_from_product_state(
+    monkeypatch, tmp_path
+) -> None:
+    # F2/R4 (e2e) + R6: the threaded key finalizes the SAME row (no orphan) even
+    # when the detail name differs from the search-row name, and the accounting
+    # key never leaks into product state (task payload / event raw_snapshot).
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "55555555-5555-5555-5555-555555555555"
+    project_uuid = "66666666-6666-6666-6666-666666666666"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f2-t5.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class UuidProjectSink:
+        def __init__(self) -> None:
+            self.discovery_events: list[object] = []
+
+        def record_discovery(self, event):
+            self.discovery_events.append(event)
+            return SimpleNamespace(id=project_uuid, project_state=event.project_state)
+
+    sink = UuidProjectSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        cb = kwargs.get("candidate_callback")
+        assert callable(cb)
+        key = cb(
+            {
+                "keyword": "k",
+                "page_number": 1,
+                "eligible_ordinal": 0,
+                "row_marker": {"project_name": "SEARCH-NAME"},
+                "project_name": "SEARCH-NAME",  # search-row name
+                "project_number": "EGP-1",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        )
+        kwargs["project_callback"](
+            {
+                "project_name": "DETAIL-NAME",  # deliberately DIFFERENT from the search row
+                "organization_name": "องค์กร",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "candidate_key": key,
+                "project_state": "discovered",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        candidate_attempt_repo=repo,
+        live=True,
+        live_include_documents=False,
+    )
+
+    summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
+    assert summary.total == 1  # threaded key finalized the SAME row (no orphan)
+    assert summary.persisted == 1
+    assert summary.accepted == 0
+    # R6: the accounting key must NOT leak into product state.
+    assert run_repository.tasks, "a discover task should have been created"
+    assert "candidate_key" not in run_repository.tasks[0]["payload"]
+    assert "candidate_key" not in (sink.discovery_events[0].raw_snapshot or {})
+
+
+def test_direct_path_ignores_untrusted_candidate_key_field(monkeypatch, tmp_path) -> None:
+    # F2 (Tier-2 MEDIUM): a direct / materialized payload must NOT be able to spoof
+    # acceptance by supplying a candidate_key field. The internal key has provenance
+    # (it arrives only via the live callback path), so the direct path records a
+    # fresh accepted row and finalizes it rather than trusting the field.
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "77777777-7777-7777-7777-777777777777"
+    project_uuid = "88888888-8888-8888-8888-888888888888"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f2-t7.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class UuidProjectSink:
+        def __init__(self) -> None:
+            self.discovery_events: list[object] = []
+
+        def record_discovery(self, event):
+            self.discovery_events.append(event)
+            return SimpleNamespace(id=project_uuid, project_state=event.project_state)
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[
+            {
+                "project_name": "P",
+                "organization_name": "องค์กร",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "candidate_key": "SPOOFED-KEY",  # must be ignored, never trusted
+                "project_state": "discovered",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=UuidProjectSink(),
+        candidate_attempt_repo=repo,
+    )
+
+    summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
+    # A real (fresh-key) accepted row was recorded and finalized — the spoofed key
+    # did NOT skip record_accepted (which would leave total == 0).
+    assert summary.total == 1
+    assert summary.persisted == 1

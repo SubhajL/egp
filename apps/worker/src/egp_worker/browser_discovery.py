@@ -216,6 +216,7 @@ def crawl_live_discovery(
     settings: BrowserDiscoverySettings | None = None,
     include_documents: bool = False,
     project_callback: Callable[[dict[str, object]], None] | None = None,
+    candidate_callback: Callable[[dict[str, object]], str | None] | None = None,
     progress_callback: LiveProgressCallback | None = None,
 ) -> list[dict[str, object]]:
     resolved_settings = settings or BrowserDiscoverySettings()
@@ -281,6 +282,11 @@ def crawl_live_discovery(
                         keyword_index += 1
                         resume_state = None
                         continue
+                collect_kwargs: dict[str, object] = {}
+                if candidate_callback is not None:
+                    # Forward only when set so the existing (candidate_callback-free)
+                    # test fakes of _collect_keyword_projects keep their signature.
+                    collect_kwargs["candidate_callback"] = candidate_callback
                 keyword_projects = _collect_keyword_projects(
                     page=page,
                     keyword=active_keyword,
@@ -288,6 +294,7 @@ def crawl_live_discovery(
                     seen_keys=seen_keys,
                     include_documents=include_documents,
                     project_callback=project_callback,
+                    **collect_kwargs,
                 )
                 discovered.extend(keyword_projects)
                 _log_live_progress(
@@ -459,6 +466,7 @@ def _collect_keyword_projects(
     seen_keys: set[str],
     include_documents: bool,
     project_callback: Callable[[dict[str, object]], None] | None = None,
+    candidate_callback: Callable[[dict[str, object]], str | None] | None = None,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     scan = KeywordScanAccumulator(keyword=keyword)
@@ -510,6 +518,9 @@ def _collect_keyword_projects(
                     "project_number": row_payload.get("project_number"),
                     "source_status_text": row_payload["source_status_text"],
                     "row_marker": row_payload["row_marker"],
+                    # F2: coordinates for the pre-detail candidate ledger write.
+                    "page_number": page_num,
+                    "eligible_ordinal": len(eligible_rows),
                 }
             )
         scan.record_page(rows=len(rows), header_signature=header_signature)
@@ -525,6 +536,26 @@ def _collect_keyword_projects(
         )
 
         for row_info in eligible_rows:
+            if candidate_callback is not None:
+                # F2: record durable candidate acceptance BEFORE any detail
+                # navigation, so a timeout / browser death / invalid detail after
+                # this point still leaves a queryable `accepted` row. This call is
+                # intentionally OUTSIDE the per-row try: a ledger-write failure must
+                # propagate un-wrapped and stop the crawl (fail-closed), never be
+                # converted to BrowserClosedDuringKeyword and retried.
+                candidate_key = candidate_callback(
+                    {
+                        "keyword": keyword,
+                        "page_number": row_info["page_number"],
+                        "eligible_ordinal": row_info["eligible_ordinal"],
+                        "row_marker": row_info["row_marker"],
+                        "project_name": row_info["project_name"],
+                        "project_number": row_info.get("project_number"),
+                        "source_status_text": row_info["source_status_text"],
+                    }
+                )
+                if candidate_key is not None:
+                    row_info["candidate_key"] = candidate_key
             try:
                 resolved_row_index = _resolve_results_row_index(page, row_info)
                 if resolved_row_index is None:
@@ -578,6 +609,11 @@ def _collect_keyword_projects(
                 ).casefold()
                 if dedupe_key not in seen_keys:
                     seen_keys.add(dedupe_key)
+                    if row_info.get("candidate_key") is not None:
+                        # F2: thread the pre-detail candidate_key onto the payload
+                        # (authoritative — overwrite any stale detail value) so the
+                        # workflow finalizes the exact accepted row.
+                        payload["candidate_key"] = row_info["candidate_key"]
                     results.append(payload)
                     if project_callback is not None:
                         project_callback(payload)

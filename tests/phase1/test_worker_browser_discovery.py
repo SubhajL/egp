@@ -3934,3 +3934,215 @@ def test_collect_keyword_projects_all_skip_rows_is_not_a_canary() -> None:
     assert summary["accepted"] == 0
     assert summary["skip_hits"] == 1
     assert summary["reason_code"] == "ok"
+
+
+# --- PR-CANARY-03 F2: pre-detail candidate ledger write --------------------
+
+
+def _single_eligible_results_page() -> FakeResultsPage:
+    return FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="1",
+                        organization="หน่วยงาน A",
+                        project_name="โครงการ F2",
+                    ),
+                ],
+            )
+        ]
+    )
+
+
+def test_collect_keyword_projects_records_candidate_strictly_before_detail(
+    monkeypatch,
+) -> None:
+    # F2/R1: the durable acceptance callback fires STRICTLY before detail
+    # navigation, so a payload=None / timeout after acceptance still leaves the
+    # candidate recorded. A shared ordered log (not call counts) proves ordering.
+    seq: list[str] = []
+    seen_candidate: dict[str, object] = {}
+
+    def candidate_callback(info: dict[str, object]) -> str:
+        seq.append("candidate")
+        seen_candidate.update(info)
+        return "KEY-1"
+
+    def fake_open(
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+    ):
+        seq.append("open")
+        return None  # invalid detail / payload is None AFTER acceptance
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    project_calls: list[dict[str, object]] = []
+
+    _collect_keyword_projects(
+        page=_single_eligible_results_page(),
+        keyword="ระบบข้อมูล",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+        project_callback=lambda payload: project_calls.append(payload),
+        candidate_callback=candidate_callback,
+    )
+
+    assert seq == ["candidate", "open"]  # accepted BEFORE the detail attempt
+    assert seen_candidate["page_number"] == 1
+    assert seen_candidate["eligible_ordinal"] == 0
+    assert seen_candidate["project_name"] == "โครงการ F2"
+    assert isinstance(seen_candidate.get("row_marker"), dict)
+    assert project_calls == []  # detail returned None -> persistence callback not reached
+
+
+def test_collect_keyword_projects_fail_closed_unwrapped_on_write_failure(
+    monkeypatch,
+) -> None:
+    # F2/R3: a durable-write failure propagates UN-WRAPPED (not converted to
+    # BrowserClosedDuringKeyword, even with a "has been closed" message) and no
+    # detail navigation happens. The message deliberately contains the
+    # browser-closed marker to prove the callback runs OUTSIDE the per-row try.
+    open_calls: list[int] = []
+
+    def fake_open(
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+    ):
+        open_calls.append(row_index)
+        return {
+            "project_name": "should-not-open",
+            "project_number": "EGP-X",
+            "source_status_text": source_status_text,
+        }
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+
+    def raising_candidate(info: dict[str, object]) -> str:
+        raise RuntimeError("candidate ledger write failed: connection has been closed")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _collect_keyword_projects(
+            page=_single_eligible_results_page(),
+            keyword="k",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+            seen_keys=set(),
+            include_documents=False,
+            candidate_callback=raising_candidate,
+        )
+
+    assert not isinstance(excinfo.value, BrowserClosedDuringKeyword)
+    assert open_calls == []  # no e-GP detail traffic after the failed durable write
+
+
+def test_collect_keyword_projects_threads_authoritative_candidate_key(
+    monkeypatch,
+) -> None:
+    # F2/R4: the pre-detail candidate_key is threaded onto the payload delivered
+    # to project_callback, AUTHORITATIVELY (overwriting any stale detail key), so
+    # finalize targets the same accepted row.
+    def fake_open(
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+    ):
+        return {
+            "project_name": "detail-name",
+            "project_number": "EGP-9",
+            "source_status_text": source_status_text,
+            "candidate_key": "STALE",  # must be overwritten by the pre-detail key
+        }
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    captured: list[dict[str, object]] = []
+
+    _collect_keyword_projects(
+        page=_single_eligible_results_page(),
+        keyword="k",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+        project_callback=lambda payload: captured.append(payload),
+        candidate_callback=lambda info: "KEY-1",
+    )
+
+    assert len(captured) == 1
+    assert captured[0]["candidate_key"] == "KEY-1"
+
+
+def test_crawl_live_discovery_forwards_candidate_callback_to_collector(
+    monkeypatch,
+) -> None:
+    # F2/R5 (anti-vacuity): the REAL crawl_live_discovery forwards
+    # candidate_callback to _collect_keyword_projects. Without this seam, every
+    # other F2 test could pass while production still writes the ledger late.
+    settings = BrowserDiscoverySettings()
+    page = FakeSearchPage()
+    browser = SimpleNamespace(close=lambda: None)
+    playwright = SimpleNamespace(stop=lambda: None)
+    chrome = SimpleNamespace()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.sync_playwright",
+        lambda: SimpleNamespace(start=lambda: playwright),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.connect_playwright_to_chrome",
+        lambda pw, settings: (browser, page),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._goto_with_recovery", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare_or_operator",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword", lambda page, keyword, settings: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.clear_search", lambda page, settings: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def spy(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr("egp_worker.browser_discovery._collect_keyword_projects", spy)
+
+    crawl_live_discovery(
+        keyword="k",
+        settings=settings,
+        include_documents=False,
+        candidate_callback=sentinel,
+    )
+
+    assert captured.get("candidate_callback") is sentinel

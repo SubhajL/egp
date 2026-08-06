@@ -513,9 +513,18 @@ def run_discover_workflow(
         )
         backfill_recorded_project_ids.add(project_id)
 
-    def _persist_discovered_project(discovered: dict[str, object]) -> ProjectRecord | None:
+    def _persist_discovered_project(
+        discovered: dict[str, object], *, candidate_key: str | None = None
+    ) -> ProjectRecord | None:
         nonlocal error_count, ignored_late_stage_projects, keyword_task_creation_blocked
         nonlocal project_task_count, run_failure_code, run_level_error
+        # F2: the authoritative pre-detail candidate key arrives ONLY via the
+        # `candidate_key` parameter (set by the live browser path). Any candidate_key
+        # FIELD carried in the payload is untrusted — pop it so it can neither leak
+        # into the product task payload / event snapshot (worker/product boundary)
+        # nor spoof prior acceptance on the direct/materialized path.
+        discovered.pop("candidate_key", None)
+        candidate_key_value: str | None = candidate_key
         source_status_text = str(discovered.get("source_status_text") or "")
         if not is_discoverable_stage_status(source_status_text):
             ignored_late_stage_projects += 1
@@ -549,8 +558,10 @@ def run_discover_workflow(
                 trigger_type=trigger_type,
             )
         # -- candidate accounting: record acceptance before persistence --
-        candidate_key_value: str | None = None
-        if candidate_attempt_repo is not None:
+        # Live browser rows already recorded acceptance pre-detail (candidate_key
+        # threaded + popped above). Only the direct / materialized-payload path,
+        # which has no detail-loss gap, records acceptance here.
+        if candidate_key_value is None and candidate_attempt_repo is not None:
             page_num = discovered.get("page_number")
             row_ord = discovered.get("row_ordinal")
             candidate_key_value = compute_candidate_key(
@@ -724,7 +735,39 @@ def run_discover_workflow(
                     if live_include_documents
                     else _mark_live_document_collection_deferred(discovered)
                 )
-                _persist_discovered_project(live_project)
+                # F2: hand the browser-threaded candidate key to the persister with
+                # provenance (a parameter), never as a trusted payload field.
+                threaded_key = live_project.pop("candidate_key", None)
+                _persist_discovered_project(
+                    live_project,
+                    candidate_key=str(threaded_key) if threaded_key is not None else None,
+                )
+
+            def _record_live_candidate(candidate_info: dict[str, object]) -> str | None:
+                # F2: durable pre-detail candidate acceptance. Invoked for each
+                # eligible row BEFORE detail navigation; raising stops the crawl
+                # (fail-closed). Run-level authorization already gated browser
+                # traffic at workflow entry, so no per-keyword re-authorization here.
+                if candidate_attempt_repo is None:
+                    return None
+                candidate_keyword = str(candidate_info.get("keyword") or keyword)
+                page_number = candidate_info.get("page_number")
+                eligible_ordinal = candidate_info.get("eligible_ordinal")
+                candidate_key = compute_candidate_key(
+                    keyword=candidate_keyword,
+                    page_number=int(page_number) if page_number is not None else 0,
+                    row_ordinal=int(eligible_ordinal) if eligible_ordinal is not None else 0,
+                    project_name=str(candidate_info.get("project_name") or ""),
+                )
+                candidate_attempt_repo.record_accepted(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    candidate_key=candidate_key,
+                    keyword=candidate_keyword,
+                    page_number=int(page_number) if page_number is not None else None,
+                    row_ordinal=int(eligible_ordinal) if eligible_ordinal is not None else None,
+                )
+                return candidate_key
 
             crawl_live_discovery(
                 keyword=keyword,
@@ -732,6 +775,7 @@ def run_discover_workflow(
                 settings=browser_settings,
                 include_documents=live_include_documents,
                 project_callback=_persist_live_project,
+                candidate_callback=_record_live_candidate,
                 progress_callback=_record_live_progress,
             )
             resolved_projects = []
