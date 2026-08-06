@@ -9,6 +9,7 @@ from egp_shared_types.enums import (
     ArtifactBucket,
     CrawlOutcomeReason,
     ProcurementType,
+    ProjectDetailReason,
     ProjectState,
 )
 from egp_worker.browser_close_check import (
@@ -28,8 +29,10 @@ from egp_worker.browser_discovery import (
     _results_header_signature,
     ResultsPageRecoveryError,
     SearchPageStateError,
+    DetailOutcomeSink,
     _collect_documents_for_payload,
     _collect_keyword_projects,
+    classify_detail_page,
     _resolve_results_row_index,
     _run_project_extraction_with_timeout,
     _return_to_results,
@@ -4146,3 +4149,409 @@ def test_crawl_live_discovery_forwards_candidate_callback_to_collector(
     )
 
     assert captured.get("candidate_callback") is sentinel
+
+
+# ---------------------------------------------------------------------------
+# PR-CANARY-03 F3 — typed browser outcomes (classifier + outcome sink)
+# ---------------------------------------------------------------------------
+
+
+def _f3_detail_page(*, body: str, url: str) -> SimpleNamespace:
+    return SimpleNamespace(url=url, inner_text=lambda selector: body)
+
+
+def test_classify_detail_page_rejection_for_e1530() -> None:
+    page = _f3_detail_page(
+        body="ข้อมูลโครงการ\nข้อความปฎิเสธ : E1530 : ค้นหาข้อมูลในฐานข้อมูลไม่พบ",
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/x",
+    )
+    assert classify_detail_page(page, {}) is ProjectDetailReason.REJECTION_PAGE
+
+
+def test_classify_detail_page_results_page_beats_placeholder_on_blanks() -> None:
+    results_body = "จำนวนโครงการที่พบ : 25\nรายการ"
+    page = _f3_detail_page(
+        body=results_body,
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement",
+    )
+    blank_detail = {"project_name": "", "organization": "", "project_number": ""}
+    assert (
+        classify_detail_page(page, blank_detail) is ProjectDetailReason.RESULTS_PAGE_RETURNED
+    )
+    procurement_page = _f3_detail_page(
+        body=results_body,
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail",
+    )
+    assert classify_detail_page(procurement_page, blank_detail) is ProjectDetailReason.VALID
+
+
+def test_classify_detail_page_placeholder_for_header_values() -> None:
+    page = _f3_detail_page(
+        body="ข้อมูลโครงการ",
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/x",
+    )
+    detail = {
+        "project_name": "ชื่อโครงการ",
+        "organization": "ชื่อหน่วยงาน",
+        "project_number": "เลขที่โครงการ",
+    }
+    assert classify_detail_page(page, detail) is ProjectDetailReason.PLACEHOLDER_DETAIL
+
+
+def test_classify_detail_page_valid_for_good_detail() -> None:
+    page = _f3_detail_page(
+        body="ข้อมูลโครงการ",
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail",
+    )
+    detail = {
+        "project_name": "จัดซื้อระบบคอมพิวเตอร์",
+        "organization": "กรมการปกครอง",
+        "project_number": "66019999999",
+    }
+    assert classify_detail_page(page, detail) is ProjectDetailReason.VALID
+
+
+def _f3_patch_open_common(monkeypatch, *, extract) -> None:
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: True,
+    )
+    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
+    )
+    monkeypatch.setattr("egp_worker.browser_discovery.extract_project_info", lambda page: extract)
+
+
+def test_open_and_extract_missing_required_when_blank(monkeypatch) -> None:
+    _f3_patch_open_common(
+        monkeypatch,
+        extract={
+            "project_name": "",
+            "organization": "กรมการปกครอง",
+            "project_number": "1",
+            "proposal_submission_date": "",
+            "budget": "",
+        },
+    )
+    page = SimpleNamespace(
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail",
+        inner_text=lambda selector: "ข้อมูลโครงการ",
+    )
+    sink = DetailOutcomeSink()
+    payload = open_and_extract_project(
+        page=page,
+        row_index=0,
+        keyword="k",
+        outcome_sink=sink,
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+    assert payload is None
+    assert sink.reason is ProjectDetailReason.MISSING_REQUIRED_FIELDS
+
+
+def test_open_and_extract_writes_navigation_failure_to_sink(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.navigate_to_project_by_row",
+        lambda page, row_index: False,
+    )
+    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None)
+    page = SimpleNamespace(url="x", inner_text=lambda selector: "")
+    sink = DetailOutcomeSink()
+    payload = open_and_extract_project(page=page, row_index=0, keyword="k", outcome_sink=sink)
+    assert payload is None
+    assert sink.reason is ProjectDetailReason.NAVIGATION_FAILURE
+
+
+def test_open_and_extract_does_not_emit_anomaly_stage(monkeypatch) -> None:
+    _f3_patch_open_common(
+        monkeypatch,
+        extract={
+            "project_name": "ชื่อหน่วยงาน",
+            "organization": "x",
+            "project_number": "1",
+            "proposal_submission_date": "",
+            "budget": "",
+        },
+    )
+    page = SimpleNamespace(
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/bad",
+        inner_text=lambda selector: "ข้อความปฎิเสธ : E1530",
+    )
+    events: list[dict[str, object]] = []
+    token = _LIVE_PROGRESS_CALLBACK.set(events.append)
+    try:
+        payload = open_and_extract_project(page=page, row_index=0, keyword="k")
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+    assert payload is None
+    stages = {str(event.get("stage")) for event in events}
+    assert "project_detail_invalid" not in stages
+    assert "project_detail_missing_required_fields" not in stages
+
+
+def test_open_and_extract_return_unchanged_without_sink(monkeypatch) -> None:
+    _f3_patch_open_common(
+        monkeypatch,
+        extract={
+            "project_name": "ชื่อโครงการ",
+            "organization": "ชื่อหน่วยงาน",
+            "project_number": "เลขที่โครงการ",
+            "proposal_submission_date": "",
+            "budget": "",
+        },
+    )
+    page = SimpleNamespace(
+        url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail",
+        inner_text=lambda selector: "ข้อมูลโครงการ",
+    )
+    payload = open_and_extract_project(page=page, row_index=0, keyword="k")
+    assert payload is None
+
+
+# ---------------------------------------------------------------------------
+# PR-CANARY-03 F3 — bounded retry + terminal anomaly + diagnostic dispatch
+# ---------------------------------------------------------------------------
+
+
+def _f3_single_row_page() -> FakeResultsPage:
+    table = FakeTable(
+        _results_headers(),
+        [_results_row(index="1", organization="หน่วยงาน A", project_name="โครงการ A")],
+    )
+    return FakeResultsPage([table])
+
+
+def _f3_seq_resolver(monkeypatch, indices) -> None:
+    seq = list(indices)
+
+    def _resolve(page, row_marker):
+        return seq.pop(0) if seq else 0
+
+    monkeypatch.setattr("egp_worker.browser_discovery._resolve_results_row_index", _resolve)
+
+
+def test_collect_retries_once_on_transient_then_succeeds(monkeypatch) -> None:
+    page = _f3_single_row_page()
+    opened: list[int] = []
+
+    def fake_open(*, row_index, source_status_text, outcome_sink=None, **kwargs):
+        opened.append(row_index)
+        if len(opened) == 1:
+            if outcome_sink is not None:
+                outcome_sink.reason = ProjectDetailReason.NAVIGATION_FAILURE
+            return None
+        if outcome_sink is not None:
+            outcome_sink.reason = ProjectDetailReason.VALID
+        return {
+            "project_name": "โครงการ A",
+            "project_number": "EGP-A",
+            "source_status_text": source_status_text,
+        }
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    _f3_seq_resolver(monkeypatch, [0, 5])
+    collected: list[dict] = []
+    results = _collect_keyword_projects(
+        page=page,
+        keyword="k",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+        project_callback=collected.append,
+    )
+    assert opened == [0, 5]  # retried once, re-resolved the row for the 2nd attempt
+    assert [result["project_name"] for result in results] == ["โครงการ A"]
+    assert len(collected) == 1
+
+
+def test_collect_does_not_retry_definitive_rejection(monkeypatch) -> None:
+    page = _f3_single_row_page()
+    opened: list[int] = []
+    restore_calls: list[int] = []
+
+    def fake_open(*, row_index, outcome_sink=None, **kwargs):
+        opened.append(row_index)
+        if outcome_sink is not None:
+            outcome_sink.reason = ProjectDetailReason.REJECTION_PAGE
+        return None
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda *a, **k: restore_calls.append(1),
+    )
+    _f3_seq_resolver(monkeypatch, [0])
+    results = _collect_keyword_projects(
+        page=page,
+        keyword="k",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys=set(),
+        include_documents=False,
+    )
+    assert opened == [0]  # definitive: no retry
+    assert results == []
+    assert len(restore_calls) == 1  # single terminal restore
+
+
+def _f3_run_collect_terminal(monkeypatch, reason, *, diagnostics_dir=None):
+    page = _f3_single_row_page()
+    page.screenshot = lambda full_page=False, timeout=None: b"PNG"
+
+    def fake_open(*, outcome_sink=None, **kwargs):
+        if outcome_sink is not None:
+            outcome_sink.reason = reason
+        return None
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    _f3_seq_resolver(monkeypatch, [0])
+    events: list[dict] = []
+    token = _LIVE_PROGRESS_CALLBACK.set(events.append)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="k",
+            settings=BrowserDiscoverySettings(
+                max_pages_per_keyword=1, diagnostics_dir=diagnostics_dir
+            ),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+    return results, events
+
+
+def test_collect_emits_terminal_anomaly_stage_once_for_rejection(monkeypatch) -> None:
+    _results, events = _f3_run_collect_terminal(monkeypatch, ProjectDetailReason.REJECTION_PAGE)
+    stages = [event["stage"] for event in events]
+    assert stages.count("project_detail_invalid") == 1
+
+
+def test_collect_emits_terminal_anomaly_stage_once_for_missing(monkeypatch) -> None:
+    _results, events = _f3_run_collect_terminal(
+        monkeypatch, ProjectDetailReason.MISSING_REQUIRED_FIELDS
+    )
+    stages = [event["stage"] for event in events]
+    assert stages.count("project_detail_missing_required_fields") == 1
+
+
+def test_collect_no_anomaly_stage_when_transient_recovers(monkeypatch) -> None:
+    page = _f3_single_row_page()
+    attempts: list[int] = []
+
+    def fake_open(*, source_status_text, outcome_sink=None, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            if outcome_sink is not None:
+                outcome_sink.reason = ProjectDetailReason.NAVIGATION_FAILURE
+            return None
+        if outcome_sink is not None:
+            outcome_sink.reason = ProjectDetailReason.VALID
+        return {
+            "project_name": "โครงการ A",
+            "project_number": "EGP-A",
+            "source_status_text": source_status_text,
+        }
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    _f3_seq_resolver(monkeypatch, [0, 0])
+    events: list[dict] = []
+    token = _LIVE_PROGRESS_CALLBACK.set(events.append)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="k",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+    stages = {event["stage"] for event in events}
+    assert "project_detail_invalid" not in stages
+    assert "project_detail_missing_required_fields" not in stages
+    assert len(results) == 1
+
+
+def test_collect_captures_one_diagnostic_on_terminal_anomaly(monkeypatch, tmp_path) -> None:
+    results, events = _f3_run_collect_terminal(
+        monkeypatch, ProjectDetailReason.REJECTION_PAGE, diagnostics_dir=tmp_path
+    )
+    assert results == []
+    assert len(list(tmp_path.glob("*.png"))) == 1
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    diag_events = [event for event in events if event["stage"] == "browser_diagnostic"]
+    assert len(diag_events) == 1
+    assert diag_events[0].get("diagnostic") == "captured"
+
+
+def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypatch) -> None:
+    # F3: a NEW keyword whose first search returns no results must consume the
+    # recovery budget before `keyword_no_results` is terminal (Codex-A2 fix).
+    settings = BrowserDiscoverySettings(search_page_recovery_retries=1)
+    page = FakeSearchPage()
+    browser = SimpleNamespace(close=lambda: None)
+    playwright = SimpleNamespace(stop=lambda: None)
+    chrome = SimpleNamespace()
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.sync_playwright",
+        lambda: SimpleNamespace(start=lambda: playwright),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.connect_playwright_to_chrome",
+        lambda pw, settings: (browser, page),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare", lambda *args, **kwargs: True
+    )
+    search_calls: list[str] = []
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: search_calls.append(keyword),
+    )
+    monkeypatch.setattr("egp_worker.browser_discovery.clear_search", lambda page, settings: None)
+    no_results_states = iter([True, False])
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page",
+        lambda page: next(no_results_states, False),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.restore_results_page",
+        lambda page, keyword, target_page_num, settings: None,
+    )
+    monkeypatch.setattr("egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None)
+    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._collect_keyword_projects",
+        lambda **kwargs: [{"project_name": "Recovered", "project_number": "6901"}],
+    )
+    events: list[dict[str, object]] = []
+    discovered = crawl_live_discovery(
+        keyword="ที่ปรึกษา",
+        settings=settings,
+        include_documents=False,
+        progress_callback=events.append,
+    )
+    assert discovered == [{"project_name": "Recovered", "project_number": "6901"}]
+    stages = [event["stage"] for event in events]
+    assert "keyword_no_results_recovery" in stages
+    assert "keyword_no_results" not in stages
+    assert search_calls.count("ที่ปรึกษา") == 2  # initial + one budgeted recovery
+
+
+def test_collect_no_diagnostic_for_out_of_scope_terminal(monkeypatch, tmp_path) -> None:
+    # QCHECK T1-LOW1 fix: a deliberate out-of-scope skip is NOT an anomaly, so even
+    # with diagnostics configured it neither emits an anomaly stage nor captures.
+    results, events = _f3_run_collect_terminal(
+        monkeypatch, ProjectDetailReason.OUT_OF_SCOPE_STAGE, diagnostics_dir=tmp_path
+    )
+    assert results == []
+    assert list(tmp_path.glob("*")) == []
+    assert [event for event in events if event["stage"] == "browser_diagnostic"] == []

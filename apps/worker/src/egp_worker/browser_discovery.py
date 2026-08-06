@@ -46,9 +46,11 @@ from egp_shared_types.enums import (
     ArtifactBucket,
     CrawlOutcomeReason,
     ProcurementType,
+    ProjectDetailReason,
     ProjectState,
 )
 
+from .browser_diagnostics import capture_detail_diagnostic, capture_keyword_diagnostic
 from .browser_downloads import collect_downloaded_documents
 from .browser_site_state import clear_site_error_toast, has_site_error_toast
 from .profiles import resolve_profile_keywords
@@ -101,6 +103,7 @@ class BrowserDiscoverySettings:
     browser_profile_dir: Path = Path.home() / "download" / "TOR" / ".browser_profile"
     proxy_server: str | None = None
     use_xvfb: bool = False
+    diagnostics_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +111,35 @@ class DiscoveryResumeState:
     keyword_index: int
     keyword: str
     page_num: int = 1
+
+
+@dataclass(slots=True)
+class DetailOutcomeSink:
+    """Mutable out-parameter carrying the typed reason of one detail open (F3).
+
+    Lets ``open_and_extract_project`` report *why* it returned ``None`` without
+    changing its ``dict | None`` return contract (kept for ~28 existing callers /
+    fakes). Carries no product data.
+    """
+
+    reason: ProjectDetailReason = ProjectDetailReason.UNKNOWN
+
+
+# F3: transient detail reasons get exactly one bounded retry after restoring the
+# search row; definitive refusal / out-of-scope / unknown reasons do not.
+_TRANSIENT_RETRY_REASONS: frozenset[ProjectDetailReason] = frozenset(
+    {
+        ProjectDetailReason.NAVIGATION_FAILURE,
+        ProjectDetailReason.RESULTS_PAGE_RETURNED,
+        ProjectDetailReason.MISSING_REQUIRED_FIELDS,
+    }
+)
+# Terminal reasons that are genuine anomalies worth a private diagnostic. A
+# deliberate out-of-scope skip (preliminary pricing) and UNKNOWN are excluded.
+_DIAGNOSTIC_REASONS: frozenset[ProjectDetailReason] = frozenset(
+    _TRANSIENT_RETRY_REASONS
+    | {ProjectDetailReason.REJECTION_PAGE, ProjectDetailReason.PLACEHOLDER_DETAIL}
+)
 
 
 class BrowserClosedDuringKeyword(RuntimeError):
@@ -265,11 +297,37 @@ def crawl_live_discovery(
                     if keyword_index > 0:
                         clear_search(page, resolved_settings)
                     search_keyword(page, active_keyword, resolved_settings)
+                    # F3: `search_keyword`'s own no-results retry is gated to the
+                    # fresh-page / same-keyword case, so a NEW keyword after a
+                    # keyword that had rows would be terminal on the first empty hit
+                    # despite remaining budget. Apply the recovery budget uniformly
+                    # here before treating `keyword_no_results` as terminal.
+                    no_results_recoveries = 0
+                    while (
+                        is_no_results_page(page)
+                        and no_results_recoveries < resolved_settings.search_page_recovery_retries
+                    ):
+                        no_results_recoveries += 1
+                        _log_live_progress(
+                            "keyword_no_results_recovery",
+                            keyword=active_keyword,
+                            extra={
+                                "attempt": no_results_recoveries,
+                                "budget": resolved_settings.search_page_recovery_retries,
+                            },
+                        )
+                        clear_search(page, resolved_settings)
+                        search_keyword(page, active_keyword, resolved_settings)
                     if is_no_results_page(page):
                         log_results_debug_snapshot(
                             page,
                             active_keyword,
                             "keyword_no_results",
+                        )
+                        keyword_diag = capture_keyword_diagnostic(
+                            page,
+                            keyword=active_keyword,
+                            diagnostics_dir=resolved_settings.diagnostics_dir,
                         )
                         _log_live_progress(
                             "keyword_no_results",
@@ -277,6 +335,7 @@ def crawl_live_discovery(
                             extra={
                                 "keyword_index": keyword_index + 1,
                                 "keyword_count": len(keywords),
+                                "diagnostic": str(keyword_diag.get("status") or "failed"),
                             },
                         )
                         keyword_index += 1
@@ -458,6 +517,88 @@ def _read_egp_found_count(page) -> int | None:
         return None
 
 
+_ANOMALY_STAGE_BY_REASON: dict[ProjectDetailReason, str] = {
+    ProjectDetailReason.MISSING_REQUIRED_FIELDS: "project_detail_missing_required_fields",
+    ProjectDetailReason.REJECTION_PAGE: "project_detail_invalid",
+    ProjectDetailReason.PLACEHOLDER_DETAIL: "project_detail_invalid",
+    ProjectDetailReason.RESULTS_PAGE_RETURNED: "project_detail_invalid",
+    ProjectDetailReason.NAVIGATION_FAILURE: "project_detail_invalid",
+}
+
+
+def _emit_terminal_detail_anomaly(
+    reason: ProjectDetailReason, keyword: str, row_info: dict[str, object]
+) -> None:
+    """Emit the anomaly progress stage ONCE, from the caller, only when a candidate
+    is terminal (post-retry). Out-of-scope skips / UNKNOWN / VALID are not anomalies.
+    Emitting per detail attempt (as the old code did) would poison a run whose
+    transient failure recovered on the bounded retry."""
+    stage = _ANOMALY_STAGE_BY_REASON.get(reason)
+    if stage is None:
+        return
+    _log_live_progress(stage, keyword=keyword, row_marker=row_info, extra={"reason": reason.value})
+
+
+def _safe_capture_detail_diagnostic(
+    page,
+    *,
+    reason,
+    marker: dict[str, object],
+    keyword: str,
+    diagnostics_dir: Path | None,
+) -> None:
+    """Capture one private diagnostic (fail-open at the call site too) and record a
+    bounded ``browser_diagnostic`` status event so an absent diagnostic is itself a
+    bounded flag, never a crawl failure."""
+    try:
+        result = capture_detail_diagnostic(
+            page,
+            reason=str(reason),
+            marker=marker,
+            keyword=keyword,
+            diagnostics_dir=diagnostics_dir,
+        )
+    except Exception:  # noqa: BLE001 - fail-open: a diagnostic must never fail a crawl
+        result = {"status": "failed"}
+    _log_live_progress(
+        "browser_diagnostic",
+        keyword=keyword,
+        row_marker=marker,
+        extra={"reason": str(reason), "diagnostic": str(result.get("status") or "failed")},
+    )
+
+
+def _open_detail_attempt(
+    *,
+    page,
+    settings: BrowserDiscoverySettings,
+    keyword: str,
+    open_project,
+    row_info: dict[str, object],
+    target_index: int,
+    sink: DetailOutcomeSink,
+    pass_sink: bool,
+    include_documents: bool,
+) -> dict[str, object] | None:
+    open_project_kwargs: dict[str, object] = {
+        "page": page,
+        "row_index": target_index,
+        "keyword": keyword,
+        "include_documents": False if include_documents else include_documents,
+        "source_status_text": str(row_info["source_status_text"]),
+    }
+    if _callable_accepts_argument(open_project, "search_name"):
+        open_project_kwargs["search_name"] = str(row_info.get("search_name") or "")
+    if pass_sink:
+        open_project_kwargs["outcome_sink"] = sink
+    return _run_project_extraction_with_timeout(
+        lambda: open_project(**open_project_kwargs),
+        timeout_s=settings.project_detail_timeout_s,
+        keyword=keyword,
+        row_marker=row_info,
+    )
+
+
 def _collect_keyword_projects(
     *,
     page,
@@ -567,21 +708,46 @@ def _collect_keyword_projects(
                     )
                 _log_live_progress("project_open_start", keyword=keyword, row_marker=row_info)
                 open_project = open_and_extract_project
-                open_project_kwargs = {
-                    "page": page,
-                    "row_index": resolved_row_index,
-                    "keyword": keyword,
-                    "include_documents": False if include_documents else include_documents,
-                    "source_status_text": str(row_info["source_status_text"]),
-                }
-                if _callable_accepts_argument(open_project, "search_name"):
-                    open_project_kwargs["search_name"] = str(row_info.get("search_name") or "")
-                payload = _run_project_extraction_with_timeout(
-                    lambda: open_project(**open_project_kwargs),
-                    timeout_s=settings.project_detail_timeout_s,
+                sink = DetailOutcomeSink()
+                pass_sink = _callable_accepts_argument(open_project, "outcome_sink")
+                payload = _open_detail_attempt(
+                    page=page,
+                    settings=settings,
                     keyword=keyword,
-                    row_marker=row_info,
+                    open_project=open_project,
+                    row_info=row_info,
+                    target_index=resolved_row_index,
+                    sink=sink,
+                    pass_sink=pass_sink,
+                    include_documents=include_documents,
                 )
+                restored_to_results = False
+                if payload is None and sink.reason in _TRANSIENT_RETRY_REASONS:
+                    # F3: exactly one bounded retry after restoring the search row.
+                    _return_to_results(
+                        page,
+                        settings,
+                        keyword=keyword,
+                        target_page_num=page_num,
+                        row_marker=row_info,
+                    )
+                    retry_index = _resolve_results_row_index(page, row_info)
+                    if retry_index is not None:
+                        payload = _open_detail_attempt(
+                            page=page,
+                            settings=settings,
+                            keyword=keyword,
+                            open_project=open_project,
+                            row_info=row_info,
+                            target_index=retry_index,
+                            sink=sink,
+                            pass_sink=pass_sink,
+                            include_documents=include_documents,
+                        )
+                    else:
+                        # Restored but could not re-locate the row: already on the
+                        # results page, so skip the second restore below.
+                        restored_to_results = True
                 if payload is not None and include_documents:
                     payload = _collect_documents_for_payload(
                         page,
@@ -593,16 +759,30 @@ def _collect_keyword_projects(
                     "project_open_finished", keyword=keyword, row_marker=payload or row_info
                 )
                 if payload is None:
+                    # F3: terminal candidate anomaly — emit the anomaly stage ONCE
+                    # here (post-retry) and capture at most one fail-open diagnostic.
+                    # A deliberate out-of-scope skip / UNKNOWN is not an anomaly, so
+                    # it neither emits a stage nor captures a diagnostic.
+                    _emit_terminal_detail_anomaly(sink.reason, keyword, row_info)
+                    if sink.reason in _DIAGNOSTIC_REASONS:
+                        _safe_capture_detail_diagnostic(
+                            page,
+                            reason=sink.reason,
+                            marker=row_info,
+                            keyword=keyword,
+                            diagnostics_dir=settings.diagnostics_dir,
+                        )
                     seen_keys.add(
                         str(row_info.get("project_number") or row_info["project_name"]).casefold()
                     )
-                    _return_to_results(
-                        page,
-                        settings,
-                        keyword=keyword,
-                        target_page_num=page_num,
-                        row_marker=row_info,
-                    )
+                    if not restored_to_results:
+                        _return_to_results(
+                            page,
+                            settings,
+                            keyword=keyword,
+                            target_page_num=page_num,
+                            row_marker=row_info,
+                        )
                     continue
                 dedupe_key = str(
                     payload.get("project_number") or payload["project_name"]
@@ -642,6 +822,15 @@ def _collect_keyword_projects(
                     keyword,
                     f"project_timeout:{row_info.get('project_name') or 'unknown-row'}",
                     expected_marker=row_info,
+                )
+                # F3: a detail timeout is a terminal candidate anomaly — capture one
+                # fail-open private diagnostic. The existing recovery below is unchanged.
+                _safe_capture_detail_diagnostic(
+                    page,
+                    reason="project_timeout",
+                    marker=row_info,
+                    keyword=keyword,
+                    diagnostics_dir=settings.diagnostics_dir,
                 )
                 try:
                     _return_to_results(
@@ -1094,7 +1283,12 @@ def open_and_extract_project(
     search_name: str | None = None,
     include_documents: bool = False,
     source_status_text: str = TARGET_STATUS,
+    outcome_sink: DetailOutcomeSink | None = None,
 ) -> dict[str, object] | None:
+    def _record_reason(reason: ProjectDetailReason) -> None:
+        if outcome_sink is not None:
+            outcome_sink.reason = reason
+
     _log_live_progress(
         "project_detail_click_start",
         keyword=keyword,
@@ -1106,6 +1300,7 @@ def open_and_extract_project(
             keyword=keyword,
             row_marker={"row_index": row_index, "source_status_text": source_status_text},
         )
+        _record_reason(ProjectDetailReason.NAVIGATION_FAILURE)
         return None
     _log_live_progress(
         "project_detail_click_finished",
@@ -1119,6 +1314,7 @@ def open_and_extract_project(
             keyword=keyword,
             row_marker={"row_index": row_index, "source_status_text": source_status_text},
         )
+        _record_reason(ProjectDetailReason.OUT_OF_SCOPE_STAGE)
         return None
     _log_live_progress(
         "project_detail_extract_start",
@@ -1126,34 +1322,20 @@ def open_and_extract_project(
         row_marker={"row_index": row_index, "source_status_text": source_status_text},
     )
     detail = extract_project_info(page)
-    if _detail_page_is_invalid(page, detail):
-        _log_live_progress(
-            "project_detail_invalid",
-            keyword=keyword,
-            row_marker={
-                "row_index": row_index,
-                "source_status_text": source_status_text,
-                "project_name": str(detail.get("project_name") or ""),
-                "organization_name": str(detail.get("organization") or ""),
-                "project_number": str(detail.get("project_number") or ""),
-            },
-        )
+    detail_reason = classify_detail_page(page, detail)
+    if detail_reason is not ProjectDetailReason.VALID:
+        # F3: the anomaly progress stage is emitted once, by the caller, only when
+        # the row is terminal (post-retry). Emitting it here would poison a run
+        # whose transient failure recovers on the bounded retry.
+        _record_reason(detail_reason)
         return None
     project_name = detail.get("project_name") or ""
     organization_name = detail.get("organization") or ""
-    if not project_name or not organization_name:
-        _log_live_progress(
-            "project_detail_missing_required_fields",
-            keyword=keyword,
-            row_marker={
-                "row_index": row_index,
-                "source_status_text": source_status_text,
-                "project_name": str(project_name),
-                "organization_name": str(organization_name),
-                "project_number": str(detail.get("project_number") or ""),
-            },
-        )
+    project_number = detail.get("project_number") or ""
+    if not project_name or not organization_name or not project_number:
+        _record_reason(ProjectDetailReason.MISSING_REQUIRED_FIELDS)
         return None
+    _record_reason(ProjectDetailReason.VALID)
     project_marker = {
         "row_index": row_index,
         "source_status_text": source_status_text,
@@ -1437,16 +1619,29 @@ def _collect_documents_for_payload(
     return updated_payload
 
 
-def _detail_page_is_invalid(page, detail: dict[str, str]) -> bool:
+def classify_detail_page(page, detail: dict[str, str]) -> ProjectDetailReason:
+    """Classify a project-detail page into a typed reason (F3).
+
+    Replaces the boolean ``_detail_page_is_invalid``. Order matters: a definitive
+    rejection page and a returned results page are checked *before* header-
+    placeholder detection so blank fields on a results page classify
+    ``RESULTS_PAGE_RETURNED`` (retryable), and truly-blank fields fall through to
+    ``VALID`` so the caller's missing-required-fields check can classify them.
+    ``""`` is deliberately NOT in the placeholder set.
+    """
     try:
         body_text = page.inner_text("body")
     except Exception:
         body_text = ""
-    compact_body = _compact_visible_text(body_text)
     if "ข้อความปฎิเสธ" in body_text or "E1530" in body_text:
-        return True
-    invalid_values = {
-        "",
+        return ProjectDetailReason.REJECTION_PAGE
+    if (
+        _compact_visible_text(body_text)
+        and "จำนวนโครงการที่พบ" in body_text
+        and "/procurement/" not in page.url
+    ):
+        return ProjectDetailReason.RESULTS_PAGE_RETURNED
+    placeholder_values = {
         "ชื่อโครงการ",
         "ชื่อหน่วยงาน",
         "เลขที่โครงการ",
@@ -1456,19 +1651,17 @@ def _detail_page_is_invalid(page, detail: dict[str, str]) -> bool:
     organization = str(detail.get("organization") or "").strip()
     project_number = str(detail.get("project_number") or "").strip()
     if (
-        project_name in invalid_values
-        or organization in invalid_values
-        or project_number in invalid_values
+        project_name in placeholder_values
+        or organization in placeholder_values
+        or project_number in placeholder_values
     ):
-        return True
+        return ProjectDetailReason.PLACEHOLDER_DETAIL
     if project_name and _compact_visible_text(project_name) in {
         _compact_visible_text("วงเงินงบประมาณ (บาท) สถานะโครงการ ดูข้อมูล"),
         _compact_visible_text("ชื่อโครงการ วงเงินงบประมาณ (บาท) สถานะโครงการ ดูข้อมูล"),
     }:
-        return True
-    if compact_body and "จำนวนโครงการที่พบ" in body_text and "/procurement/" not in page.url:
-        return True
-    return False
+        return ProjectDetailReason.PLACEHOLDER_DETAIL
+    return ProjectDetailReason.VALID
 
 
 def _find_bundled_chromium() -> str | None:

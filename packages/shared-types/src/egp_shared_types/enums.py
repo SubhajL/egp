@@ -166,6 +166,27 @@ class CrawlerBlockerCode(StrEnum):
     PROFILE_OPERATOR_ACTION_REQUIRED = "profile_operator_action_required"
 
 
+class ProjectDetailReason(StrEnum):
+    """Typed outcome of a single project-detail open in live discovery.
+
+    Replaces the boolean `_detail_page_is_invalid` (PR-CANARY-03 F3 / the frozen
+    PR-CANARY-02 contract). Transient reasons get one bounded retry; definitive
+    reasons and out-of-scope skips do not. `MISSING_REQUIRED_FIELDS` reuses the
+    existing ``CrawlOutcomeReason.PROJECT_DETAIL_MISSING_REQUIRED_FIELDS`` value so
+    the workflow anomaly mapping stays stable; the other anomaly reasons collapse
+    to the ``project_detail_invalid`` progress stage in the caller.
+    """
+
+    VALID = "valid"
+    NAVIGATION_FAILURE = "navigation_failure"
+    RESULTS_PAGE_RETURNED = "results_page_returned"
+    MISSING_REQUIRED_FIELDS = "project_detail_missing_required_fields"
+    REJECTION_PAGE = "rejection_page"
+    PLACEHOLDER_DETAIL = "placeholder_detail"
+    OUT_OF_SCOPE_STAGE = "out_of_scope_stage"
+    UNKNOWN = "unknown"
+
+
 class UserRole(StrEnum):
     OWNER = "owner"
     ADMIN = "admin"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import replace
@@ -50,16 +51,28 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         "browser_chrome_path": "chrome_path",
         "browser_proxy_server": "proxy_server",
         "browser_use_xvfb": "use_xvfb",
+        "browser_diagnostics_dir": "diagnostics_dir",
     }
     for payload_key, setting_key in flat_key_map.items():
         if settings_payload.get(payload_key) is not None:
             settings_payload[setting_key] = settings_payload[payload_key]
         if payload.get(payload_key) is not None:
             settings_payload[setting_key] = payload[payload_key]
-    if not settings_payload:
+    # F3: diagnostics_dir may be supplied by the job payload OR by the worker-host
+    # `EGP_BROWSER_DIAGNOSTICS_DIR` env var (payload wins). The env path lets an
+    # operator activate diagnostics on the residential worker without dispatcher
+    # plumbing, so it must survive an otherwise-empty settings payload.
+    diagnostics_raw = settings_payload.get("diagnostics_dir")
+    if diagnostics_raw is not None:
+        diagnostics_raw = str(diagnostics_raw).strip() or None
+    if diagnostics_raw is None:
+        diagnostics_raw = os.getenv("EGP_BROWSER_DIAGNOSTICS_DIR", "").strip() or None
+    if not settings_payload and diagnostics_raw is None:
         return None
 
     updates: dict[str, object] = {}
+    if diagnostics_raw is not None:
+        updates["diagnostics_dir"] = Path(str(diagnostics_raw)).expanduser()
     int_fields = {
         "cdp_port",
         "nav_timeout_ms",
@@ -88,7 +101,6 @@ def _build_browser_settings(payload: dict[str, object]) -> BrowserDiscoverySetti
         else:
             updates["use_xvfb"] = str(raw_use_xvfb).strip().lower() in {"1", "true", "yes", "on"}
     return replace(BrowserDiscoverySettings(), **updates)
-
 
 
 def _maybe_report_shadow_parity(payload: dict, result) -> None:
