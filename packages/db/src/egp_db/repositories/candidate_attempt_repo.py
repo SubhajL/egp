@@ -143,6 +143,24 @@ def _record_from_mapping(row: RowMapping) -> CandidateAttemptRecord:
     )
 
 
+def _dialect_insert(table, connection):
+    """Return a dialect-specific INSERT that supports on_conflict_do_nothing.
+
+    Mirrors ``project_aliases.py``; both PostgreSQL and SQLite implement the
+    ``on_conflict_do_nothing`` extension, so idempotent inserts work on the
+    production database and the SQLite test/bootstrap path alike.
+    """
+    if connection.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+        return postgresql_insert(table)
+    if connection.dialect.name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        return sqlite_insert(table)
+    return insert(table)
+
+
 # ---------------------------------------------------------------------------
 # Repository
 # ---------------------------------------------------------------------------
@@ -201,9 +219,16 @@ class SqlCandidateAttemptRepository:
         }
         t = DISCOVERY_CANDIDATE_ATTEMPTS_TABLE
         with self._engine.begin() as conn:
-            # SQLite does not support the postgresql on_conflict_do_nothing
-            # extension; use INSERT OR IGNORE via raw prefix for portability.
-            stmt = insert(t).values(**values).prefix_with("OR IGNORE")
+            # Idempotent insert on the (tenant_id, run_id, candidate_key) unique
+            # constraint. Both PostgreSQL (production) and SQLite (tests) implement
+            # on_conflict_do_nothing; the generic fallback degrades to a plain
+            # insert. `prefix_with("OR IGNORE")` was SQLite-only and produced
+            # invalid `INSERT OR IGNORE` SQL on PostgreSQL.
+            stmt = _dialect_insert(t, conn).values(**values)
+            if hasattr(stmt, "on_conflict_do_nothing"):
+                stmt = stmt.on_conflict_do_nothing(
+                    index_elements=[t.c.tenant_id, t.c.run_id, t.c.candidate_key]
+                )
             conn.execute(stmt)
             row = (
                 conn.execute(
