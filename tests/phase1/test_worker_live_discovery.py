@@ -3152,3 +3152,45 @@ def test_direct_path_ignores_untrusted_candidate_key_field(monkeypatch, tmp_path
     # did NOT skip record_accepted (which would leave total == 0).
     assert summary.total == 1
     assert summary.persisted == 1
+
+
+def test_run_discover_workflow_recovery_and_diagnostic_events_are_not_anomalies(
+    monkeypatch,
+) -> None:
+    # F3: the new `keyword_no_results_recovery` and `browser_diagnostic` progress
+    # stages are evidence, NOT terminal anomalies — a run carrying them succeeds.
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    def fake_crawl_live_discovery(**kwargs):
+        progress_callback = kwargs["progress_callback"]
+        progress_callback(
+            {"stage": "page_scan_finished", "keyword": "แพลตฟอร์ม", "page_num": 1, "eligible_count": 1}
+        )
+        progress_callback(
+            {"stage": "keyword_no_results_recovery", "keyword": "แพลตฟอร์ม", "attempt": 1, "budget": 1}
+        )
+        progress_callback(
+            {
+                "stage": "browser_diagnostic",
+                "keyword": "แพลตฟอร์ม",
+                "reason": "navigation_failure",
+                "diagnostic": "captured",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery", fake_crawl_live_discovery
+    )
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        keyword="แพลตฟอร์ม",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        live=True,
+    )
+    assert result.run.run.status == "succeeded"
+    assert run_repository.finished_error_count == 0
+    assert "live_crawl_anomaly_count" not in run_repository.finished_summary
