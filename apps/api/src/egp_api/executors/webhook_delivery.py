@@ -10,6 +10,8 @@ from typing import Protocol
 from egp_api.config import get_database_url
 from egp_db.connection import create_shared_engine
 from egp_db.repositories.notification_repo import create_notification_repository
+from egp_db.repositories.audit_repo import create_audit_repository
+from egp_api.services.webhook_security_audit import WebhookSecurityAuditRecorder
 from egp_notifications.webhook_delivery import WebhookDeliveryProcessor
 
 
@@ -29,7 +31,14 @@ def build_webhook_delivery_processor(database_url: str | None = None) -> Webhook
         database_url=resolved_database_url,
         engine=shared_engine,
     )
-    return WebhookDeliveryProcessor(repository=repository)
+    audit_repository = create_audit_repository(
+        database_url=resolved_database_url,
+        engine=shared_engine,
+    )
+    return WebhookDeliveryProcessor(
+        repository=repository,
+        security_audit_recorder=WebhookSecurityAuditRecorder(audit_repository),
+    )
 
 
 def run_webhook_delivery_once(
@@ -54,7 +63,7 @@ async def run_webhook_delivery_loop(
     resolved_logger = logger or globals()["logger"]
     while not stop_event.is_set():
         try:
-            processor.process_pending()
+            await asyncio.to_thread(processor.process_pending)
         except Exception:
             resolved_logger.warning(
                 "Failed to process pending webhook deliveries",

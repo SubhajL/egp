@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic import BaseModel, Field
 
 from egp_api.auth import require_admin_role, resolve_request_tenant_id
 from egp_api.services.entitlement_service import EntitlementError
 from egp_api.services.webhook_service import WebhookList, WebhookService
+from egp_notifications.webhook_security import WebhookEndpointError
 from egp_shared_types.enums import NotificationType
 
 
@@ -37,7 +38,7 @@ class WebhookListResponse(BaseModel):
 class CreateWebhookRequest(BaseModel):
     tenant_id: str | None = None
     name: str = Field(min_length=1)
-    url: AnyHttpUrl
+    url: str = Field(min_length=1)
     notification_types: list[NotificationType] = Field(min_length=1)
     signing_secret: str = Field(min_length=8)
 
@@ -97,6 +98,11 @@ def create_webhook(request: Request, payload: CreateWebhookRequest) -> WebhookRe
         raise HTTPException(status_code=404, detail="tenant not found") from exc
     except EntitlementError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except WebhookEndpointError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="webhook endpoint is not allowed",
+        ) from exc
     return WebhookResponse(**asdict(created))
 
 

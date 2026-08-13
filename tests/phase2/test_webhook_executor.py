@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -12,9 +13,11 @@ class RecordingProcessor:
     def __init__(self, *, stop_event: asyncio.Event | None = None) -> None:
         self.stop_event = stop_event
         self.limits: list[int | None] = []
+        self.thread_ids: list[int] = []
 
     def process_pending(self, *, limit: int | None = None) -> int:
         self.limits.append(limit)
+        self.thread_ids.append(threading.get_ident())
         if self.stop_event is not None:
             self.stop_event.set()
         return 7
@@ -34,6 +37,7 @@ async def test_run_webhook_delivery_loop_processes_until_stop_event() -> None:
     stop_event = asyncio.Event()
     processor = RecordingProcessor(stop_event=stop_event)
 
+    event_loop_thread_id = threading.get_ident()
     await webhook_delivery.run_webhook_delivery_loop(
         processor=processor,
         stop_event=stop_event,
@@ -41,6 +45,7 @@ async def test_run_webhook_delivery_loop_processes_until_stop_event() -> None:
     )
 
     assert processor.limits == [None]
+    assert processor.thread_ids[0] != event_loop_thread_id
 
 
 def test_main_once_builds_processor_from_database_url() -> None:

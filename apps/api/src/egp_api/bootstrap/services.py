@@ -56,6 +56,7 @@ from egp_api.services.run_service import RunService
 from egp_api.services.storage_settings_service import StorageSettingsService
 from egp_api.services.support_service import SupportService
 from egp_api.services.webhook_service import WebhookService
+from egp_api.services.webhook_security_audit import WebhookSecurityAuditRecorder
 from egp_db.db_utils import is_sqlite_url
 from egp_notifications.service import EmailSender, SmtpConfig
 
@@ -87,6 +88,7 @@ def configure_services(
     # One construction path, shared with the standalone crawler-agent inbox
     # processor — see egp_api.bootstrap.notifications for why the collaborators
     # are no longer named individually here.
+    webhook_security_audit = WebhookSecurityAuditRecorder(bundle.audit_repository)
     notification_stack = build_notification_stack(
         notification_repository=bundle.notification_repository,
         billing_repository=bundle.billing_repository,
@@ -96,6 +98,7 @@ def configure_services(
         tenant_entitlement_repository=bundle.tenant_entitlement_repository,
         smtp_config=get_smtp_config(smtp_config),
         email_sender=notification_email_sender,
+        security_audit_recorder=webhook_security_audit,
     )
     # Only the collaborators this module still binds to app.state are unpacked;
     # the raw (ungated) dispatcher is deliberately NOT one of them — every
@@ -236,6 +239,8 @@ def configure_services(
         bundle.notification_repository,
         bundle.audit_repository,
         entitlement_service,
+        endpoint_policy=notification_stack.endpoint_policy,
+        security_audit_recorder=webhook_security_audit,
     )
     app.state.payment_callback_secret = resolved_payment_callback_secret
     app.state.web_base_url = resolved_web_base_url

@@ -235,8 +235,8 @@ class CrawlerAgentInboxProcessor:
                     parity_verdict=parity[0],
                     parity_detail=parity[1],
                 )
-                outcome.error_code = None if outcome.applied else (
-                    AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value
+                outcome.error_code = (
+                    None if outcome.applied else (AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value)
                 )
                 return outcome
             self._apply(record)
@@ -276,9 +276,7 @@ class CrawlerAgentInboxProcessor:
                     error_code=outcome.error_code,
                 ):
                     outcome.rejected = False
-                    outcome.error_code = (
-                        AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value
-                    )
+                    outcome.error_code = AgentInboxErrorCode.PROCESSOR_LEASE_LOST.value
                 return outcome
             outcome.retried = True
             outcome.error_code = AgentInboxErrorCode.APPLY_FAILED_TRANSIENT.value
@@ -346,9 +344,7 @@ class CrawlerAgentInboxProcessor:
         except Exception:  # noqa: BLE001 - telemetry must not break the drain
             _logger.warning("crawler agent inbox: heartbeat failed", exc_info=True)
 
-    def _compare_shadow(
-        self, record: InboxRecord
-    ) -> tuple[str, dict[str, Any] | None]:
+    def _compare_shadow(self, record: InboxRecord) -> tuple[str, dict[str, Any] | None]:
         """Compare a shadow envelope against what the legacy run durably recorded.
 
         MUTATES NOTHING. The envelope is decoded exactly as `_apply_discovery`
@@ -518,7 +514,9 @@ def build_crawler_agent_inbox_runtime(
 
     from egp_api.bootstrap.notifications import build_notification_stack
     from egp_api.config import get_smtp_config
+    from egp_api.services.webhook_security_audit import WebhookSecurityAuditRecorder
     from egp_db.repositories.billing_repo import create_billing_repository
+    from egp_db.repositories.audit_repo import create_audit_repository
     from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
     from egp_db.repositories.document_repo import create_artifact_store
     from egp_db.repositories.notification_repo import create_notification_repository
@@ -531,9 +529,7 @@ def build_crawler_agent_inbox_runtime(
     from egp_domain.project_ingest import ProjectIngestService
 
     resolved_artifact_root = get_artifact_root(artifact_root)
-    resolved_database_url = get_database_url(
-        database_url, artifact_root=resolved_artifact_root
-    )
+    resolved_database_url = get_database_url(database_url, artifact_root=resolved_artifact_root)
     shared_engine = create_shared_engine(resolved_database_url)
 
     project_repository = create_project_repository(
@@ -563,6 +559,12 @@ def build_crawler_agent_inbox_runtime(
         ),
         smtp_config=get_smtp_config(None),
         email_sender=None,
+        security_audit_recorder=WebhookSecurityAuditRecorder(
+            create_audit_repository(
+                database_url=resolved_database_url,
+                engine=shared_engine,
+            )
+        ),
     )
     project_ingest_service = ProjectIngestService(
         project_repository,
@@ -581,7 +583,9 @@ def build_crawler_agent_inbox_runtime(
         processor=CrawlerAgentInboxProcessor(
             repository=repository,
             project_ingest_service=project_ingest_service,
-            lease_seconds=_env_float("EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS", DEFAULT_LEASE_SECONDS),
+            lease_seconds=_env_float(
+                "EGP_CRAWLER_AGENT_INBOX_LEASE_SECONDS", DEFAULT_LEASE_SECONDS
+            ),
             backoff_seconds=_env_float(
                 "EGP_CRAWLER_AGENT_INBOX_BACKOFF_SECONDS", DEFAULT_BACKOFF_SECONDS
             ),
@@ -626,9 +630,7 @@ def run_crawler_agent_inbox_loop(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Apply queued e-GP crawler-agent results."
-    )
+    parser = argparse.ArgumentParser(description="Apply queued e-GP crawler-agent results.")
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--artifact-root", type=Path, default=None)
     parser.add_argument(
@@ -655,9 +657,7 @@ def main(
         # Deliberately drains anyway. Turning ingress off must not strand results
         # that were already accepted while it was on; a separate stop of this
         # container is the emergency control.
-        _logger.info(
-            "crawler agent protocol is off; draining already-accepted results only"
-        )
+        _logger.info("crawler agent protocol is off; draining already-accepted results only")
 
     if args.once:
         outcome = runtime.processor.process_once()
