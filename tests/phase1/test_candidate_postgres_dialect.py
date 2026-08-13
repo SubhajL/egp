@@ -15,7 +15,6 @@ method against a real PostgreSQL cluster with the real migration set applied.
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import event
@@ -125,13 +124,27 @@ def test_record_accepted_round_trips_on_real_postgres() -> None:
                     ("F1 Tenant", "f1-tenant", "dev"),
                 )
                 tenant_id = str(cursor.fetchone()[0])
+                # Migration 039 added composite tenant FKs, so the run and
+                # project referenced below must really exist for this tenant.
+                cursor.execute(
+                    "INSERT INTO crawl_runs (tenant_id, trigger_type)"
+                    " VALUES (%s, 'manual') RETURNING id",
+                    (tenant_id,),
+                )
+                run_id = str(cursor.fetchone()[0])
+                cursor.execute(
+                    "INSERT INTO projects"
+                    " (tenant_id, canonical_project_id, project_name)"
+                    " VALUES (%s, %s, %s) RETURNING id",
+                    (tenant_id, "canon-f1-dialect", "F1 Dialect Project"),
+                )
+                project_id = str(cursor.fetchone()[0])
             connection.commit()
 
         repo = SqlCandidateAttemptRepository(
             database_url=database_url,
             bootstrap_schema=False,
         )
-        run_id = str(uuid4())
         candidate_key = "pg-candidate-key"
 
         first = repo.record_accepted(
@@ -163,7 +176,7 @@ def test_record_accepted_round_trips_on_real_postgres() -> None:
             tenant_id=tenant_id,
             run_id=run_id,
             candidate_key=candidate_key,
-            project_id=PROJECT_ID,
+            project_id=project_id,
         )
         assert finalized is not None
         assert finalized.candidate_status == "persisted"

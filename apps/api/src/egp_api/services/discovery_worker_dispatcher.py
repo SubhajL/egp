@@ -59,7 +59,11 @@ from egp_observability.logging import (
     tail_bounded_preview,
 )
 from egp_observability.metrics import record_discovery_keyword_scan
-from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
+from egp_shared_types.enums import (
+    CandidateTerminalReason,
+    CrawlerBlockerCode,
+    DiscoveryFailureCode,
+)
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -1132,7 +1136,8 @@ class SubprocessDiscoveryDispatcher:
                 except Exception:
                     pass
                 self._reconcile_candidate_attempts(
-                    run_id=run_id, terminal_reason="lease_lost",
+                    run_id=run_id,
+                    terminal_reason=CandidateTerminalReason.LEASE_LOST.value,
                 )
                 self._mark_active_run_failed(
                     run_id=run_id,
@@ -1178,7 +1183,8 @@ class SubprocessDiscoveryDispatcher:
                 except Exception:
                     pass
                 self._reconcile_candidate_attempts(
-                    run_id=run_id, terminal_reason="worker_timeout",
+                    run_id=run_id,
+                    terminal_reason=CandidateTerminalReason.WORKER_TIMEOUT.value,
                 )
                 self._mark_active_run_failed(
                     run_id=run_id,
@@ -1436,7 +1442,7 @@ class SubprocessDiscoveryDispatcher:
         self,
         *,
         run_id: str,
-        terminal_reason: str = "worker_lost",
+        terminal_reason: str = CandidateTerminalReason.WORKER_LOST.value,
     ) -> None:
         """Mark any still-accepted discovery candidates as unknown."""
         try:
@@ -1507,7 +1513,8 @@ class SubprocessDiscoveryDispatcher:
             f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
         )
         self._reconcile_candidate_attempts(
-            run_id=run_id, terminal_reason="worker_terminated",
+            run_id=run_id,
+            terminal_reason=CandidateTerminalReason.WORKER_TERMINATED.value,
         )
         self._mark_active_run_failed(
             run_id=run_id,

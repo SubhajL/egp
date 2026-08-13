@@ -4001,6 +4001,10 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
     assert seen_candidate["eligible_ordinal"] == 0
     assert seen_candidate["project_name"] == "โครงการ F2"
     assert isinstance(seen_candidate.get("row_marker"), dict)
+    # F6/identity: the marker must carry the visible-signature identity fields
+    # the content key consumes (org/budget/status) — QCHECK Tier-2 finding 7.
+    for marker_field in ("organization_name", "budget_text", "source_status_text"):
+        assert marker_field in seen_candidate["row_marker"]
     assert project_calls == []  # detail returned None -> persistence callback not reached
 
 
