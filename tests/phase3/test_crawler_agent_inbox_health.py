@@ -25,6 +25,11 @@ from uuid import uuid4
 from psycopg import connect
 from psycopg.errors import CheckViolation
 import pytest
+from tests.support.jwt_factory import (
+    TEST_JWT_AUDIENCE,
+    TEST_JWT_ISSUER,
+    mint_machine_jwt,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -500,6 +505,8 @@ def test_inbox_health_route_requires_the_operator_role(
             database_url=migrated_database_url,
             auth_required=True,
             jwt_secret="u8b-user-jwt-secret",
+            jwt_issuer=TEST_JWT_ISSUER,
+            jwt_audience=TEST_JWT_AUDIENCE,
             internal_worker_token="u8b-worker-token",
             background_runtime_mode="external",
         )
@@ -689,7 +696,6 @@ def test_inbox_health_route_rejects_a_viewer_and_allows_an_operator(
     middleware answers first — so deleting `require_run_operator_role` would have
     left this route open to any authenticated viewer with the suite still green."""
 
-    import jwt
     from fastapi.testclient import TestClient
 
     from egp_api.main import create_app
@@ -701,20 +707,19 @@ def test_inbox_health_route_rejects_a_viewer_and_allows_an_operator(
             database_url=migrated_database_url,
             auth_required=True,
             jwt_secret=jwt_secret,
+            jwt_issuer=TEST_JWT_ISSUER,
+            jwt_audience=TEST_JWT_AUDIENCE,
             internal_worker_token="u8b-worker-token",
             background_runtime_mode="external",
         )
     )
 
     def _headers(role: str) -> dict[str, str]:
-        token = jwt.encode(
-            {
-                "sub": "user-u8b",
-                "tenant_id": "11111111-1111-1111-1111-111111111111",
-                "role": role,
-            },
-            jwt_secret,
-            algorithm="HS256",
+        token = mint_machine_jwt(
+            secret=jwt_secret,
+            tenant_id="11111111-1111-1111-1111-111111111111",
+            subject="user-u8b",
+            role=role,
         )
         return {"Authorization": f"Bearer {token}"}
 

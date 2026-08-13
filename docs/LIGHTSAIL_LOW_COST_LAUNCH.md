@@ -265,6 +265,9 @@ template above is the canonical setup:
 DATABASE_URL=postgresql+psycopg://egp:strong_password@127.0.0.1:5432/egp
 EGP_AUTH_REQUIRED=true
 EGP_JWT_SECRET=replace_with_long_random_secret
+EGP_JWT_ISSUER=https://issuer.example/egp-machine
+EGP_JWT_AUDIENCE=egp-api-production
+EGP_JWT_CLOCK_SKEW_SECONDS=30
 EGP_PAYMENT_CALLBACK_SECRET=replace_with_long_random_secret
 # --- Payment provider: pick ONE of (opn, stripe) ---
 # OPN (Omise) — default for Thai company deployments. Stripe is an

@@ -15,6 +15,7 @@ from egp_api.services.readiness_service import ReadinessService
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 from egp_db.migration_runner import apply_migrations, list_migration_files
 from tests.support.app_factory import create_test_app
+from tests.support.jwt_factory import TEST_JWT_AUDIENCE, TEST_JWT_ISSUER
 
 
 def test_ci_postgres_readiness_accepts_exact_migration_set(repo_root: Path) -> None:
@@ -66,6 +67,8 @@ def test_ready_fails_quickly_when_database_unreachable(tmp_path: Path) -> None:
             database_url="postgresql://egp:egp@127.0.0.1:1/egp",
             auth_required=True,
             jwt_secret="readiness-test-secret",
+            jwt_issuer=TEST_JWT_ISSUER,
+            jwt_audience=TEST_JWT_AUDIENCE,
             payment_callback_secret="readiness-callback-secret",
             background_runtime_mode="external",
         )

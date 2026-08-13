@@ -480,6 +480,31 @@ def get_jwt_secret(override: str | None = None) -> str | None:
     return raw or None
 
 
+def get_jwt_issuer(override: str | None = None) -> str | None:
+    raw = override if override is not None else os.getenv("EGP_JWT_ISSUER", "")
+    value = raw.strip()
+    return value or None
+
+
+def get_jwt_audience(override: str | None = None) -> str | None:
+    raw = override if override is not None else os.getenv("EGP_JWT_AUDIENCE", "")
+    value = raw.strip()
+    return value or None
+
+
+def get_jwt_clock_skew_seconds(override: int | str | None = None) -> int:
+    raw = override if override is not None else os.getenv("EGP_JWT_CLOCK_SKEW_SECONDS", "30")
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise RuntimeError("EGP_JWT_CLOCK_SKEW_SECONDS must be an integer")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("EGP_JWT_CLOCK_SKEW_SECONDS must be an integer") from exc
+    if not 0 <= value <= 120:
+        raise RuntimeError("EGP_JWT_CLOCK_SKEW_SECONDS must be between 0 and 120")
+    return value
+
+
 def get_storage_credentials_secret(override: str | None = None) -> str | None:
     if override is not None:
         value = override.strip()

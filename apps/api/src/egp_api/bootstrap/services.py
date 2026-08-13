@@ -293,6 +293,7 @@ def configure_services(
     app.state.auth_required = bundle.resolved_auth_required
     app.state.internal_worker_token = bundle.resolved_internal_worker_token
     app.state.jwt_secret = bundle.resolved_jwt_secret
+    app.state.jwt_validation_policy = bundle.resolved_jwt_validation_policy
     app.state.session_cookie_name = bundle.session_cookie_name
     app.state.session_cookie_max_age_seconds = bundle.session_cookie_max_age_seconds
     app.state.session_cookie_secure = bundle.session_cookie_secure

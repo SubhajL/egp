@@ -9,11 +9,11 @@ import time
 from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
-import jwt
 import pytest
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_shared_types.enums import BillingRecordStatus
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -161,14 +161,8 @@ def _totp_code(secret: str, *, now: int | None = None) -> str:
 def _bearer_headers(
     *, tenant_id: str = TENANT_ID, role: str = "owner"
 ) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "user-123",
-            "tenant_id": tenant_id,
-            "role": role,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret=JWT_SECRET, tenant_id=tenant_id, role=role
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -650,17 +644,16 @@ def test_metadata_cannot_elevate_role_or_tenant(
     client = _create_client(tmp_path)
     _seed_tenant(client)
 
-    role_elevation_token = jwt.encode(
-        {
-            "sub": "metadata-attacker",
-            "tenant_id": TENANT_ID,
+    role_elevation_token = mint_machine_jwt(
+        secret=JWT_SECRET,
+        tenant_id=TENANT_ID,
+        subject="metadata-attacker",
+        extra_claims={
             metadata_key: {
                 "tenant_id": OTHER_TENANT_ID,
                 "role": "support",
             },
         },
-        JWT_SECRET,
-        algorithm="HS256",
     )
     role_elevation_headers = {
         "Authorization": f"Bearer {role_elevation_token}",
@@ -674,16 +667,17 @@ def test_metadata_cannot_elevate_role_or_tenant(
     assert me_response.json()["user"]["role"] is None
     assert admin_response.status_code == 403
 
-    nested_tenant_only_token = jwt.encode(
-        {
-            "sub": "metadata-attacker",
+    nested_tenant_only_token = mint_machine_jwt(
+        secret=JWT_SECRET,
+        tenant_id=TENANT_ID,
+        subject="metadata-attacker",
+        extra_claims={
+            "tenant_id": None,
             metadata_key: {
                 "tenant_id": TENANT_ID,
                 "role": "support",
             },
         },
-        JWT_SECRET,
-        algorithm="HS256",
     )
 
     nested_tenant_response = client.get(
@@ -693,7 +687,7 @@ def test_metadata_cannot_elevate_role_or_tenant(
 
     assert nested_tenant_response.status_code == 401
     assert nested_tenant_response.json() == {
-        "detail": "tenant claim missing from token",
+        "detail": "invalid bearer token",
     }
 
 

@@ -8,7 +8,6 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
-import jwt
 
 from egp_api.main import create_app as create_runtime_app
 from egp_api.config import get_jwt_secret
@@ -22,6 +21,11 @@ from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import ProcurementType, ProjectState
 from egp_worker.workflows.discover import run_discover_workflow
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import (
+    TEST_JWT_AUDIENCE,
+    TEST_JWT_ISSUER,
+    mint_machine_jwt,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "99999999-9999-9999-9999-999999999999"
@@ -126,14 +130,7 @@ class FakeSupabaseClient:
 
 
 def _auth_headers(tenant_id: str = TENANT_ID) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "user-123",
-            "tenant_id": tenant_id,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
-    )
+    token = mint_machine_jwt(secret=JWT_SECRET, tenant_id=tenant_id)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -184,7 +181,41 @@ def test_auth_enabled_startup_requires_explicit_egp_jwt_secret(
             artifact_root=tmp_path,
             database_url=f"sqlite+pysqlite:///{tmp_path / 'missing-jwt.sqlite3'}",
             auth_required=True,
+            jwt_issuer=TEST_JWT_ISSUER,
+            jwt_audience=TEST_JWT_AUDIENCE,
             payment_callback_secret="phase1-callback-secret",
+            background_runtime_mode="external",
+        )
+
+
+def test_auth_enabled_startup_requires_explicit_jwt_issuer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("EGP_JWT_ISSUER", raising=False)
+
+    with pytest.raises(RuntimeError, match="EGP_JWT_ISSUER"):
+        create_runtime_app(
+            artifact_root=tmp_path,
+            database_url=f"sqlite+pysqlite:///{tmp_path / 'missing-issuer.sqlite3'}",
+            auth_required=True,
+            jwt_secret=JWT_SECRET,
+            jwt_audience=TEST_JWT_AUDIENCE,
+            background_runtime_mode="external",
+        )
+
+
+def test_auth_enabled_startup_requires_explicit_jwt_audience(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("EGP_JWT_AUDIENCE", raising=False)
+
+    with pytest.raises(RuntimeError, match="EGP_JWT_AUDIENCE"):
+        create_runtime_app(
+            artifact_root=tmp_path,
+            database_url=f"sqlite+pysqlite:///{tmp_path / 'missing-audience.sqlite3'}",
+            auth_required=True,
+            jwt_secret=JWT_SECRET,
+            jwt_issuer=TEST_JWT_ISSUER,
             background_runtime_mode="external",
         )
 

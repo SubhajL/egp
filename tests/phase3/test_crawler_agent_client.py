@@ -23,6 +23,8 @@ from uuid import uuid4
 from psycopg import connect
 import pytest
 
+from tests.support.jwt_factory import TEST_JWT_AUDIENCE, TEST_JWT_ISSUER
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "packages/db/src/migrations"
@@ -68,6 +70,8 @@ def _app_client(migrated_database_url: str, tmp_path: Path, *, protocol: str):
             database_url=migrated_database_url,
             auth_required=True,
             jwt_secret="u8e-user-jwt-secret-at-least-32-bytes-long",
+            jwt_issuer=TEST_JWT_ISSUER,
+            jwt_audience=TEST_JWT_AUDIENCE,
             internal_worker_token=WORKER_TOKEN,
             background_runtime_mode="external",
             crawler_agent_protocol=protocol,
