@@ -13,6 +13,9 @@ import jwt
 from egp_db.db_utils import normalize_uuid_string
 
 
+AUTHENTICATED_ROLES = frozenset({"owner", "admin", "support", "analyst", "viewer"})
+
+
 @dataclass(frozen=True, slots=True)
 class AuthContext:
     tenant_id: str
@@ -175,6 +178,14 @@ def require_run_operator_role(request: Request) -> None:
     role = extract_request_role(request)
     if role not in {"owner", "admin", "support", "analyst"}:
         raise HTTPException(status_code=403, detail="run operator role required")
+
+
+def require_authenticated_role(request: Request) -> None:
+    auth_context = getattr(request.state, "auth_context", None)
+    if auth_context is None:
+        return
+    if extract_request_role(request) not in AUTHENTICATED_ROLES:
+        raise HTTPException(status_code=403, detail="authenticated role required")
 
 
 def require_support_role(request: Request) -> None:

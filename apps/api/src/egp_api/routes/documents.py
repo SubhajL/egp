@@ -5,12 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from egp_api.auth import resolve_request_tenant_id
+from egp_api.auth import (
+    require_authenticated_role,
+    require_run_operator_role,
+    resolve_request_tenant_id,
+)
 from egp_api.services.entitlement_service import EntitlementError
 from egp_db.repositories.document_repo import (
     DocumentArtifactReadError,
@@ -274,11 +278,23 @@ def _build_proxy_download_url(request: Request, *, document_id: str) -> str:
     return urlunsplit((scheme, host, parsed.path, parsed.query, parsed.fragment))
 
 
-@router.post("/ingest", response_model=StoreDocumentResponse)
+@router.post(
+    "/ingest",
+    response_model=StoreDocumentResponse,
+    dependencies=[Depends(require_run_operator_role)],
+)
 def ingest_document(payload: DocumentIngestRequest, request: Request, response: Response):
     service = _service_from_request(request)
     resolved_tenant_id = resolve_request_tenant_id(request, payload.tenant_id)
     try:
+        auth_context = getattr(request.state, "auth_context", None)
+        if auth_context is not None:
+            project = request.app.state.project_repository.get_project(
+                tenant_id=resolved_tenant_id,
+                project_id=payload.project_id,
+            )
+            if project is None:
+                raise HTTPException(status_code=404, detail="project not found")
         result = service.ingest_document(
             tenant_id=resolved_tenant_id,
             project_id=payload.project_id,
@@ -295,7 +311,11 @@ def ingest_document(payload: DocumentIngestRequest, request: Request, response: 
     return _serialize_store_result(result)
 
 
-@router.get("/projects/{project_id}", response_model=ListDocumentsResponse)
+@router.get(
+    "/projects/{project_id}",
+    response_model=ListDocumentsResponse,
+    dependencies=[Depends(require_authenticated_role)],
+)
 def list_documents(
     project_id: str, request: Request, tenant_id: str | None = None
 ) -> ListDocumentsResponse:
@@ -311,7 +331,11 @@ def list_documents(
     )
 
 
-@router.get("/projects/{project_id}/diffs", response_model=ListDocumentDiffsResponse)
+@router.get(
+    "/projects/{project_id}/diffs",
+    response_model=ListDocumentDiffsResponse,
+    dependencies=[Depends(require_authenticated_role)],
+)
 def list_document_diffs(
     project_id: str, request: Request, tenant_id: str | None = None
 ) -> ListDocumentDiffsResponse:
@@ -327,6 +351,7 @@ def list_document_diffs(
 @router.get(
     "/{document_id}/diff/{other_document_id}",
     response_model=DocumentDiffDetailResponse,
+    dependencies=[Depends(require_authenticated_role)],
 )
 def get_document_diff(
     document_id: str,
@@ -346,7 +371,11 @@ def get_document_diff(
     return DocumentDiffDetailResponse(diff=_serialize_diff(diff))
 
 
-@router.get("/projects/{project_id}/reviews", response_model=ListDocumentReviewsResponse)
+@router.get(
+    "/projects/{project_id}/reviews",
+    response_model=ListDocumentReviewsResponse,
+    dependencies=[Depends(require_authenticated_role)],
+)
 def list_document_reviews(
     project_id: str,
     request: Request,
@@ -373,6 +402,7 @@ def list_document_reviews(
 @router.post(
     "/reviews/{review_id}/actions",
     response_model=DocumentReviewActionResponse,
+    dependencies=[Depends(require_run_operator_role)],
 )
 def apply_document_review_action(
     review_id: str,
@@ -421,7 +451,10 @@ def _matches_etag(if_none_match: str | None, sha256: str) -> bool:
     return False
 
 
-@router.get("/{document_id}/download")
+@router.get(
+    "/{document_id}/download",
+    dependencies=[Depends(require_authenticated_role)],
+)
 async def download_document(
     document_id: str,
     request: Request,
@@ -500,6 +533,7 @@ async def download_document(
 @router.get(
     "/{document_id}/download-link",
     response_model=DocumentDownloadLinkResponse,
+    dependencies=[Depends(require_authenticated_role)],
 )
 def get_document_download_link(
     document_id: str,

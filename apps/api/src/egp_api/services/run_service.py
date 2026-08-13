@@ -17,6 +17,8 @@ from egp_db.repositories.run_repo import (
 from egp_shared_types.enums import CrawlRunStatus, NotificationType
 
 if TYPE_CHECKING:
+    from egp_db.repositories.profile_repo import SqlProfileRepository
+    from egp_db.repositories.project_repo import SqlProjectRepository
     from egp_notifications.dispatcher import NotificationDispatcher
 
 
@@ -28,16 +30,28 @@ class RunDetailPage:
     offset: int
 
 
+class RunProjectNotFoundError(LookupError):
+    """Raised when a task project is absent from the run tenant."""
+
+
+class RunProfileNotFoundError(LookupError):
+    """Raised when a run profile is absent from the run tenant."""
+
+
 class RunService:
     def __init__(
         self,
         repository: SqlRunRepository,
         *,
+        project_repository: SqlProjectRepository | None = None,
+        profile_repository: SqlProfileRepository | None = None,
         artifact_root: Path | None = None,
         entitlement_service: TenantEntitlementService | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
         self._repository = repository
+        self._project_repository = project_repository
+        self._profile_repository = profile_repository
         self._artifact_root = artifact_root
         self._entitlement_service = entitlement_service
         self._notification_dispatcher = notification_dispatcher
@@ -50,6 +64,15 @@ class RunService:
         profile_id: str | None = None,
         summary_json: dict[str, object] | None = None,
     ) -> CrawlRunDetail:
+        if profile_id is not None:
+            if self._profile_repository is None:
+                raise RunProfileNotFoundError(profile_id)
+            profile = self._profile_repository.get_profile_detail(
+                tenant_id=tenant_id,
+                profile_id=profile_id,
+            )
+            if profile is None:
+                raise RunProfileNotFoundError(profile_id)
         if self._entitlement_service is not None:
             snapshot = self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
@@ -80,11 +103,21 @@ class RunService:
         keyword: str | None = None,
         payload: dict[str, object] | None = None,
     ) -> CrawlTaskRecord:
-        run = self._repository.find_run_by_id(run_id)
+        run = self._repository.find_run_by_id_for_tenant(
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
         if run is None:
             raise KeyError(run_id)
-        if run.tenant_id != tenant_id:
-            raise PermissionError(run_id)
+        if project_id is not None:
+            if self._project_repository is None:
+                raise RunProjectNotFoundError(project_id)
+            project = self._project_repository.get_project(
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+            if project is None:
+                raise RunProjectNotFoundError(project_id)
         if self._entitlement_service is not None:
             self._entitlement_service.require_active_subscription(
                 tenant_id=tenant_id,
@@ -113,11 +146,12 @@ class RunService:
         summary_json: dict[str, object] | None = None,
         error_count: int = 0,
     ) -> CrawlRunDetail:
-        run_before = self._repository.find_run_by_id(run_id)
+        run_before = self._repository.find_run_by_id_for_tenant(
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
         if run_before is None:
             raise KeyError(run_id)
-        if run_before.tenant_id != tenant_id:
-            raise PermissionError(run_id)
         if run_before.started_at is None:
             self._repository.mark_run_started(run_id)
         run = self._repository.mark_run_finished(
@@ -170,11 +204,12 @@ class RunService:
         )
 
     def get_run_log(self, *, tenant_id: str, run_id: str) -> str | None:
-        run = self._repository.find_run_by_id(run_id)
+        run = self._repository.find_run_by_id_for_tenant(
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
         if run is None:
             raise KeyError(run_id)
-        if run.tenant_id != tenant_id:
-            raise PermissionError(run_id)
         if self._artifact_root is None:
             return None
         raw_path = (run.summary_json or {}).get("worker_log_path")
