@@ -382,9 +382,84 @@ test("login redirects to signup when no registration record exists", async ({ pa
   await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
 
   await expect(page).toHaveURL(/\/signup\?email=new-user%40example\.com/);
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/security");
   await expect(
     page.getByText("ไม่พบข้อมูลการลงทะเบียนสำหรับอีเมลนี้ กรุณาสมัครใช้งานก่อน"),
   ).toBeVisible();
+});
+
+test("successful login rejects a hostile next destination @critical", async ({ page }) => {
+  let attackerReached = false;
+  await page.route(/^https?:\/\/attacker\.invalid(?:\/|$)/, async (route) => {
+    attackerReached = true;
+    await route.fulfill({ status: 200, contentType: "text/html", body: "attacker" });
+  });
+  await mockApi(page);
+  const query = new URLSearchParams({ next: "/\\attacker.invalid/path" });
+
+  await page.goto(`/login?${query.toString()}`);
+  const appOrigin = new URL(page.url()).origin;
+  await page.getByLabel("อีเมล").fill("analyst@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  expect(new URL(page.url()).origin).toBe(appOrigin);
+  expect(attackerReached).toBe(false);
+});
+
+test("successful signup rejects a hostile next destination @critical", async ({ page }) => {
+  let attackerReached = false;
+  await page.route(/^https?:\/\/attacker\.invalid(?:\/|$)/, async (route) => {
+    attackerReached = true;
+    await route.fulfill({ status: 200, contentType: "text/html", body: "attacker" });
+  });
+  await mockApi(page);
+  const query = new URLSearchParams({ next: "/\\attacker.invalid/path" });
+
+  await page.goto(`/signup?${query.toString()}`);
+  const appOrigin = new URL(page.url()).origin;
+  await page.getByLabel("ชื่อบริษัท / องค์กร").fill("Example Company Ltd");
+  await page.getByLabel("อีเมล").fill("owner@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เริ่มทดลองใช้งานฟรี" }).click();
+
+  await expect(page).toHaveURL(/\/dashboard$/);
+  expect(new URL(page.url()).origin).toBe(appOrigin);
+  expect(attackerReached).toBe(false);
+});
+
+test("authenticated auth pages reject hostile next destinations @critical", async ({ page }) => {
+  await mockApi(page, { authenticated: true });
+  const query = new URLSearchParams({ next: "/\\attacker.invalid/path" });
+
+  await page.goto(`/login?${query.toString()}`);
+  const appOrigin = new URL(page.url()).origin;
+  await expect(page).toHaveURL(/\/dashboard$/);
+
+  await page.goto(`/signup?${query.toString()}`);
+  await expect(page).toHaveURL(/\/dashboard$/);
+  expect(new URL(page.url()).origin).toBe(appOrigin);
+});
+
+test("login does not propagate a hostile next destination to signup @critical", async ({ page }) => {
+  await mockApi(page, {
+    loginResponses: [
+      {
+        status: 401,
+        body: { detail: "registration required", code: "registration_required" },
+      },
+    ],
+  });
+  const query = new URLSearchParams({ next: "/\\attacker.invalid/path" });
+
+  await page.goto(`/login?${query.toString()}`);
+  await page.getByLabel("อีเมล").fill("new-user@example.com");
+  await page.getByLabel("รหัสผ่าน").fill("super-secret-password");
+  await page.getByRole("button", { name: "เข้าสู่ระบบ" }).click();
+
+  await expect(page).toHaveURL(/\/signup\?/);
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/dashboard");
 });
 
 test("login redirects overdue accounts to billing with a payment notice", async ({ page }) => {
