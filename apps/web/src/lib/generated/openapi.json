@@ -3074,7 +3074,6 @@
             "title": "Tenant Id"
           },
           "url": {
-            "format": "uri",
             "minLength": 1,
             "title": "Url",
             "type": "string"
