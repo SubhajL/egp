@@ -38,6 +38,7 @@ from egp_api.config import (
 from egp_api.services.admin_service import AdminService
 from egp_api.services.audit_service import AuditService
 from egp_api.services.auth_service import AuthService
+from egp_api.services.session_auth_runtime import SessionAuthenticationRuntime
 from egp_api.services.billing_service import BillingService
 from egp_api.services.dashboard_service import DashboardService
 from egp_api.services.discovery_dispatch import DiscoveryDispatchProcessor
@@ -162,6 +163,10 @@ def configure_services(
     app.state.auth_repository = bundle.auth_repository
     app.state.audit_repository = bundle.audit_repository
     app.state.auth_service = auth_service
+    app.state.session_auth_runtime = SessionAuthenticationRuntime(
+        auth_service=auth_service,
+        repository=bundle.auth_repository,
+    )
     app.state.billing_repository = bundle.billing_repository
     app.state.audit_service = AuditService(bundle.audit_repository)
     app.state.admin_service = AdminService(

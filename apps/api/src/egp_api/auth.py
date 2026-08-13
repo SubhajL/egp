@@ -6,7 +6,7 @@ import base64
 import hmac
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -223,6 +223,30 @@ def authenticate_request(
         )
     if session_token is not None and session_authenticator is not None:
         context = session_authenticator(session_token)
+        if context is None:
+            raise HTTPException(status_code=401, detail="invalid session")
+        return context
+    raise HTTPException(status_code=401, detail="missing authentication")
+
+
+async def authenticate_request_async(
+    *,
+    authorization_header: str | None,
+    session_token: str | None,
+    jwt_secret: str | None,
+    jwt_validation_policy: JwtValidationPolicy | None,
+    session_authenticator: Callable[[str], Awaitable[AuthContext | None]],
+) -> AuthContext:
+    if authorization_header is not None:
+        if not jwt_secret or jwt_validation_policy is None:
+            raise HTTPException(status_code=503, detail="server auth not configured")
+        return authenticate_bearer_request(
+            authorization_header=authorization_header,
+            jwt_secret=jwt_secret,
+            validation_policy=jwt_validation_policy,
+        )
+    if session_token is not None:
+        context = await session_authenticator(session_token)
         if context is None:
             raise HTTPException(status_code=401, detail="invalid session")
         return context

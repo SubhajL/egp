@@ -20,6 +20,7 @@ from sqlalchemy import (
     and_,
     func,
     insert,
+    or_,
     select,
     update,
 )
@@ -100,6 +101,14 @@ class LoginUserRecord:
     email_verified_at: str | None
     mfa_enabled: bool
     mfa_secret: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedSessionRecord:
+    session_id: str
+    tenant_id: str
+    last_seen_at: datetime | None
+    user: LoginUserRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,10 +396,11 @@ class SqlAuthRepository:
             )
         return int(result.rowcount or 0)
 
-    def get_session_user(self, *, session_token: str) -> LoginUserRecord | None:
-        now = _now()
+    def get_authenticated_session(
+        self, *, session_token: str
+    ) -> AuthenticatedSessionRecord | None:
         session_token_hash = _hash_opaque_token(session_token)
-        with self._engine.begin() as connection:
+        with self._engine.connect() as connection:
             row = (
                 connection.execute(
                     select(
@@ -400,11 +410,17 @@ class SqlAuthRepository:
                         TENANTS_TABLE.c.plan_code,
                         TENANTS_TABLE.c.is_active,
                         USER_SESSIONS_TABLE.c.id.label("session_id"),
+                        USER_SESSIONS_TABLE.c.tenant_id.label("session_tenant_id"),
+                        USER_SESSIONS_TABLE.c.last_seen_at,
                     )
                     .select_from(
                         USER_SESSIONS_TABLE.join(
                             USERS_TABLE,
-                            USERS_TABLE.c.id == USER_SESSIONS_TABLE.c.user_id,
+                            and_(
+                                USERS_TABLE.c.id == USER_SESSIONS_TABLE.c.user_id,
+                                USERS_TABLE.c.tenant_id
+                                == USER_SESSIONS_TABLE.c.tenant_id,
+                            ),
                         ).join(
                             TENANTS_TABLE,
                             TENANTS_TABLE.c.id == USER_SESSIONS_TABLE.c.tenant_id,
@@ -415,7 +431,7 @@ class SqlAuthRepository:
                             USER_SESSIONS_TABLE.c.session_token_hash
                             == session_token_hash,
                             USER_SESSIONS_TABLE.c.revoked_at.is_(None),
-                            USER_SESSIONS_TABLE.c.expires_at > now,
+                            USER_SESSIONS_TABLE.c.expires_at > func.now(),
                         )
                     )
                     .limit(1)
@@ -425,12 +441,48 @@ class SqlAuthRepository:
             )
             if row is None:
                 return None
-            connection.execute(
+        return AuthenticatedSessionRecord(
+            session_id=normalize_uuid_string(row["session_id"]),
+            tenant_id=normalize_uuid_string(row["session_tenant_id"]),
+            last_seen_at=row["last_seen_at"],
+            user=_login_user_from_mapping(row),
+        )
+
+    def touch_session_activity(
+        self,
+        *,
+        tenant_id: str,
+        session_ids: list[str] | tuple[str, ...],
+        observed_at: datetime,
+        minimum_interval_seconds: float,
+    ) -> int:
+        normalized_ids = tuple(
+            dict.fromkeys(normalize_uuid_string(value) for value in session_ids)
+        )
+        if not normalized_ids:
+            return 0
+        if len(normalized_ids) > 100:
+            raise ValueError("at most 100 session IDs may be touched")
+        cutoff = observed_at - timedelta(seconds=max(0.0, minimum_interval_seconds))
+        with self._engine.begin() as connection:
+            result = connection.execute(
                 update(USER_SESSIONS_TABLE)
-                .where(USER_SESSIONS_TABLE.c.session_token_hash == session_token_hash)
-                .values(last_seen_at=now, updated_at=now)
+                .where(
+                    and_(
+                        USER_SESSIONS_TABLE.c.tenant_id
+                        == normalize_uuid_string(tenant_id),
+                        USER_SESSIONS_TABLE.c.id.in_(normalized_ids),
+                        USER_SESSIONS_TABLE.c.revoked_at.is_(None),
+                        USER_SESSIONS_TABLE.c.expires_at > func.now(),
+                        or_(
+                            USER_SESSIONS_TABLE.c.last_seen_at.is_(None),
+                            USER_SESSIONS_TABLE.c.last_seen_at <= cutoff,
+                        ),
+                    )
+                )
+                .values(last_seen_at=observed_at, updated_at=observed_at)
             )
-        return _login_user_from_mapping(row)
+        return int(result.rowcount or 0)
 
     def create_account_action_token(
         self,

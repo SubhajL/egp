@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
 from tests.support.jwt_factory import mint_machine_jwt
+from tests.support.lifespan_client import enter_test_client
 from egp_shared_types.enums import BillingRecordStatus
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -23,21 +24,18 @@ PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = (
     "pbkdf2_sha256$390000$testsalt12345678$nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
 )
-
-
 def _create_client(
     tmp_path, *, auth_required: bool = True, email_sender=None
 ) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase4-auth.sqlite3'}"
-    return TestClient(
-        create_app(
-            artifact_root=tmp_path,
-            database_url=database_url,
-            auth_required=auth_required,
-            jwt_secret=JWT_SECRET if auth_required else None,
-            notification_email_sender=email_sender,
-        )
+    app = create_app(
+        artifact_root=tmp_path,
+        database_url=database_url,
+        auth_required=auth_required,
+        jwt_secret=JWT_SECRET if auth_required else None,
+        notification_email_sender=email_sender,
     )
+    return enter_test_client(TestClient(app))
 
 
 def _seed_tenant(

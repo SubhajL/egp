@@ -13,7 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from egp_api.auth import authenticate_request
+from egp_api.auth import authenticate_request_async
+from egp_api.services.session_auth_runtime import SessionAuthenticationUnavailableError
 from egp_api.routes.admin import router as admin_router
 from egp_api.routes.auth import router as auth_router
 from egp_api.routes.billing import router as billing_router
@@ -190,12 +191,18 @@ def _register_auth_middleware(
             authorization_values = request.headers.getlist("authorization")
             if len(authorization_values) > 1:
                 raise HTTPException(status_code=401, detail="invalid bearer token")
-            request.state.auth_context = authenticate_request(
+            request.state.auth_context = await authenticate_request_async(
                 authorization_header=(authorization_values[0] if authorization_values else None),
                 session_token=request.cookies.get(app.state.session_cookie_name),
                 jwt_secret=app.state.jwt_secret,
                 jwt_validation_policy=app.state.jwt_validation_policy,
-                session_authenticator=app.state.auth_service.authenticate_session,
+                session_authenticator=app.state.session_auth_runtime.authenticate,
+            )
+        except SessionAuthenticationUnavailableError:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "session authentication temporarily unavailable"},
+                headers=cors_headers_for_origin(request.headers.get("origin")),
             )
         except Exception as exc:
             status_code = getattr(exc, "status_code", 401)

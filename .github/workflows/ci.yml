@@ -138,6 +138,7 @@ jobs:
           uv run --frozen python -m pytest -q
           tests/phase1/test_migration_runner.py::test_ci_postgres_records_exact_migration_set
           tests/phase1/test_api_readiness.py::test_ci_postgres_readiness_accepts_exact_migration_set
+          tests/operations/test_session_activity_postgres.py::test_ci_postgres_activity_touch_contract
 
   test-python:
     name: Python Tests

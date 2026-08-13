@@ -9,6 +9,7 @@ import re
 import struct
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from secrets import token_bytes
 from urllib.parse import quote
 
@@ -53,6 +54,14 @@ class CurrentSessionView:
 class LoginResult:
     session_token: str
     current: CurrentSessionView
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAuthenticationResult:
+    context: AuthContext
+    session_id: str
+    tenant_id: str
+    last_seen_at: datetime | None
 
 
 class WorkspaceSlugRequiredError(PermissionError):
@@ -203,11 +212,20 @@ class AuthService:
             return False
         return self._repository.revoke_session(session_token=session_token)
 
-    def authenticate_session(self, session_token: str) -> AuthContext | None:
-        user = self._repository.get_session_user(session_token=session_token)
-        if user is None or not user.tenant_is_active or user.status != "active":
+    def authenticate_session(self, session_token: str) -> SessionAuthenticationResult | None:
+        session = self._repository.get_authenticated_session(session_token=session_token)
+        if (
+            session is None
+            or not session.user.tenant_is_active
+            or session.user.status != "active"
+        ):
             return None
-        return _auth_context_from_user(user)
+        return SessionAuthenticationResult(
+            context=_auth_context_from_user(session.user),
+            session_id=session.session_id,
+            tenant_id=session.tenant_id,
+            last_seen_at=session.last_seen_at,
+        )
 
     def describe_current(self, auth_context: AuthContext) -> CurrentSessionView:
         return self._build_current_view(auth_context)
