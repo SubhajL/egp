@@ -751,10 +751,11 @@ def test_accept_invite_sets_password_marks_email_verified_and_creates_session(
     )
     assert invited.status_code == 202
 
+    token = _extract_token(sent)
     accepted = client.post(
         "/v1/auth/invite/accept",
         json={
-            "token": _extract_token(sent),
+            "token": token,
             "password": "invite accepted password",
         },
     )
@@ -765,6 +766,30 @@ def test_accept_invite_sets_password_marks_email_verified_and_creates_session(
     me = client.get("/v1/me")
     assert me.status_code == 200
     assert me.json()["user"]["email"] == "invitee@example.com"
+    replay = client.post(
+        "/v1/auth/invite/accept",
+        json={"token": token, "password": "different replay password"},
+    )
+    assert replay.status_code == 400
+    assert replay.json() == {
+        "detail": "invalid or expired invite token",
+        "code": "invalid_invite_token",
+    }
+
+
+def test_invalid_invite_token_wins_over_short_password_validation(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/auth/invite/accept",
+        json={"token": "invalid-token", "password": "x"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "invalid or expired invite token",
+        "code": "invalid_invite_token",
+    }
 
 
 def test_forgot_password_returns_generic_success_for_unknown_email(tmp_path) -> None:
@@ -800,6 +825,16 @@ def test_reset_password_consumes_token_and_replaces_old_password(tmp_path) -> No
     _seed_tenant(client)
     _seed_user(client, email="resetme@example.com")
 
+    login_before_reset = client.post(
+        "/v1/auth/login",
+        json={
+            "tenant_slug": "acme-intelligence",
+            "email": "resetme@example.com",
+            "password": PASSWORD,
+        },
+    )
+    assert login_before_reset.status_code == 200
+
     forgot = client.post(
         "/v1/auth/password/forgot",
         json={
@@ -809,14 +844,16 @@ def test_reset_password_consumes_token_and_replaces_old_password(tmp_path) -> No
     )
     assert forgot.status_code == 202
 
+    token = _extract_token(sent)
     reset = client.post(
         "/v1/auth/password/reset",
         json={
-            "token": _extract_token(sent),
+            "token": token,
             "password": "a brand new password",
         },
     )
     assert reset.status_code == 200
+    assert client.get("/v1/me").status_code == 401
 
     old_login = client.post(
         "/v1/auth/login",
@@ -837,6 +874,65 @@ def test_reset_password_consumes_token_and_replaces_old_password(tmp_path) -> No
 
     assert old_login.status_code == 401
     assert new_login.status_code == 200
+    replay = client.post(
+        "/v1/auth/password/reset",
+        json={"token": token, "password": "another replay password"},
+    )
+    assert replay.status_code == 400
+    assert replay.json() == {
+        "detail": "invalid or expired password reset token",
+        "code": "invalid_password_reset_token",
+    }
+
+
+def test_invalid_reset_token_wins_over_short_password_validation(tmp_path) -> None:
+    client = _create_client(tmp_path)
+
+    response = client.post(
+        "/v1/auth/password/reset",
+        json={"token": "invalid-token", "password": "x"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "invalid or expired password reset token",
+        "code": "invalid_password_reset_token",
+    }
+
+
+@pytest.mark.parametrize(
+    ("purpose", "path"),
+    (
+        ("invite", "/v1/auth/invite/accept"),
+        ("password_reset", "/v1/auth/password/reset"),
+    ),
+)
+def test_valid_action_token_survives_short_password_failure(
+    tmp_path, purpose: str, path: str
+) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    user_id = _seed_user(client, email=f"weak-{purpose}@example.com")
+    token = client.app.state.auth_repository.create_account_action_token(
+        tenant_id=TENANT_ID,
+        user_id=user_id,
+        purpose=purpose,
+        delivery_email=f"weak-{purpose}@example.com",
+        expires_in_seconds=3600,
+    )
+
+    rejected = client.post(path, json={"token": token, "password": "x"})
+    assert rejected.status_code == 400
+    assert rejected.json() == {
+        "detail": "password must be at least 12 characters",
+        "code": "password_too_short",
+    }
+
+    retried = client.post(
+        path,
+        json={"token": token, "password": "valid retry password"},
+    )
+    assert retried.status_code == 200
 
 
 def test_send_and_consume_email_verification_token(tmp_path) -> None:
@@ -863,9 +959,10 @@ def test_send_and_consume_email_verification_token(tmp_path) -> None:
     requested = client.post("/v1/auth/email/verification/send")
     assert requested.status_code == 202
 
+    token = _extract_token(sent)
     verified = client.post(
         "/v1/auth/email/verify",
-        json={"token": _extract_token(sent)},
+        json={"token": token},
     )
 
     assert verified.status_code == 200
@@ -873,6 +970,46 @@ def test_send_and_consume_email_verification_token(tmp_path) -> None:
     me = client.get("/v1/me")
     assert me.status_code == 200
     assert me.json()["user"]["email_verified"] is True
+    replay = client.post("/v1/auth/email/verify", json={"token": token})
+    assert replay.status_code == 400
+    assert replay.json() == {
+        "detail": "invalid or expired email verification token",
+        "code": "invalid_email_verification_token",
+    }
+
+
+def test_email_verification_inactive_target_does_not_consume_token(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    user_id = _seed_user(client, email="inactive-verify@example.com")
+    token = client.app.state.auth_repository.create_account_action_token(
+        tenant_id=TENANT_ID,
+        user_id=user_id,
+        purpose="email_verification",
+        delivery_email="inactive-verify@example.com",
+        expires_in_seconds=3600,
+    )
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE users SET status='suspended' WHERE id=:user_id"),
+            {"user_id": user_id},
+        )
+
+    inactive = client.post("/v1/auth/email/verify", json={"token": token})
+    assert inactive.status_code == 400
+    assert inactive.json() == {
+        "detail": "account is not active",
+        "code": "account_not_active",
+    }
+
+    with client.app.state.db_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE users SET status='active' WHERE id=:user_id"),
+            {"user_id": user_id},
+        )
+    retried = client.post("/v1/auth/email/verify", json={"token": token})
+    assert retried.status_code == 200
+    assert retried.json() == {"email_verified": True}
 
 
 def test_mfa_setup_enable_and_login_require_code(tmp_path) -> None:
