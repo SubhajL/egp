@@ -44,44 +44,49 @@ def discovery_dispatch_route_kick_enabled(
 def build_lifespan(*, logger: logging.Logger):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        session_auth_runtime = getattr(app.state, "session_auth_runtime", None)
         poller_task = None
         poller_stop_event = None
         discovery_task = None
         discovery_stop_event = None
         discovery_wake_signal = None
-        processor = getattr(app.state, "webhook_delivery_processor", None)
-        discovery_processor = getattr(app.state, "discovery_dispatch_processor", None)
-        if processor is not None and getattr(
-            app.state, "webhook_delivery_processor_enabled", False
-        ):
-            poller_stop_event = asyncio.Event()
-            poller_task = asyncio.create_task(
-                run_webhook_delivery_loop(
-                    processor=processor,
-                    stop_event=poller_stop_event,
-                    poll_interval_seconds=1.0,
-                )
-            )
-        if discovery_processor is not None and getattr(
-            app.state, "discovery_dispatch_processor_enabled", False
-        ):
-            discovery_stop_event = asyncio.Event()
-            discovery_wake_signal = DiscoveryDispatchWakeSignal()
-            app.state.discovery_dispatch_wake_signal = discovery_wake_signal
-            discovery_task = asyncio.create_task(
-                run_discovery_dispatch_loop(
-                    processor=discovery_processor,
-                    run_service=app.state.run_service,
-                    owner_pid=os.getpid(),
-                    stop_event=discovery_stop_event,
-                    poll_interval_seconds=1.0,
-                    logger=logger,
-                    wake_signal=discovery_wake_signal,
-                )
-            )
         try:
+            if session_auth_runtime is not None:
+                await session_auth_runtime.start()
+            processor = getattr(app.state, "webhook_delivery_processor", None)
+            discovery_processor = getattr(app.state, "discovery_dispatch_processor", None)
+            if processor is not None and getattr(
+                app.state, "webhook_delivery_processor_enabled", False
+            ):
+                poller_stop_event = asyncio.Event()
+                poller_task = asyncio.create_task(
+                    run_webhook_delivery_loop(
+                        processor=processor,
+                        stop_event=poller_stop_event,
+                        poll_interval_seconds=1.0,
+                    )
+                )
+            if discovery_processor is not None and getattr(
+                app.state, "discovery_dispatch_processor_enabled", False
+            ):
+                discovery_stop_event = asyncio.Event()
+                discovery_wake_signal = DiscoveryDispatchWakeSignal()
+                app.state.discovery_dispatch_wake_signal = discovery_wake_signal
+                discovery_task = asyncio.create_task(
+                    run_discovery_dispatch_loop(
+                        processor=discovery_processor,
+                        run_service=app.state.run_service,
+                        owner_pid=os.getpid(),
+                        stop_event=discovery_stop_event,
+                        poll_interval_seconds=1.0,
+                        logger=logger,
+                        wake_signal=discovery_wake_signal,
+                    )
+                )
             yield
         finally:
+            if session_auth_runtime is not None:
+                await session_auth_runtime.stop()
             if poller_stop_event is not None:
                 poller_stop_event.set()
             if poller_task is not None:
