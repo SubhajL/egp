@@ -107,7 +107,7 @@ def _seed_active_subscription(client: TestClient) -> None:
         )
 
 
-def _seed_active_profile_keyword(client: TestClient, *, keyword: str) -> None:
+def _seed_active_profile_keyword(client: TestClient, *, keyword: str) -> str:
     profile_id = str(uuid4())
     with client.app.state.db_engine.begin() as connection:
         connection.execute(
@@ -170,6 +170,7 @@ def _seed_active_profile_keyword(client: TestClient, *, keyword: str) -> None:
                 "created_at": "2026-04-05T00:00:00+00:00",
             },
         )
+    return profile_id
 
 
 def _seed_project(
@@ -313,7 +314,7 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         )
     )
     _seed_active_subscription(client)
-    _seed_active_profile_keyword(client, keyword="สุขภาพ")
+    profile_id = _seed_active_profile_keyword(client, keyword="สุขภาพ")
 
     # Keep "today" fixtures away from UTC midnight so the dashboard date bucket
     # assertions stay deterministic in CI regardless of execution time.
@@ -378,14 +379,14 @@ def test_dashboard_summary_endpoint_returns_repository_backed_metrics(tmp_path) 
         trigger_type="schedule",
         status=CrawlRunStatus.SUCCEEDED,
         projects_seen=12,
-        profile_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        profile_id=profile_id,
     )
     _create_run(
         client,
         trigger_type="manual",
         status=CrawlRunStatus.FAILED,
         projects_seen=0,
-        profile_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        profile_id=profile_id,
     )
     _create_run(
         client,
