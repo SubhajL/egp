@@ -27,9 +27,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "deploy" / ".env.production.example"
+COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 
 ENV_READ_FUNCTIONS = {"getenv", "environ.get"}
 
@@ -371,6 +373,25 @@ def test_env_template_file_exists_and_parses() -> None:
 def test_env_template_has_no_duplicate_keys() -> None:
     duplicates = _collect_duplicate_template_keys(TEMPLATE_PATH)
     assert duplicates == set(), f"duplicate keys in template: {sorted(duplicates)}"
+
+
+def test_runtime_diagnostics_and_release_vars_are_optional() -> None:
+    template = _parse_env_template(TEMPLATE_PATH)
+
+    for name in {"EGP_BROWSER_DIAGNOSTICS_DIR", "EGP_RELEASE_SHA"}:
+        entry = template[name]
+        assert entry.section == "optional"
+        assert entry.placeholder == ""
+
+
+def test_discovery_executor_relays_optional_observability_vars() -> None:
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    environment = compose["services"]["discovery-executor"]["environment"]
+
+    assert environment["EGP_BROWSER_DIAGNOSTICS_DIR"] == (
+        "${EGP_BROWSER_DIAGNOSTICS_DIR:-}"
+    )
+    assert environment["EGP_RELEASE_SHA"] == "${EGP_RELEASE_SHA:-}"
 
 
 def test_env_template_tracks_runtime_egp_vars() -> None:
