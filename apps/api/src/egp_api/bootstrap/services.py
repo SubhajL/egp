@@ -257,6 +257,8 @@ def configure_services(
     app.state.run_repository = bundle.run_repository
     app.state.run_service = RunService(
         bundle.run_repository,
+        project_repository=bundle.project_repository,
+        profile_repository=bundle.profile_repository,
         artifact_root=bundle.resolved_artifact_root,
         entitlement_service=entitlement_service,
         notification_dispatcher=gated_notification_dispatcher,

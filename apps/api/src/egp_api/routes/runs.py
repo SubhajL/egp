@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from egp_api.auth import resolve_request_tenant_id
+from egp_api.auth import (
+    require_authenticated_role,
+    require_run_operator_role,
+    resolve_request_tenant_id,
+)
 from egp_api.services.entitlement_service import EntitlementError
-from egp_api.services.run_service import RunService
+from egp_api.services.run_service import (
+    RunProfileNotFoundError,
+    RunProjectNotFoundError,
+    RunService,
+)
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
     CrawlRunRecord,
@@ -127,7 +135,11 @@ def _serialize_detail(detail: CrawlRunDetail) -> RunDetailResponse:
     )
 
 
-@router.post("", response_model=RunDetailResponse)
+@router.post(
+    "",
+    response_model=RunDetailResponse,
+    dependencies=[Depends(require_run_operator_role)],
+)
 def create_run(
     payload: CreateRunRequest, request: Request, response: Response
 ) -> RunDetailResponse:
@@ -142,11 +154,19 @@ def create_run(
         )
     except EntitlementError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RunProfileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="profile not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED
     return _serialize_detail(detail)
 
 
-@router.post("/{run_id}/tasks", response_model=TaskResponse)
+@router.post(
+    "/{run_id}/tasks",
+    response_model=TaskResponse,
+    dependencies=[Depends(require_run_operator_role)],
+)
 def create_task(
     run_id: str,
     payload: CreateTaskRequest,
@@ -167,15 +187,21 @@ def create_task(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
+    except RunProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="project not found") from exc
     except EntitlementError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail="run not found for tenant") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     response.status_code = status.HTTP_201_CREATED
     return _serialize_task(task)
 
 
-@router.post("/{run_id}/finish", response_model=RunDetailResponse)
+@router.post(
+    "/{run_id}/finish",
+    response_model=RunDetailResponse,
+    dependencies=[Depends(require_run_operator_role)],
+)
 def finish_run(
     run_id: str,
     payload: FinishRunRequest,
@@ -194,12 +220,14 @@ def finish_run(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail="run not found for tenant") from exc
     return _serialize_detail(detail)
 
 
-@router.get("", response_model=RunListResponse)
+@router.get(
+    "",
+    response_model=RunListResponse,
+    dependencies=[Depends(require_authenticated_role)],
+)
 def list_runs(
     request: Request,
     tenant_id: str | None = None,
@@ -217,7 +245,11 @@ def list_runs(
     )
 
 
-@router.get("/{run_id}/log", response_class=PlainTextResponse)
+@router.get(
+    "/{run_id}/log",
+    response_class=PlainTextResponse,
+    dependencies=[Depends(require_authenticated_role)],
+)
 def get_run_log(
     run_id: str,
     request: Request,
@@ -232,8 +264,6 @@ def get_run_log(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run not found") from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail="run not found for tenant") from exc
     if log_text is None:
         raise HTTPException(status_code=404, detail="run log not found")
     return PlainTextResponse(log_text)

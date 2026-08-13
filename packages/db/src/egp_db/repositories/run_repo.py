@@ -936,6 +936,28 @@ class SqlRunRepository:
             )
         return _run_from_mapping(row) if row is not None else None
 
+    def find_run_by_id_for_tenant(
+        self, *, tenant_id: str, run_id: str
+    ) -> CrawlRunRecord | None:
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_run_id = normalize_uuid_string(run_id)
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(CRAWL_RUNS_TABLE)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        )
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+        return _run_from_mapping(row) if row is not None else None
+
     def find_task_by_id(self, task_id: str) -> CrawlTaskRecord | None:
         normalized_task_id = normalize_uuid_string(task_id)
         with self._engine.connect() as connection:
