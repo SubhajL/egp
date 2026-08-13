@@ -2404,10 +2404,7 @@ export interface components {
             signing_secret: string;
             /** Tenant Id */
             tenant_id?: string | null;
-            /**
-             * Url
-             * Format: uri
-             */
+            /** Url */
             url: string;
         };
         /** CurrentSessionResponse */
