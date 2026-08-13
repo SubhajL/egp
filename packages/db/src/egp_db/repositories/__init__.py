@@ -4,6 +4,7 @@ from .audit_repo import AuditLogEventRecord, AuditLogPage, create_audit_reposito
 from .candidate_attempt_repo import (
     CandidateAttemptRecord,
     CandidateRunSummary,
+    CandidateTerminalConflictError,
     SqlCandidateAttemptRepository,
     create_candidate_attempt_repository,
 )
@@ -59,6 +60,7 @@ from .recrawl_request_repo import (
 
 __all__ = [
     "CandidateAttemptRecord",
+    "CandidateTerminalConflictError",
     "CandidateRunSummary",
     "SqlCandidateAttemptRepository",
     "create_candidate_attempt_repository",

@@ -3154,6 +3154,450 @@ def test_direct_path_ignores_untrusted_candidate_key_field(monkeypatch, tmp_path
     assert summary.persisted == 1
 
 
+def _expected_content_key(
+    keyword: str,
+    project_name: str,
+    project_number: str | None = None,
+    organization_name: str = "",
+    budget_text: str = "",
+    source_status_text: str = "",
+) -> str:
+    """F6/R7 golden-vector oracle (v2), independent of compute_candidate_key."""
+    import hashlib
+    import json
+
+    normalized_keyword = keyword.strip().casefold()
+    if project_number:
+        parts = ["num", project_number.casefold()]
+    else:
+        parts = [
+            "name",
+            project_name.casefold(),
+            organization_name.casefold(),
+            budget_text.casefold(),
+            source_status_text.casefold(),
+        ]
+    payload = json.dumps(
+        ["egp-candidate-key.v2", normalized_keyword, *parts],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_candidate_rows(repo, run_id: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from egp_db.repositories.candidate_attempt_repo import (
+        DISCOVERY_CANDIDATE_ATTEMPTS_TABLE as T,
+    )
+
+    with repo._engine.connect() as conn:
+        rows = conn.execute(select(T).where(T.c.run_id == run_id)).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def test_live_candidate_callback_persists_content_provenance(monkeypatch, tmp_path) -> None:
+    # F6/T14 (R7+R8, workflow half): the live acceptance path stores
+    # project_number + row_marker JSON and keys candidates by CONTENT identity
+    # (golden-vector recomputed here, never via the production helper).
+    import json
+
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "99999999-9999-9999-9999-999999999999"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t14.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+    sink = FakeProjectEventSink()
+
+    marker_with_number = {
+        "project_name": "P-NUM",
+        "project_number": "EGP-77",
+        "organization_name": "Org A",
+        "budget_text": "1,000",
+        "source_status_text": "s",
+        "visible_signature": "sig-1",
+    }
+    marker_without_number = {
+        "project_name": "P-NAME",
+        "project_number": "",
+        "organization_name": "Org B",
+        "budget_text": "2,000",
+        "source_status_text": "s",
+        "visible_signature": "sig-2",
+    }
+
+    def fake_crawl_live_discovery(**kwargs):
+        cb = kwargs.get("candidate_callback")
+        assert callable(cb)
+        cb(
+            {
+                "keyword": "k",
+                "page_number": 1,
+                "eligible_ordinal": 0,
+                "row_marker": marker_with_number,
+                "project_name": "P-NUM",
+                "project_number": "EGP-77",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        )
+        cb(
+            {
+                "keyword": "k",
+                "page_number": 2,
+                "eligible_ordinal": 1,
+                "row_marker": marker_without_number,
+                "project_name": "P-NAME",
+                "project_number": None,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[],
+        run_repository=run_repository,
+        project_event_sink=sink,
+        candidate_attempt_repo=repo,
+        live=True,
+    )
+
+    rows = {row["project_number"]: row for row in _read_candidate_rows(repo, run_id)}
+    assert set(rows) == {"EGP-77", None}
+
+    with_number = rows["EGP-77"]
+    assert with_number["candidate_key"] == _expected_content_key(
+        "k", "P-NUM", project_number="EGP-77", organization_name="Org A"
+    )
+    assert with_number["row_marker"] == json.dumps(
+        marker_with_number, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert with_number["page_number"] == 1
+    assert with_number["row_ordinal"] == 0
+
+    without_number = rows[None]
+    # Identity falls back to the VISIBLE ROW SIGNATURE from the marker:
+    # name + org + budget + status (R7 v2).
+    assert without_number["candidate_key"] == _expected_content_key(
+        "k",
+        "P-NAME",
+        organization_name="Org B",
+        budget_text="2,000",
+        source_status_text="s",
+    )
+    assert without_number["row_marker"] == json.dumps(
+        marker_without_number, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def test_direct_path_key_is_content_based_no_fabricated_coordinates(tmp_path) -> None:
+    # F6/T16 (R7+R8, direct path): materialized payloads key by content and
+    # store NULL coordinates — never fabricated 0,0 — plus the project_number.
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    project_uuid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t16.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class UuidProjectSink:
+        def __init__(self) -> None:
+            self.discovery_events: list[object] = []
+
+        def record_discovery(self, event):
+            self.discovery_events.append(event)
+            return SimpleNamespace(id=project_uuid, project_state=event.project_state)
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[
+            {
+                "project_name": "Direct Project",
+                "project_number": "EGP-DIRECT-1",
+                "organization_name": "Direct Org",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "project_state": "discovered",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=UuidProjectSink(),
+        candidate_attempt_repo=repo,
+    )
+
+    rows = _read_candidate_rows(repo, run_id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["candidate_key"] == _expected_content_key(
+        "k", "Direct Project", project_number="EGP-DIRECT-1",
+        organization_name="Direct Org",
+    )
+    assert row["page_number"] is None, "no fabricated 0 coordinate"
+    assert row["row_ordinal"] is None, "no fabricated 0 coordinate"
+    assert row["project_number"] == "EGP-DIRECT-1"
+    assert row["candidate_status"] == "persisted"
+
+
+def test_direct_path_no_number_identity_uses_org_and_status(tmp_path) -> None:
+    # F6 (QCHECK Tier-2 finding 7): the direct path must forward organization
+    # and status into the no-number fallback identity — removing either from
+    # the call site must fail this golden-vector comparison.
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "abababab-abab-abab-abab-abababababab"
+    project_uuid = "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t16b.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class UuidProjectSink:
+        def __init__(self) -> None:
+            self.discovery_events: list[object] = []
+
+        def record_discovery(self, event):
+            self.discovery_events.append(event)
+            return SimpleNamespace(id=project_uuid, project_state=event.project_state)
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[
+            {
+                "project_name": "Numberless Project",
+                "organization_name": "Org X",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "project_state": "discovered",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=UuidProjectSink(),
+        candidate_attempt_repo=repo,
+    )
+
+    rows = _read_candidate_rows(repo, run_id)
+    assert len(rows) == 1
+    assert rows[0]["candidate_key"] == _expected_content_key(
+        "k",
+        "Numberless Project",
+        organization_name="Org X",
+        source_status_text="หนังสือเชิญชวน/ประกาศเชิญชวน",
+    )
+    assert rows[0]["project_number"] is None
+
+
+def test_workflow_persist_failure_writes_typed_reason(tmp_path) -> None:
+    # F6/T17 (R5, workflow half): the REAL _persist_discovered_project failure
+    # handler stores the typed persist_error reason + truncated detail — never
+    # the raw exception string as the reason.
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t17.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class ExplodingSink:
+        def record_discovery(self, event):
+            raise RuntimeError(
+                "sink exploded: connection reset by peer | " + "x" * 600
+            )
+
+    run_discover_workflow(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        keyword="k",
+        discovered_projects=[
+            {
+                "project_name": "Doomed Project",
+                "project_number": "EGP-DOOM-1",
+                "organization_name": "Org",
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "project_state": "discovered",
+            }
+        ],
+        run_repository=run_repository,
+        project_event_sink=ExplodingSink(),
+        candidate_attempt_repo=repo,
+    )
+
+    rows = _read_candidate_rows(repo, run_id)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["candidate_status"] == "failed"
+    assert row["terminal_reason"] == "persist_error"
+    assert "sink exploded" in (row["terminal_detail"] or "")
+    assert len(row["terminal_detail"]) == 500, "detail must be truncated to 500"
+
+
+def test_workflow_logs_distinct_event_on_terminal_conflict(tmp_path, caplog) -> None:
+    # F6/T19 (R11): a contradictory finalize at the production call site is
+    # DISTINCTLY visible (structured candidate_terminal_conflict event), and
+    # the workflow continues fail-open (authority escalation is F4).
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    project_uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t19.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class UuidProjectSink:
+        def __init__(self) -> None:
+            self.discovery_events: list[object] = []
+
+        def record_discovery(self, event):
+            self.discovery_events.append(event)
+            return SimpleNamespace(id=project_uuid, project_state=event.project_state)
+
+    # Pre-finalize the SAME content key as failed, so the workflow's
+    # finalize_persisted contradicts the terminal state.
+    conflicting_key = _expected_content_key(
+        "k", "Conflicted Project", project_number="EGP-CONFLICT-1",
+        organization_name="Org",
+    )
+    repo.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        candidate_key=conflicting_key,
+        keyword="k",
+    )
+    repo.finalize_failed(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        candidate_key=conflicting_key,
+        terminal_reason="worker_lost",
+    )
+
+    with caplog.at_level(logging.ERROR, logger="egp_worker.workflows.discover"):
+        run_discover_workflow(
+            tenant_id=TENANT_ID,
+            run_id=run_id,
+            keyword="k",
+            discovered_projects=[
+                {
+                    "project_name": "Conflicted Project",
+                    "project_number": "EGP-CONFLICT-1",
+                    "organization_name": "Org",
+                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    "project_state": "discovered",
+                }
+            ],
+            run_repository=run_repository,
+            project_event_sink=UuidProjectSink(),
+            candidate_attempt_repo=repo,
+        )
+
+    conflict_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", None) == "candidate_terminal_conflict"
+    ]
+    assert conflict_records, (
+        "a contradictory finalize must emit the distinct "
+        "candidate_terminal_conflict event, not a generic warning"
+    )
+    record = conflict_records[0]
+    assert record.levelno == logging.ERROR
+    assert getattr(record, "candidate_key", None) == conflicting_key
+    assert getattr(record, "existing_status", None) == "failed"
+    assert getattr(record, "requested_status", None) == "persisted"
+    # Fail-open: the project itself still persisted (F4 owns escalation).
+    assert run_repository.tasks
+
+
+def test_workflow_failure_path_logs_distinct_event_on_terminal_conflict(
+    tmp_path, caplog
+) -> None:
+    # F6/R11 (QCHECK Tier-2 finding 6): the FAILURE-path finalize (except
+    # branch at the finalize_failed call site) must also catch the typed
+    # conflict distinctly, and the event must carry BOTH full triples.
+    from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+
+    run_id = "efefefef-efef-efef-efef-efefefefefef"
+    pre_project = "12121212-1212-1212-1212-121212121212"
+    repo = SqlCandidateAttemptRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'f6-t19b.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    run_repository = FakeRunRepository()
+
+    class ExplodingSink:
+        def record_discovery(self, event):
+            raise RuntimeError("persist boom")
+
+    conflicting_key = _expected_content_key(
+        "k", "Conflicted Project B", project_number="EGP-CONFLICT-2"
+    )
+    repo.record_accepted(
+        tenant_id=TENANT_ID, run_id=run_id, candidate_key=conflicting_key, keyword="k"
+    )
+    repo.finalize_persisted(
+        tenant_id=TENANT_ID,
+        run_id=run_id,
+        candidate_key=conflicting_key,
+        project_id=pre_project,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="egp_worker.workflows.discover"):
+        run_discover_workflow(
+            tenant_id=TENANT_ID,
+            run_id=run_id,
+            keyword="k",
+            discovered_projects=[
+                {
+                    "project_name": "Conflicted Project B",
+                    "project_number": "EGP-CONFLICT-2",
+                    "organization_name": "Org",
+                    "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    "project_state": "discovered",
+                }
+            ],
+            run_repository=run_repository,
+            project_event_sink=ExplodingSink(),
+            candidate_attempt_repo=repo,
+        )
+
+    conflict_records = [
+        record
+        for record in caplog.records
+        if getattr(record, "egp_event", None) == "candidate_terminal_conflict"
+    ]
+    assert conflict_records, "failure-path finalize must emit the distinct event"
+    record = conflict_records[0]
+    assert getattr(record, "candidate_key", None) == conflicting_key
+    assert getattr(record, "existing_status", None) == "persisted"
+    assert getattr(record, "existing_reason", None) is None
+    assert getattr(record, "existing_project_id", None) == pre_project
+    assert getattr(record, "requested_status", None) == "failed"
+    assert getattr(record, "requested_reason", None) == "persist_error"
+    assert getattr(record, "requested_project_id", None) is None
+    # Fail-open: the original persisted terminal state is preserved.
+    summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
+    assert summary.persisted == 1
+
+
 def test_run_discover_workflow_recovery_and_diagnostic_events_are_not_anomalies(
     monkeypatch,
 ) -> None:

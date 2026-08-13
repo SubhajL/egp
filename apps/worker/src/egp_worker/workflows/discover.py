@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,7 +20,10 @@ from egp_crawler_core.candidate_key import compute_candidate_key
 from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
 from egp_db.onedrive import OneDriveOAuthConfig
-from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
+from egp_db.repositories.candidate_attempt_repo import (
+    CandidateTerminalConflictError,
+    SqlCandidateAttemptRepository,
+)
 from egp_db.repositories.document_capture_attempt_repo import (
     SqlDocumentCaptureAttemptRepository,
     create_document_capture_attempt_repository,
@@ -30,6 +34,7 @@ from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
 from egp_shared_types.project_events import DiscoveredProjectEvent
 from egp_shared_types.enums import (
+    CandidateTerminalReason,
     CrawlOutcomeReason,
     DiscoveryFailureCode,
     DocumentCaptureAttemptStatus,
@@ -74,6 +79,35 @@ _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
 _LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
 _KEYWORD_SCAN_SUMMARY_STAGE = "keyword_scan_summary"
 _BACKFILL_TRIGGER_TYPE = "backfill"
+
+
+def _log_candidate_terminal_conflict(
+    *,
+    tenant_id: str,
+    run_id: str,
+    conflict: CandidateTerminalConflictError,
+) -> None:
+    """Emit the distinct structured event for a contradictory finalize (F6/R11).
+
+    Fail-open by design: the caller continues after logging. Making the
+    conflict block or fail the run is F4's run-authority charter.
+    """
+    logger.error(
+        "Candidate terminal conflict for %s",
+        conflict.candidate_key,
+        extra={
+            "egp_event": "candidate_terminal_conflict",
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "candidate_key": conflict.candidate_key,
+            "existing_status": conflict.existing_status,
+            "existing_reason": conflict.existing_reason,
+            "existing_project_id": conflict.existing_project_id,
+            "requested_status": conflict.requested_status,
+            "requested_reason": conflict.requested_reason,
+            "requested_project_id": conflict.requested_project_id,
+        },
+    )
 
 
 def _keyword_scan_is_canary_anomaly(event: dict[str, object]) -> bool:
@@ -561,14 +595,21 @@ def run_discover_workflow(
         # Live browser rows already recorded acceptance pre-detail (candidate_key
         # threaded + popped above). Only the direct / materialized-payload path,
         # which has no detail-loss gap, records acceptance here.
+        # F6/identity: content-based key (number, else the contracted direct
+        # payload fields name+org+status). Browser-only budget_text is not
+        # fabricated here. Coordinates are stored only when the payload really
+        # carries them — never fabricated as 0,0.
         if candidate_key_value is None and candidate_attempt_repo is not None:
             page_num = discovered.get("page_number")
             row_ord = discovered.get("row_ordinal")
+            direct_number_value = discovered.get("project_number")
+            direct_number = str(direct_number_value) if direct_number_value else None
             candidate_key_value = compute_candidate_key(
                 keyword=task_keyword,
-                page_number=int(page_num) if page_num is not None else 0,
-                row_ordinal=int(row_ord) if row_ord is not None else 0,
                 project_name=str(discovered.get("project_name") or ""),
+                project_number=direct_number,
+                organization_name=str(discovered.get("organization_name") or ""),
+                source_status_text=str(discovered.get("source_status_text") or ""),
             )
             candidate_attempt_repo.record_accepted(
                 tenant_id=tenant_id,
@@ -577,6 +618,7 @@ def run_discover_workflow(
                 keyword=task_keyword,
                 page_number=int(page_num) if page_num is not None else None,
                 row_ordinal=int(row_ord) if row_ord is not None else None,
+                project_number=direct_number,
             )
         try:
             task = run_repository.create_task(
@@ -652,6 +694,13 @@ def run_discover_workflow(
                         candidate_key=candidate_key_value,
                         project_id=project.id,
                     )
+                except CandidateTerminalConflictError as conflict:
+                    # F6/R11: a contradictory rewrite is DISTINCTLY visible —
+                    # never folded into the generic warning. Still fail-open;
+                    # escalation to run authority is F4's charter.
+                    _log_candidate_terminal_conflict(
+                        tenant_id=tenant_id, run_id=run.id, conflict=conflict
+                    )
                 except Exception:
                     logger.warning(
                         "Failed to finalize candidate attempt as persisted for %s",
@@ -666,11 +715,18 @@ def run_discover_workflow(
             error_count += 1
             if candidate_attempt_repo is not None and candidate_key_value is not None:
                 try:
+                    # F6/R5: typed reason; the raw exception text is diagnostics
+                    # and lives in terminal_detail, never in terminal_reason.
                     candidate_attempt_repo.finalize_failed(
                         tenant_id=tenant_id,
                         run_id=run.id,
                         candidate_key=candidate_key_value,
-                        terminal_reason=str(exc)[:500],
+                        terminal_reason=CandidateTerminalReason.PERSIST_ERROR.value,
+                        terminal_detail=str(exc)[:500],
+                    )
+                except CandidateTerminalConflictError as conflict:
+                    _log_candidate_terminal_conflict(
+                        tenant_id=tenant_id, run_id=run.id, conflict=conflict
                     )
                 except Exception:
                     logger.warning(
@@ -748,16 +804,30 @@ def run_discover_workflow(
                 # eligible row BEFORE detail navigation; raising stops the crawl
                 # (fail-closed). Run-level authorization already gated browser
                 # traffic at workflow entry, so no per-keyword re-authorization here.
+                # F6/identity: the key is CONTENT-based (project number, else
+                # name+organization from the row marker) so a browser-death
+                # resume re-scan is idempotent instead of orphaning a second
+                # position-keyed row; page/ordinal are stored as provenance only.
                 if candidate_attempt_repo is None:
                     return None
                 candidate_keyword = str(candidate_info.get("keyword") or keyword)
                 page_number = candidate_info.get("page_number")
                 eligible_ordinal = candidate_info.get("eligible_ordinal")
+                marker = candidate_info.get("row_marker")
+                marker_dict = marker if isinstance(marker, dict) else None
+                project_number_value = candidate_info.get("project_number")
+                project_number = str(project_number_value) if project_number_value else None
                 candidate_key = compute_candidate_key(
                     keyword=candidate_keyword,
-                    page_number=int(page_number) if page_number is not None else 0,
-                    row_ordinal=int(eligible_ordinal) if eligible_ordinal is not None else 0,
                     project_name=str(candidate_info.get("project_name") or ""),
+                    project_number=project_number,
+                    organization_name=str((marker_dict or {}).get("organization_name") or ""),
+                    budget_text=str((marker_dict or {}).get("budget_text") or ""),
+                    source_status_text=str(
+                        (marker_dict or {}).get("source_status_text")
+                        or candidate_info.get("source_status_text")
+                        or ""
+                    ),
                 )
                 candidate_attempt_repo.record_accepted(
                     tenant_id=tenant_id,
@@ -766,6 +836,17 @@ def run_discover_workflow(
                     keyword=candidate_keyword,
                     page_number=int(page_number) if page_number is not None else None,
                     row_ordinal=int(eligible_ordinal) if eligible_ordinal is not None else None,
+                    project_number=project_number,
+                    row_marker=(
+                        json.dumps(
+                            marker_dict,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if marker_dict is not None
+                        else None
+                    ),
                 )
                 return candidate_key
 

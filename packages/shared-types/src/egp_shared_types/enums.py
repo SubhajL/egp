@@ -187,6 +187,40 @@ class ProjectDetailReason(StrEnum):
     UNKNOWN = "unknown"
 
 
+class CandidateTerminalReason(StrEnum):
+    """Typed terminal-reason vocabulary for the candidate-attempt ledger.
+
+    PR-CANARY-03 F6: this is the ONLY vocabulary `terminal_reason` accepts —
+    enforced three times over: migration 039's CHECK constraint, the SQLAlchemy
+    mirror CHECK (SQLite enforces CHECKs), and a ValueError guard in the
+    repository. Every list in 039 is drift-tested against this enum, so any
+    change here requires a matching migration.
+
+    The detail-terminal members mirror ``ProjectDetailReason`` values so F4 can
+    terminalize accepted rows precisely instead of collapsing browser detail
+    anomalies into ``unclassified`` (``DETAIL_UNKNOWN`` maps
+    ``ProjectDetailReason.UNKNOWN``, whose bare value would collide with the
+    ``unknown`` candidate *status*).
+    """
+
+    WORKER_LOST = "worker_lost"
+    LEASE_LOST = "lease_lost"
+    WORKER_TIMEOUT = "worker_timeout"
+    WORKER_TERMINATED = "worker_terminated"
+    CANCELLED = "cancelled"
+    PERSIST_ERROR = "persist_error"
+    DUPLICATE_IN_RUN = "duplicate_in_run"
+    LATE_STAGE = "late_stage"
+    UNCLASSIFIED = "unclassified"
+    NAVIGATION_FAILURE = "navigation_failure"
+    RESULTS_PAGE_RETURNED = "results_page_returned"
+    MISSING_REQUIRED_FIELDS = "project_detail_missing_required_fields"
+    REJECTION_PAGE = "rejection_page"
+    PLACEHOLDER_DETAIL = "placeholder_detail"
+    OUT_OF_SCOPE_STAGE = "out_of_scope_stage"
+    DETAIL_UNKNOWN = "detail_unknown"
+
+
 class UserRole(StrEnum):
     OWNER = "owner"
     ADMIN = "admin"
