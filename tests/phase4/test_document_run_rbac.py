@@ -7,11 +7,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-import jwt
 import pytest
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_db.repositories.project_repo import build_project_upsert_record
 from egp_shared_types.enums import ProcurementType, ProjectState
 
@@ -38,10 +38,11 @@ def _client(tmp_path: Path) -> TestClient:
 def _auth_headers(
     *, tenant_id: str = TENANT_ID, role: str = "analyst"
 ) -> dict[str, str]:
-    token = jwt.encode(
-        {"sub": f"{role}-subject", "tenant_id": tenant_id, "role": role},
-        JWT_SECRET,
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret=JWT_SECRET,
+        tenant_id=tenant_id,
+        subject=f"{role}-subject",
+        role=role,
     )
     return {"Authorization": f"Bearer {token}"}
 

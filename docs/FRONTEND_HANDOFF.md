@@ -105,9 +105,12 @@ NEXT_PUBLIC_EGP_TENANT_ID=11111111-1111-1111-1111-111111111111
 Current FE browser auth is cookie-session based. Do not reintroduce `NEXT_PUBLIC_EGP_API_BEARER_TOKEN` for user-facing login flows.
 For normal tenant-scoped pages, do not pass `tenant_id` from the frontend; rely on session context. Keep explicit `tenant_id` only for support-mode cross-tenant admin flows.
 
-Machine bearer tokens must be signed with `EGP_JWT_SECRET` and carry direct `sub`, `tenant_id`,
-and optional `role` claims. Nested `user_metadata` and `app_metadata` values are never
-authorization inputs.
+Machine bearer tokens must use HS256 with `EGP_JWT_SECRET`; exactly match the configured
+`EGP_JWT_ISSUER` and string `EGP_JWT_AUDIENCE`; and carry integer `exp`, direct string `sub`, and
+direct UUID-string `tenant_id` claims. Optional `iat` and `nbf` timestamps are validated with the
+bounded `EGP_JWT_CLOCK_SKEW_SECONDS` policy. `role` remains optional, but must be a direct nonblank
+string when present. Audience arrays, duplicate JSON members, and nested `user_metadata` or
+`app_metadata` authorization values are rejected or ignored fail-closed.
 
 ---
 
@@ -612,9 +615,10 @@ If local API is running on default settings:
 
 ```bash
 export NEXT_PUBLIC_EGP_API_BASE_URL=http://localhost:8000
-export NEXT_PUBLIC_EGP_TENANT_ID=<tenant-uuid>
-export NEXT_PUBLIC_EGP_API_BEARER_TOKEN=<dev-jwt-with-tenant-claim>
 ```
+
+Use the normal browser login flow and its HTTP-only session cookie. Never place a machine bearer or
+tenant credential in a `NEXT_PUBLIC_*` variable; those values are bundled into browser-visible code.
 
 ---
 

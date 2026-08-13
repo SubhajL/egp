@@ -34,6 +34,10 @@ new value in use.
 Used by `apps/api` to verify HS256 machine bearer tokens. Browser sessions are
 opaque, database-backed cookies and do not use this secret.
 
+Tokens must also carry the configured `EGP_JWT_ISSUER`, string `EGP_JWT_AUDIENCE`, integer expiry,
+and direct subject/tenant claims. Upgrade every external signer first: the previous verifier accepts
+the additional claims, while the strict verifier intentionally rejects legacy minimal tokens.
+
 - **Generate**: `openssl rand -hex 32`
 - **Roll**: edit `/etc/egp/egp.env`; replace the `EGP_JWT_SECRET=` line.
 - **Restart**: `sudo systemctl restart egp-api.service` (or the API container
@@ -46,8 +50,8 @@ opaque, database-backed cookies and do not use this secret.
   sessions remain valid.
 - **Frequency**: quarterly, or immediately if leaked.
 
-The API has no fallback bearer secret. Auth-enabled startup fails unless
-`EGP_JWT_SECRET` is set explicitly.
+The API has no fallback bearer secret or identity scope. Auth-enabled startup fails unless
+`EGP_JWT_SECRET`, `EGP_JWT_ISSUER`, and `EGP_JWT_AUDIENCE` are set explicitly.
 
 ---
 
@@ -199,11 +203,11 @@ Cloudflare R2. The access key ID is non-secret but should be rotated together.
 
 ---
 
-## 7. `SUPABASE_SERVICE_ROLE_KEY` — Supabase Storage + Auth
+## 7. `SUPABASE_SERVICE_ROLE_KEY` — Supabase Storage
 
-Used by `apps/api` to call Supabase Storage with full bypass privileges, and
-to validate Supabase-issued JWTs. **High-value secret** — full read/write on
-the Supabase project.
+Used by `apps/api` to call Supabase Storage with full bypass privileges. It does not validate machine
+JWTs; rotate `EGP_JWT_SECRET` under section 2 to revoke that bearer authority. **High-value secret** —
+full read/write on the Supabase project.
 
 - **Generate**: Supabase dashboard → **Project Settings** → **API** → **Service
   role secret** → **Generate new key**.

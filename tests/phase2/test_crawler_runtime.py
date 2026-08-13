@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
-import jwt
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_api.services.crawler_runtime_reporter import CrawlerRuntimeReporter
 from egp_crawler_core.recovery_policy import evaluate_recovery_decision
 from egp_db.repositories.crawler_runtime_repo import create_crawler_runtime_repository
@@ -13,14 +13,11 @@ from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 
 def _auth_headers(*, role: str) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "runtime-user",
-            "tenant_id": "11111111-1111-1111-1111-111111111111",
-            "role": role,
-        },
-        "runtime-jwt-secret-at-least-32-bytes",
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret="runtime-jwt-secret-at-least-32-bytes",
+        tenant_id="11111111-1111-1111-1111-111111111111",
+        subject="runtime-user",
+        role=role,
     )
     return {"Authorization": f"Bearer {token}"}
 

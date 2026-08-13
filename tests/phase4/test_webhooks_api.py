@@ -4,10 +4,10 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-import jwt
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_notifications.webhook_security import WebhookEndpointPolicy
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -178,14 +178,8 @@ def _seed_subscription(
 
 
 def _auth_headers(*, tenant_id: str = TENANT_ID, role: str) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "user-123",
-            "tenant_id": tenant_id,
-            "role": role,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret=JWT_SECRET, tenant_id=tenant_id, role=role
     )
     return {"Authorization": f"Bearer {token}"}
 

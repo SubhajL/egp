@@ -5,9 +5,9 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from fastapi.testclient import TestClient
-import jwt
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_shared_types.enums import DiscoveryFailureCode
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
@@ -28,14 +28,8 @@ class FailingDiscoveryProcessor:
 
 
 def _auth_headers(*, role: str, tenant_id: str = TENANT_ID) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "user-123",
-            "tenant_id": tenant_id,
-            "role": role,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret=JWT_SECRET, tenant_id=tenant_id, role=role
     )
     return {"Authorization": f"Bearer {token}"}
 

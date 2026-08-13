@@ -18,6 +18,9 @@ from egp_api.config import (
     get_google_drive_scopes,
     get_internal_worker_token,
     get_jwt_secret,
+    get_jwt_audience,
+    get_jwt_clock_skew_seconds,
+    get_jwt_issuer,
     get_onedrive_client_id,
     get_onedrive_client_secret,
     get_onedrive_redirect_uri,
@@ -30,6 +33,7 @@ from egp_api.config import (
     get_supabase_service_role_key,
     get_supabase_url,
 )
+from egp_api.auth import JwtValidationPolicy
 from egp_api.services.google_drive import (
     GoogleDriveClient,
     GoogleDriveOAuthConfig,
@@ -76,6 +80,7 @@ class RepositoryBundle:
     resolved_auth_required: bool
     resolved_internal_worker_token: str | None
     resolved_jwt_secret: str | None
+    resolved_jwt_validation_policy: JwtValidationPolicy | None
     resolved_storage_credentials_secret: str | None
     resolved_google_drive_oauth_config: GoogleDriveOAuthConfig | None
     resolved_google_drive_client: object
@@ -120,6 +125,9 @@ def build_repository_bundle(
     supabase_client: object | None,
     auth_required: bool | None,
     jwt_secret: str | None,
+    jwt_issuer: str | None,
+    jwt_audience: str | None,
+    jwt_clock_skew_seconds: int | str | None,
     storage_credentials_secret: str | None,
     google_drive_oauth_config: GoogleDriveOAuthConfig | None,
     google_drive_client: object | None,
@@ -135,6 +143,19 @@ def build_repository_bundle(
     resolved_jwt_secret = get_jwt_secret(jwt_secret)
     if resolved_auth_required and resolved_jwt_secret is None:
         raise RuntimeError("EGP_JWT_SECRET is required when authentication is enabled")
+    resolved_jwt_validation_policy = None
+    if resolved_auth_required:
+        resolved_jwt_issuer = get_jwt_issuer(jwt_issuer)
+        resolved_jwt_audience = get_jwt_audience(jwt_audience)
+        if resolved_jwt_issuer is None:
+            raise RuntimeError("EGP_JWT_ISSUER is required when authentication is enabled")
+        if resolved_jwt_audience is None:
+            raise RuntimeError("EGP_JWT_AUDIENCE is required when authentication is enabled")
+        resolved_jwt_validation_policy = JwtValidationPolicy(
+            issuer=resolved_jwt_issuer,
+            audience=resolved_jwt_audience,
+            clock_skew_seconds=get_jwt_clock_skew_seconds(jwt_clock_skew_seconds),
+        )
     resolved_storage_credentials_secret = (
         get_storage_credentials_secret(storage_credentials_secret) or resolved_jwt_secret
     )
@@ -228,6 +249,7 @@ def build_repository_bundle(
         resolved_auth_required=resolved_auth_required,
         resolved_internal_worker_token=resolved_internal_worker_token,
         resolved_jwt_secret=resolved_jwt_secret,
+        resolved_jwt_validation_policy=resolved_jwt_validation_policy,
         resolved_storage_credentials_secret=resolved_storage_credentials_secret,
         resolved_google_drive_oauth_config=resolved_google_drive_oauth_config,
         resolved_google_drive_client=resolved_google_drive_client,

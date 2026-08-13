@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable
 from typing import Literal
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -187,10 +187,14 @@ def _register_auth_middleware(
             return await call_next(request)
 
         try:
+            authorization_values = request.headers.getlist("authorization")
+            if len(authorization_values) > 1:
+                raise HTTPException(status_code=401, detail="invalid bearer token")
             request.state.auth_context = authenticate_request(
-                authorization_header=request.headers.get("authorization"),
+                authorization_header=(authorization_values[0] if authorization_values else None),
                 session_token=request.cookies.get(app.state.session_cookie_name),
                 jwt_secret=app.state.jwt_secret,
+                jwt_validation_policy=app.state.jwt_validation_policy,
                 session_authenticator=app.state.auth_service.authenticate_session,
             )
         except Exception as exc:

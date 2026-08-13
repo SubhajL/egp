@@ -32,6 +32,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "deploy" / ".env.production.example"
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
+LOCALDEV_COMPOSE_PATH = REPO_ROOT / "docker-compose-localdev.yml"
 
 ENV_READ_FUNCTIONS = {"getenv", "environ.get"}
 
@@ -147,6 +148,10 @@ LAUNCH_CRITICAL_SECRETS: frozenset[str] = frozenset(
         "EGP_PAYMENT_CALLBACK_SECRET",
         "EGP_INTERNAL_WORKER_TOKEN",
     }
+)
+
+REQUIRED_JWT_IDENTITY_VARS: frozenset[str] = frozenset(
+    {"EGP_JWT_ISSUER", "EGP_JWT_AUDIENCE"}
 )
 
 KNOWN_SECTION_LABELS: frozenset[str] = frozenset(
@@ -382,6 +387,37 @@ def test_runtime_diagnostics_and_release_vars_are_optional() -> None:
         entry = template[name]
         assert entry.section == "optional"
         assert entry.placeholder == ""
+
+
+def test_strict_jwt_identity_is_required_and_relayed_to_api() -> None:
+    template = _parse_env_template(TEMPLATE_PATH)
+    for name in REQUIRED_JWT_IDENTITY_VARS:
+        assert template[name].section == "required"
+        assert template[name].placeholder
+
+    compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    environment = compose["services"]["api"]["environment"]
+    assert environment["EGP_JWT_ISSUER"] == (
+        "${EGP_JWT_ISSUER:?set EGP_JWT_ISSUER in your environment}"
+    )
+    assert environment["EGP_JWT_AUDIENCE"] == (
+        "${EGP_JWT_AUDIENCE:?set EGP_JWT_AUDIENCE in your environment}"
+    )
+    assert environment["EGP_JWT_CLOCK_SKEW_SECONDS"] == (
+        "${EGP_JWT_CLOCK_SKEW_SECONDS:-30}"
+    )
+
+    local_compose = yaml.safe_load(LOCALDEV_COMPOSE_PATH.read_text(encoding="utf-8"))
+    local_environment = local_compose["services"]["api"]["environment"]
+    assert local_environment["EGP_JWT_ISSUER"] == (
+        "${EGP_JWT_ISSUER:-http://localhost/egp-machine-issuer}"
+    )
+    assert local_environment["EGP_JWT_AUDIENCE"] == (
+        "${EGP_JWT_AUDIENCE:-egp-api-local}"
+    )
+    assert local_environment["EGP_JWT_CLOCK_SKEW_SECONDS"] == (
+        "${EGP_JWT_CLOCK_SKEW_SECONDS:-30}"
+    )
 
 
 def test_discovery_executor_relays_optional_observability_vars() -> None:

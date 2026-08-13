@@ -36,6 +36,9 @@ EGP_API_PORT=8010
 EGP_WEB_PORT=3002
 EGP_AUTH_REQUIRED=true
 EGP_JWT_SECRET=dev-jwt-secret
+EGP_JWT_ISSUER=http://localhost/egp-machine-issuer
+EGP_JWT_AUDIENCE=egp-api-local
+EGP_JWT_CLOCK_SKEW_SECONDS=30
 EGP_SESSION_COOKIE_SECURE=false
 EGP_PAYMENT_PROVIDER=mock_promptpay
 # mock PromptPay builds the QR locally from this proxy id (no external acquirer).

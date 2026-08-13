@@ -15,9 +15,9 @@ from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-import jwt
 
 from tests.support.app_factory import create_test_app as create_app
+from tests.support.jwt_factory import mint_machine_jwt
 from egp_api.services.line_slip_service import LineSlipService
 from egp_db.repositories.line_payment_repo import LinePaymentRepository
 
@@ -29,14 +29,11 @@ JWT_SECRET = "line-test-jwt-secret-at-least-32-bytes"
 
 
 def _auth_headers(tenant_id: str, *, role: str = "admin") -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "sub": "00000000-0000-0000-0000-0000000000aa",
-            "tenant_id": tenant_id,
-            "role": role,
-        },
-        JWT_SECRET,
-        algorithm="HS256",
+    token = mint_machine_jwt(
+        secret=JWT_SECRET,
+        tenant_id=tenant_id,
+        subject="00000000-0000-0000-0000-0000000000aa",
+        role=role,
     )
     return {"Authorization": f"Bearer {token}"}
 

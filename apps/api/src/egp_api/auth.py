@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
+import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +17,27 @@ from egp_db.db_utils import normalize_uuid_string
 
 
 AUTHENTICATED_ROLES = frozenset({"owner", "admin", "support", "analyst", "viewer"})
+JWT_ALGORITHMS = ("HS256",)
+_BASE64URL_SEGMENT = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+@dataclass(frozen=True, slots=True)
+class JwtValidationPolicy:
+    issuer: str
+    audience: str
+    clock_skew_seconds: int
+
+    def __post_init__(self) -> None:
+        if not self.issuer or self.issuer != self.issuer.strip():
+            raise ValueError("JWT issuer must be a nonblank canonical string")
+        if not self.audience or self.audience != self.audience.strip():
+            raise ValueError("JWT audience must be a nonblank canonical string")
+        if (
+            isinstance(self.clock_skew_seconds, bool)
+            or not isinstance(self.clock_skew_seconds, int)
+            or not 0 <= self.clock_skew_seconds <= 120
+        ):
+            raise ValueError("JWT clock skew must be an integer between 0 and 120")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,48 +72,137 @@ def _extract_bearer_token(header_value: str | None) -> str:
     return token.strip()
 
 
+class _DuplicateJsonMember(ValueError):
+    pass
+
+
+def _reject_duplicate_members(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonMember(key)
+        result[key] = value
+    return result
+
+
+def _decode_jose_object(segment: str) -> dict[str, object]:
+    if not _BASE64URL_SEGMENT.fullmatch(segment):
+        raise ValueError("invalid JOSE segment encoding")
+    padded = f"{segment}{'=' * (-len(segment) % 4)}"
+    raw = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+    value = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=_reject_duplicate_members,
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+    )
+    if not isinstance(value, dict):
+        raise ValueError("JOSE value must be an object")
+    return value
+
+
+def _preflight_compact_jwt(token: str, policy: JwtValidationPolicy) -> None:
+    segments = token.split(".")
+    if len(segments) != 3 or any(not segment for segment in segments):
+        raise ValueError("invalid compact JWT")
+    if any(_BASE64URL_SEGMENT.fullmatch(segment) is None for segment in segments):
+        raise ValueError("invalid JOSE segment encoding")
+    header = _decode_jose_object(segments[0])
+    _decode_jose_object(segments[1])
+    if header.get("alg") not in JWT_ALGORITHMS:
+        raise ValueError("unsupported JWT algorithm")
+
+
+def _required_string_claim(claims: dict[str, Any], name: str) -> str:
+    value = claims.get(name)
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"invalid {name} claim")
+    return value
+
+
+def _optional_string_claim(claims: dict[str, Any], name: str) -> str | None:
+    if name not in claims:
+        return None
+    value = claims[name]
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"invalid {name} claim")
+    return value
+
+
+def _optional_bool_claim(claims: dict[str, Any], name: str) -> bool:
+    if name not in claims:
+        return False
+    value = claims[name]
+    if not isinstance(value, bool):
+        raise ValueError(f"invalid {name} claim")
+    return value
+
+
+def _integer_timestamp_claim(
+    claims: dict[str, Any], name: str, *, required: bool
+) -> int | None:
+    if name not in claims:
+        if required:
+            raise ValueError(f"missing {name} claim")
+        return None
+    value = claims[name]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"invalid {name} claim")
+    return value
+
+
 def extract_authorization_claims(claims: dict[str, Any]) -> AuthorizationClaims:
     """Extract only direct EGP-controlled tenant and role claims."""
 
-    direct = claims.get("tenant_id")
-    if not direct:
-        raise HTTPException(status_code=401, detail="tenant claim missing from token")
+    direct = _required_string_claim(claims, "tenant_id")
+    role = _optional_string_claim(claims, "role")
     return AuthorizationClaims(
-        tenant_id=normalize_uuid_string(str(direct)),
-        role=_normalize_optional_claim(claims.get("role")),
+        tenant_id=normalize_uuid_string(direct),
+        role=role,
     )
 
 
 def authenticate_bearer_request(
-    *, authorization_header: str | None, jwt_secret: str
+    *,
+    authorization_header: str | None,
+    jwt_secret: str,
+    validation_policy: JwtValidationPolicy,
 ) -> AuthContext:
-    token = _extract_bearer_token(authorization_header)
     try:
+        token = _extract_bearer_token(authorization_header)
+        _preflight_compact_jwt(token, validation_policy)
         claims = jwt.decode(
             token,
             jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False},
+            algorithms=list(JWT_ALGORITHMS),
+            issuer=validation_policy.issuer,
+            audience=validation_policy.audience,
+            leeway=validation_policy.clock_skew_seconds,
+            options={
+                "require": ["iss", "aud", "exp", "sub", "tenant_id"],
+                "strict_aud": True,
+            },
         )
-    except jwt.PyJWTError as exc:
+        _required_string_claim(claims, "iss")
+        _required_string_claim(claims, "aud")
+        subject = _required_string_claim(claims, "sub")
+        _integer_timestamp_claim(claims, "exp", required=True)
+        _integer_timestamp_claim(claims, "iat", required=False)
+        _integer_timestamp_claim(claims, "nbf", required=False)
+        authorization_claims = extract_authorization_claims(claims)
+        context = AuthContext(
+            tenant_id=authorization_claims.tenant_id,
+            subject=subject,
+            claims=claims,
+            user_id=_optional_string_claim(claims, "user_id"),
+            email=_optional_string_claim(claims, "email"),
+            full_name=_optional_string_claim(claims, "full_name"),
+            role=authorization_claims.role,
+            email_verified_at=_optional_string_claim(claims, "email_verified_at"),
+            mfa_enabled=_optional_bool_claim(claims, "mfa_enabled"),
+        )
+    except (HTTPException, jwt.PyJWTError, ValueError, TypeError, UnicodeError) as exc:
         raise HTTPException(status_code=401, detail="invalid bearer token") from exc
-
-    subject = str(claims.get("sub") or "").strip()
-    if not subject:
-        raise HTTPException(status_code=401, detail="subject claim missing from token")
-    authorization_claims = extract_authorization_claims(claims)
-
-    return AuthContext(
-        tenant_id=authorization_claims.tenant_id,
-        subject=subject,
-        claims=claims,
-        user_id=_normalize_optional_claim(claims.get("user_id")),
-        email=_normalize_optional_claim(claims.get("email")),
-        full_name=_normalize_optional_claim(claims.get("full_name")),
-        role=authorization_claims.role,
-        email_verified_at=_normalize_optional_claim(claims.get("email_verified_at")),
-        mfa_enabled=_normalize_bool_claim(claims.get("mfa_enabled")),
-    )
+    return context
 
 
 def authenticate_request(
@@ -97,14 +210,16 @@ def authenticate_request(
     authorization_header: str | None,
     session_token: str | None,
     jwt_secret: str | None,
+    jwt_validation_policy: JwtValidationPolicy | None,
     session_authenticator: Callable[[str], AuthContext | None] | None = None,
 ) -> AuthContext:
     if authorization_header is not None:
-        if not jwt_secret:
+        if not jwt_secret or jwt_validation_policy is None:
             raise HTTPException(status_code=503, detail="server auth not configured")
         return authenticate_bearer_request(
             authorization_header=authorization_header,
             jwt_secret=jwt_secret,
+            validation_policy=jwt_validation_policy,
         )
     if session_token is not None and session_authenticator is not None:
         context = session_authenticator(session_token)
@@ -112,21 +227,6 @@ def authenticate_request(
             raise HTTPException(status_code=401, detail="invalid session")
         return context
     raise HTTPException(status_code=401, detail="missing authentication")
-
-
-def _normalize_optional_claim(value: object) -> str | None:
-    if value is None:
-        return None
-    normalized = str(value).strip()
-    return normalized or None
-
-
-def _normalize_bool_claim(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return False
 
 
 def resolve_request_tenant_id(
