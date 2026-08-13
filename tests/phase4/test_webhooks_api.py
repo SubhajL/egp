@@ -8,15 +8,22 @@ import jwt
 from sqlalchemy import text
 
 from tests.support.app_factory import create_test_app as create_app
+from egp_notifications.webhook_security import WebhookEndpointPolicy
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_TENANT_ID = "22222222-2222-2222-2222-222222222222"
 JWT_SECRET = "phase4-webhook-test-secret-at-least-32-bytes"
 
 
+class PublicResolver:
+    def resolve(self, hostname: str, port: int, *, timeout_seconds: float):
+        del hostname, port, timeout_seconds
+        return ["93.184.216.34"]
+
+
 def _create_client(tmp_path, *, auth_required: bool = False) -> TestClient:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'phase4-webhooks.sqlite3'}"
-    return TestClient(
+    client = TestClient(
         create_app(
             artifact_root=tmp_path,
             database_url=database_url,
@@ -24,6 +31,10 @@ def _create_client(tmp_path, *, auth_required: bool = False) -> TestClient:
             jwt_secret=JWT_SECRET if auth_required else None,
         )
     )
+    policy = WebhookEndpointPolicy(resolver=PublicResolver())
+    client.app.state.webhook_service._endpoint_policy = policy
+    client.app.state.webhook_delivery_processor._endpoint_policy = policy
+    return client
 
 
 def _seed_tenant(
@@ -303,6 +314,7 @@ def test_webhook_routes_reject_invalid_notification_types_and_bad_urls(
 ) -> None:
     client = _create_client(tmp_path)
     _seed_tenant(client)
+    _seed_subscription(client, plan_code="monthly_membership", keyword_limit=5)
 
     invalid_type = client.post(
         "/v1/webhooks",
@@ -327,6 +339,75 @@ def test_webhook_routes_reject_invalid_notification_types_and_bad_urls(
 
     assert invalid_type.status_code == 422
     assert invalid_url.status_code == 422
+
+
+def test_webhook_creation_rejects_unsafe_target_without_persistence(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_subscription(client, plan_code="monthly_membership", keyword_limit=5)
+
+    response = client.post(
+        "/v1/webhooks",
+        json={
+            "tenant_id": TENANT_ID,
+            "name": "Metadata Receiver",
+            "url": "https://169.254.169.254/latest/meta-data",
+            "notification_types": ["run_failed"],
+            "signing_secret": "super-secret",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "webhook endpoint is not allowed"}
+    assert client.get("/v1/webhooks", params={"tenant_id": TENANT_ID}).json() == {
+        "webhooks": []
+    }
+    with client.app.state.db_engine.connect() as connection:
+        audit = (
+            connection.execute(
+                text(
+                    """
+                SELECT tenant_id, event_type, metadata_json
+                FROM audit_log_events
+                WHERE event_type = 'webhook.security_configuration_rejected'
+                """
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert str(audit["tenant_id"]) == TENANT_ID
+    assert "169.254.169.254" not in str(audit["metadata_json"])
+
+
+def test_webhook_creation_preserves_raw_url_for_central_policy(tmp_path) -> None:
+    client = _create_client(tmp_path)
+    _seed_tenant(client)
+    _seed_subscription(client, plan_code="monthly_membership", keyword_limit=5)
+
+    for url in (
+        " https://hooks.example.com/egp",
+        "https://hooks.example.com/egp\t",
+        "https://hooks.example.com/egp\nignored",
+        "https:\\hooks.example.com\\egp",
+        "https://[invalid/egp",
+    ):
+        response = client.post(
+            "/v1/webhooks",
+            json={
+                "tenant_id": TENANT_ID,
+                "name": "Invalid Receiver",
+                "url": url,
+                "notification_types": ["run_failed"],
+                "signing_secret": "super-secret",
+            },
+        )
+        assert response.status_code == 422, (url, response.text)
+        assert response.json() == {"detail": "webhook endpoint is not allowed"}
+
+    assert client.get("/v1/webhooks", params={"tenant_id": TENANT_ID}).json() == {
+        "webhooks": []
+    }
 
 
 def test_webhook_routes_reject_cross_tenant_delete_attempt(tmp_path) -> None:

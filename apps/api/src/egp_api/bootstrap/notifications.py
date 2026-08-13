@@ -44,6 +44,7 @@ from egp_notifications.webhook_delivery import (
     WebhookDeliveryProcessor,
     WebhookDeliveryService,
 )
+from egp_notifications.webhook_security import WebhookEndpointPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class NotificationStack:
     notification_dispatcher: NotificationDispatcher
     entitlement_service: TenantEntitlementService
     gated_dispatcher: EntitlementAwareNotificationDispatcher
+    endpoint_policy: WebhookEndpointPolicy
 
 
 def build_notification_stack(
@@ -73,6 +75,8 @@ def build_notification_stack(
     tenant_entitlement_repository: object | None = None,
     smtp_config: SmtpConfig | None = None,
     email_sender: EmailSender | None = None,
+    endpoint_policy: WebhookEndpointPolicy | None = None,
+    security_audit_recorder: object | None = None,
 ) -> NotificationStack:
     """Assemble the notification stack. Pure construction; performs no I/O.
 
@@ -88,6 +92,7 @@ def build_notification_stack(
     if profile_repository is None:
         raise ValueError("profile_repository is required")
 
+    resolved_endpoint_policy = endpoint_policy or WebhookEndpointPolicy()
     notification_service = NotificationService(
         smtp_config=smtp_config,
         in_app_store=notification_repository,
@@ -95,7 +100,9 @@ def build_notification_stack(
     )
     webhook_delivery_service = WebhookDeliveryService(repository=notification_repository)
     webhook_delivery_processor = WebhookDeliveryProcessor(
-        repository=notification_repository
+        repository=notification_repository,
+        endpoint_policy=resolved_endpoint_policy,
+        security_audit_recorder=security_audit_recorder,
     )
     notification_dispatcher = NotificationDispatcher(
         service=notification_service,
@@ -121,4 +128,5 @@ def build_notification_stack(
             notification_dispatcher,
             entitlement_service,
         ),
+        endpoint_policy=resolved_endpoint_policy,
     )

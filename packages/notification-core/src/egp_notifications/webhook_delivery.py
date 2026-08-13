@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import hmac
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Protocol
 
-import httpx
-
 from egp_notifications.service import Notification
+from egp_notifications.webhook_security import (
+    ApprovedWebhookEndpoint,
+    SafeWebhookTransport,
+    WebhookEndpointPolicy,
+    WebhookEndpointRejected,
+    WebhookEndpointResolutionError,
+    WebhookRedirectRejected,
+)
 from egp_shared_types.enums import NotificationType
 
 
@@ -57,11 +64,23 @@ class WebhookTransport(Protocol):
     def __call__(
         self,
         *,
-        url: str,
+        endpoint: ApprovedWebhookEndpoint,
         headers: dict[str, str],
         body: bytes,
         timeout_seconds: float,
     ) -> WebhookTransportResult: ...
+
+
+class WebhookSecurityAuditRecorder(Protocol):
+    def record_delivery_blocked(
+        self,
+        *,
+        tenant_id: str,
+        webhook_subscription_id: str,
+        reason_code: str,
+        stage: str,
+        attempt_count: int,
+    ) -> None: ...
 
 
 class WebhookDeliveryStore(Protocol):
@@ -110,25 +129,6 @@ class WebhookDeliveryStore(Protocol):
         limit: int = 10,
         stale_after_seconds: float = 60.0,
     ) -> list[WebhookDeliveryRecord]: ...
-
-
-def _default_transport(
-    *,
-    url: str,
-    headers: dict[str, str],
-    body: bytes,
-    timeout_seconds: float,
-) -> WebhookTransportResult:
-    response = httpx.post(
-        url,
-        content=body,
-        headers=headers,
-        timeout=timeout_seconds,
-    )
-    return WebhookTransportResult(
-        status_code=response.status_code,
-        body=response.text,
-    )
 
 
 def _build_webhook_payload(
@@ -181,7 +181,7 @@ class WebhookDeliveryService:
         max_attempts: int = 3,
     ) -> None:
         self._repository = repository
-        self._transport = transport or _default_transport
+        self._transport = transport
         self._timeout_seconds = float(timeout_seconds)
         self._max_attempts = max(1, int(max_attempts))
 
@@ -229,19 +229,27 @@ class WebhookDeliveryProcessor:
         *,
         repository: WebhookDeliveryStore,
         transport: WebhookTransport | None = None,
+        endpoint_policy: WebhookEndpointPolicy | None = None,
+        security_audit_recorder: WebhookSecurityAuditRecorder | None = None,
         timeout_seconds: float = 5.0,
         max_attempts: int = 3,
         retry_delay_seconds: float = 30.0,
         claim_limit: int = 10,
         claim_stale_after_seconds: float = 60.0,
+        monotonic=time.monotonic,
     ) -> None:
         self._repository = repository
-        self._transport = transport or _default_transport
+        self._endpoint_policy = endpoint_policy or WebhookEndpointPolicy()
+        self._transport = transport or SafeWebhookTransport(
+            endpoint_policy=self._endpoint_policy
+        )
+        self._security_audit_recorder = security_audit_recorder
         self._timeout_seconds = float(timeout_seconds)
         self._max_attempts = max(1, int(max_attempts))
         self._retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self._claim_limit = max(1, int(claim_limit))
         self._claim_stale_after_seconds = max(1.0, float(claim_stale_after_seconds))
+        self._monotonic = monotonic
 
     def process_pending(self, *, limit: int | None = None) -> int:
         deliveries = self._repository.claim_pending_webhook_deliveries(
@@ -294,11 +302,22 @@ class WebhookDeliveryProcessor:
         next_attempt_count = int(delivery.attempt_count) + 1
 
         try:
+            deadline = self._monotonic() + self._timeout_seconds
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise TimeoutError("webhook delivery timed out")
+            endpoint = self._endpoint_policy.resolve(
+                target.url,
+                timeout_seconds=remaining,
+            )
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise TimeoutError("webhook delivery timed out")
             result = self._transport(
-                url=target.url,
+                endpoint=endpoint,
                 headers=headers,
                 body=body,
-                timeout_seconds=self._timeout_seconds,
+                timeout_seconds=remaining,
             )
             if _is_success_status(result.status_code):
                 return self._repository.record_webhook_delivery_attempt(
@@ -330,23 +349,65 @@ class WebhookDeliveryProcessor:
                 ),
                 processing_started_at=None,
             )
-        except Exception as exc:
+        except (WebhookEndpointRejected, WebhookRedirectRejected) as exc:
+            if self._security_audit_recorder is not None:
+                self._security_audit_recorder.record_delivery_blocked(
+                    tenant_id=delivery.tenant_id,
+                    webhook_subscription_id=delivery.webhook_subscription_id,
+                    reason_code=exc.reason_code,
+                    stage=(
+                        "redirect"
+                        if isinstance(exc, WebhookRedirectRejected)
+                        else "delivery"
+                    ),
+                    attempt_count=next_attempt_count,
+                )
             return self._repository.record_webhook_delivery_attempt(
                 tenant_id=delivery.tenant_id,
                 delivery_id=delivery.id,
-                delivery_status=(
-                    "pending" if next_attempt_count < self._max_attempts else "failed"
-                ),
+                delivery_status="failed",
                 response_status_code=None,
-                response_body=str(exc),
+                response_body="blocked by webhook endpoint security policy",
                 delivered=False,
-                next_attempt_at=(
-                    _next_attempt_at(self._retry_delay_seconds)
-                    if next_attempt_count < self._max_attempts
-                    else None
-                ),
+                next_attempt_at=None,
                 processing_started_at=None,
             )
+        except WebhookEndpointResolutionError:
+            return self._record_retryable_exception(
+                delivery=delivery,
+                next_attempt_count=next_attempt_count,
+                response_body="webhook endpoint resolution failed",
+            )
+        except Exception:
+            return self._record_retryable_exception(
+                delivery=delivery,
+                next_attempt_count=next_attempt_count,
+                response_body="webhook transport failed",
+            )
+
+    def _record_retryable_exception(
+        self,
+        *,
+        delivery: WebhookDeliveryRecord,
+        next_attempt_count: int,
+        response_body: str,
+    ) -> WebhookDeliveryRecord:
+        return self._repository.record_webhook_delivery_attempt(
+            tenant_id=delivery.tenant_id,
+            delivery_id=delivery.id,
+            delivery_status=(
+                "pending" if next_attempt_count < self._max_attempts else "failed"
+            ),
+            response_status_code=None,
+            response_body=response_body,
+            delivered=False,
+            next_attempt_at=(
+                _next_attempt_at(self._retry_delay_seconds)
+                if next_attempt_count < self._max_attempts
+                else None
+            ),
+            processing_started_at=None,
+        )
 
 
 def _next_attempt_at(retry_delay_seconds: float) -> datetime:

@@ -12,9 +12,11 @@ from egp_db.repositories.notification_repo import (
     WebhookSubscriptionRecord,
 )
 from egp_shared_types.enums import NotificationType
+from egp_notifications.webhook_security import WebhookEndpointPolicy, WebhookEndpointError
 
 if TYPE_CHECKING:
     from egp_api.services.entitlement_service import TenantEntitlementService
+    from egp_api.services.webhook_security_audit import WebhookSecurityAuditRecorder
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,11 +31,15 @@ class WebhookService:
         notification_repository: SqlNotificationRepository,
         audit_repository: SqlAuditRepository | None = None,
         entitlement_service: TenantEntitlementService | None = None,
+        endpoint_policy: WebhookEndpointPolicy | None = None,
+        security_audit_recorder: WebhookSecurityAuditRecorder | None = None,
     ) -> None:
         self._admin_repository = admin_repository
         self._notification_repository = notification_repository
         self._audit_repository = audit_repository
         self._entitlement_service = entitlement_service
+        self._endpoint_policy = endpoint_policy or WebhookEndpointPolicy()
+        self._security_audit_recorder = security_audit_recorder
 
     def list_webhooks(self, *, tenant_id: str) -> WebhookList:
         if self._admin_repository.get_tenant(tenant_id=tenant_id) is None:
@@ -61,10 +67,20 @@ class WebhookService:
                 tenant_id=tenant_id,
                 capability="notifications",
             )
+        try:
+            endpoint = self._endpoint_policy.resolve(url)
+        except WebhookEndpointError as exc:
+            if self._security_audit_recorder is not None:
+                self._security_audit_recorder.record_creation_rejected(
+                    tenant_id=tenant_id,
+                    actor_subject=actor_subject or "manual-operator",
+                    reason_code=exc.reason_code,
+                )
+            raise
         created = self._notification_repository.create_webhook_subscription(
             tenant_id=tenant_id,
             name=name,
-            url=url,
+            url=endpoint.canonical_url,
             notification_types=notification_types,
             signing_secret=signing_secret,
         )
@@ -78,7 +94,6 @@ class WebhookService:
                 event_type="webhook.created",
                 summary=f"Created webhook {created.name}",
                 metadata_json={
-                    "url": created.url,
                     "notification_types": created.notification_types,
                 },
             )
@@ -113,7 +128,6 @@ class WebhookService:
                 event_type="webhook.deleted",
                 summary=f"Deleted webhook {existing.name}",
                 metadata_json={
-                    "url": existing.url,
                     "notification_types": existing.notification_types,
                 },
             )

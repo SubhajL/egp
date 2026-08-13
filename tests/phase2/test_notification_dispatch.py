@@ -5,6 +5,10 @@ import json
 from egp_db.repositories.notification_repo import SqlNotificationRepository
 from egp_notifications.dispatcher import NotificationDispatcher
 from egp_notifications.service import Notification, NotificationService
+from egp_notifications.webhook_security import (
+    ApprovedWebhookEndpoint,
+    WebhookEndpointPolicy,
+)
 from egp_notifications.webhook_delivery import (
     WebhookDeliveryProcessor,
     WebhookDeliveryService,
@@ -24,14 +28,14 @@ class FakeWebhookTransport:
     def __call__(
         self,
         *,
-        url: str,
+        endpoint: ApprovedWebhookEndpoint,
         headers: dict[str, str],
         body: bytes,
         timeout_seconds: float,
     ) -> WebhookTransportResult:
         self.calls.append(
             {
-                "url": url,
+                "url": endpoint.canonical_url,
                 "headers": headers,
                 "body": body,
                 "timeout_seconds": timeout_seconds,
@@ -41,6 +45,23 @@ class FakeWebhookTransport:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class PublicResolver:
+    def resolve(self, hostname: str, port: int, *, timeout_seconds: float):
+        del hostname, port, timeout_seconds
+        return ["93.184.216.34"]
+
+
+PUBLIC_ENDPOINT_POLICY = WebhookEndpointPolicy(resolver=PublicResolver())
+
+
+class RecordingSecurityAudit:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def record_delivery_blocked(self, **event: object) -> None:
+        self.events.append(event)
 
 
 def test_dispatch_uses_tenant_scoped_active_recipients_only(tmp_path) -> None:
@@ -254,6 +275,7 @@ def test_webhook_processor_delivers_queued_webhook(tmp_path) -> None:
     processor = WebhookDeliveryProcessor(
         repository=repository,
         transport=transport,
+        endpoint_policy=PUBLIC_ENDPOINT_POLICY,
     )
     processed = processor.process_pending()
 
@@ -314,6 +336,7 @@ def test_webhook_processor_retries_retryable_webhook_failures_with_same_event_id
     processor = WebhookDeliveryProcessor(
         repository=repository,
         transport=transport,
+        endpoint_policy=PUBLIC_ENDPOINT_POLICY,
         max_attempts=2,
         retry_delay_seconds=0.0,
     )
@@ -366,6 +389,7 @@ def test_dispatch_does_not_retry_non_retryable_4xx_webhook_failure(tmp_path) -> 
     processor = WebhookDeliveryProcessor(
         repository=repository,
         transport=transport,
+        endpoint_policy=PUBLIC_ENDPOINT_POLICY,
         max_attempts=3,
     )
     processed = processor.process_pending()
@@ -376,6 +400,56 @@ def test_dispatch_does_not_retry_non_retryable_4xx_webhook_failure(tmp_path) -> 
     assert deliveries[0].delivery_status == "failed"
     assert deliveries[0].attempt_count == 1
     assert deliveries[0].last_response_status_code == 410
+
+
+def test_processor_blocks_private_target_without_transport_or_retry(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'dispatch-webhook-private.sqlite3'}"
+    repository = SqlNotificationRepository(
+        database_url=database_url, bootstrap_schema=True
+    )
+    repository.create_webhook_subscription(
+        tenant_id=TENANT_ID,
+        name="Unsafe Receiver",
+        url="https://169.254.169.254/latest/meta-data",
+        notification_types=[NotificationType.RUN_FAILED],
+        signing_secret="super-secret",
+    )
+    transport = FakeWebhookTransport([WebhookTransportResult(status_code=200)])
+    dispatcher = NotificationDispatcher(
+        service=NotificationService(in_app_store=repository),
+        recipient_resolver=repository,
+        webhook_delivery_service=WebhookDeliveryService(repository=repository),
+    )
+    dispatcher.dispatch(
+        tenant_id=TENANT_ID,
+        notification_type=NotificationType.RUN_FAILED,
+        template_vars={"run_id": "run-123", "error_count": "1"},
+    )
+
+    audit = RecordingSecurityAudit()
+    processed = WebhookDeliveryProcessor(
+        repository=repository,
+        transport=transport,
+        endpoint_policy=WebhookEndpointPolicy(resolver=PublicResolver()),
+        security_audit_recorder=audit,
+    ).process_pending()
+
+    delivery = repository.list_webhook_deliveries(tenant_id=TENANT_ID)[0]
+    assert processed == 1
+    assert transport.calls == []
+    assert delivery.delivery_status == "failed"
+    assert delivery.attempt_count == 1
+    assert delivery.next_attempt_at is None
+    assert delivery.last_response_body == "blocked by webhook endpoint security policy"
+    assert audit.events == [
+        {
+            "tenant_id": TENANT_ID,
+            "webhook_subscription_id": delivery.webhook_subscription_id,
+            "reason_code": "address_not_global",
+            "stage": "delivery",
+            "attempt_count": 1,
+        }
+    ]
 
 
 def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
@@ -426,6 +500,7 @@ def test_dispatch_webhook_failure_does_not_block_existing_notification_channels(
     processor = WebhookDeliveryProcessor(
         repository=repository,
         transport=transport,
+        endpoint_policy=PUBLIC_ENDPOINT_POLICY,
         max_attempts=3,
         retry_delay_seconds=0.0,
     )
@@ -471,6 +546,7 @@ def test_webhook_delivery_skips_already_delivered_event_id(tmp_path) -> None:
     processor = WebhookDeliveryProcessor(
         repository=repository,
         transport=transport,
+        endpoint_policy=PUBLIC_ENDPOINT_POLICY,
     )
     notification = Notification(
         id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
