@@ -1,15 +1,41 @@
 import type { AuthenticatedUser, CurrentSessionResponse } from "./api";
 
 const CURRENT_SESSION_STORAGE_KEY = "egp.currentSession";
+const SAFE_NEXT_PATH_BASES = ["https://safe-next-path.invalid/", "https://safe-next-path.test/"];
+const ENCODED_SEPARATOR_PATTERN = /%(?:2f|5c)/i;
+
+function safeAppDestination(value: string | null | undefined): string | null {
+  if (!value?.startsWith("/")) {
+    return null;
+  }
+
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const boundaryIndexes = [queryIndex, fragmentIndex].filter((index) => index >= 0);
+  const pathnameEnd = boundaryIndexes.length > 0 ? Math.min(...boundaryIndexes) : value.length;
+  const pathname = value.slice(0, pathnameEnd);
+  if (pathname.includes("\\") || ENCODED_SEPARATOR_PATTERN.test(pathname)) {
+    return null;
+  }
+
+  try {
+    const isSameOriginForEveryBase = SAFE_NEXT_PATH_BASES.every((base) => {
+      const parsed = new URL(value, base);
+      const trusted = new URL(base);
+      return (
+        parsed.origin === trusted.origin &&
+        parsed.username === "" &&
+        parsed.password === ""
+      );
+    });
+    return isSameOriginForEveryBase ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 export function normalizeNextPath(value: string | null | undefined, fallback = "/dashboard"): string {
-  if (!value) {
-    return fallback;
-  }
-  if (!value.startsWith("/") || value.startsWith("//")) {
-    return fallback;
-  }
-  return value;
+  return safeAppDestination(value) ?? safeAppDestination(fallback) ?? "/dashboard";
 }
 
 export function buildCurrentPath(pathname: string, search = ""): string {
