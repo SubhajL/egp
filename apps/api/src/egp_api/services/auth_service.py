@@ -15,6 +15,7 @@ from urllib.parse import quote
 from egp_api.auth import AuthContext
 from egp_db.repositories.admin_repo import SqlAdminRepository, TenantRecord
 from egp_db.repositories.auth_repo import (
+    AccountActionTargetInactiveError,
     LoginUserRecord,
     SqlAuthRepository,
     hash_password,
@@ -232,29 +233,19 @@ class AuthService:
         return user.email
 
     def accept_invite(self, *, token: str, password: str) -> LoginResult:
-        user = self._repository.consume_account_action_token(token=token, purpose="invite")
-        if user is None:
-            raise PermissionError("invalid or expired invite token")
-        if not user.tenant_is_active or user.status != "active":
+        try:
+            result = self._repository.accept_invite_atomically(
+                token=token,
+                password_hash_factory=lambda: hash_password(password),
+                session_expires_in_seconds=self._session_max_age_seconds,
+            )
+        except AccountActionTargetInactiveError:
             raise PermissionError("account is not active")
-        self._repository.update_password(
-            tenant_id=user.tenant_id,
-            user_id=user.user_id,
-            password_hash=hash_password(password),
-        )
-        self._repository.mark_email_verified(
-            tenant_id=user.tenant_id,
-            user_id=user.user_id,
-        )
-        refreshed = self._require_user(user.tenant_id, user.user_id)
-        session_token = self._repository.create_session(
-            tenant_id=refreshed.tenant_id,
-            user_id=refreshed.user_id,
-            expires_in_seconds=self._session_max_age_seconds,
-        )
+        if result is None:
+            raise PermissionError("invalid or expired invite token")
         return LoginResult(
-            session_token=session_token,
-            current=self._build_current_view(_auth_context_from_user(refreshed)),
+            session_token=result.session_token,
+            current=self._build_current_view(_auth_context_from_user(result.user)),
         )
 
     def request_password_reset(self, *, tenant_slug: str, email: str) -> None:
@@ -279,23 +270,15 @@ class AuthService:
         )
 
     def reset_password(self, *, token: str, password: str) -> None:
-        user = self._repository.consume_account_action_token(
-            token=token,
-            purpose="password_reset",
-        )
-        if user is None:
-            raise PermissionError("invalid or expired password reset token")
-        if not user.tenant_is_active or user.status != "active":
+        try:
+            completed = self._repository.reset_password_atomically(
+                token=token,
+                password_hash_factory=lambda: hash_password(password),
+            )
+        except AccountActionTargetInactiveError:
             raise PermissionError("account is not active")
-        self._repository.update_password(
-            tenant_id=user.tenant_id,
-            user_id=user.user_id,
-            password_hash=hash_password(password),
-        )
-        self._repository.revoke_all_sessions_for_user(
-            tenant_id=user.tenant_id,
-            user_id=user.user_id,
-        )
+        if not completed:
+            raise PermissionError("invalid or expired password reset token")
 
     def send_email_verification(self, auth_context: AuthContext) -> None:
         user = self._require_user(
@@ -320,16 +303,12 @@ class AuthService:
         )
 
     def verify_email(self, *, token: str) -> bool:
-        user = self._repository.consume_account_action_token(
-            token=token,
-            purpose="email_verification",
-        )
-        if user is None:
+        try:
+            completed = self._repository.verify_email_atomically(token=token)
+        except AccountActionTargetInactiveError:
+            raise PermissionError("account is not active")
+        if not completed:
             raise PermissionError("invalid or expired email verification token")
-        self._repository.mark_email_verified(
-            tenant_id=user.tenant_id,
-            user_id=user.user_id,
-        )
         return True
 
     def setup_mfa(self, auth_context: AuthContext) -> tuple[str, str]:

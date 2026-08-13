@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
 from uuid import uuid4
@@ -22,7 +23,7 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.engine import Engine, RowMapping
+from sqlalchemy.engine import Connection, Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
@@ -99,6 +100,20 @@ class LoginUserRecord:
     email_verified_at: str | None
     mfa_enabled: bool
     mfa_secret: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class AtomicInviteAcceptanceResult:
+    user: LoginUserRecord
+    session_token: str
+
+
+class AccountActionTargetInactiveError(PermissionError):
+    """Raised when an otherwise eligible token targets an inactive account."""
+
+
+class _AccountActionTargetInvalidError(RuntimeError):
+    """Rollback sentinel for a claimed token with an invalid target association."""
 
 
 def _now() -> datetime:
@@ -473,58 +488,232 @@ class SqlAuthRepository:
             )
         return raw_token
 
-    def consume_account_action_token(
-        self, *, token: str, purpose: str
-    ) -> LoginUserRecord | None:
+    def _claim_account_action_target(
+        self,
+        connection: Connection,
+        *,
+        token: str,
+        purpose: str,
+    ) -> tuple[LoginUserRecord, str, str] | None:
         normalized_purpose = str(purpose).strip()
         if normalized_purpose not in ACCOUNT_ACTION_PURPOSES:
             raise ValueError(
                 f"unsupported account action token purpose: {normalized_purpose}"
             )
-        now = _now()
         token_hash = _hash_opaque_token(token)
-        with self._engine.begin() as connection:
-            row = (
-                connection.execute(
-                    select(
-                        USERS_TABLE,
-                        TENANTS_TABLE.c.name,
-                        TENANTS_TABLE.c.slug,
-                        TENANTS_TABLE.c.plan_code,
-                        TENANTS_TABLE.c.is_active,
-                        ACCOUNT_ACTION_TOKENS_TABLE.c.id.label("action_token_id"),
-                    )
-                    .select_from(
-                        ACCOUNT_ACTION_TOKENS_TABLE.join(
-                            USERS_TABLE,
-                            USERS_TABLE.c.id == ACCOUNT_ACTION_TOKENS_TABLE.c.user_id,
-                        ).join(
-                            TENANTS_TABLE,
-                            TENANTS_TABLE.c.id
-                            == ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id,
-                        )
-                    )
-                    .where(
-                        and_(
-                            ACCOUNT_ACTION_TOKENS_TABLE.c.token_hash == token_hash,
-                            ACCOUNT_ACTION_TOKENS_TABLE.c.purpose == normalized_purpose,
-                            ACCOUNT_ACTION_TOKENS_TABLE.c.consumed_at.is_(None),
-                            ACCOUNT_ACTION_TOKENS_TABLE.c.expires_at > now,
-                        )
-                    )
-                    .limit(1)
-                )
-                .mappings()
-                .first()
-            )
-            if row is None:
-                return None
+        claimed = (
             connection.execute(
                 update(ACCOUNT_ACTION_TOKENS_TABLE)
-                .where(ACCOUNT_ACTION_TOKENS_TABLE.c.token_hash == token_hash)
-                .values(consumed_at=now, updated_at=now)
+                .where(
+                    and_(
+                        ACCOUNT_ACTION_TOKENS_TABLE.c.token_hash == token_hash,
+                        ACCOUNT_ACTION_TOKENS_TABLE.c.purpose == normalized_purpose,
+                        ACCOUNT_ACTION_TOKENS_TABLE.c.consumed_at.is_(None),
+                        ACCOUNT_ACTION_TOKENS_TABLE.c.expires_at
+                        > func.current_timestamp(),
+                    )
+                )
+                .values(
+                    consumed_at=func.current_timestamp(),
+                    updated_at=func.current_timestamp(),
+                )
+                .returning(
+                    ACCOUNT_ACTION_TOKENS_TABLE.c.tenant_id,
+                    ACCOUNT_ACTION_TOKENS_TABLE.c.user_id,
+                )
             )
-        return _login_user_from_mapping(row)
+            .mappings()
+            .first()
+        )
+        if claimed is None:
+            return None
+        tenant_id = str(claimed["tenant_id"])
+        user_id = str(claimed["user_id"])
+        row = (
+            connection.execute(
+                select(
+                    USERS_TABLE,
+                    TENANTS_TABLE.c.name,
+                    TENANTS_TABLE.c.slug,
+                    TENANTS_TABLE.c.plan_code,
+                    TENANTS_TABLE.c.is_active,
+                )
+                .select_from(
+                    USERS_TABLE.join(
+                        TENANTS_TABLE,
+                        and_(
+                            TENANTS_TABLE.c.id == USERS_TABLE.c.tenant_id,
+                            TENANTS_TABLE.c.id == tenant_id,
+                        ),
+                    )
+                )
+                .where(
+                    and_(
+                        USERS_TABLE.c.id == user_id,
+                        USERS_TABLE.c.tenant_id == tenant_id,
+                    )
+                )
+                .with_for_update()
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise _AccountActionTargetInvalidError
+        user = _login_user_from_mapping(row)
+        if not user.tenant_is_active or user.status != "active":
+            raise AccountActionTargetInactiveError
+        return user, tenant_id, user_id
+
+    def accept_invite_atomically(
+        self,
+        *,
+        token: str,
+        password_hash_factory: Callable[[], str],
+        session_expires_in_seconds: int,
+    ) -> AtomicInviteAcceptanceResult | None:
+        now = _now()
+        raw_session_token = token_urlsafe(SESSION_TOKEN_BYTES)
+        try:
+            with self._engine.begin() as connection:
+                claimed = self._claim_account_action_target(
+                    connection, token=token, purpose="invite"
+                )
+                if claimed is None:
+                    return None
+                _, tenant_id, user_id = claimed
+                password_hash = password_hash_factory()
+                connection.execute(
+                    update(USERS_TABLE)
+                    .where(
+                        and_(
+                            USERS_TABLE.c.tenant_id == tenant_id,
+                            USERS_TABLE.c.id == user_id,
+                        )
+                    )
+                    .values(
+                        password_hash=password_hash,
+                        email_verified_at=now,
+                        updated_at=now,
+                    )
+                )
+                connection.execute(
+                    insert(USER_SESSIONS_TABLE).values(
+                        id=str(uuid4()),
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        session_token_hash=_hash_opaque_token(raw_session_token),
+                        expires_at=now
+                        + timedelta(seconds=max(60, int(session_expires_in_seconds))),
+                        revoked_at=None,
+                        created_at=now,
+                        updated_at=now,
+                        last_seen_at=now,
+                    )
+                )
+                refreshed = self._get_login_user_in_transaction(
+                    connection, tenant_id=tenant_id, user_id=user_id
+                )
+                if refreshed is None:
+                    raise _AccountActionTargetInvalidError
+        except _AccountActionTargetInvalidError:
+            return None
+        return AtomicInviteAcceptanceResult(
+            user=refreshed,
+            session_token=raw_session_token,
+        )
+
+    def reset_password_atomically(
+        self, *, token: str, password_hash_factory: Callable[[], str]
+    ) -> bool:
+        now = _now()
+        try:
+            with self._engine.begin() as connection:
+                claimed = self._claim_account_action_target(
+                    connection, token=token, purpose="password_reset"
+                )
+                if claimed is None:
+                    return False
+                _, tenant_id, user_id = claimed
+                password_hash = password_hash_factory()
+                connection.execute(
+                    update(USERS_TABLE)
+                    .where(
+                        and_(
+                            USERS_TABLE.c.tenant_id == tenant_id,
+                            USERS_TABLE.c.id == user_id,
+                        )
+                    )
+                    .values(password_hash=password_hash, updated_at=now)
+                )
+                connection.execute(
+                    update(USER_SESSIONS_TABLE)
+                    .where(
+                        and_(
+                            USER_SESSIONS_TABLE.c.tenant_id == tenant_id,
+                            USER_SESSIONS_TABLE.c.user_id == user_id,
+                            USER_SESSIONS_TABLE.c.revoked_at.is_(None),
+                        )
+                    )
+                    .values(revoked_at=now, updated_at=now)
+                )
+        except _AccountActionTargetInvalidError:
+            return False
+        return True
+
+    def verify_email_atomically(self, *, token: str) -> bool:
+        now = _now()
+        try:
+            with self._engine.begin() as connection:
+                claimed = self._claim_account_action_target(
+                    connection, token=token, purpose="email_verification"
+                )
+                if claimed is None:
+                    return False
+                _, tenant_id, user_id = claimed
+                connection.execute(
+                    update(USERS_TABLE)
+                    .where(
+                        and_(
+                            USERS_TABLE.c.tenant_id == tenant_id,
+                            USERS_TABLE.c.id == user_id,
+                        )
+                    )
+                    .values(email_verified_at=now, updated_at=now)
+                )
+        except _AccountActionTargetInvalidError:
+            return False
+        return True
+
+    def _get_login_user_in_transaction(
+        self, connection: Connection, *, tenant_id: str, user_id: str
+    ) -> LoginUserRecord | None:
+        row = (
+            connection.execute(
+                select(
+                    USERS_TABLE,
+                    TENANTS_TABLE.c.name,
+                    TENANTS_TABLE.c.slug,
+                    TENANTS_TABLE.c.plan_code,
+                    TENANTS_TABLE.c.is_active,
+                )
+                .select_from(
+                    USERS_TABLE.join(
+                        TENANTS_TABLE,
+                        TENANTS_TABLE.c.id == USERS_TABLE.c.tenant_id,
+                    )
+                )
+                .where(
+                    and_(
+                        USERS_TABLE.c.tenant_id == tenant_id,
+                        USERS_TABLE.c.id == user_id,
+                    )
+                )
+            )
+            .mappings()
+            .first()
+        )
+        return _login_user_from_mapping(row) if row is not None else None
 
     def mark_email_verified(self, *, tenant_id: str, user_id: str) -> str:
         now = _now()

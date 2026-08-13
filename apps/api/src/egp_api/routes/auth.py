@@ -27,6 +27,7 @@ AUTH_ERROR_CODES = {
     "invalid or expired invite token": "invalid_invite_token",
     "invalid or expired password reset token": "invalid_password_reset_token",
     "invalid or expired email verification token": "invalid_email_verification_token",
+    "password must be at least 12 characters": "password_too_short",
     "email delivery is not configured": "email_delivery_not_configured",
 }
 
@@ -232,6 +233,9 @@ def reset_password(payload: ResetPasswordRequest, request: Request) -> ActionSta
     except PermissionError as exc:
         detail = str(exc) or "invalid token"
         return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
+    except ValueError as exc:
+        detail = str(exc) or "invalid password"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     return ActionStatusResponse(status="password_reset")
 
 
@@ -246,6 +250,9 @@ def accept_invite(
         result = service.accept_invite(token=payload.token, password=payload.password)
     except PermissionError as exc:
         detail = str(exc) or "invalid invite token"
+        return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
+    except ValueError as exc:
+        detail = str(exc) or "invalid password"
         return _json_error(status_code=400, detail=detail, code=AUTH_ERROR_CODES.get(detail))
     response.set_cookie(
         key=request.app.state.session_cookie_name,
