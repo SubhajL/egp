@@ -272,7 +272,18 @@ Formal primary-owned `g-check`: completed below with no findings.
 
 ## Delivery and closeout
 
-Pending PR/review/merge/landing. No deployment or activation is authorized.
+- Source commit: `398c7e0932b71a69de2828473f25287a717bf951`.
+- PR: `#218`, `fix(crawler): make fault injection truthful`, targeting `main` from
+  `fix/f7-truthful-fault-injection`.
+- GitHub reported the PR mergeable but blocked by hosted checks. All seven CI jobs and the Claude
+  review completed with zero executable steps; their check annotations state: `The job was not
+  started because your account is locked due to a billing issue.` These jobs are unavailable
+  hosted evidence, not passing or product-test failures. Vercel preview remained pending and is not
+  counted as deployment, activation, or runtime acceptance.
+- The user's standing lifecycle explicitly authorizes merge after honest required-check handling.
+  Merge, exact-SHA local-main landing, and session-worktree cleanup remain to be recorded outside
+  this source commit.
+- No deployment, activation, crawler restart, canary claim, or protocol flip was performed.
 
 ## Review (2026-08-15 12:27:41 +0700) - working-tree
 
