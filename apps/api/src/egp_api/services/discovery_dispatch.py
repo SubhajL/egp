@@ -32,12 +32,21 @@ class NonRetriableDiscoveryDispatchError(RuntimeError):
 
 
 class DiscoveryJobStore(Protocol):
-    def get_discovery_queue_snapshot(self) -> DiscoveryQueueSnapshot: ...
+    def get_discovery_queue_snapshot(
+        self,
+        *,
+        exclude_trigger_types: Collection[str] | None = None,
+    ) -> DiscoveryQueueSnapshot: ...
 
     def has_claimable_discovery_jobs(
         self,
         *,
         exclude_job_ids: Collection[str] | None = None,
+        only_job_id: str | None = None,
+        only_tenant_id: str | None = None,
+        only_live: bool | None = None,
+        only_trigger_type: str | None = None,
+        exclude_trigger_types: Collection[str] | None = None,
     ) -> bool: ...
 
     def claim_pending_discovery_jobs(
@@ -46,6 +55,11 @@ class DiscoveryJobStore(Protocol):
         limit: int = 10,
         lease_seconds: float = 60.0,
         exclude_job_ids: Collection[str] | None = None,
+        only_job_id: str | None = None,
+        only_tenant_id: str | None = None,
+        only_live: bool | None = None,
+        only_trigger_type: str | None = None,
+        exclude_trigger_types: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]: ...
 
     def renew_discovery_job_lease(
@@ -86,8 +100,8 @@ class DiscoveryDispatchRequest:
     # claim. The parent cannot build that envelope: dispatch() returns None and the
     # decoded subprocess result has ids and counts, not project bodies.
     claim_token: str | None = None
-    # Deterministic fault injection for canary runs.  When set, the dispatcher
-    # raises the corresponding failure without spawning a subprocess.
+    # Test-only seam for truthful fault injection. Production operator use is
+    # authorized and wired exclusively by the standalone discovery executor.
     fault_mode: str | None = None
 
 
@@ -261,6 +275,12 @@ class DiscoveryDispatchProcessor:
     lease_seconds: float = 60.0
     lease_heartbeat_seconds: float = 20.0
     worker_count: int = 1
+    target_job_id: str | None = None
+    target_tenant_id: str | None = None
+    target_trigger_type: str | None = None
+    excluded_trigger_types: tuple[str, ...] = ()
+    require_non_live_target: bool = False
+    force_terminal_failures: bool = False
 
     def process_pending(
         self,
@@ -299,8 +319,23 @@ class DiscoveryDispatchProcessor:
         circuit_reset_at: str | None = None
         while len(dispositions) < requested_limit:
             batch_limit = min(worker_count, requested_limit - len(dispositions))
+            claim_scope = (
+                {
+                    "only_job_id": self.target_job_id,
+                    "only_tenant_id": self.target_tenant_id,
+                    "only_live": False if self.require_non_live_target else None,
+                    "only_trigger_type": self.target_trigger_type,
+                }
+                if self.target_job_id is not None
+                else (
+                    {"exclude_trigger_types": self.excluded_trigger_types}
+                    if self.excluded_trigger_types
+                    else {}
+                )
+            )
             if not self.repository.has_claimable_discovery_jobs(
                 exclude_job_ids=processed_job_ids,
+                **claim_scope,
             ):
                 break
             if self.pre_dispatch_preparer is not None:
@@ -315,6 +350,7 @@ class DiscoveryDispatchProcessor:
                 limit=batch_limit,
                 lease_seconds=self.lease_seconds,
                 exclude_job_ids=processed_job_ids,
+                **claim_scope,
             )
             if not jobs:
                 break
@@ -322,12 +358,19 @@ class DiscoveryDispatchProcessor:
             dispositions.extend(self._process_claimed_jobs(jobs=jobs, worker_count=worker_count))
             if len(jobs) < batch_limit:
                 break
+        queue_snapshot = (
+            self.repository.get_discovery_queue_snapshot(
+                exclude_trigger_types=self.excluded_trigger_types,
+            )
+            if self.excluded_trigger_types
+            else self.repository.get_discovery_queue_snapshot()
+        )
         return DiscoveryDispatchBatchResult(
             requested_limit=requested_limit,
             dispositions=tuple(dispositions),
             blocker=blocker,
             circuit_reset_at=circuit_reset_at,
-            queue_snapshot=self.repository.get_discovery_queue_snapshot(),
+            queue_snapshot=queue_snapshot,
         )
 
     def _process_claimed_jobs(
@@ -411,7 +454,12 @@ class DiscoveryDispatchProcessor:
             return self._record_disposition(
                 job=job,
                 job_status="failed",
-                outcome="failed",
+                outcome=(
+                    "fault_verified"
+                    if self.force_terminal_failures
+                    and getattr(dispatch_error, "fault_evidence_verified", False)
+                    else "failed"
+                ),
                 last_error=str(dispatch_error),
                 last_error_code=dispatch_error.failure_code,
             )
@@ -422,11 +470,16 @@ class DiscoveryDispatchProcessor:
             DiscoveryFailureCode.DISPATCH_EXCEPTION,
         )
         next_attempt = job.attempt_count + 1
-        if next_attempt >= self.max_attempts:
+        if self.force_terminal_failures or next_attempt >= self.max_attempts:
             return self._record_disposition(
                 job=job,
                 job_status="failed",
-                outcome="failed",
+                outcome=(
+                    "fault_verified"
+                    if self.force_terminal_failures
+                    and getattr(dispatch_error, "fault_evidence_verified", False)
+                    else "failed"
+                ),
                 last_error=str(dispatch_error),
                 last_error_code=failure_code,
             )

@@ -67,6 +67,16 @@ from egp_shared_types.enums import (
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
+FAULT_INJECTION_TIMEOUT_SECONDS = 1.0
+FAULT_INJECTION_MODES = frozenset(
+    {
+        "worker_timeout",
+        "nonzero_exit",
+        "missing_result",
+        "entitlement_denied",
+        "worker_crash",
+    }
+)
 _RELEASE_SHA: str | None = os.environ.get("EGP_RELEASE_SHA") or None
 
 
@@ -410,9 +420,7 @@ def _communicate_with_cancellation(
             if cancellation_event.is_set():
                 _kill_process_group(proc)
                 proc.communicate()
-                raise _DiscoveryLeaseCancellation(
-                    "discovery job lease ownership was lost"
-                )
+                raise _DiscoveryLeaseCancellation("discovery job lease ownership was lost")
             continue
         if cancellation_event.is_set():
             _kill_process_group(proc)
@@ -495,7 +503,6 @@ def _resolve_browser_settings_payload(
         return payload
     payload["max_pages_per_keyword"] = normalized_max_pages
     return payload
-
 
 
 def _parse_non_retriable_error(
@@ -650,57 +657,55 @@ def _drain_worker_stdout(
     return tail
 
 
-def _simulate_fault(
+def _fault_worker_command(fault_mode: str) -> list[str]:
+    """Return the fixed internal harness command or fail closed."""
+
+    if fault_mode not in FAULT_INJECTION_MODES:
+        raise NonRetriableDiscoveryDispatchError(
+            "unknown fault_mode",
+            failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+        )
+    return [sys.executable, "-m", "egp_worker.fault_injection", fault_mode]
+
+
+def _fault_outcome_verified(
+    *,
     fault_mode: str,
-    run_id: str,
-    keyword: str,
-    pending_log_events: list[str],
-) -> None:
-    """Raise a deterministic fault for canary testing without spawning a worker.
+    returncode: int | None,
+    failure_code: DiscoveryFailureCode,
+) -> bool:
+    expected = {
+        "worker_timeout": (-signal.SIGKILL, DiscoveryFailureCode.WORKER_TIMEOUT),
+        "nonzero_exit": (17, DiscoveryFailureCode.WORKER_EXIT_NONZERO),
+        "missing_result": (0, DiscoveryFailureCode.WORKER_RESULT_MISSING),
+        "entitlement_denied": (18, DiscoveryFailureCode.ENTITLEMENT_DENIED),
+        "worker_crash": (-signal.SIGTERM, DiscoveryFailureCode.WORKER_TERMINATED),
+    }.get(fault_mode)
+    return expected == (returncode, failure_code)
 
-    Called from ``dispatch_cancellable()`` when ``request.fault_mode`` is set.
-    Writes a ``dispatch_failed`` event with ``reason="fault_injection"`` then
-    raises the exception that the real failure mode would produce.
-    """
-    try:
-        pending_log_events.append(make_event(
-            "dispatch_failed",
-            run_id=run_id,
-            reason="fault_injection",
-            injected_fault=fault_mode,
-        ))
-    except Exception:
-        pass
 
-    if fault_mode == "worker_timeout":
-        raise DiscoverySpawnError(
-            f"[fault_injection] simulated worker timeout for keyword {keyword!r}",
-            failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+def _verified_fault_exception(
+    exc: DiscoverySpawnError | NonRetriableDiscoveryDispatchError,
+    *,
+    fault_mode: str,
+    returncode: int | None,
+    run_terminalized: bool,
+    candidates_reconciled: bool,
+) -> DiscoverySpawnError | NonRetriableDiscoveryDispatchError:
+    if (
+        run_terminalized
+        and candidates_reconciled
+        and _fault_outcome_verified(
+            fault_mode=fault_mode,
+            returncode=returncode,
+            failure_code=exc.failure_code,
         )
-    if fault_mode == "nonzero_exit":
-        raise DiscoverySpawnError(
-            f"[fault_injection] simulated nonzero exit for keyword {keyword!r}",
-            failure_code=DiscoveryFailureCode.WORKER_EXIT_NONZERO,
-        )
-    if fault_mode == "missing_result":
-        raise DiscoverySpawnError(
-            f"[fault_injection] simulated missing result for keyword {keyword!r}",
-            failure_code=DiscoveryFailureCode.WORKER_RESULT_MISSING,
-        )
-    if fault_mode == "entitlement_denied":
-        raise NonRetriableDiscoveryDispatchError(
-            f"[fault_injection] simulated entitlement denial for keyword {keyword!r}",
-            failure_code=DiscoveryFailureCode.ENTITLEMENT_DENIED,
-        )
-    if fault_mode == "worker_crash":
-        raise NonRetriableDiscoveryDispatchError(
-            f"[fault_injection] simulated worker crash for keyword {keyword!r}",
-            failure_code=DiscoveryFailureCode.WORKER_TERMINATED,
-        )
-    raise ValueError(
-        f"unknown fault_mode {fault_mode!r}; "
-        "valid modes: worker_timeout, nonzero_exit, missing_result, "
-        "entitlement_denied, worker_crash"
+    ):
+        exc.fault_evidence_verified = True
+        return exc
+    return NonRetriableDiscoveryDispatchError(
+        "fault injection outcome or durable cleanup was not verified",
+        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
     )
 
 
@@ -720,6 +725,9 @@ class SubprocessDiscoveryDispatcher:
         run_repository=None,
         profile_repository=None,
         timeout_seconds: float = DISCOVER_WORKER_TIMEOUT_SECONDS,
+        fault_mode: str | None = None,
+        fault_injection_authorized: bool = False,
+        fault_timeout_seconds: float = FAULT_INJECTION_TIMEOUT_SECONDS,
         browser_cdp_port_base: int | str | None = None,
         browser_cdp_port_range: int | str | None = None,
         browser_profile_root: Path | str | None = None,
@@ -749,6 +757,9 @@ class SubprocessDiscoveryDispatcher:
         self._run_repository = run_repository or _NoopRunRepository()
         self._profile_repository = profile_repository
         self._timeout_seconds = timeout_seconds
+        self._fault_mode = fault_mode
+        self._fault_injection_authorized = fault_injection_authorized
+        self._fault_timeout_seconds = max(0.01, float(fault_timeout_seconds))
         self._browser_cdp_port_base = get_browser_cdp_port_base(browser_cdp_port_base)
         self._browser_cdp_port_range = get_browser_cdp_port_range(browser_cdp_port_range)
         if self._browser_cdp_port_base + self._browser_cdp_port_range - 1 > 65_535:
@@ -822,6 +833,8 @@ class SubprocessDiscoveryDispatcher:
     def prepare_for_dispatch(self) -> DiscoveryPreDispatchResult:
         """Warm/preflight a stale persistent profile before claiming a job."""
 
+        if self._fault_mode is not None and self._fault_injection_authorized:
+            return DiscoveryPreDispatchResult.ready()
         circuit_snapshot = get_default_rate_limiter().get_circuit_snapshot()
         if circuit_snapshot.is_open:
             _logger.warning(
@@ -903,36 +916,63 @@ class SubprocessDiscoveryDispatcher:
         *,
         cancellation_event: threading.Event | None,
     ) -> None:
+        requested_fault_mode = (
+            request.fault_mode if request.fault_mode is not None else self._fault_mode
+        )
+        if (
+            self._fault_mode is not None
+            and request.fault_mode is not None
+            and request.fault_mode != self._fault_mode
+        ):
+            raise NonRetriableDiscoveryDispatchError(
+                "request fault mode does not match the authorized operator mode",
+                failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+            )
+        if requested_fault_mode is not None and not self._fault_injection_authorized:
+            raise NonRetriableDiscoveryDispatchError(
+                "fault injection requires an authorized standalone executor",
+                failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+            )
         run_id = str(uuid4())
         run_trigger = map_job_trigger_to_run_trigger(request.trigger_type)
-        browser_profile_dir, cleanup_after = self._resolve_profile_dir_for_dispatch(run_id)
-        browser_settings = _resolve_browser_settings_payload(
-            profile_repository=self._profile_repository,
-            tenant_id=request.tenant_id,
-            profile_id=request.profile_id,
-            run_id=run_id,
-            browser_cdp_port_base=self._browser_cdp_port_base,
-            browser_cdp_port_range=self._browser_cdp_port_range,
-            browser_profile_dir=browser_profile_dir,
-            chrome_path=self._browser_chrome_path,
-            proxy_server=self._browser_proxy_server,
-            use_xvfb=self._browser_use_xvfb,
-            nav_timeout_ms=self._browser_nav_timeout_ms,
-            cloudflare_timeout_ms=self._browser_cloudflare_timeout_ms,
-            cloudflare_reload_retries=self._browser_cloudflare_reload_retries,
-            cloudflare_operator_timeout_ms=self._browser_cloudflare_operator_timeout_ms,
-            project_detail_timeout_s=self._browser_project_detail_timeout_s,
-        )
-        profile_lock = (
-            _acquire_profile_lock(browser_profile_dir)
-            if self._browser_profile_mode == "persistent"
-            else None
-        )
-        try:
-            self._warm_persistent_profile_if_stale(
-                profile_dir=browser_profile_dir,
-                browser_settings=browser_settings,
+        if requested_fault_mode is not None:
+            browser_profile_dir = _browser_profile_dir_for_run_id(
+                run_id,
+                profile_root=self._browser_profile_root,
             )
+            cleanup_after = True
+            browser_settings: dict[str, object] = {}
+            profile_lock = None
+        else:
+            browser_profile_dir, cleanup_after = self._resolve_profile_dir_for_dispatch(run_id)
+            browser_settings = _resolve_browser_settings_payload(
+                profile_repository=self._profile_repository,
+                tenant_id=request.tenant_id,
+                profile_id=request.profile_id,
+                run_id=run_id,
+                browser_cdp_port_base=self._browser_cdp_port_base,
+                browser_cdp_port_range=self._browser_cdp_port_range,
+                browser_profile_dir=browser_profile_dir,
+                chrome_path=self._browser_chrome_path,
+                proxy_server=self._browser_proxy_server,
+                use_xvfb=self._browser_use_xvfb,
+                nav_timeout_ms=self._browser_nav_timeout_ms,
+                cloudflare_timeout_ms=self._browser_cloudflare_timeout_ms,
+                cloudflare_reload_retries=self._browser_cloudflare_reload_retries,
+                cloudflare_operator_timeout_ms=self._browser_cloudflare_operator_timeout_ms,
+                project_detail_timeout_s=self._browser_project_detail_timeout_s,
+            )
+            profile_lock = (
+                _acquire_profile_lock(browser_profile_dir)
+                if self._browser_profile_mode == "persistent"
+                else None
+            )
+        try:
+            if requested_fault_mode is None:
+                self._warm_persistent_profile_if_stale(
+                    profile_dir=browser_profile_dir,
+                    browser_settings=browser_settings,
+                )
             run_values: dict[str, object] = {
                 "tenant_id": request.tenant_id,
                 "profile_id": request.profile_id,
@@ -946,12 +986,18 @@ class SubprocessDiscoveryDispatcher:
             self._run_repository.create_run(
                 **run_values,
             )
-            log_path = (
-                self._artifact_root / "tenants" / request.tenant_id / "runs" / run_id / "worker.log"
-            ).resolve()
+            log_path = None
             log_handle = None
             if self._artifact_root is not None:
                 try:
+                    log_path = (
+                        self._artifact_root
+                        / "tenants"
+                        / request.tenant_id
+                        / "runs"
+                        / run_id
+                        / "worker.log"
+                    ).resolve()
                     log_path.parent.mkdir(parents=True, exist_ok=True)
                     log_handle = log_path.open("ab")
                 except Exception:
@@ -963,23 +1009,67 @@ class SubprocessDiscoveryDispatcher:
                     log_path = None
             pending_log_events: list[str] = []
             try:
-                pending_log_events.append(make_event(
-                    "dispatch_started",
-                    run_id=run_id,
-                    owner_pid=os.getpid(),
-                    execution_backend="subprocess",
-                    release_sha=_RELEASE_SHA,
-                ))
+                pending_log_events.append(
+                    make_event(
+                        "dispatch_started",
+                        run_id=run_id,
+                        owner_pid=os.getpid(),
+                        execution_backend="subprocess",
+                        release_sha=_RELEASE_SHA,
+                    )
+                )
             except Exception:
                 pass
-            try:
-                if request.fault_mode is not None:
-                    _simulate_fault(
-                        request.fault_mode,
-                        run_id,
-                        request.keyword,
-                        pending_log_events,
+            fault_mode = requested_fault_mode
+            fault_source = "test" if request.fault_mode is not None else "operator_cli"
+            worker_command = [sys.executable, "-m", "egp_worker.main"]
+            worker_timeout_seconds = self._timeout_seconds
+            if fault_mode is not None:
+                try:
+                    worker_command = _fault_worker_command(fault_mode)
+                except NonRetriableDiscoveryDispatchError as exc:
+                    try:
+                        pending_log_events.append(
+                            make_event(
+                                "fault_injection_invalid_mode",
+                                run_id=run_id,
+                                fault_mode="invalid",
+                                source=fault_source,
+                                release_sha=_RELEASE_SHA,
+                            )
+                        )
+                    except Exception:
+                        pass
+                    self._terminalize_injected_run(
+                        run_id=run_id,
+                        fault_mode="invalid",
+                        error=str(exc),
+                        failure_code=exc.failure_code,
+                        pending_log_events=pending_log_events,
                     )
+                    _flush_log_events(log_handle, pending_log_events)
+                    if log_handle is not None:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                    raise
+                if fault_mode == "worker_timeout":
+                    worker_timeout_seconds = self._fault_timeout_seconds
+                try:
+                    pending_log_events.append(
+                        make_event(
+                            "fault_injection_started",
+                            run_id=run_id,
+                            fault_mode=fault_mode,
+                            source=fault_source,
+                            owner_pid=os.getpid(),
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
+                except Exception:
+                    pass
+            try:
                 payload = json.dumps(
                     {
                         "command": "discover",
@@ -1004,11 +1094,28 @@ class SubprocessDiscoveryDispatcher:
                     },
                     ensure_ascii=False,
                 ).encode()
+                if fault_mode is not None:
+                    payload = json.dumps(
+                        {
+                            "command": "fault_injection",
+                            "run_id": run_id,
+                            "fault_mode": fault_mode,
+                        },
+                        ensure_ascii=False,
+                    ).encode()
                 stdout_capture = tempfile.SpooledTemporaryFile(
                     max_size=WORKER_STDOUT_SPOOL_LIMIT_BYTES,
                     mode="w+b",
                 )
-            except Exception:
+            except Exception as exc:
+                if fault_mode is not None:
+                    self._terminalize_injected_run(
+                        run_id=run_id,
+                        fault_mode=fault_mode,
+                        error=str(exc),
+                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                        pending_log_events=pending_log_events,
+                    )
                 _flush_log_events(log_handle, pending_log_events)
                 if log_handle is not None:
                     try:
@@ -1019,7 +1126,7 @@ class SubprocessDiscoveryDispatcher:
             proc = None
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "egp_worker.main"],
+                    worker_command,
                     stdin=subprocess.PIPE,
                     stdout=stdout_capture,
                     stderr=log_handle or subprocess.PIPE,
@@ -1035,12 +1142,23 @@ class SubprocessDiscoveryDispatcher:
                             if isinstance(getattr(proc, "pid", None), int)
                             else {}
                         ),
+                        **(
+                            {
+                                "fault_injection": {
+                                    "mode": fault_mode,
+                                    "source": fault_source,
+                                    "release_sha": _RELEASE_SHA,
+                                }
+                            }
+                            if fault_mode is not None
+                            else {}
+                        ),
                     },
                 )
                 returned_stdout, stderr = _communicate_with_cancellation(
                     proc,
                     payload=payload,
-                    timeout_seconds=self._timeout_seconds,
+                    timeout_seconds=worker_timeout_seconds,
                     cancellation_event=cancellation_event,
                 )
                 stdout = _drain_worker_stdout(
@@ -1061,7 +1179,25 @@ class SubprocessDiscoveryDispatcher:
                         keyword=request.keyword,
                     )
                     if terminated is not None:
-                        raise terminated
+                        termination_error, run_terminalized, candidates_reconciled = terminated
+                        if fault_mode is not None:
+                            self._append_fault_terminalization_event(
+                                pending_log_events=pending_log_events,
+                                run_id=run_id,
+                                fault_mode=fault_mode,
+                                failure_code=termination_error.failure_code,
+                                child_pid=getattr(proc, "pid", None),
+                                run_terminalized=run_terminalized,
+                                candidates_reconciled=candidates_reconciled,
+                            )
+                            termination_error = _verified_fault_exception(
+                                termination_error,
+                                fault_mode=fault_mode,
+                                returncode=proc.returncode,
+                                run_terminalized=run_terminalized,
+                                candidates_reconciled=candidates_reconciled,
+                            )
+                        raise termination_error
                 if worker_result is not None:
                     run_status, failure_code = _validate_discovery_worker_result(
                         worker_result,
@@ -1111,13 +1247,15 @@ class SubprocessDiscoveryDispatcher:
                     run_id=run_id,
                 )
                 try:
-                    pending_log_events.append(make_event(
-                        "dispatch_finished",
-                        run_id=run_id,
-                        owner_pid=os.getpid(),
-                        child_pid=getattr(proc, "pid", None),
-                        release_sha=_RELEASE_SHA,
-                    ))
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_finished",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            child_pid=getattr(proc, "pid", None),
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
             except _DiscoveryLeaseCancellation as exc:
@@ -1126,13 +1264,15 @@ class SubprocessDiscoveryDispatcher:
                     f"for keyword {request.keyword!r}"
                 )
                 try:
-                    pending_log_events.append(make_event(
-                        "dispatch_failed",
-                        run_id=run_id,
-                        owner_pid=os.getpid(),
-                        reason="lease_lost",
-                        release_sha=_RELEASE_SHA,
-                    ))
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_failed",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            reason="lease_lost",
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
                 self._reconcile_candidate_attempts(
@@ -1150,86 +1290,170 @@ class SubprocessDiscoveryDispatcher:
                 ) from exc
             except subprocess.TimeoutExpired as exc:
                 _kill_process_group(proc)
-                returned_stdout, stderr = proc.communicate()
-                stdout = _drain_worker_stdout(
-                    stdout_capture,
-                    returned_stdout,
-                    log_handle=log_handle,
-                )
-                if log_handle is not None:
-                    log_handle.flush()
-                stderr_text = (self._read_log_tail(log_path) if log_path is not None else None) or (
-                    stderr or exc.stderr
-                )
-                preview = tail_bounded_preview(stderr_text)
                 error_message = f"discover worker timed out for keyword {request.keyword!r}"
-                _logger.warning(
-                    "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
-                    request.keyword,
-                    request.tenant_id,
-                    request.profile_id,
-                    exc.timeout,
-                    preview,
-                )
                 try:
-                    pending_log_events.append(make_event(
-                        "dispatch_failed",
-                        run_id=run_id,
-                        owner_pid=os.getpid(),
-                        child_pid=getattr(proc, "pid", None),
-                        reason="worker_timeout",
-                        release_sha=_RELEASE_SHA,
-                    ))
+                    returned_stdout, stderr = proc.communicate()
+                    stdout = _drain_worker_stdout(
+                        stdout_capture,
+                        returned_stdout,
+                        log_handle=log_handle,
+                    )
+                    if log_handle is not None:
+                        log_handle.flush()
+                    stderr_text = (
+                        self._read_log_tail(log_path) if log_path is not None else None
+                    ) or (stderr or exc.stderr)
+                    preview = tail_bounded_preview(stderr_text)
+                    _logger.warning(
+                        "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
+                        request.keyword,
+                        request.tenant_id,
+                        request.profile_id,
+                        exc.timeout,
+                        preview,
+                    )
+                except Exception:
+                    _logger.warning(
+                        "Failed to drain timed-out discover worker diagnostics (run_id=%s)",
+                        run_id,
+                        exc_info=True,
+                    )
+                try:
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_failed",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            child_pid=getattr(proc, "pid", None),
+                            reason="worker_timeout",
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
-                self._reconcile_candidate_attempts(
+                candidates_reconciled = self._reconcile_candidate_attempts(
                     run_id=run_id,
                     terminal_reason=CandidateTerminalReason.WORKER_TIMEOUT.value,
                 )
-                self._mark_active_run_failed(
+                run_terminalized = self._mark_active_run_failed(
                     run_id=run_id,
                     error=error_message,
                     failure_reason="worker_timeout",
                 )
-                raise DiscoverySpawnError(
+                if fault_mode is not None:
+                    self._append_fault_terminalization_event(
+                        pending_log_events=pending_log_events,
+                        run_id=run_id,
+                        fault_mode=fault_mode,
+                        failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+                        child_pid=getattr(proc, "pid", None),
+                        run_terminalized=run_terminalized,
+                        candidates_reconciled=candidates_reconciled,
+                    )
+                timeout_error = DiscoverySpawnError(
                     error_message,
                     failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
-                ) from exc
-            except DiscoverySpawnError:
-                try:
-                    pending_log_events.append(make_event(
-                        "dispatch_failed",
+                )
+                if fault_mode is not None:
+                    timeout_error = _verified_fault_exception(
+                        timeout_error,
+                        fault_mode=fault_mode,
+                        returncode=getattr(proc, "returncode", None),
+                        run_terminalized=run_terminalized,
+                        candidates_reconciled=candidates_reconciled,
+                    )
+                raise timeout_error from exc
+            except DiscoverySpawnError as exc:
+                raised_exc: DiscoverySpawnError | NonRetriableDiscoveryDispatchError = exc
+                if fault_mode is not None:
+                    run_terminalized, candidates_reconciled = self._terminalize_injected_run(
                         run_id=run_id,
-                        owner_pid=os.getpid(),
-                        child_pid=getattr(proc, "pid", None) if proc is not None else None,
-                        reason="spawn_error",
-                        release_sha=_RELEASE_SHA,
-                    ))
+                        fault_mode=fault_mode,
+                        error=str(exc),
+                        failure_code=exc.failure_code,
+                        pending_log_events=pending_log_events,
+                        child_pid=(getattr(proc, "pid", None) if proc is not None else None),
+                    )
+                    raised_exc = _verified_fault_exception(
+                        exc,
+                        fault_mode=fault_mode,
+                        returncode=getattr(proc, "returncode", None),
+                        run_terminalized=run_terminalized,
+                        candidates_reconciled=candidates_reconciled,
+                    )
+                try:
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_failed",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                            reason="spawn_error",
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
-                raise
-            except NonRetriableDiscoveryDispatchError:
-                try:
-                    pending_log_events.append(make_event(
-                        "dispatch_failed",
+                if raised_exc is exc:
+                    raise
+                raise raised_exc from exc
+            except NonRetriableDiscoveryDispatchError as exc:
+                raised_exc = exc
+                if (
+                    fault_mode is not None
+                    and exc.failure_code != DiscoveryFailureCode.WORKER_TERMINATED
+                ):
+                    run_terminalized, candidates_reconciled = self._terminalize_injected_run(
                         run_id=run_id,
-                        owner_pid=os.getpid(),
-                        child_pid=getattr(proc, "pid", None) if proc is not None else None,
-                        reason="non_retriable_error",
-                        release_sha=_RELEASE_SHA,
-                    ))
+                        fault_mode=fault_mode,
+                        error=str(exc),
+                        failure_code=exc.failure_code,
+                        pending_log_events=pending_log_events,
+                        child_pid=(getattr(proc, "pid", None) if proc is not None else None),
+                    )
+                    raised_exc = _verified_fault_exception(
+                        exc,
+                        fault_mode=fault_mode,
+                        returncode=getattr(proc, "returncode", None),
+                        run_terminalized=run_terminalized,
+                        candidates_reconciled=candidates_reconciled,
+                    )
+                try:
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_failed",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                            reason="non_retriable_error",
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
-                raise
-            except Exception:
-                try:
-                    pending_log_events.append(make_event(
-                        "dispatch_failed",
+                if raised_exc is exc:
+                    raise
+                raise raised_exc from exc
+            except Exception as exc:
+                if fault_mode is not None:
+                    self._terminalize_injected_run(
                         run_id=run_id,
-                        owner_pid=os.getpid(),
-                        reason="unexpected_error",
-                        release_sha=_RELEASE_SHA,
-                    ))
+                        fault_mode=fault_mode,
+                        error=str(exc),
+                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                        pending_log_events=pending_log_events,
+                        child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                    )
+                try:
+                    pending_log_events.append(
+                        make_event(
+                            "dispatch_failed",
+                            run_id=run_id,
+                            owner_pid=os.getpid(),
+                            reason="unexpected_error",
+                            release_sha=_RELEASE_SHA,
+                        )
+                    )
                 except Exception:
                     pass
                 _logger.warning(
@@ -1248,10 +1472,9 @@ class SubprocessDiscoveryDispatcher:
                 try:
                     if getattr(proc, "poll", None) is not None and proc.poll() is None:
                         _kill_process_group(proc)
+                        proc.communicate(timeout=5)
                 except Exception:  # noqa: BLE001 - cleanup must never mask the original error
-                    _logger.warning(
-                        "failed to reap discover worker process group", exc_info=True
-                    )
+                    _logger.warning("failed to reap discover worker process group", exc_info=True)
                 _flush_log_events(log_handle, pending_log_events)
                 try:
                     stdout_capture.close()
@@ -1443,7 +1666,7 @@ class SubprocessDiscoveryDispatcher:
         *,
         run_id: str,
         terminal_reason: str = CandidateTerminalReason.WORKER_LOST.value,
-    ) -> None:
+    ) -> bool:
         """Mark any still-accepted discovery candidates as unknown."""
         try:
             repo = create_candidate_attempt_repository(
@@ -1460,12 +1683,14 @@ class SubprocessDiscoveryDispatcher:
                     run_id,
                     terminal_reason,
                 )
+            return True
         except Exception:
             _logger.warning(
                 "Failed to reconcile candidate attempts for run %s",
                 run_id,
                 exc_info=True,
             )
+            return False
 
     def _mark_active_run_failed(
         self,
@@ -1473,7 +1698,7 @@ class SubprocessDiscoveryDispatcher:
         run_id: str,
         error: str,
         failure_reason: str,
-    ) -> None:
+    ) -> bool:
         try:
             failed_run = self._run_repository.fail_run_if_active(
                 run_id,
@@ -1487,13 +1712,81 @@ class SubprocessDiscoveryDispatcher:
                 failure_reason,
                 exc_info=True,
             )
-            return
+            return False
         if failed_run is not None:
             _logger.warning(
                 "Marked discover run %s failed (%s)",
                 failed_run.id,
                 failure_reason,
             )
+        return failed_run is not None
+
+    def _terminalize_injected_run(
+        self,
+        *,
+        run_id: str,
+        fault_mode: str,
+        error: str,
+        failure_code: DiscoveryFailureCode,
+        pending_log_events: list[str],
+        child_pid: int | None = None,
+    ) -> tuple[bool, bool]:
+        terminal_reason = {
+            DiscoveryFailureCode.WORKER_TIMEOUT: CandidateTerminalReason.WORKER_TIMEOUT.value,
+            DiscoveryFailureCode.WORKER_TERMINATED: (
+                CandidateTerminalReason.WORKER_TERMINATED.value
+            ),
+        }.get(failure_code, CandidateTerminalReason.WORKER_LOST.value)
+        candidates_reconciled = self._reconcile_candidate_attempts(
+            run_id=run_id,
+            terminal_reason=terminal_reason,
+        )
+        run_terminalized = self._mark_active_run_failed(
+            run_id=run_id,
+            error=error,
+            failure_reason=failure_code.value,
+        )
+        self._append_fault_terminalization_event(
+            pending_log_events=pending_log_events,
+            run_id=run_id,
+            fault_mode=fault_mode,
+            failure_code=failure_code,
+            child_pid=child_pid,
+            run_terminalized=run_terminalized,
+            candidates_reconciled=candidates_reconciled,
+        )
+        return run_terminalized, candidates_reconciled
+
+    @staticmethod
+    def _append_fault_terminalization_event(
+        *,
+        pending_log_events: list[str],
+        run_id: str,
+        fault_mode: str,
+        failure_code: DiscoveryFailureCode,
+        child_pid: int | None,
+        run_terminalized: bool,
+        candidates_reconciled: bool,
+    ) -> None:
+        try:
+            pending_log_events.append(
+                make_event(
+                    (
+                        "fault_injection_terminalized"
+                        if run_terminalized
+                        else "fault_injection_terminalization_failed"
+                    ),
+                    run_id=run_id,
+                    fault_mode=fault_mode,
+                    owner_pid=os.getpid(),
+                    child_pid=child_pid,
+                    release_sha=_RELEASE_SHA,
+                    failure_code=failure_code.value,
+                    candidates_reconciled=candidates_reconciled,
+                )
+            )
+        except Exception:
+            pass
 
     def _worker_termination_error(
         self,
@@ -1501,7 +1794,7 @@ class SubprocessDiscoveryDispatcher:
         returncode: int,
         run_id: str,
         keyword: str,
-    ) -> NonRetriableDiscoveryDispatchError | None:
+    ) -> tuple[NonRetriableDiscoveryDispatchError, bool, bool] | None:
         if returncode >= 0:
             return None
         signal_number = abs(int(returncode))
@@ -1512,16 +1805,20 @@ class SubprocessDiscoveryDispatcher:
         error_message = (
             f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
         )
-        self._reconcile_candidate_attempts(
+        candidates_reconciled = self._reconcile_candidate_attempts(
             run_id=run_id,
             terminal_reason=CandidateTerminalReason.WORKER_TERMINATED.value,
         )
-        self._mark_active_run_failed(
+        run_terminalized = self._mark_active_run_failed(
             run_id=run_id,
             error=error_message,
             failure_reason="worker_terminated",
         )
-        return NonRetriableDiscoveryDispatchError(
-            error_message,
-            failure_code=DiscoveryFailureCode.WORKER_TERMINATED,
+        return (
+            NonRetriableDiscoveryDispatchError(
+                error_message,
+                failure_code=DiscoveryFailureCode.WORKER_TERMINATED,
+            ),
+            run_terminalized,
+            candidates_reconciled,
         )
