@@ -20,6 +20,27 @@ from egp_api.services.discovery_dispatch import (
 from egp_db.repositories.discovery_job_repo import DiscoveryQueueSnapshot
 from egp_shared_types.enums import CrawlerBlockerCode
 
+FAULT_JOB_ID = "11111111-1111-4111-8111-111111111111"
+FAULT_TENANT_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def _fault_cli_args(
+    *,
+    mode: str = "nonzero_exit",
+    job_id: str | None = FAULT_JOB_ID,
+    tenant_id: str | None = FAULT_TENANT_ID,
+    once: bool = True,
+    limit: str = "1",
+) -> list[str]:
+    args = ["--limit", limit, "--fault-mode", mode]
+    if once:
+        args.insert(0, "--once")
+    if job_id is not None:
+        args.extend(["--fault-job-id", job_id])
+    if tenant_id is not None:
+        args.extend(["--fault-tenant-id", tenant_id])
+    return args
+
 
 class RecordingDiscoveryProcessor:
     def __init__(self, *, stop_event: asyncio.Event | None = None) -> None:
@@ -669,6 +690,263 @@ def test_runtime_stopping_state_always_reports_agent_offline() -> None:
         "circuit_state": "open",
         "circuit_reset_at": "2026-07-23T04:00:00+00:00",
     }
+
+
+@pytest.mark.parametrize(
+    ("argv", "enabled", "protocol"),
+    [
+        (_fault_cli_args(), None, "off"),
+        (_fault_cli_args(), "false", "off"),
+        (_fault_cli_args(once=False), "true", "off"),
+        (_fault_cli_args(limit="2"), "true", "off"),
+        (_fault_cli_args(), "true", "shadow"),
+        (["--once", "--limit", "1", "--fault-mode", "nonzero_exit"], "true", "off"),
+        (_fault_cli_args(job_id="not-a-uuid"), "true", "off"),
+        (_fault_cli_args(tenant_id=None), "true", "off"),
+    ],
+)
+def test_fault_injection_operator_gate_denies_before_runtime_build(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    argv: list[str],
+    enabled: str | None,
+    protocol: str,
+) -> None:
+    if enabled is None:
+        monkeypatch.delenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", enabled)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", protocol)
+    aggregate_log = tmp_path / "Library" / "Logs" / "egp" / "crawl.log"
+    aggregate_log.parent.mkdir(parents=True)
+    aggregate_log.write_text("existing audit\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    rotate_calls: list[Path] = []
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "rotate_log_copytruncate",
+        lambda path: rotate_calls.append(path),
+    )
+    built = False
+
+    def runtime_factory(*args: object, **kwargs: object):
+        nonlocal built
+        built = True
+        pytest.fail(f"denied injection built runtime: {args!r} {kwargs!r}")
+
+    assert discovery_dispatch.main(argv, runtime_factory=runtime_factory) == 2
+    assert built is False
+    assert rotate_calls == []
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    assert any(event.get("event") == "fault_injection_denied" for event in events)
+
+
+def test_fault_injection_operator_gate_wires_authorized_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    processor = RecordingDiscoveryProcessor()
+    monkeypatch.setattr(
+        processor,
+        "process_pending",
+        lambda *, limit=None: DiscoveryDispatchBatchResult(
+            requested_limit=limit or 1,
+            dispositions=(
+                DiscoveryJobDispatchDisposition(
+                    job_id=FAULT_JOB_ID,
+                    outcome="fault_verified",
+                    failure_code="worker_exit_nonzero",
+                ),
+            ),
+        ),
+    )
+    run_service = RecordingRunService()
+    built_kwargs: list[dict[str, object]] = []
+
+    def runtime_factory(*args: object, **kwargs: object):
+        del args
+        built_kwargs.append(dict(kwargs))
+        return discovery_dispatch.DiscoveryDispatchRuntime(
+            processor=processor,
+            run_service=run_service,
+        )
+
+    assert (
+        discovery_dispatch.main(
+            _fault_cli_args(),
+            runtime_factory=runtime_factory,
+        )
+        == 0
+    )
+    assert built_kwargs == [
+        {
+            "artifact_root": None,
+            "worker_count": None,
+            "fault_mode": "nonzero_exit",
+            "fault_job_id": FAULT_JOB_ID,
+            "fault_tenant_id": FAULT_TENANT_ID,
+        }
+    ]
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    assert any(
+        event.get("event") == "fault_injection_authorized"
+        and event.get("fault_mode") == "nonzero_exit"
+        for event in events
+    )
+    assert any(
+        event.get("event") == "fault_injection_observed"
+        and event.get("observed_failure_code") == "worker_exit_nonzero"
+        for event in events
+    )
+
+
+@pytest.mark.parametrize("enabled", [None, "true"])
+def test_fault_injection_operator_gate_redacts_invalid_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    enabled: str | None,
+) -> None:
+    if enabled is None:
+        monkeypatch.delenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", enabled)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    secret_like_mode = "token-super-sensitive-value"
+
+    assert (
+        discovery_dispatch.main(
+            _fault_cli_args(mode=secret_like_mode),
+            runtime_factory=lambda *args, **kwargs: pytest.fail(
+                "runtime must not be built"
+            ),
+        )
+        == 2
+    )
+
+    stderr = capsys.readouterr().err
+    assert secret_like_mode not in stderr
+    events = [json.loads(line) for line in stderr.splitlines() if line.startswith("{")]
+    assert any(
+        event.get("event") == "fault_injection_denied"
+        and event.get("fault_mode") == "invalid"
+        and event.get("reason")
+        == ("authorization_disabled" if enabled is None else "invalid_mode")
+        for event in events
+    )
+
+
+def test_fault_injection_operator_returns_nonzero_when_outcome_mismatches(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    processor = RecordingDiscoveryProcessor()
+    monkeypatch.setattr(
+        processor,
+        "process_pending",
+        lambda *, limit=None: DiscoveryDispatchBatchResult(
+            requested_limit=limit or 1,
+            dispositions=(
+                DiscoveryJobDispatchDisposition(
+                    job_id=FAULT_JOB_ID,
+                    outcome="failed",
+                    failure_code="worker_terminated",
+                ),
+            ),
+        ),
+    )
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=processor,
+        run_service=RecordingRunService(),
+    )
+
+    assert (
+        discovery_dispatch.main(
+            _fault_cli_args(mode="worker_crash"),
+            runtime_factory=lambda *args, **kwargs: runtime,
+        )
+        == 4
+    )
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    assert any(event.get("event") == "fault_injection_mismatch" for event in events)
+
+
+def test_fault_injection_operator_returns_nonzero_for_wrong_job_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    processor = RecordingDiscoveryProcessor()
+    monkeypatch.setattr(
+        processor,
+        "process_pending",
+        lambda *, limit=None: DiscoveryDispatchBatchResult(
+            requested_limit=limit or 1,
+            dispositions=(
+                DiscoveryJobDispatchDisposition(
+                    job_id="22222222-2222-4222-8222-222222222222",
+                    outcome="fault_verified",
+                    failure_code="worker_exit_nonzero",
+                ),
+            ),
+        ),
+    )
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=processor,
+        run_service=RecordingRunService(),
+    )
+
+    assert (
+        discovery_dispatch.main(
+            _fault_cli_args(mode="nonzero_exit"),
+            runtime_factory=lambda *args, **kwargs: runtime,
+        )
+        == 4
+    )
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    assert any(
+        event.get("event") == "fault_injection_mismatch"
+        and event.get("expected_discovery_job_id") == FAULT_JOB_ID
+        and event.get("observed_discovery_job_id")
+        == "22222222-2222-4222-8222-222222222222"
+        for event in events
+    )
 
 
 def test_background_lifespan_uses_standalone_discovery_executor_loop() -> None:

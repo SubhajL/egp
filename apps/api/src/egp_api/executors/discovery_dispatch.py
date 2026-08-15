@@ -12,6 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 import threading
 from typing import Callable, Literal, Protocol
+from uuid import UUID
 
 import sys
 
@@ -22,6 +23,7 @@ from egp_api.config import (
     get_artifact_prefix,
     get_artifact_root,
     get_artifact_storage_backend,
+    get_crawler_agent_protocol,
     get_database_url,
     get_discovery_lease_heartbeat_seconds,
     get_discovery_lease_seconds,
@@ -34,7 +36,10 @@ from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchProcessor,
     DiscoveryJobDispatchDisposition,
 )
-from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
+from egp_api.services.discovery_worker_dispatcher import (
+    FAULT_INJECTION_MODES,
+    SubprocessDiscoveryDispatcher,
+)
 from egp_api.services.crawler_runtime_reporter import (
     CrawlerRuntimeReporter,
     build_crawler_runtime_reporter_from_env,
@@ -45,10 +50,18 @@ from egp_db.connection import create_shared_engine
 from egp_db.repositories.discovery_job_repo import create_discovery_job_repository
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.run_repo import CrawlRunRecord, create_run_repository
-from egp_shared_types.enums import CrawlerBlockerCode
+from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 
 logger = logging.getLogger(__name__)
+
+_FAULT_MODE_EXPECTED_FAILURE = {
+    "worker_timeout": DiscoveryFailureCode.WORKER_TIMEOUT.value,
+    "nonzero_exit": DiscoveryFailureCode.WORKER_EXIT_NONZERO.value,
+    "missing_result": DiscoveryFailureCode.WORKER_RESULT_MISSING.value,
+    "entitlement_denied": DiscoveryFailureCode.ENTITLEMENT_DENIED.value,
+    "worker_crash": DiscoveryFailureCode.WORKER_TERMINATED.value,
+}
 
 
 class PendingDiscoveryProcessor(Protocol):
@@ -260,8 +273,19 @@ def build_discovery_dispatch_runtime(
     *,
     artifact_root: Path | None = None,
     worker_count: int | str | None = None,
+    fault_mode: str | None = None,
+    fault_job_id: str | None = None,
+    fault_tenant_id: str | None = None,
 ) -> DiscoveryDispatchRuntime:
     """Build repository-backed discovery dispatch runtime dependencies."""
+
+    fault_values = (fault_mode, fault_job_id, fault_tenant_id)
+    if any(value is not None for value in fault_values) and not all(
+        value is not None for value in fault_values
+    ):
+        raise RuntimeError(
+            "fault_mode, fault_job_id, and fault_tenant_id must be provided together"
+        )
 
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(
@@ -287,6 +311,8 @@ def build_discovery_dispatch_runtime(
         supabase_service_role_key=get_supabase_service_role_key(None),
         run_repository=run_repository,
         profile_repository=profile_repository,
+        fault_mode=fault_mode,
+        fault_injection_authorized=fault_mode is not None,
     )
     processor = DiscoveryDispatchProcessor(
         repository=create_discovery_job_repository(
@@ -298,6 +324,12 @@ def build_discovery_dispatch_runtime(
         lease_seconds=get_discovery_lease_seconds(),
         lease_heartbeat_seconds=get_discovery_lease_heartbeat_seconds(),
         worker_count=get_discovery_worker_count(worker_count),
+        target_job_id=fault_job_id,
+        target_tenant_id=fault_tenant_id,
+        target_trigger_type="fault_injection" if fault_mode is not None else None,
+        excluded_trigger_types=() if fault_mode is not None else ("fault_injection",),
+        require_non_live_target=fault_mode is not None,
+        force_terminal_failures=fault_mode is not None,
     )
     return DiscoveryDispatchRuntime(
         processor=processor,
@@ -647,7 +679,124 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Concurrent discovery workers. Defaults to EGP_DISCOVERY_WORKER_COUNT or 1.",
     )
+    parser.add_argument(
+        "--fault-mode",
+        default=None,
+        help="Operator-only truthful fault mode; requires the explicit one-shot safety gate.",
+    )
+    parser.add_argument(
+        "--fault-job-id",
+        default=None,
+        help="Exact pre-created canary discovery job UUID required with --fault-mode.",
+    )
+    parser.add_argument(
+        "--fault-tenant-id",
+        default=None,
+        help="Expected tenant UUID for the non-live canary job required with --fault-mode.",
+    )
     return parser
+
+
+def _authorize_fault_injection(
+    args: argparse.Namespace,
+    *,
+    release_sha: str | None,
+) -> str | None:
+    requested_mode = args.fault_mode
+    if requested_mode is None and args.fault_job_id is None and args.fault_tenant_id is None:
+        return None
+
+    reason: str | None = None
+    if requested_mode is None:
+        reason = "fault_mode_required"
+    elif args.fault_job_id is None:
+        reason = "fault_job_id_required"
+    elif args.fault_tenant_id is None:
+        reason = "fault_tenant_id_required"
+    else:
+        try:
+            args.fault_job_id = str(UUID(str(args.fault_job_id)))
+            args.fault_tenant_id = str(UUID(str(args.fault_tenant_id)))
+        except ValueError:
+            reason = "fault_target_invalid"
+    if reason is None and (
+        os.environ.get("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "").strip().lower() != "true"
+    ):
+        reason = "authorization_disabled"
+    elif reason is None and requested_mode not in FAULT_INJECTION_MODES:
+        reason = "invalid_mode"
+    elif reason is None and not args.once:
+        reason = "once_required"
+    elif reason is None and args.limit != 1:
+        reason = "limit_one_required"
+    elif reason is None:
+        try:
+            protocol = get_crawler_agent_protocol(None)
+        except RuntimeError:
+            reason = "agent_protocol_invalid"
+        else:
+            if protocol != "off":
+                reason = "agent_protocol_must_be_off"
+
+    if reason is not None:
+        audit_mode = str(requested_mode) if requested_mode in FAULT_INJECTION_MODES else "invalid"
+        print(
+            make_event(
+                "fault_injection_denied",
+                fault_mode=audit_mode,
+                reason=reason,
+                release_sha=release_sha,
+            ),
+            file=sys.stderr,
+        )
+        raise ValueError(reason)
+
+    print(
+        make_event(
+            "fault_injection_authorized",
+            fault_mode=requested_mode,
+            discovery_job_id=args.fault_job_id,
+            tenant_id=args.fault_tenant_id,
+            source="operator_cli",
+            release_sha=release_sha,
+        ),
+        file=sys.stderr,
+    )
+    return str(requested_mode)
+
+
+def _report_fault_injection_outcome(
+    *,
+    fault_mode: str,
+    expected_job_id: str,
+    processed: DiscoveryDispatchBatchResult,
+    release_sha: str | None,
+) -> bool:
+    expected_failure = _FAULT_MODE_EXPECTED_FAILURE[fault_mode]
+    observed_job_id = processed.dispositions[0].job_id if len(processed.dispositions) == 1 else None
+    observed_failure = (
+        processed.dispositions[0].failure_code if len(processed.dispositions) == 1 else None
+    )
+    matched = (
+        len(processed.dispositions) == 1
+        and observed_job_id == expected_job_id
+        and processed.dispositions[0].outcome == "fault_verified"
+        and observed_failure == expected_failure
+    )
+    print(
+        make_event(
+            "fault_injection_observed" if matched else "fault_injection_mismatch",
+            fault_mode=fault_mode,
+            expected_discovery_job_id=expected_job_id,
+            observed_discovery_job_id=observed_job_id,
+            expected_failure_code=expected_failure,
+            observed_failure_code=observed_failure,
+            processed_count=processed.processed_count,
+            release_sha=release_sha,
+        ),
+        file=sys.stderr,
+    )
+    return matched
 
 
 def main(
@@ -659,6 +808,10 @@ def main(
     args = _build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     release_sha = os.environ.get("EGP_RELEASE_SHA") or None
+    try:
+        fault_mode = _authorize_fault_injection(args, release_sha=release_sha)
+    except ValueError:
+        return 2
     aggregate_log = Path.home() / "Library" / "Logs" / "egp" / "crawl.log"
     if aggregate_log.exists():
         rotate_log_copytruncate(aggregate_log)
@@ -673,11 +826,15 @@ def main(
     )
     runtime_reporter: CrawlerRuntimeReporter | None = build_crawler_runtime_reporter_from_env()
     try:
-        runtime = runtime_factory(
-            args.database_url,
-            artifact_root=args.artifact_root,
-            worker_count=args.worker_count,
-        )
+        runtime_kwargs: dict[str, object] = {
+            "artifact_root": args.artifact_root,
+            "worker_count": args.worker_count,
+        }
+        if fault_mode is not None:
+            runtime_kwargs["fault_mode"] = fault_mode
+            runtime_kwargs["fault_job_id"] = args.fault_job_id
+            runtime_kwargs["fault_tenant_id"] = args.fault_tenant_id
+        runtime = runtime_factory(args.database_url, **runtime_kwargs)
     except Exception as exc:
         _report_runtime_error(runtime_reporter, exc)
         if args.once:
@@ -735,6 +892,17 @@ def main(
             "Processed %d pending discovery dispatch jobs",
             processed.processed_count,
         )
+        if fault_mode is not None:
+            return (
+                0
+                if _report_fault_injection_outcome(
+                    fault_mode=fault_mode,
+                    expected_job_id=str(args.fault_job_id),
+                    processed=processed,
+                    release_sha=release_sha,
+                )
+                else 4
+            )
         return 3 if summary.exit_reason == "blocked" else 0
 
     try:

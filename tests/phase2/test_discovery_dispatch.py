@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import threading
 import time
+from types import SimpleNamespace
 
 from sqlalchemy import text
 
@@ -13,6 +14,7 @@ from egp_api.services.discovery_dispatch import (
     DiscoveryPreDispatchResult,
     NonRetriableDiscoveryDispatchError,
 )
+from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
 from egp_db.repositories.discovery_job_repo import (
     DiscoveryJobRecord,
     DiscoveryQueueSnapshot,
@@ -641,6 +643,242 @@ def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
     assert results[0].processed_count == 1
     assert stored.job_status == "dispatched"
     assert stored.claim_token is None
+
+
+def test_fault_target_claims_only_explicit_canary_job(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'fault-target.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    other_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="ordinary-job",
+    )
+    canary_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="f7-canary",
+        trigger_type="fault_injection",
+        live=False,
+    )
+    dispatched_job_ids: list[str | None] = []
+
+    class RecordingDispatcher:
+        def dispatch(self, request: DiscoveryDispatchRequest) -> None:
+            dispatched_job_ids.append(request.discovery_job_id)
+            raise RuntimeError("truthful canary failure")
+
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=RecordingDispatcher(),
+        claim_limit=1,
+        target_job_id=canary_job.id,
+        target_tenant_id=TENANT_ID,
+        target_trigger_type="fault_injection",
+        require_non_live_target=True,
+        force_terminal_failures=True,
+    )
+
+    result = processor.process_pending(limit=1)
+
+    assert result.processed_count == 1
+    assert result.dispositions[0].outcome == "failed"
+    assert (
+        result.dispositions[0].failure_code
+        == DiscoveryFailureCode.DISPATCH_EXCEPTION.value
+    )
+    assert dispatched_job_ids == [canary_job.id]
+    assert (
+        repo.get_discovery_job(
+            tenant_id=TENANT_ID,
+            job_id=other_job.id,
+        ).job_status
+        == "pending"
+    )
+    assert (
+        repo.get_discovery_job(
+            tenant_id=TENANT_ID,
+            job_id=canary_job.id,
+        ).job_status
+        == "failed"
+    )
+
+
+def test_fault_target_rejects_each_mismatched_canary_constraint(tmp_path) -> None:
+    cases = (
+        (
+            "wrong-tenant",
+            TENANT_ID,
+            False,
+            "fault_injection",
+            "33333333-3333-3333-3333-333333333333",
+        ),
+        ("live-target", TENANT_ID, True, "fault_injection", TENANT_ID),
+        ("wrong-trigger", TENANT_ID, False, "manual", TENANT_ID),
+    )
+    for name, tenant_id, live, trigger_type, target_tenant_id in cases:
+        repo = SqlDiscoveryJobRepository(
+            database_url=f"sqlite+pysqlite:///{tmp_path / f'{name}.sqlite3'}",
+            bootstrap_schema=True,
+        )
+        _seed_profile_row(repo)
+        job = repo.create_discovery_job(
+            tenant_id=tenant_id,
+            profile_id=PROFILE_ID,
+            profile_type="custom",
+            keyword=name,
+            trigger_type=trigger_type,
+            live=live,
+        )
+        dispatcher = RecordingDiscoveryDispatcher()
+        processor = DiscoveryDispatchProcessor(
+            repository=repo,
+            dispatcher=dispatcher,
+            claim_limit=1,
+            target_job_id=job.id,
+            target_tenant_id=target_tenant_id,
+            target_trigger_type="fault_injection",
+            require_non_live_target=True,
+            force_terminal_failures=True,
+        )
+
+        result = processor.process_pending(limit=1)
+
+        assert result.processed_count == 0
+        assert dispatcher.requests == []
+        assert (
+            repo.get_discovery_job(tenant_id=tenant_id, job_id=job.id).job_status
+            == "pending"
+        )
+
+
+def test_persisted_fault_canary_traverses_real_child_and_terminalizes_queue(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'fault-chain.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    canary_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="f7-real-chain",
+        trigger_type="fault_injection",
+        live=False,
+    )
+
+    class RunRepository:
+        def __init__(self) -> None:
+            self.run: dict[str, object] = {}
+
+        def create_run(self, **values: object) -> None:
+            self.run = {
+                **values,
+                "status": "queued",
+                "summary_json": {},
+                "finished_at": None,
+            }
+
+        def update_run_summary(self, run_id: str, *, summary_json) -> None:
+            assert run_id == self.run["run_id"]
+            current = self.run["summary_json"]
+            assert isinstance(current, dict)
+            current.update(summary_json or {})
+
+        def fail_run_if_active(self, run_id: str, *, error: str, failure_reason: str):
+            assert run_id == self.run["run_id"]
+            self.run.update(
+                status="failed",
+                error=error,
+                failure_reason=failure_reason,
+                finished_at="2026-08-15T00:00:00+00:00",
+            )
+            return SimpleNamespace(id=run_id)
+
+    run_repository = RunRepository()
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=run_repository,
+        fault_mode="nonzero_exit",
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_candidate_attempts",
+        lambda **kwargs: True,
+    )
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=dispatcher,
+        claim_limit=1,
+        target_job_id=canary_job.id,
+        target_tenant_id=TENANT_ID,
+        target_trigger_type="fault_injection",
+        require_non_live_target=True,
+        force_terminal_failures=True,
+    )
+
+    result = processor.process_pending(limit=1)
+
+    assert result.processed_count == 1
+    assert result.dispositions[0].job_id == canary_job.id
+    assert result.dispositions[0].outcome == "fault_verified"
+    assert result.dispositions[0].failure_code == "worker_exit_nonzero"
+    assert run_repository.run["trigger_type"] == "manual"
+    assert run_repository.run["status"] == "failed"
+    assert (
+        repo.get_discovery_job(tenant_id=TENANT_ID, job_id=canary_job.id).job_status
+        == "failed"
+    )
+
+
+def test_normal_processor_excludes_fault_injection_canary(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'normal-excludes-canary.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    ordinary_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="ordinary-job",
+    )
+    canary_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="f7-canary",
+        trigger_type="fault_injection",
+        live=False,
+    )
+    dispatcher = RecordingDiscoveryDispatcher()
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=dispatcher,
+        claim_limit=1,
+        excluded_trigger_types=("fault_injection",),
+    )
+
+    result = processor.process_pending(limit=1)
+
+    assert result.processed_count == 1
+    assert dispatcher.requests[0].discovery_job_id == ordinary_job.id
+    assert result.queue_snapshot.pending_count == 0
+    assert result.queue_snapshot.claimable_count == 0
+    assert (
+        repo.get_discovery_job(tenant_id=TENANT_ID, job_id=canary_job.id).job_status
+        == "pending"
+    )
 
 
 def test_dispatch_retries_transient_lease_renewal_before_expiry() -> None:

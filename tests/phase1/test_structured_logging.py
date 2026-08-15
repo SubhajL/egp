@@ -44,9 +44,7 @@ def test_make_event_produces_utc_timestamped_single_line_json() -> None:
     assert payload["release_sha"] == "abc123"
 
     ts = payload["ts"]
-    assert ts.endswith("+00:00") or ts.endswith("Z"), (
-        f"timestamp must be UTC, got {ts}"
-    )
+    assert ts.endswith("+00:00") or ts.endswith("Z"), f"timestamp must be UTC, got {ts}"
 
     assert "job_id" not in payload, "None-valued fields must be omitted"
 
@@ -81,15 +79,17 @@ def test_framed_result_is_extracted_before_fallback_reverse_scan() -> None:
     framed_dict = {"run_id": "framed-1", "run_status": "succeeded"}
     lastline_dict = {"run_id": "lastline-1", "run_status": "failed"}
 
-    stdout = "\n".join([
-        "some noise",
-        "more noise",
-        RESULT_FRAME_BEGIN,
-        json.dumps(framed_dict, sort_keys=True),
-        RESULT_FRAME_END,
-        "trailing noise",
-        json.dumps(lastline_dict, sort_keys=True),
-    ])
+    stdout = "\n".join(
+        [
+            "some noise",
+            "more noise",
+            RESULT_FRAME_BEGIN,
+            json.dumps(framed_dict, sort_keys=True),
+            RESULT_FRAME_END,
+            "trailing noise",
+            json.dumps(lastline_dict, sort_keys=True),
+        ]
+    )
 
     result = _decode_framed_or_fallback_result(stdout)
     assert result is not None
@@ -107,11 +107,13 @@ def test_framed_result_falls_back_to_reverse_scan_when_no_frame() -> None:
     )
 
     expected = {"run_id": "fallback-1", "run_status": "succeeded"}
-    stdout = "\n".join([
-        "some noise",
-        "more noise",
-        json.dumps(expected, sort_keys=True),
-    ])
+    stdout = "\n".join(
+        [
+            "some noise",
+            "more noise",
+            json.dumps(expected, sort_keys=True),
+        ]
+    )
 
     result = _decode_framed_or_fallback_result(stdout)
     assert result is not None
@@ -233,15 +235,17 @@ def test_dispatcher_extracts_framed_result_from_fake_worker(
         ) -> tuple[bytes, bytes]:
             payload = json.loads((input or b"{}").decode("utf-8"))
             result = {**expected_result, "run_id": payload.get("run_id")}
-            framed_stdout = "\n".join([
-                "some logging noise line 1",
-                "WARNING: irrelevant garbage",
-                RESULT_FRAME_BEGIN,
-                json.dumps(result, sort_keys=True),
-                RESULT_FRAME_END,
-                "more trailing noise",
-                json.dumps({"decoy": True}, sort_keys=True),
-            ])
+            framed_stdout = "\n".join(
+                [
+                    "some logging noise line 1",
+                    "WARNING: irrelevant garbage",
+                    RESULT_FRAME_BEGIN,
+                    json.dumps(result, sort_keys=True),
+                    RESULT_FRAME_END,
+                    "more trailing noise",
+                    json.dumps({"decoy": True}, sort_keys=True),
+                ]
+            )
             return (framed_stdout.encode("utf-8"), b"")
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
@@ -280,11 +284,13 @@ def test_dispatch_events_written_to_log_handle(
         ) -> tuple[bytes, bytes]:
             payload = json.loads((input or b"{}").decode("utf-8"))
             result = {**expected_result, "run_id": payload.get("run_id")}
-            framed_stdout = "\n".join([
-                RESULT_FRAME_BEGIN,
-                json.dumps(result, sort_keys=True),
-                RESULT_FRAME_END,
-            ])
+            framed_stdout = "\n".join(
+                [
+                    RESULT_FRAME_BEGIN,
+                    json.dumps(result, sort_keys=True),
+                    RESULT_FRAME_END,
+                ]
+            )
             return (framed_stdout.encode("utf-8"), b"")
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
@@ -394,13 +400,15 @@ def test_framed_result_fails_closed_on_malformed_content() -> None:
     )
 
     lastline_dict = {"run_id": "should-not-get-this", "run_status": "succeeded"}
-    stdout = "\n".join([
-        "some noise",
-        RESULT_FRAME_BEGIN,
-        "not valid json{{{",
-        RESULT_FRAME_END,
-        json.dumps(lastline_dict, sort_keys=True),
-    ])
+    stdout = "\n".join(
+        [
+            "some noise",
+            RESULT_FRAME_BEGIN,
+            "not valid json{{{",
+            RESULT_FRAME_END,
+            json.dumps(lastline_dict, sort_keys=True),
+        ]
+    )
 
     result = _decode_framed_or_fallback_result(stdout)
     assert result is None, (
@@ -460,12 +468,16 @@ def test_non_retriable_error_gets_specific_dispatch_failed_reason(
             continue
 
     failed_events = [e for e in events if e.get("event") == "dispatch_failed"]
-    assert failed_events, f"dispatch_failed event must exist, got events: {[e['event'] for e in events]}"
+    assert failed_events, (
+        f"dispatch_failed event must exist, got events: {[e['event'] for e in events]}"
+    )
     failed = failed_events[0]
     assert failed["reason"] == "non_retriable_error", (
         f"reason must be 'non_retriable_error', got {failed['reason']!r}"
     )
-    assert "child_pid" in failed, "dispatch_failed for non-retriable must include child_pid"
+    assert "child_pid" in failed, (
+        "dispatch_failed for non-retriable must include child_pid"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +508,13 @@ def test_stdout_capture_close_failure_does_not_prevent_log_handle_close(
         ) -> tuple[bytes, bytes]:
             payload = json.loads((input or b"{}").decode("utf-8"))
             result = {**expected_result, "run_id": payload.get("run_id")}
-            framed_stdout = "\n".join([
-                RESULT_FRAME_BEGIN,
-                json.dumps(result, sort_keys=True),
-                RESULT_FRAME_END,
-            ])
+            framed_stdout = "\n".join(
+                [
+                    RESULT_FRAME_BEGIN,
+                    json.dumps(result, sort_keys=True),
+                    RESULT_FRAME_END,
+                ]
+            )
             return (framed_stdout.encode("utf-8"), b"")
 
     close_calls = []
@@ -596,290 +610,3 @@ def test_log_handle_closed_on_payload_serialization_failure(
     assert "log_handle_closed" in close_tracker, (
         "log_handle must be closed even when payload serialization fails"
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers for fault-injection tests (T16-T21)
-# ---------------------------------------------------------------------------
-def _parse_structured_events(log_dir: Path) -> list[dict[str, object]]:
-    """Read worker.log under *log_dir* and return parsed structured events."""
-    log_files = list(log_dir.rglob("worker.log"))
-    if not log_files:
-        return []
-    log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
-    events: list[dict[str, object]] = []
-    for line in log_content.strip().splitlines():
-        try:
-            parsed = json.loads(line)
-            if isinstance(parsed, dict) and "event" in parsed:
-                events.append(parsed)
-        except json.JSONDecodeError:
-            continue
-    return events
-
-
-def _make_fault_request(fault_mode: str):
-    from egp_api.services.discovery_dispatch import DiscoveryDispatchRequest
-
-    return DiscoveryDispatchRequest(
-        tenant_id="t1",
-        profile_id="profile-1",
-        profile_type="custom",
-        keyword="test-keyword",
-        fault_mode=fault_mode,
-    )
-
-
-# ---------------------------------------------------------------------------
-# T16: fault injection — worker_timeout raises DiscoverySpawnError
-# ---------------------------------------------------------------------------
-def test_fault_injection_worker_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
-    from egp_shared_types.enums import DiscoveryFailureCode
-
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Popen must not be called during fault injection")
-        ),
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("worker_timeout")
-
-    with pytest.raises(DiscoverySpawnError) as exc_info:
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-
-    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TIMEOUT
-
-    events = _parse_structured_events(tmp_path)
-    event_names = [e["event"] for e in events]
-    assert "dispatch_started" in event_names, (
-        f"dispatch_started must appear, got {event_names}"
-    )
-    assert "dispatch_failed" in event_names, (
-        f"dispatch_failed must appear, got {event_names}"
-    )
-    failed = next(e for e in events if e["event"] == "dispatch_failed")
-    assert failed["reason"] == "fault_injection"
-    assert failed["injected_fault"] == "worker_timeout"
-
-
-# ---------------------------------------------------------------------------
-# T17: fault injection — nonzero_exit raises DiscoverySpawnError
-# ---------------------------------------------------------------------------
-def test_fault_injection_nonzero_exit(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
-    from egp_shared_types.enums import DiscoveryFailureCode
-
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Popen must not be called during fault injection")
-        ),
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("nonzero_exit")
-
-    with pytest.raises(DiscoverySpawnError) as exc_info:
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-
-    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_EXIT_NONZERO
-
-    events = _parse_structured_events(tmp_path)
-    event_names = [e["event"] for e in events]
-    assert "dispatch_started" in event_names
-    assert "dispatch_failed" in event_names
-    failed = next(e for e in events if e["event"] == "dispatch_failed")
-    assert failed["reason"] == "fault_injection"
-    assert failed["injected_fault"] == "nonzero_exit"
-
-
-# ---------------------------------------------------------------------------
-# T18: fault injection — missing_result raises DiscoverySpawnError
-# ---------------------------------------------------------------------------
-def test_fault_injection_missing_result(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-    from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
-    from egp_shared_types.enums import DiscoveryFailureCode
-
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Popen must not be called during fault injection")
-        ),
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("missing_result")
-
-    with pytest.raises(DiscoverySpawnError) as exc_info:
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-
-    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_RESULT_MISSING
-
-    events = _parse_structured_events(tmp_path)
-    event_names = [e["event"] for e in events]
-    assert "dispatch_started" in event_names
-    assert "dispatch_failed" in event_names
-    failed = next(e for e in events if e["event"] == "dispatch_failed")
-    assert failed["reason"] == "fault_injection"
-    assert failed["injected_fault"] == "missing_result"
-
-
-# ---------------------------------------------------------------------------
-# T19: fault injection — entitlement_denied raises NonRetriableDispatchError
-# ---------------------------------------------------------------------------
-def test_fault_injection_entitlement_denied(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-    from egp_api.services.discovery_dispatch import (
-        NonRetriableDiscoveryDispatchError,
-    )
-    from egp_shared_types.enums import DiscoveryFailureCode
-
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Popen must not be called during fault injection")
-        ),
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("entitlement_denied")
-
-    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-
-    assert exc_info.value.failure_code == DiscoveryFailureCode.ENTITLEMENT_DENIED
-
-    events = _parse_structured_events(tmp_path)
-    event_names = [e["event"] for e in events]
-    assert "dispatch_started" in event_names
-    assert "dispatch_failed" in event_names
-    failed = next(e for e in events if e["event"] == "dispatch_failed")
-    assert failed["reason"] == "fault_injection"
-    assert failed["injected_fault"] == "entitlement_denied"
-
-
-# ---------------------------------------------------------------------------
-# T20: fault injection — unknown mode fails closed with ValueError
-# ---------------------------------------------------------------------------
-def test_fault_injection_unknown_mode_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-
-    monkeypatch.setattr(
-        subprocess,
-        "Popen",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("Popen must not be called during fault injection")
-        ),
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("bogus_fault_that_does_not_exist")
-
-    with pytest.raises(ValueError, match="unknown fault_mode"):
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-
-
-# ---------------------------------------------------------------------------
-# T21: no subprocess spawned during fault injection
-# ---------------------------------------------------------------------------
-def test_no_subprocess_spawned_during_fault_injection(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-
-    popen_calls: list[bool] = []
-
-    class TrackingFakeProcess:
-        def __init__(self) -> None:
-            popen_calls.append(True)
-            self.returncode = 0
-            self.pid = 12345
-
-        def communicate(
-            self, *, input: bytes | None = None, timeout: float | None = None
-        ) -> tuple[bytes, bytes]:
-            return (b"", b"")
-
-    monkeypatch.setattr(
-        subprocess, "Popen", lambda *args, **kwargs: TrackingFakeProcess()
-    )
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-
-    for fault_mode in (
-        "worker_timeout",
-        "nonzero_exit",
-        "missing_result",
-        "entitlement_denied",
-        "worker_crash",
-    ):
-        request = _make_fault_request(fault_mode)
-        with pytest.raises(Exception):
-            spawner.dispatch_cancellable(request, cancellation_event=None)
-
-    assert len(popen_calls) == 0, (
-        f"Popen was called {len(popen_calls)} times during fault injection; "
-        "expected 0 calls"
-    )
-
-
-# ---------------------------------------------------------------------------
-# T22: fault_injection worker_crash raises NonRetriableDiscoveryDispatchError
-# ---------------------------------------------------------------------------
-def test_fault_injection_worker_crash(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from egp_api.main import _make_discover_spawner
-    from egp_api.services.discovery_dispatch import (
-        NonRetriableDiscoveryDispatchError,
-    )
-    from egp_shared_types.enums import DiscoveryFailureCode
-
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: None)
-    spawner = _make_discover_spawner(
-        "sqlite+pysqlite:///test.sqlite3",
-        artifact_root=tmp_path,
-    )
-    request = _make_fault_request("worker_crash")
-    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
-        spawner.dispatch_cancellable(request, cancellation_event=None)
-    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TERMINATED

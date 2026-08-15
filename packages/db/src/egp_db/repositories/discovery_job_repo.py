@@ -237,7 +237,8 @@ def resolve_profile_execution_backend(
         connection.execute(
             select(CRAWL_PROFILES_TABLE.c.execution_backend).where(
                 and_(
-                    CRAWL_PROFILES_TABLE.c.tenant_id == normalize_uuid_string(tenant_id),
+                    CRAWL_PROFILES_TABLE.c.tenant_id
+                    == normalize_uuid_string(tenant_id),
                     CRAWL_PROFILES_TABLE.c.id == normalize_uuid_string(profile_id),
                 )
             )
@@ -468,6 +469,7 @@ class SqlDiscoveryJobRepository:
         self,
         *,
         now: datetime | None = None,
+        exclude_trigger_types: Collection[str] | None = None,
     ) -> DiscoveryQueueSnapshot:
         """Return legacy-queue operational counts without tenant or keyword payloads.
 
@@ -483,10 +485,15 @@ class SqlDiscoveryJobRepository:
         """
 
         resolved_now = _as_utc(now or _now())
-        pending = and_(
+        pending_conditions = [
             DISCOVERY_JOBS_TABLE.c.job_status == "pending",
             DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
-        )
+        ]
+        if exclude_trigger_types:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.trigger_type.not_in(tuple(exclude_trigger_types))
+            )
+        pending = and_(*pending_conditions)
         claimable = and_(
             pending,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= resolved_now,
@@ -533,6 +540,11 @@ class SqlDiscoveryJobRepository:
         self,
         *,
         exclude_job_ids: Collection[str] | None = None,
+        only_job_id: str | None = None,
+        only_tenant_id: str | None = None,
+        only_live: bool | None = None,
+        only_trigger_type: str | None = None,
+        exclude_trigger_types: Collection[str] | None = None,
     ) -> bool:
         now = _now()
         excluded_job_ids = {
@@ -555,6 +567,25 @@ class SqlDiscoveryJobRepository:
             claimable_conditions.append(
                 DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
             )
+        if only_job_id is not None:
+            claimable_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.id == normalize_uuid_string(only_job_id)
+            )
+        if only_tenant_id is not None:
+            claimable_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.tenant_id
+                == normalize_uuid_string(only_tenant_id)
+            )
+        if only_live is not None:
+            claimable_conditions.append(DISCOVERY_JOBS_TABLE.c.live.is_(only_live))
+        if only_trigger_type is not None:
+            claimable_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.trigger_type == only_trigger_type
+            )
+        if exclude_trigger_types:
+            claimable_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.trigger_type.not_in(tuple(exclude_trigger_types))
+            )
         with self._engine.connect() as connection:
             row = (
                 connection.execute(
@@ -573,6 +604,11 @@ class SqlDiscoveryJobRepository:
         limit: int = 10,
         lease_seconds: float = 60.0,
         exclude_job_ids: Collection[str] | None = None,
+        only_job_id: str | None = None,
+        only_tenant_id: str | None = None,
+        only_live: bool | None = None,
+        only_trigger_type: str | None = None,
+        exclude_trigger_types: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
         lease_expires_at = now + timedelta(seconds=max(0.01, float(lease_seconds)))
@@ -590,6 +626,25 @@ class SqlDiscoveryJobRepository:
         if excluded_job_ids:
             pending_conditions.append(
                 DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
+            )
+        if only_job_id is not None:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.id == normalize_uuid_string(only_job_id)
+            )
+        if only_tenant_id is not None:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.tenant_id
+                == normalize_uuid_string(only_tenant_id)
+            )
+        if only_live is not None:
+            pending_conditions.append(DISCOVERY_JOBS_TABLE.c.live.is_(only_live))
+        if only_trigger_type is not None:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.trigger_type == only_trigger_type
+            )
+        if exclude_trigger_types:
+            pending_conditions.append(
+                DISCOVERY_JOBS_TABLE.c.trigger_type.not_in(tuple(exclude_trigger_types))
             )
         claimable_conditions = [
             *pending_conditions,
