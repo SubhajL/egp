@@ -622,18 +622,25 @@ class SqlRunRepository:
 
     def fail_run_if_active(
         self,
-        run_id: str,
         *,
+        tenant_id: str,
+        run_id: str,
         error: str,
         failure_reason: str = "worker_timeout",
     ) -> CrawlRunRecord | None:
         now = _now()
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
         normalized_run_id = normalize_uuid_string(run_id)
         with self._engine.begin() as connection:
             row = (
                 connection.execute(
                     select(CRAWL_RUNS_TABLE)
-                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        )
+                    )
                     .limit(1)
                 )
                 .mappings()
@@ -651,7 +658,12 @@ class SqlRunRepository:
             summary["failure_reason"] = str(failure_reason)
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
-                .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                .where(
+                    and_(
+                        CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                        CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                    )
+                )
                 .values(
                     status=CrawlRunStatus.FAILED.value,
                     finished_at=now,
@@ -663,7 +675,12 @@ class SqlRunRepository:
             failed_row = (
                 connection.execute(
                     select(CRAWL_RUNS_TABLE)
-                    .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        )
+                    )
                     .limit(1)
                 )
                 .mappings()

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from egp_api.services.entitlement_service import EntitlementError, TenantEntitlementService
+from egp_db.abnormal_run_completion import complete_abnormal_run
 from egp_db.repositories.run_repo import (
     CrawlRunDetail,
     CrawlRunRecord,
@@ -14,12 +16,28 @@ from egp_db.repositories.run_repo import (
     ProjectCrawlEvidencePage,
     SqlRunRepository,
 )
-from egp_shared_types.enums import CrawlRunStatus, NotificationType
+from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
+from egp_observability.subprocess_evidence import (
+    build_run_log_path,
+    read_bounded_redacted_log,
+)
+from egp_shared_types.enums import CandidateTerminalReason, CrawlRunStatus, NotificationType
 
 if TYPE_CHECKING:
     from egp_db.repositories.profile_repo import SqlProfileRepository
     from egp_db.repositories.project_repo import SqlProjectRepository
     from egp_notifications.dispatcher import NotificationDispatcher
+
+
+logger = logging.getLogger(__name__)
+
+
+class _UnavailableCandidateRepository:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def reconcile_open_candidates(self, **_kwargs: object) -> int:
+        raise self._error
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +64,7 @@ class RunService:
         project_repository: SqlProjectRepository | None = None,
         profile_repository: SqlProfileRepository | None = None,
         artifact_root: Path | None = None,
+        database_url: str | None = None,
         entitlement_service: TenantEntitlementService | None = None,
         notification_dispatcher: NotificationDispatcher | None = None,
     ) -> None:
@@ -53,6 +72,7 @@ class RunService:
         self._project_repository = project_repository
         self._profile_repository = profile_repository
         self._artifact_root = artifact_root
+        self._database_url = database_url
         self._entitlement_service = entitlement_service
         self._notification_dispatcher = notification_dispatcher
 
@@ -213,9 +233,11 @@ class RunService:
         if self._artifact_root is None:
             return None
         raw_path = (run.summary_json or {}).get("worker_log_path")
-        expected_log_path = (
-            self._artifact_root / "tenants" / tenant_id / "runs" / run_id / "worker.log"
-        ).resolve()
+        expected_log_path = build_run_log_path(
+            artifact_root=self._artifact_root,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
         if not isinstance(raw_path, str) or not raw_path.strip():
             return None
         for log_path in _resolve_run_log_candidates(raw_path, artifact_root=self._artifact_root):
@@ -223,11 +245,51 @@ class RunService:
                 continue
             if not log_path.is_file():
                 return None
-            return log_path.read_text(encoding="utf-8", errors="replace")
+            return read_bounded_redacted_log(log_path)
         return None
 
     def reconcile_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]:
-        return self._repository.fail_runs_with_missing_workers(owner_pid=owner_pid)
+        failed_runs = self._repository.fail_runs_with_missing_workers(owner_pid=owner_pid)
+        if not failed_runs or self._database_url is None:
+            return failed_runs
+        try:
+            candidate_repository = create_candidate_attempt_repository(
+                database_url=self._database_url,
+            )
+        except Exception as exc:  # preserve per-run terminalization/reporting
+            candidate_repository = _UnavailableCandidateRepository(exc)
+        for run in failed_runs:
+            report = complete_abnormal_run(
+                tenant_id=run.tenant_id,
+                run_id=run.id,
+                failure_code="worker_lost",
+                candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
+                error=f"discover worker for run {run.id} disappeared before completion",
+                candidate_repository=candidate_repository,
+                run_repository=self._repository,
+            )
+            if not report.succeeded:
+                logger.error(
+                    "Missing-worker abnormal completion incomplete "
+                    "(tenant_id=%s run_id=%s candidate_error=%s run_error=%s)",
+                    run.tenant_id,
+                    run.id,
+                    report.candidate_reconciliation_error_type,
+                    report.run_terminalization_error_type,
+                )
+                try:
+                    self._repository.update_run_summary(
+                        run.id,
+                        summary_json={"abnormal_completion": report.evidence()},
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist incomplete abnormal completion "
+                        "(tenant_id=%s run_id=%s)",
+                        run.tenant_id,
+                        run.id,
+                    )
+        return failed_runs
 
 
 def _resolve_run_log_candidates(raw_path: str, *, artifact_root: Path) -> list[Path]:

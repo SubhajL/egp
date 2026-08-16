@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1227,6 +1228,60 @@ def test_run_discover_workflow_marks_run_failed_when_live_discovery_crashes() ->
         "failure_code": DiscoveryFailureCode.WORKER_REPORTED_FAILURE,
     }
     assert run_repository.finished_error_count == 1
+
+
+def test_direct_workflow_exception_reconciles_open_candidates(tmp_path: Path) -> None:
+    from egp_db.repositories.candidate_attempt_repo import (
+        SqlCandidateAttemptRepository,
+    )
+    from egp_db.repositories.run_repo import SqlRunRepository
+    from egp_shared_types.enums import CrawlRunStatus
+
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'direct.sqlite3'}"
+    run_repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    candidate_repository = SqlCandidateAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    run = run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        run_id="22222222-2222-2222-2222-222222222222",
+    )
+    candidate_repository.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+        candidate_key="direct-crash-candidate",
+        keyword="analytics",
+    )
+
+    def crawl(_keyword: str) -> list[dict[str, object]]:
+        raise RuntimeError("direct workflow crash")
+
+    with pytest.raises(RuntimeError, match="direct workflow crash"):
+        run_discover_workflow(
+            tenant_id=TENANT_ID,
+            run_id=run.id,
+            keyword="analytics",
+            discovered_projects=[],
+            run_repository=run_repository,
+            project_event_sink=FakeProjectEventSink(),
+            candidate_attempt_repo=candidate_repository,
+            live_discovery=crawl,
+        )
+
+    current = run_repository.find_run_by_id_for_tenant(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+    )
+    assert current is not None
+    assert current.status is CrawlRunStatus.FAILED
+    summary = candidate_repository.get_run_candidate_summary(TENANT_ID, run.id)
+    assert summary.accepted == 0
+    assert summary.unknown == 1
 
 
 def test_run_discover_workflow_uses_document_collecting_browser_discovery_for_live_runs(
@@ -2977,8 +3032,8 @@ def test_run_discover_workflow_durable_candidate_survives_post_acceptance_loss(
 ) -> None:
     # F2/R2 + R5: run_discover_workflow passes a callable candidate_callback into
     # crawl_live_discovery; invoking it (pre-detail) records a durable `accepted`
-    # row that survives a timeout/browser-death AFTER acceptance (project_callback
-    # never fires).
+    # row that survives a timeout/browser-death AFTER acceptance until F4's
+    # authority gate terminalizes it and forbids success.
     from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
 
     run_id = "44444444-4444-4444-4444-444444444444"
@@ -3024,8 +3079,19 @@ def test_run_discover_workflow_durable_candidate_survives_post_acceptance_loss(
 
     summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
     assert summary.total == 1
-    assert summary.accepted == 1
+    assert summary.accepted == 0
     assert summary.persisted == 0
+    assert summary.unknown == 1
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_summary is not None
+    ledger = run_repository.finished_summary["candidate_ledger"]
+    assert ledger["authority"] == "reconciled_incomplete"
+    assert ledger["accepted_before_reconciliation"] == 1
+    assert run_repository.finished_summary["failure_code"] == (
+        DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+    )
+    assert run_repository.finished_error_count == 1
+    assert run_repository.tasks[0]["status"] == "failed"
 
 
 def test_run_discover_workflow_finalizes_threaded_key_and_hides_it_from_product_state(
@@ -3452,7 +3518,7 @@ def test_workflow_persist_failure_writes_typed_reason(tmp_path) -> None:
 def test_workflow_logs_distinct_event_on_terminal_conflict(tmp_path, caplog) -> None:
     # F6/T19 (R11): a contradictory finalize at the production call site is
     # DISTINCTLY visible (structured candidate_terminal_conflict event), and
-    # the workflow continues fail-open (authority escalation is F4).
+    # F4 escalates the conflict into a failed run publication.
     from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
 
     run_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -3523,8 +3589,15 @@ def test_workflow_logs_distinct_event_on_terminal_conflict(tmp_path, caplog) -> 
     assert getattr(record, "candidate_key", None) == conflicting_key
     assert getattr(record, "existing_status", None) == "failed"
     assert getattr(record, "requested_status", None) == "persisted"
-    # Fail-open: the project itself still persisted (F4 owns escalation).
+    # Product persistence can complete, but the contradictory ledger state is authoritative.
     assert run_repository.tasks
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_summary is not None
+    assert run_repository.finished_summary["candidate_ledger"]["conflict_count"] == 1
+    assert run_repository.finished_summary["failure_code"] == (
+        DiscoveryFailureCode.WORKER_REPORTED_FAILURE
+    )
+    assert run_repository.finished_error_count == 1
 
 
 def test_workflow_failure_path_logs_distinct_event_on_terminal_conflict(
@@ -3593,9 +3666,12 @@ def test_workflow_failure_path_logs_distinct_event_on_terminal_conflict(
     assert getattr(record, "requested_status", None) == "failed"
     assert getattr(record, "requested_reason", None) == "persist_error"
     assert getattr(record, "requested_project_id", None) is None
-    # Fail-open: the original persisted terminal state is preserved.
+    # The original persisted terminal state is preserved, but the run fails closed.
     summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=run_id)
     assert summary.persisted == 1
+    assert run_repository.finished_status == "failed"
+    assert run_repository.finished_summary is not None
+    assert run_repository.finished_summary["candidate_ledger"]["conflict_count"] == 1
 
 
 def test_run_discover_workflow_recovery_and_diagnostic_events_are_not_anomalies(

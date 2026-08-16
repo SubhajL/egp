@@ -16,13 +16,22 @@ from typing import Final
 RESULT_FRAME_BEGIN: Final[str] = "---EGP_RESULT_BEGIN---"
 RESULT_FRAME_END: Final[str] = "---EGP_RESULT_END---"
 
-_SECRET_PATTERNS: Final[re.Pattern[str]] = re.compile(
-    r"|".join([
-        r"(?<=://)([^:]+):([^@]+)@",
-        r"(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)?)",
-        r"([Bb][Ee][Aa][Rr][Ee][Rr]\s+)\S+",
-        r"([Bb][Aa][Ss][Ii][Cc]\s+)[A-Za-z0-9+/=]+",
-    ])
+_SECRET_PATTERNS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
+    (re.compile(r"(?<=://)[^:\s/]+:[^@\s/]+@"), "[REDACTED]@"),
+    (
+        re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)?"),
+        "[REDACTED]",
+    ),
+    (re.compile(r"(?i)Bearer\s+\S+"), "[REDACTED]"),
+    (re.compile(r"(?i)Basic\s+[A-Za-z0-9+/=]+"), "[REDACTED]"),
+    (
+        re.compile(
+            r"(?i)([\"']?(?:password|passwd|token|secret|api[_-]?key|"
+            r"service[_-]?role[_-]?key|authorization)[\"']?\s*[:=]\s*[\"']?)"
+            r"[^\s,}\"']+"
+        ),
+        r"\1[REDACTED]",
+    ),
 )
 
 
@@ -57,7 +66,10 @@ def make_event(
 
 
 def redact_preview(text: str) -> str:
-    return _SECRET_PATTERNS.sub(lambda _: "[REDACTED]", text)
+    redacted = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 
 def tail_bounded_preview(

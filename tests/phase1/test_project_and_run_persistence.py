@@ -5,7 +5,9 @@ import sqlite3
 
 import pytest
 
+from egp_api.services.run_service import RunService
 from egp_db.artifact_store import LocalArtifactStore
+from egp_db.repositories.candidate_attempt_repo import SqlCandidateAttemptRepository
 from egp_db.repositories.document_repo import SqlDocumentRepository
 from egp_db.repositories.project_repo import (
     SqlProjectRepository,
@@ -436,11 +438,11 @@ def test_upsert_project_rejects_state_regression_for_existing_project(tmp_path) 
 
 def test_run_repository_tracks_runs_and_tasks(tmp_path) -> None:
     database_path = tmp_path / "phase1.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
     repository = SqlRunRepository(
-        database_url=f"sqlite+pysqlite:///{database_path}",
+        database_url=database_url,
         bootstrap_schema=True,
     )
-
     run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
     task = repository.create_task(
         run_id=run.id,
@@ -685,7 +687,8 @@ def test_run_repository_fails_only_the_target_active_run(tmp_path) -> None:
     repository.update_run_summary(sibling.id, summary_json={"projects_seen": 2})
 
     failed = repository.fail_run_if_active(
-        matching.id,
+        tenant_id=TENANT_ID,
+        run_id=matching.id,
         error="discover worker terminated by signal SIGTERM for keyword 'แพลตฟอร์ม'",
         failure_reason="worker_terminated",
     )
@@ -718,7 +721,8 @@ def test_run_repository_fails_reserved_queued_run_before_worker_starts(
     )
 
     failed = repository.fail_run_if_active(
-        reserved.id,
+        tenant_id=TENANT_ID,
+        run_id=reserved.id,
         error="discover worker timed out for keyword 'แพลตฟอร์ม'",
     )
 
@@ -729,6 +733,28 @@ def test_run_repository_fails_reserved_queued_run_before_worker_starts(
         "error": "discover worker timed out for keyword 'แพลตฟอร์ม'",
         "failure_reason": "worker_timeout",
     }
+
+
+def test_run_repository_active_failure_requires_matching_tenant(tmp_path) -> None:
+    database_path = tmp_path / "phase1.sqlite3"
+    repository = SqlRunRepository(
+        database_url=f"sqlite+pysqlite:///{database_path}",
+        bootstrap_schema=True,
+    )
+    run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(run.id)
+
+    failed = repository.fail_run_if_active(
+        tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        run_id=run.id,
+        error="must not cross tenants",
+        failure_reason="worker_lost",
+    )
+
+    assert failed is None
+    unchanged = repository.find_run_by_id_for_tenant(tenant_id=TENANT_ID, run_id=run.id)
+    assert unchanged is not None
+    assert unchanged.status is CrawlRunStatus.RUNNING
 
 
 def test_run_repository_rejects_invalid_trigger_and_task_type(tmp_path) -> None:
@@ -751,9 +777,14 @@ def test_fail_runs_with_missing_worker_process_marks_worker_lost(
     tmp_path, monkeypatch
 ) -> None:
     database_path = tmp_path / "phase1.sqlite3"
+    database_url = f"sqlite+pysqlite:///{database_path}"
     repository = SqlRunRepository(
-        database_url=f"sqlite+pysqlite:///{database_path}",
+        database_url=database_url,
         bootstrap_schema=True,
+    )
+    candidate_repository = SqlCandidateAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
     )
     missing = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
     other_owner = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
@@ -766,6 +797,12 @@ def test_fail_runs_with_missing_worker_process_marks_worker_lost(
             "worker_pid": 99902,
             "worker_log_path": str(tmp_path / "worker.log"),
         },
+    )
+    candidate_repository.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=missing.id,
+        candidate_key="missing-worker-candidate",
+        keyword="k",
     )
     repository.update_run_summary(
         other_owner.id,
@@ -782,7 +819,10 @@ def test_fail_runs_with_missing_worker_process_marks_worker_lost(
 
     monkeypatch.setattr("egp_db.repositories.run_repo.os.kill", fake_kill)
 
-    failed = repository.fail_runs_with_missing_workers(owner_pid=99901)
+    failed = RunService(
+        repository,
+        database_url=database_url,
+    ).reconcile_missing_workers(owner_pid=99901)
 
     assert [run.id for run in failed] == [missing.id]
     assert failed[0].status is CrawlRunStatus.FAILED
@@ -796,6 +836,58 @@ def test_fail_runs_with_missing_worker_process_marks_worker_lost(
     untouched = repository.find_run_by_id(other_owner.id)
     assert untouched is not None
     assert untouched.status is CrawlRunStatus.RUNNING
+    candidate_summary = candidate_repository.get_run_candidate_summary(
+        TENANT_ID,
+        missing.id,
+    )
+    assert candidate_summary.accepted == 0
+    assert candidate_summary.unknown == 1
+
+
+def test_missing_worker_persists_incomplete_candidate_reconciliation(
+    tmp_path, monkeypatch
+) -> None:
+    from egp_api.services.run_service import RunService
+    from egp_db.repositories.run_repo import SqlRunRepository
+
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(database_url=database_url, bootstrap_schema=True)
+    run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(run.id)
+    repository.update_run_summary(
+        run.id,
+        summary_json={"worker_owner_pid": 71001, "worker_pid": 71002},
+    )
+
+    def fake_kill(pid: int, sig: int) -> None:
+        del sig
+        if pid == 71002:
+            raise ProcessLookupError(pid)
+
+    class BrokenCandidateRepository:
+        def reconcile_open_candidates(self, **_kwargs) -> int:
+            raise RuntimeError("candidate store unavailable")
+
+    monkeypatch.setattr("egp_db.repositories.run_repo.os.kill", fake_kill)
+    monkeypatch.setattr(
+        "egp_api.services.run_service.create_candidate_attempt_repository",
+        lambda **_kwargs: BrokenCandidateRepository(),
+    )
+
+    failed = RunService(
+        repository,
+        database_url=database_url,
+    ).reconcile_missing_workers(owner_pid=71001)
+
+    assert [item.id for item in failed] == [run.id]
+    current = repository.find_run_by_id_for_tenant(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+    )
+    assert current is not None
+    evidence = (current.summary_json or {})["abnormal_completion"]
+    assert evidence["succeeded"] is False
+    assert evidence["candidate_reconciliation_error_type"] == "RuntimeError"
 
 
 def test_project_and_run_listing_supports_limit_and_offset(tmp_path) -> None:

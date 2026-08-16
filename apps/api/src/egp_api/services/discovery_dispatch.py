@@ -100,6 +100,10 @@ class DiscoveryDispatchRequest:
     # claim. The parent cannot build that envelope: dispatch() returns None and the
     # decoded subprocess result has ids and counts, not project bodies.
     claim_token: str | None = None
+    # Evidence-only correlation for remote agent work. Unlike
+    # `discovery_job_id`, this does not create a local database FK.
+    evidence_job_id: str | None = None
+    execution_backend: str = "subprocess"
     # Test-only seam for truthful fault injection. Production operator use is
     # authorized and wired exclusively by the standalone discovery executor.
     fault_mode: str | None = None

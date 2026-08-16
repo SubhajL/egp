@@ -15,6 +15,8 @@ classification, and the rule that an observation must never fail a real crawl.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 
@@ -29,7 +31,7 @@ class _FakeClaim:
     live = True
     recrawl_request_id = None
     claim_token = "token-1"
-    lease_expires_at = "2026-01-01T00:00:00+00:00"
+    lease_expires_at = "2099-01-01T00:00:00+00:00"
     attempt_count = 0
 
 
@@ -160,6 +162,87 @@ def test_the_runtime_renews_the_lease_while_the_crawl_runs() -> None:
         == "applied"
     )
     assert client.renewals >= 2
+
+
+def test_transient_renewal_failures_cancel_at_last_confirmed_expiry() -> None:
+    from egp_worker.agent_client import AgentTransportError
+    from egp_worker.agent_runtime import run_once
+
+    class ExpiringClaim(_FakeClaim):
+        lease_expires_at = (datetime.now(UTC) + timedelta(seconds=0.12)).isoformat()
+
+    client = _FakeClient(
+        claims=[ExpiringClaim()],
+        renew_error=AgentTransportError("control plane unavailable"),
+    )
+
+    class CancellableExecutor:
+        cancelled = False
+
+        def execute_cancellable(self, claim, *, cancellation_event):
+            del claim
+            assert cancellation_event.wait(timeout=1)
+            self.cancelled = True
+            return {"kind": "discovery", "payload": {"projects": []}}
+
+    executor = CancellableExecutor()
+    outcome = run_once(
+        client=client,
+        executor=executor,
+        agent_id="canary",
+        renew_interval_seconds=0.02,
+    )
+
+    assert outcome == "lease_lost"
+    assert executor.cancelled is True
+    assert client.submitted == []
+
+
+def test_expired_claim_never_starts_the_executor() -> None:
+    from egp_worker.agent_runtime import run_once
+
+    class ExpiredClaim(_FakeClaim):
+        lease_expires_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+
+    calls: list[object] = []
+
+    def executor(claim):
+        calls.append(claim)
+        return {"kind": "discovery", "payload": {"projects": []}}
+
+    outcome = run_once(
+        client=_FakeClient(claims=[ExpiredClaim()]),
+        executor=executor,
+        agent_id="canary",
+    )
+
+    assert outcome == "lease_lost"
+    assert calls == []
+
+
+def test_agent_evidence_close_failure_does_not_mask_completed_work() -> None:
+    from egp_worker.agent_runtime import _close_evidence_writer_safely
+
+    class BrokenWriter:
+        def close(self) -> None:
+            raise OSError("disk disappeared")
+
+    class RecordingRepository:
+        updates: list[tuple[str, dict[str, object]]] = []
+
+        def update_run_summary(self, run_id: str, *, summary_json) -> None:
+            self.updates.append((run_id, summary_json))
+
+    repository = RecordingRepository()
+    _close_evidence_writer_safely(
+        writer=BrokenWriter(),
+        run_repository=repository,
+        run_id="run-1",
+    )
+
+    assert repository.updates == [
+        ("run-1", {"evidence_close_error_type": "OSError"})
+    ]
 
 
 def test_the_loop_stops_on_a_disabled_protocol_and_on_auth_failure() -> None:

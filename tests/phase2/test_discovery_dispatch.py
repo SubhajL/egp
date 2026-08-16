@@ -792,7 +792,15 @@ def test_persisted_fault_canary_traverses_real_child_and_terminalizes_queue(
             assert isinstance(current, dict)
             current.update(summary_json or {})
 
-        def fail_run_if_active(self, run_id: str, *, error: str, failure_reason: str):
+        def fail_run_if_active(
+            self,
+            *,
+            tenant_id: str,
+            run_id: str,
+            error: str,
+            failure_reason: str,
+        ):
+            assert tenant_id == self.run["tenant_id"]
             assert run_id == self.run["run_id"]
             self.run.update(
                 status="failed",

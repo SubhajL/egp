@@ -7,6 +7,7 @@ import pytest
 
 from egp_shared_types.enums import (
     ArtifactBucket,
+    CandidateTerminalReason,
     CrawlOutcomeReason,
     ProcurementType,
     ProjectDetailReason,
@@ -3967,6 +3968,7 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
     # candidate recorded. A shared ordered log (not call counts) proves ordering.
     seq: list[str] = []
     seen_candidate: dict[str, object] = {}
+    terminal_calls: list[tuple[str, str, str]] = []
 
     def candidate_callback(info: dict[str, object]) -> str:
         seq.append("candidate")
@@ -3994,6 +3996,9 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
         include_documents=False,
         project_callback=lambda payload: project_calls.append(payload),
         candidate_callback=candidate_callback,
+        candidate_terminal_callback=lambda key, status, reason: terminal_calls.append(
+            (key, status, reason)
+        ),
     )
 
     assert seq == ["candidate", "open"]  # accepted BEFORE the detail attempt
@@ -4006,6 +4011,9 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
     for marker_field in ("organization_name", "budget_text", "source_status_text"):
         assert marker_field in seen_candidate["row_marker"]
     assert project_calls == []  # detail returned None -> persistence callback not reached
+    assert terminal_calls == [
+        ("KEY-1", "failed", CandidateTerminalReason.DETAIL_UNKNOWN.value)
+    ]
 
 
 def test_collect_keyword_projects_fail_closed_unwrapped_on_write_failure(
@@ -4085,6 +4093,43 @@ def test_collect_keyword_projects_threads_authoritative_candidate_key(
 
     assert len(captured) == 1
     assert captured[0]["candidate_key"] == "KEY-1"
+
+
+def test_collect_keyword_projects_terminalizes_post_detail_duplicate(
+    monkeypatch,
+) -> None:
+    def fake_open(
+        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+    ):
+        return {
+            "project_name": "detail-name",
+            "project_number": "EGP-DUP-1",
+            "source_status_text": source_status_text,
+        }
+
+    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    terminal_calls: list[tuple[str, str, str]] = []
+
+    results = _collect_keyword_projects(
+        page=_single_eligible_results_page(),
+        keyword="k",
+        settings=BrowserDiscoverySettings(max_pages_per_keyword=1),
+        seen_keys={"egp-dup-1"},
+        include_documents=False,
+        candidate_callback=lambda info: "KEY-DUP",
+        candidate_terminal_callback=lambda key, status, reason: terminal_calls.append(
+            (key, status, reason)
+        ),
+    )
+
+    assert results == []
+    assert terminal_calls == [
+        ("KEY-DUP", "dropped", CandidateTerminalReason.DUPLICATE_IN_RUN.value)
+    ]
 
 
 def test_crawl_live_discovery_forwards_candidate_callback_to_collector(

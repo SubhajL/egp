@@ -470,7 +470,10 @@ def test_run_log_endpoint_returns_worker_log_contents(tmp_path) -> None:
     run_id = str(uuid4())
     log_path = tmp_path / "tenants" / TENANT_ID / "runs" / run_id / "worker.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text("worker line 1\nworker line 2\n", encoding="utf-8")
+    log_path.write_text(
+        "worker line 1\nAuthorization: Bearer secret-token\nworker line 2\n",
+        encoding="utf-8",
+    )
 
     run = repository.create_run(
         tenant_id=TENANT_ID,
@@ -485,7 +488,9 @@ def test_run_log_endpoint_returns_worker_log_contents(tmp_path) -> None:
     )
 
     assert response.status_code == 200
-    assert response.text == "worker line 1\nworker line 2\n"
+    assert response.text == (
+        "worker line 1\nAuthorization: [REDACTED]\nworker line 2\n"
+    )
 
 
 def test_run_log_endpoint_rejects_noncanonical_log_path(tmp_path) -> None:

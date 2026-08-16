@@ -16,6 +16,10 @@ from egp_api.services.discovery_dispatch import (
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+from egp_db.repositories.candidate_attempt_repo import (
+    SqlCandidateAttemptRepository,
+)
+from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import DiscoveryFailureCode
 
 
@@ -133,9 +137,8 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(
         "worker_owner_pid": os.getpid(),
         "worker_pid": process.pid,
     }
-    assert popen_kwargs["stdout"] is not subprocess.PIPE
-    assert hasattr(popen_kwargs["stdout"], "write")
-    assert popen_kwargs["stderr"] is not subprocess.PIPE
+    assert popen_kwargs["stdout"] is subprocess.PIPE
+    assert popen_kwargs["stderr"] is subprocess.PIPE
 
 
 def test_discover_dispatch_correlates_reserved_run_to_job_and_recrawl_request(
@@ -209,6 +212,93 @@ def test_discover_spawner_retries_semantic_failed_worker_result(
     assert exc_info.value.failure_code == DiscoveryFailureCode.SEARCH_PAGE_STATE_ERROR
 
 
+@pytest.mark.parametrize("mode", ["missing", "invalid", "nonzero", "unexpected"])
+def test_every_post_reservation_abnormal_exit_reconciles_tenant_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    tenant_id = "11111111-1111-1111-1111-111111111111"
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'abnormal.sqlite3'}"
+    candidate_repository = SqlCandidateAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    real_run_repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+
+    class RunRepository:
+        def create_run(self, **values):
+            values.pop("profile_id", None)
+            values.pop("discovery_job_id", None)
+            values.pop("recrawl_request_id", None)
+            return real_run_repository.create_run(**values)
+
+        def __getattr__(self, name):
+            return getattr(real_run_repository, name)
+
+    class AbnormalProcess:
+        pid = 45678
+        returncode = 7 if mode == "nonzero" else 0
+
+        def communicate(self, input=None, timeout=None):
+            del timeout
+            payload = json.loads((input or b"{}").decode())
+            run_id = payload["run_id"]
+            candidate_repository.record_accepted(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                candidate_key=f"candidate-{mode}",
+                keyword="k",
+            )
+            if mode == "unexpected":
+                raise RuntimeError("unexpected communication failure")
+            if mode == "invalid":
+                return (
+                    json.dumps(
+                        {
+                            "run_id": "00000000-0000-0000-0000-000000000000",
+                            "run_status": "succeeded",
+                        }
+                    ).encode(),
+                    b"",
+                )
+            if mode == "nonzero":
+                return (b"", b"worker exited")
+            return (b"", b"")
+
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: AbnormalProcess(),
+    )
+    dispatcher = _make_discover_spawner(
+        database_url,
+        artifact_root=tmp_path / "artifacts",
+        run_repository=RunRepository(),
+    )
+
+    expected = RuntimeError if mode == "unexpected" else DiscoverySpawnError
+    with pytest.raises(expected):
+        dispatcher.dispatch(
+            DiscoveryDispatchRequest(
+                tenant_id=tenant_id,
+                profile_id="22222222-2222-2222-2222-222222222222",
+                profile_type="manual",
+                keyword="k",
+            )
+        )
+
+    runs = real_run_repository.list_runs(tenant_id=tenant_id, limit=10, offset=0)
+    assert len(runs.items) == 1
+    run = runs.items[0]
+    assert run.status.value == "failed"
+    summary = candidate_repository.get_run_candidate_summary(tenant_id, run.id)
+    assert summary.accepted == 0
+    assert summary.unknown == 1
+
+
 def test_discover_spawner_kills_worker_when_lease_cancellation_is_signalled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -255,11 +345,13 @@ def test_discover_spawner_kills_worker_when_lease_cancellation_is_signalled(
 
         def fail_run_if_active(
             self,
-            run_id: str,
             *,
+            tenant_id: str,
+            run_id: str,
             error: str,
             failure_reason: str,
         ) -> None:
+            captured["failed_tenant_id"] = tenant_id
             captured["failed_run_id"] = run_id
             captured["error"] = error
             captured["failure_reason"] = failure_reason
@@ -441,11 +533,13 @@ def test_discover_spawner_treats_terminated_worker_as_non_retriable(
 
         def fail_run_if_active(
             self,
-            run_id: str,
             *,
+            tenant_id: str,
+            run_id: str,
             error: str,
             failure_reason: str = "worker_timeout",
         ):
+            captured["failed_tenant_id"] = tenant_id
             captured["failed_run_id"] = run_id
             captured["error"] = error
             captured["failure_reason"] = failure_reason
