@@ -270,6 +270,7 @@ def configure_services(
         project_repository=bundle.project_repository,
         profile_repository=bundle.profile_repository,
         artifact_root=bundle.resolved_artifact_root,
+        database_url=bundle.resolved_database_url,
         entitlement_service=entitlement_service,
         notification_dispatcher=gated_notification_dispatcher,
     )

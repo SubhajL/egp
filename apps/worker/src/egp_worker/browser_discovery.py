@@ -44,6 +44,7 @@ except (
 
 from egp_shared_types.enums import (
     ArtifactBucket,
+    CandidateTerminalReason,
     CrawlOutcomeReason,
     ProcurementType,
     ProjectDetailReason,
@@ -249,6 +250,7 @@ def crawl_live_discovery(
     include_documents: bool = False,
     project_callback: Callable[[dict[str, object]], None] | None = None,
     candidate_callback: Callable[[dict[str, object]], str | None] | None = None,
+    candidate_terminal_callback: Callable[[str, str, str], None] | None = None,
     progress_callback: LiveProgressCallback | None = None,
 ) -> list[dict[str, object]]:
     resolved_settings = settings or BrowserDiscoverySettings()
@@ -346,6 +348,8 @@ def crawl_live_discovery(
                     # Forward only when set so the existing (candidate_callback-free)
                     # test fakes of _collect_keyword_projects keep their signature.
                     collect_kwargs["candidate_callback"] = candidate_callback
+                if candidate_terminal_callback is not None:
+                    collect_kwargs["candidate_terminal_callback"] = candidate_terminal_callback
                 keyword_projects = _collect_keyword_projects(
                     page=page,
                     keyword=active_keyword,
@@ -608,10 +612,30 @@ def _collect_keyword_projects(
     include_documents: bool,
     project_callback: Callable[[dict[str, object]], None] | None = None,
     candidate_callback: Callable[[dict[str, object]], str | None] | None = None,
+    candidate_terminal_callback: Callable[[str, str, str], None] | None = None,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     scan = KeywordScanAccumulator(keyword=keyword)
     page_num = 1
+
+    def _terminalize_candidate(
+        row_info: dict[str, object], *, status: str, reason: CandidateTerminalReason
+    ) -> None:
+        candidate_key = row_info.get("candidate_key")
+        if candidate_terminal_callback is not None and candidate_key is not None:
+            candidate_terminal_callback(str(candidate_key), status, reason.value)
+
+    def _detail_terminal_reason(reason: ProjectDetailReason) -> CandidateTerminalReason:
+        return {
+            ProjectDetailReason.NAVIGATION_FAILURE: CandidateTerminalReason.NAVIGATION_FAILURE,
+            ProjectDetailReason.RESULTS_PAGE_RETURNED: CandidateTerminalReason.RESULTS_PAGE_RETURNED,
+            ProjectDetailReason.MISSING_REQUIRED_FIELDS: CandidateTerminalReason.MISSING_REQUIRED_FIELDS,
+            ProjectDetailReason.REJECTION_PAGE: CandidateTerminalReason.REJECTION_PAGE,
+            ProjectDetailReason.PLACEHOLDER_DETAIL: CandidateTerminalReason.PLACEHOLDER_DETAIL,
+            ProjectDetailReason.OUT_OF_SCOPE_STAGE: CandidateTerminalReason.OUT_OF_SCOPE_STAGE,
+            ProjectDetailReason.UNKNOWN: CandidateTerminalReason.DETAIL_UNKNOWN,
+        }.get(reason, CandidateTerminalReason.DETAIL_UNKNOWN)
+
     while page_num <= settings.max_pages_per_keyword:
         try:
             # The search click navigates the SPA; under slow proxy latency the
@@ -775,6 +799,11 @@ def _collect_keyword_projects(
                     seen_keys.add(
                         str(row_info.get("project_number") or row_info["project_name"]).casefold()
                     )
+                    _terminalize_candidate(
+                        row_info,
+                        status="failed",
+                        reason=_detail_terminal_reason(sink.reason),
+                    )
                     if not restored_to_results:
                         _return_to_results(
                             page,
@@ -797,6 +826,12 @@ def _collect_keyword_projects(
                     results.append(payload)
                     if project_callback is not None:
                         project_callback(payload)
+                else:
+                    _terminalize_candidate(
+                        row_info,
+                        status="dropped",
+                        reason=CandidateTerminalReason.DUPLICATE_IN_RUN,
+                    )
                 _return_to_results(
                     page,
                     settings,
@@ -840,6 +875,11 @@ def _collect_keyword_projects(
                         target_page_num=page_num,
                         row_marker=row_info,
                     )
+                    _terminalize_candidate(
+                        row_info,
+                        status="failed",
+                        reason=CandidateTerminalReason.UNCLASSIFIED,
+                    )
                     continue
                 except ResultsPageRecoveryError:
                     if _results_page_available(page, allow_no_results=False):
@@ -858,6 +898,11 @@ def _collect_keyword_projects(
                         f"project_restore_skipped:{marker_name}",
                         expected_marker=row_info,
                     )
+                    _terminalize_candidate(
+                        row_info,
+                        status="failed",
+                        reason=CandidateTerminalReason.UNCLASSIFIED,
+                    )
                     continue
                 raise
             except SearchPageStateError as exc:
@@ -874,6 +919,11 @@ def _collect_keyword_projects(
                         keyword=keyword,
                         target_page_num=page_num,
                         row_marker=row_info,
+                    )
+                    _terminalize_candidate(
+                        row_info,
+                        status="failed",
+                        reason=CandidateTerminalReason.UNCLASSIFIED,
                     )
                     continue
                 except ResultsPageRecoveryError:

@@ -477,11 +477,14 @@ class SqlCandidateAttemptRepository:
 
     def reconcile_open_candidates(
         self,
+        *,
+        tenant_id: str,
         run_id: str,
         terminal_reason: str = CandidateTerminalReason.WORKER_LOST.value,
     ) -> int:
-        """Mark all still-accepted candidates for *run_id* as 'unknown'."""
+        """Mark one tenant/run's still-accepted candidates as ``unknown``."""
         _require_vocabulary_reason(terminal_reason)
+        normalized_tenant = normalize_uuid_string(tenant_id)
         normalized_run = normalize_uuid_string(run_id)
         t = DISCOVERY_CANDIDATE_ATTEMPTS_TABLE
         with self._engine.begin() as conn:
@@ -489,6 +492,7 @@ class SqlCandidateAttemptRepository:
                 update(t)
                 .where(
                     and_(
+                        t.c.tenant_id == normalized_tenant,
                         t.c.run_id == normalized_run,
                         t.c.candidate_status == "accepted",
                     )

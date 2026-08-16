@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from egp_crawler_core.discovery_authorization import (
     DiscoveryAuthorizationError,
@@ -19,10 +20,12 @@ from egp_crawler_core.discovery_authorization import (
 from egp_crawler_core.candidate_key import compute_candidate_key
 from egp_crawler_core.invitation_rules import is_discoverable_stage_status
 from egp_db.google_drive import GoogleDriveOAuthConfig
+from egp_db.abnormal_run_completion import complete_abnormal_run
 from egp_db.onedrive import OneDriveOAuthConfig
 from egp_db.repositories.candidate_attempt_repo import (
     CandidateTerminalConflictError,
     SqlCandidateAttemptRepository,
+    create_candidate_attempt_repository,
 )
 from egp_db.repositories.document_capture_attempt_repo import (
     SqlDocumentCaptureAttemptRepository,
@@ -432,6 +435,18 @@ def run_discover_workflow(
         run = run_repository.mark_run_started(run.id)
     else:
         run = run_repository.mark_run_started(run_id)
+    if candidate_attempt_repo is None and database_url is not None:
+        try:
+            UUID(str(run.id))
+        except ValueError:
+            # Custom/in-memory repositories may use non-durable test ids. They
+            # cannot participate in the SQL candidate ledger.
+            pass
+        else:
+            candidate_attempt_repo = create_candidate_attempt_repository(
+                database_url=database_url,
+                bootstrap_schema=False,
+            )
     persisted_projects: list[ProjectRecord] = []
     persisted_project_keys: set[str] = set()
     ignored_late_stage_projects = 0
@@ -445,6 +460,164 @@ def run_discover_workflow(
     backfill_recorded_project_ids: set[str] = set()
     project_task_count = 0
     keyword_task_creation_blocked = False
+    finalization_error_count = 0
+    conflict_count = 0
+    candidate_ledger: dict[str, object] | None = None
+
+    def _finalize_candidate(
+        *,
+        candidate_key: str | None,
+        status: str,
+        terminal_reason: CandidateTerminalReason | None = None,
+        terminal_detail: str | None = None,
+        project_id: str | None = None,
+    ) -> bool:
+        """Finalize one accepted candidate and retain authority failures for publication."""
+        nonlocal conflict_count, finalization_error_count
+        if candidate_attempt_repo is None or candidate_key is None:
+            return True
+        try:
+            if status == "persisted":
+                if project_id is None:
+                    raise ValueError("persisted candidate finalization requires project_id")
+                result = candidate_attempt_repo.finalize_persisted(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    candidate_key=candidate_key,
+                    project_id=project_id,
+                )
+            elif status == "failed":
+                if terminal_reason is None:
+                    raise ValueError("failed candidate finalization requires terminal_reason")
+                result = candidate_attempt_repo.finalize_failed(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    candidate_key=candidate_key,
+                    terminal_reason=terminal_reason.value,
+                    terminal_detail=terminal_detail,
+                )
+            elif status == "dropped":
+                if terminal_reason is None:
+                    raise ValueError("dropped candidate finalization requires terminal_reason")
+                result = candidate_attempt_repo.finalize_dropped(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    candidate_key=candidate_key,
+                    terminal_reason=terminal_reason.value,
+                    terminal_detail=terminal_detail,
+                )
+            else:
+                raise ValueError(f"unsupported candidate terminal status {status!r}")
+            if result is None:
+                finalization_error_count += 1
+                logger.error(
+                    "Candidate terminal finalization returned no record for %s",
+                    candidate_key,
+                    extra={
+                        "egp_event": "candidate_terminal_finalization_error",
+                        "tenant_id": tenant_id,
+                        "run_id": run.id,
+                        "candidate_key": candidate_key,
+                        "requested_status": status,
+                    },
+                )
+                return False
+            return True
+        except CandidateTerminalConflictError as conflict:
+            conflict_count += 1
+            _log_candidate_terminal_conflict(tenant_id=tenant_id, run_id=run.id, conflict=conflict)
+            return False
+        except Exception:
+            finalization_error_count += 1
+            logger.warning(
+                "Failed to finalize candidate attempt as %s for %s",
+                status,
+                candidate_key,
+                exc_info=True,
+            )
+            return False
+
+    def _apply_candidate_ledger_authority() -> tuple[bool, bool]:
+        """Return (force_failed, partial) after the durable ledger is re-read."""
+        nonlocal candidate_ledger
+        if candidate_attempt_repo is None:
+            return False, False
+
+        accepted_before = 0
+        accepted_after = 0
+        reconciled_count = 0
+        summary = None
+        authority_error_type: str | None = None
+        try:
+            summary = candidate_attempt_repo.get_run_candidate_summary(
+                tenant_id=tenant_id,
+                run_id=run.id,
+            )
+            accepted_before = summary.accepted
+        except Exception as exc:
+            authority_error_type = exc.__class__.__name__
+
+        if authority_error_type is None and accepted_before > 0:
+            try:
+                reconciled_count = candidate_attempt_repo.reconcile_open_candidates(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    terminal_reason=CandidateTerminalReason.UNCLASSIFIED.value,
+                )
+                summary = candidate_attempt_repo.get_run_candidate_summary(
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                )
+                accepted_after = summary.accepted
+            except Exception as exc:
+                authority_error_type = exc.__class__.__name__
+        elif summary is not None:
+            accepted_after = summary.accepted
+
+        counts = {
+            "accepted": summary.accepted if summary is not None else 0,
+            "persisted": summary.persisted if summary is not None else 0,
+            "dropped": summary.dropped if summary is not None else 0,
+            "failed": summary.failed if summary is not None else 0,
+            "unknown": summary.unknown if summary is not None else 0,
+            "total": summary.total if summary is not None else 0,
+        }
+        authority = "complete"
+        force_failed = False
+        partial = False
+        if authority_error_type is not None:
+            authority = "unavailable"
+            force_failed = True
+        elif finalization_error_count:
+            authority = "finalization_error"
+            force_failed = True
+        elif conflict_count:
+            authority = "terminal_conflict"
+            force_failed = True
+        elif accepted_before:
+            # Reconciliation turns openings into unknown evidence, never success.
+            authority = "reconciled_incomplete"
+            force_failed = True
+        elif accepted_after:
+            authority = "open_candidates"
+            force_failed = True
+        elif counts["failed"] or counts["unknown"]:
+            authority = "incomplete"
+            partial = bool(counts["persisted"])
+            force_failed = not partial
+
+        candidate_ledger = {
+            "authority": authority,
+            "accepted_before_reconciliation": accepted_before,
+            "accepted_after_reconciliation": accepted_after,
+            "reconciled_count": reconciled_count,
+            "finalization_error_count": finalization_error_count,
+            "conflict_count": conflict_count,
+            "counts": counts,
+        }
+        if authority_error_type is not None:
+            candidate_ledger["authority_error_type"] = authority_error_type
+        return force_failed, partial
 
     def _current_summary() -> dict[str, object]:
         summary: dict[str, object] = {"projects_seen": len(persisted_projects)}
@@ -458,6 +631,8 @@ def run_discover_workflow(
             summary["live_crawl_latest_anomaly"] = live_crawl_latest_anomaly
         if keyword_scans:
             summary["keyword_scans"] = {name: dict(scan) for name, scan in keyword_scans.items()}
+        if candidate_ledger is not None:
+            summary["candidate_ledger"] = dict(candidate_ledger)
         return summary
 
     def _record_keyword_scan(event_snapshot: dict[str, object]) -> None:
@@ -561,6 +736,11 @@ def run_discover_workflow(
         candidate_key_value: str | None = candidate_key
         source_status_text = str(discovered.get("source_status_text") or "")
         if not is_discoverable_stage_status(source_status_text):
+            _finalize_candidate(
+                candidate_key=candidate_key_value,
+                status="dropped",
+                terminal_reason=CandidateTerminalReason.LATE_STAGE,
+            )
             ignored_late_stage_projects += 1
             logger.info(
                 "Ignored discovery payload outside invitation stage for %s",
@@ -577,6 +757,11 @@ def run_discover_workflow(
             return None
         project_key = _discovered_project_key(discovered)
         if project_key in persisted_project_keys:
+            _finalize_candidate(
+                candidate_key=candidate_key_value,
+                status="dropped",
+                terminal_reason=CandidateTerminalReason.DUPLICATE_IN_RUN,
+            )
             return None
         task_keyword = str(discovered.get("keyword") or keyword)
         safe_discovered = _task_safe_payload(discovered)
@@ -686,54 +871,25 @@ def run_discover_workflow(
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
-            if candidate_attempt_repo is not None and candidate_key_value is not None:
-                try:
-                    candidate_attempt_repo.finalize_persisted(
-                        tenant_id=tenant_id,
-                        run_id=run.id,
-                        candidate_key=candidate_key_value,
-                        project_id=project.id,
-                    )
-                except CandidateTerminalConflictError as conflict:
-                    # F6/R11: a contradictory rewrite is DISTINCTLY visible —
-                    # never folded into the generic warning. Still fail-open;
-                    # escalation to run authority is F4's charter.
-                    _log_candidate_terminal_conflict(
-                        tenant_id=tenant_id, run_id=run.id, conflict=conflict
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to finalize candidate attempt as persisted for %s",
-                        candidate_key_value,
-                        exc_info=True,
-                    )
+            _finalize_candidate(
+                candidate_key=candidate_key_value,
+                status="persisted",
+                project_id=project.id,
+            )
             persisted_project_keys.add(project_key)
             persisted_projects.append(project)
             run_repository.update_run_summary(run.id, summary_json=_current_summary())
             return project
         except Exception as exc:
             error_count += 1
-            if candidate_attempt_repo is not None and candidate_key_value is not None:
-                try:
-                    # F6/R5: typed reason; the raw exception text is diagnostics
-                    # and lives in terminal_detail, never in terminal_reason.
-                    candidate_attempt_repo.finalize_failed(
-                        tenant_id=tenant_id,
-                        run_id=run.id,
-                        candidate_key=candidate_key_value,
-                        terminal_reason=CandidateTerminalReason.PERSIST_ERROR.value,
-                        terminal_detail=str(exc)[:500],
-                    )
-                except CandidateTerminalConflictError as conflict:
-                    _log_candidate_terminal_conflict(
-                        tenant_id=tenant_id, run_id=run.id, conflict=conflict
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to finalize candidate attempt as failed for %s",
-                        candidate_key_value,
-                        exc_info=True,
-                    )
+            # F6/R5: typed reason; the raw exception text is diagnostics and
+            # lives in terminal_detail, never in terminal_reason.
+            _finalize_candidate(
+                candidate_key=candidate_key_value,
+                status="failed",
+                terminal_reason=CandidateTerminalReason.PERSIST_ERROR,
+                terminal_detail=str(exc)[:500],
+            )
             if project is not None and project.id not in backfill_recorded_project_ids:
                 try:
                     _record_backfill_capture_attempt(
@@ -850,6 +1006,29 @@ def run_discover_workflow(
                 )
                 return candidate_key
 
+            def _record_live_candidate_terminal(
+                candidate_key: str,
+                status: str,
+                terminal_reason: str,
+            ) -> None:
+                """Close a browser-terminal row against its pre-detail key."""
+                try:
+                    reason = CandidateTerminalReason(terminal_reason)
+                except ValueError:
+                    # This is an internal browser/workflow contract violation. Route
+                    # it through the central finalizer so publication fails closed.
+                    _finalize_candidate(
+                        candidate_key=candidate_key,
+                        status=status,
+                        terminal_reason=None,
+                    )
+                    return
+                _finalize_candidate(
+                    candidate_key=candidate_key,
+                    status=status,
+                    terminal_reason=reason,
+                )
+
             crawl_live_discovery(
                 keyword=keyword,
                 profile=profile,
@@ -857,6 +1036,7 @@ def run_discover_workflow(
                 include_documents=live_include_documents,
                 project_callback=_persist_live_project,
                 candidate_callback=_record_live_candidate,
+                candidate_terminal_callback=_record_live_candidate_terminal,
                 progress_callback=_record_live_progress,
             )
             resolved_projects = []
@@ -874,16 +1054,46 @@ def run_discover_workflow(
     except Exception as exc:
         run_level_error = str(exc)
         run_failure_code = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
-        run_repository.mark_run_finished(
-            run.id,
-            status="failed",
-            summary_json={
-                "projects_seen": len(persisted_projects),
-                "error": run_level_error,
-                "failure_code": run_failure_code,
-            },
-            error_count=max(1, error_count),
-        )
+        if candidate_attempt_repo is not None and all(
+            hasattr(run_repository, method)
+            for method in ("fail_run_if_active", "find_run_by_id_for_tenant")
+        ):
+            report = complete_abnormal_run(
+                tenant_id=tenant_id,
+                run_id=run.id,
+                failure_code=run_failure_code.value,
+                candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
+                error=run_level_error,
+                candidate_repository=candidate_attempt_repo,
+                run_repository=run_repository,
+            )
+            if not report.succeeded:
+                logger.error(
+                    "Direct workflow abnormal completion incomplete",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "run_id": run.id,
+                        "abnormal_completion": report.evidence(),
+                    },
+                )
+                try:
+                    run_repository.update_run_summary(
+                        run.id,
+                        summary_json={"abnormal_completion": report.evidence()},
+                    )
+                except Exception:
+                    logger.exception("Failed to persist abnormal completion report")
+        else:
+            run_repository.mark_run_finished(
+                run.id,
+                status="failed",
+                summary_json={
+                    "projects_seen": len(persisted_projects),
+                    "error": run_level_error,
+                    "failure_code": run_failure_code,
+                },
+                error_count=max(1, error_count),
+            )
         raise
 
     terminal_live_anomaly = (
@@ -910,6 +1120,18 @@ def run_discover_workflow(
         if live_crawl_latest_anomaly is not None
         else None
     )
+    ledger_force_failed, ledger_partial = _apply_candidate_ledger_authority()
+    ledger_error = (
+        "candidate ledger authority failed"
+        if ledger_force_failed
+        else ("candidate ledger incomplete" if ledger_partial else None)
+    )
+    if ledger_force_failed or ledger_partial:
+        ledger_outcome = "failed" if ledger_force_failed else "partial"
+        for scan in keyword_scans.values():
+            # The scan's browser observation is useful evidence, but it cannot
+            # publish an `ok` aggregate once its candidate ledger is incomplete.
+            scan["outcome"] = ledger_outcome
     summary_json = _current_summary()
     if run_level_error is not None:
         summary_json["error"] = run_level_error
@@ -921,8 +1143,11 @@ def run_discover_workflow(
         summary_json["failure_code"] = (
             anomaly_failure_code or DiscoveryFailureCode.WORKER_REPORTED_FAILURE
         )
+    elif ledger_error is not None:
+        summary_json["error"] = ledger_error
+        summary_json["failure_code"] = DiscoveryFailureCode.WORKER_REPORTED_FAILURE
     if project_task_count == 0 and not keyword_task_creation_blocked:
-        keyword_task_error = run_level_error or anomaly_error
+        keyword_task_error = run_level_error or anomaly_error or ledger_error
         keyword_task_result: dict[str, object] = {"projects_seen": len(persisted_projects)}
         if keyword_task_error is not None:
             keyword_task_result["error"] = keyword_task_error
@@ -943,7 +1168,8 @@ def run_discover_workflow(
             summary_json = _current_summary()
             summary_json["error"] = run_level_error
             summary_json["failure_code"] = run_failure_code
-    effective_error_count = error_count + live_crawl_anomaly_count
+    ledger_error_count = 1 if ledger_error is not None else 0
+    effective_error_count = error_count + live_crawl_anomaly_count + ledger_error_count
     if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
         existing_project_id = _backfill_project_id_for_keyword(
             database_url=database_url,
@@ -969,11 +1195,17 @@ def run_discover_workflow(
                 ),
                 doc_count=0,
             )
+    if ledger_force_failed:
+        terminal_status = "failed"
+    elif effective_error_count:
+        terminal_status = "partial" if persisted_projects else "failed"
+    elif ledger_partial:
+        terminal_status = "partial"
+    else:
+        terminal_status = "succeeded"
     run_repository.mark_run_finished(
         run.id,
-        status="partial"
-        if effective_error_count and persisted_projects
-        else ("failed" if effective_error_count else "succeeded"),
+        status=terminal_status,
         summary_json=summary_json,
         error_count=effective_error_count,
     )

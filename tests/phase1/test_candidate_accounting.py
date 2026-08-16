@@ -13,6 +13,7 @@ from egp_shared_types.enums import CandidateTerminalReason
 
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_TENANT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 RUN_ID = "22222222-2222-2222-2222-222222222222"
 PROJECT_ID = "33333333-3333-3333-3333-333333333333"
 
@@ -154,7 +155,11 @@ def test_reconcile_open_candidates_marks_accepted_as_unknown(tmp_path):
     )
 
     # Reconcile: only key2 (still accepted) should become unknown
-    count = repo.reconcile_open_candidates(run_id=RUN_ID, terminal_reason="worker_lost")
+    count = repo.reconcile_open_candidates(
+        tenant_id=TENANT_ID,
+        run_id=RUN_ID,
+        terminal_reason="worker_lost",
+    )
     assert count == 1
 
     summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=RUN_ID)
@@ -162,6 +167,27 @@ def test_reconcile_open_candidates_marks_accepted_as_unknown(tmp_path):
     assert summary.unknown == 1
     assert summary.accepted == 0
     assert summary.total == 2
+
+
+def test_reconcile_open_candidates_requires_matching_tenant(tmp_path):
+    repo = _create_repo(tmp_path)
+    repo.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=RUN_ID,
+        candidate_key="tenant-guard",
+        keyword="analytics",
+    )
+
+    count = repo.reconcile_open_candidates(
+        tenant_id=OTHER_TENANT_ID,
+        run_id=RUN_ID,
+        terminal_reason=CandidateTerminalReason.WORKER_LOST.value,
+    )
+
+    assert count == 0
+    summary = repo.get_run_candidate_summary(tenant_id=TENANT_ID, run_id=RUN_ID)
+    assert summary.accepted == 1
+    assert summary.unknown == 0
 
 
 # -- F6 replay / conflict semantics (T7-T9) ---------------------------------

@@ -336,6 +336,7 @@ def build_discovery_dispatch_runtime(
         run_service=RunService(
             run_repository,
             artifact_root=resolved_artifact_root,
+            database_url=resolved_database_url,
         ),
     )
 

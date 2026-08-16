@@ -51,6 +51,10 @@ from egp_crawler_core.profile_lock import (
     release_profile_lock as _shared_release_profile_lock,
 )
 from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
+from egp_db.abnormal_run_completion import (
+    AbnormalRunCompletionReport,
+    complete_abnormal_run,
+)
 from egp_crawler_core.rate_limiter import get_default_rate_limiter
 from egp_observability.logging import (
     RESULT_FRAME_BEGIN,
@@ -59,6 +63,16 @@ from egp_observability.logging import (
     tail_bounded_preview,
 )
 from egp_observability.metrics import record_discovery_keyword_scan
+from egp_observability.subprocess_evidence import (
+    BoundedEvidenceWriter,
+    BoundedResultDecoder,
+    ChildProcessCancelled,
+    DiscardingEvidenceWriter,
+    EvidenceCorrelation,
+    build_run_log_path,
+    observe_child_process,
+    prune_run_evidence,
+)
 from egp_shared_types.enums import (
     CandidateTerminalReason,
     CrawlerBlockerCode,
@@ -89,6 +103,36 @@ def _flush_log_events(log_handle: BinaryIO | None, events: list[str]) -> None:
         log_handle.flush()
     except Exception:
         pass
+
+
+class _EvidenceEventBuffer(list[str]):
+    """Compatibility list that writes lifecycle events at append time."""
+
+    def __init__(self, writer: BoundedEvidenceWriter | None) -> None:
+        super().__init__()
+        self._writer = writer
+
+    def append(self, event_line: str) -> None:
+        if self._writer is None:
+            super().append(event_line)
+            return
+        try:
+            payload = json.loads(event_line)
+            event = str(payload.pop("event"))
+            payload.pop("ts", None)
+            for key in (
+                "tenant_id",
+                "run_id",
+                "job_id",
+                "owner_pid",
+                "child_pid",
+                "execution_backend",
+                "release_sha",
+            ):
+                payload.pop(key, None)
+            self._writer.write_lifecycle(event, **payload)
+        except Exception:
+            pass
 
 
 PROFILE_STATE_FILENAME = ".egp-profile-state.json"
@@ -540,6 +584,16 @@ class _NoopRunRepository:
     def update_run_summary(self, run_id: str, *, summary_json: dict[str, object] | None) -> None:
         del run_id, summary_json
 
+    def find_run_by_id_for_tenant(self, **kwargs) -> None:
+        del kwargs
+        return None
+
+
+class _UnavailableCandidateRepository:
+    def reconcile_open_candidates(self, **kwargs) -> int:
+        del kwargs
+        raise RuntimeError("candidate repository is unavailable")
+
 
 class DiscoverySpawnError(RuntimeError):
     """Raised when a subprocess discovery worker fails for a retriable reason."""
@@ -915,7 +969,7 @@ class SubprocessDiscoveryDispatcher:
         request: DiscoveryDispatchRequest,
         *,
         cancellation_event: threading.Event | None,
-    ) -> None:
+    ) -> dict[str, object] | None:
         requested_fault_mode = (
             request.fault_mode if request.fault_mode is not None else self._fault_mode
         )
@@ -988,18 +1042,26 @@ class SubprocessDiscoveryDispatcher:
             )
             log_path = None
             log_handle = None
+            evidence_writer = None
             if self._artifact_root is not None:
                 try:
-                    log_path = (
-                        self._artifact_root
-                        / "tenants"
-                        / request.tenant_id
-                        / "runs"
-                        / run_id
-                        / "worker.log"
-                    ).resolve()
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    log_handle = log_path.open("ab")
+                    log_path = build_run_log_path(
+                        artifact_root=self._artifact_root,
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                    )
+                    evidence_writer = BoundedEvidenceWriter(
+                        path=log_path,
+                        correlation=EvidenceCorrelation(
+                            tenant_id=request.tenant_id,
+                            run_id=run_id,
+                            job_id=request.discovery_job_id or request.evidence_job_id,
+                            owner_pid=os.getpid(),
+                            child_pid=None,
+                            execution_backend=request.execution_backend,
+                            release_sha=_RELEASE_SHA,
+                        ),
+                    )
                 except Exception:
                     _logger.warning(
                         "Failed to create discover worker log file (run_id=%s)",
@@ -1007,14 +1069,15 @@ class SubprocessDiscoveryDispatcher:
                         exc_info=True,
                     )
                     log_path = None
-            pending_log_events: list[str] = []
+            pending_log_events: list[str] = _EvidenceEventBuffer(evidence_writer)
             try:
                 pending_log_events.append(
                     make_event(
                         "dispatch_started",
                         run_id=run_id,
+                        job_id=request.discovery_job_id or request.evidence_job_id,
                         owner_pid=os.getpid(),
-                        execution_backend="subprocess",
+                        execution_backend=request.execution_backend,
                         release_sha=_RELEASE_SHA,
                     )
                 )
@@ -1041,6 +1104,7 @@ class SubprocessDiscoveryDispatcher:
                     except Exception:
                         pass
                     self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode="invalid",
                         error=str(exc),
@@ -1053,6 +1117,8 @@ class SubprocessDiscoveryDispatcher:
                             log_handle.close()
                         except Exception:
                             pass
+                    if evidence_writer is not None:
+                        evidence_writer.close()
                     raise
                 if fault_mode == "worker_timeout":
                     worker_timeout_seconds = self._fault_timeout_seconds
@@ -1110,11 +1176,20 @@ class SubprocessDiscoveryDispatcher:
             except Exception as exc:
                 if fault_mode is not None:
                     self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode=fault_mode,
                         error=str(exc),
                         failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
                         pending_log_events=pending_log_events,
+                    )
+                else:
+                    self._complete_abnormal_run(
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                        error=str(exc),
+                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                        candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
                     )
                 _flush_log_events(log_handle, pending_log_events)
                 if log_handle is not None:
@@ -1122,16 +1197,20 @@ class SubprocessDiscoveryDispatcher:
                         log_handle.close()
                     except Exception:
                         pass
+                if evidence_writer is not None:
+                    evidence_writer.close()
                 raise
             proc = None
             try:
                 proc = subprocess.Popen(
                     worker_command,
                     stdin=subprocess.PIPE,
-                    stdout=stdout_capture,
-                    stderr=log_handle or subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     start_new_session=True,
                 )
+                if evidence_writer is not None:
+                    evidence_writer.update_child_pid(getattr(proc, "pid", None))
                 self._safe_update_run_summary(
                     run_id=run_id,
                     summary_json={
@@ -1155,25 +1234,44 @@ class SubprocessDiscoveryDispatcher:
                         ),
                     },
                 )
-                returned_stdout, stderr = _communicate_with_cancellation(
-                    proc,
-                    payload=payload,
-                    timeout_seconds=worker_timeout_seconds,
-                    cancellation_event=cancellation_event,
+                result_decoder = BoundedResultDecoder()
+                has_real_pipes = all(
+                    getattr(getattr(proc, name, None), "fileno", None) is not None
+                    for name in ("stdin", "stdout", "stderr")
                 )
-                stdout = _drain_worker_stdout(
-                    stdout_capture,
-                    returned_stdout,
-                    log_handle=log_handle,
-                )
-                if log_handle is not None:
-                    log_handle.flush()
-                stderr_text = (
-                    self._read_log_tail(log_path) if log_path is not None else None
-                ) or stderr
-                worker_result = _decode_framed_or_fallback_result(stdout)
+                if has_real_pipes:
+                    collected = observe_child_process(
+                        proc,
+                        payload=payload,
+                        writer=evidence_writer or DiscardingEvidenceWriter(),
+                        result_decoder=result_decoder,
+                        timeout_seconds=worker_timeout_seconds,
+                        cancellation_event=cancellation_event,
+                    )
+                    stderr_text = collected.stderr_tail
+                    worker_result = result_decoder.decode()
+                    stdout = b""
+                else:
+                    returned_stdout, stderr = _communicate_with_cancellation(
+                        proc,
+                        payload=payload,
+                        timeout_seconds=worker_timeout_seconds,
+                        cancellation_event=cancellation_event,
+                    )
+                    stdout = _drain_worker_stdout(
+                        stdout_capture,
+                        returned_stdout,
+                        log_handle=None,
+                    )
+                    if evidence_writer is not None:
+                        evidence_writer.write_child("stdout", stdout)
+                        if stderr not in {None, b"", ""}:
+                            evidence_writer.write_child("stderr", stderr)
+                    stderr_text = stderr
+                    worker_result = _decode_framed_or_fallback_result(stdout)
                 if proc.returncode is not None and proc.returncode < 0:
                     terminated = self._worker_termination_error(
+                        tenant_id=request.tenant_id,
                         returncode=int(proc.returncode),
                         run_id=run_id,
                         keyword=request.keyword,
@@ -1258,7 +1356,7 @@ class SubprocessDiscoveryDispatcher:
                     )
                 except Exception:
                     pass
-            except _DiscoveryLeaseCancellation as exc:
+            except (_DiscoveryLeaseCancellation, ChildProcessCancelled) as exc:
                 error_message = (
                     f"discover worker stopped because lease ownership was lost "
                     f"for keyword {request.keyword!r}"
@@ -1275,14 +1373,12 @@ class SubprocessDiscoveryDispatcher:
                     )
                 except Exception:
                     pass
-                self._reconcile_candidate_attempts(
-                    run_id=run_id,
-                    terminal_reason=CandidateTerminalReason.LEASE_LOST.value,
-                )
-                self._mark_active_run_failed(
+                self._complete_abnormal_run(
+                    tenant_id=request.tenant_id,
                     run_id=run_id,
                     error=error_message,
-                    failure_reason="lease_lost",
+                    failure_code=DiscoveryFailureCode.LEASE_LOST,
+                    candidate_reason=CandidateTerminalReason.LEASE_LOST.value,
                 )
                 raise DiscoverySpawnError(
                     error_message,
@@ -1296,13 +1392,15 @@ class SubprocessDiscoveryDispatcher:
                     stdout = _drain_worker_stdout(
                         stdout_capture,
                         returned_stdout,
-                        log_handle=log_handle,
+                        log_handle=None,
                     )
-                    if log_handle is not None:
-                        log_handle.flush()
-                    stderr_text = (
+                    if evidence_writer is not None:
+                        evidence_writer.write_child("stdout", stdout)
+                        if stderr not in {None, b"", ""}:
+                            evidence_writer.write_child("stderr", stderr)
+                    stderr_text = (stderr or exc.stderr) or (
                         self._read_log_tail(log_path) if log_path is not None else None
-                    ) or (stderr or exc.stderr)
+                    )
                     preview = tail_bounded_preview(stderr_text)
                     _logger.warning(
                         "Discover worker timed out for keyword %r (tenant_id=%s profile_id=%s timeout_seconds=%s stderr=%r)",
@@ -1331,24 +1429,27 @@ class SubprocessDiscoveryDispatcher:
                     )
                 except Exception:
                     pass
-                candidates_reconciled = self._reconcile_candidate_attempts(
-                    run_id=run_id,
-                    terminal_reason=CandidateTerminalReason.WORKER_TIMEOUT.value,
-                )
-                run_terminalized = self._mark_active_run_failed(
-                    run_id=run_id,
-                    error=error_message,
-                    failure_reason="worker_timeout",
-                )
                 if fault_mode is not None:
-                    self._append_fault_terminalization_event(
-                        pending_log_events=pending_log_events,
+                    run_terminalized, candidates_reconciled = self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode=fault_mode,
+                        error=error_message,
                         failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+                        pending_log_events=pending_log_events,
                         child_pid=getattr(proc, "pid", None),
-                        run_terminalized=run_terminalized,
-                        candidates_reconciled=candidates_reconciled,
+                    )
+                else:
+                    completion = self._complete_abnormal_run(
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                        error=error_message,
+                        failure_code=DiscoveryFailureCode.WORKER_TIMEOUT,
+                        candidate_reason=CandidateTerminalReason.WORKER_TIMEOUT.value,
+                    )
+                    candidates_reconciled = completion.candidate_reconciliation_succeeded
+                    run_terminalized = (
+                        completion.run_terminalized or completion.run_already_terminal
                     )
                 timeout_error = DiscoverySpawnError(
                     error_message,
@@ -1367,6 +1468,7 @@ class SubprocessDiscoveryDispatcher:
                 raised_exc: DiscoverySpawnError | NonRetriableDiscoveryDispatchError = exc
                 if fault_mode is not None:
                     run_terminalized, candidates_reconciled = self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode=fault_mode,
                         error=str(exc),
@@ -1380,6 +1482,14 @@ class SubprocessDiscoveryDispatcher:
                         returncode=getattr(proc, "returncode", None),
                         run_terminalized=run_terminalized,
                         candidates_reconciled=candidates_reconciled,
+                    )
+                else:
+                    self._complete_abnormal_run(
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                        error=str(exc),
+                        failure_code=exc.failure_code,
+                        candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
                     )
                 try:
                     pending_log_events.append(
@@ -1404,6 +1514,7 @@ class SubprocessDiscoveryDispatcher:
                     and exc.failure_code != DiscoveryFailureCode.WORKER_TERMINATED
                 ):
                     run_terminalized, candidates_reconciled = self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode=fault_mode,
                         error=str(exc),
@@ -1417,6 +1528,18 @@ class SubprocessDiscoveryDispatcher:
                         returncode=getattr(proc, "returncode", None),
                         run_terminalized=run_terminalized,
                         candidates_reconciled=candidates_reconciled,
+                    )
+                else:
+                    self._complete_abnormal_run(
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                        error=str(exc),
+                        failure_code=exc.failure_code,
+                        candidate_reason=(
+                            CandidateTerminalReason.WORKER_TERMINATED.value
+                            if exc.failure_code == DiscoveryFailureCode.WORKER_TERMINATED
+                            else CandidateTerminalReason.WORKER_LOST.value
+                        ),
                     )
                 try:
                     pending_log_events.append(
@@ -1437,12 +1560,21 @@ class SubprocessDiscoveryDispatcher:
             except Exception as exc:
                 if fault_mode is not None:
                     self._terminalize_injected_run(
+                        tenant_id=request.tenant_id,
                         run_id=run_id,
                         fault_mode=fault_mode,
                         error=str(exc),
                         failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
                         pending_log_events=pending_log_events,
                         child_pid=getattr(proc, "pid", None) if proc is not None else None,
+                    )
+                else:
+                    self._complete_abnormal_run(
+                        tenant_id=request.tenant_id,
+                        run_id=run_id,
+                        error=str(exc),
+                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                        candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
                     )
                 try:
                     pending_log_events.append(
@@ -1485,11 +1617,24 @@ class SubprocessDiscoveryDispatcher:
                         log_handle.close()
                     except Exception:
                         pass
+                if evidence_writer is not None:
+                    try:
+                        evidence_writer.close()
+                    except Exception:
+                        pass
+                    try:
+                        prune_run_evidence(
+                            artifact_root=self._artifact_root,
+                            tenant_id=request.tenant_id,
+                        )
+                    except Exception:
+                        pass
             if self._browser_profile_mode == "persistent":
                 self._record_persistent_profile_success(
                     profile_dir=browser_profile_dir,
                     source="crawl",
                 )
+            return worker_result
         finally:
             _release_profile_lock(profile_lock)
             if cleanup_after:
@@ -1656,14 +1801,16 @@ class SubprocessDiscoveryDispatcher:
     def _read_log_tail(self, log_path: Path | None, *, limit: int = 8192) -> str | None:
         if log_path is None or not log_path.is_file():
             return None
-        data = log_path.read_bytes()
-        if len(data) > limit:
-            data = data[-limit:]
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - max(1, int(limit))))
+            data = handle.read(max(1, int(limit)))
         return data.decode("utf-8", errors="replace")
 
     def _reconcile_candidate_attempts(
         self,
         *,
+        tenant_id: str,
         run_id: str,
         terminal_reason: str = CandidateTerminalReason.WORKER_LOST.value,
     ) -> bool:
@@ -1673,6 +1820,7 @@ class SubprocessDiscoveryDispatcher:
                 database_url=self._database_url,
             )
             count = repo.reconcile_open_candidates(
+                tenant_id=tenant_id,
                 run_id=run_id,
                 terminal_reason=terminal_reason,
             )
@@ -1695,13 +1843,15 @@ class SubprocessDiscoveryDispatcher:
     def _mark_active_run_failed(
         self,
         *,
+        tenant_id: str,
         run_id: str,
         error: str,
         failure_reason: str,
     ) -> bool:
         try:
             failed_run = self._run_repository.fail_run_if_active(
-                run_id,
+                tenant_id=tenant_id,
+                run_id=run_id,
                 error=error,
                 failure_reason=failure_reason,
             )
@@ -1721,9 +1871,45 @@ class SubprocessDiscoveryDispatcher:
             )
         return failed_run is not None
 
+    def _complete_abnormal_run(
+        self,
+        *,
+        tenant_id: str,
+        run_id: str,
+        error: str,
+        failure_code: DiscoveryFailureCode,
+        candidate_reason: str,
+    ) -> AbnormalRunCompletionReport:
+        try:
+            candidate_repository = create_candidate_attempt_repository(
+                database_url=self._database_url,
+            )
+        except Exception:
+            candidate_repository = _UnavailableCandidateRepository()
+        report = complete_abnormal_run(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            failure_code=failure_code.value,
+            candidate_reason=candidate_reason,
+            error=error,
+            candidate_repository=candidate_repository,
+            run_repository=self._run_repository,
+        )
+        if not report.succeeded:
+            _logger.warning(
+                "Abnormal run completion was incomplete "
+                "(tenant_id=%s run_id=%s candidate_error=%s run_error=%s)",
+                tenant_id,
+                run_id,
+                report.candidate_reconciliation_error_type,
+                report.run_terminalization_error_type,
+            )
+        return report
+
     def _terminalize_injected_run(
         self,
         *,
+        tenant_id: str,
         run_id: str,
         fault_mode: str,
         error: str,
@@ -1738,10 +1924,12 @@ class SubprocessDiscoveryDispatcher:
             ),
         }.get(failure_code, CandidateTerminalReason.WORKER_LOST.value)
         candidates_reconciled = self._reconcile_candidate_attempts(
+            tenant_id=tenant_id,
             run_id=run_id,
             terminal_reason=terminal_reason,
         )
         run_terminalized = self._mark_active_run_failed(
+            tenant_id=tenant_id,
             run_id=run_id,
             error=error,
             failure_reason=failure_code.value,
@@ -1791,6 +1979,7 @@ class SubprocessDiscoveryDispatcher:
     def _worker_termination_error(
         self,
         *,
+        tenant_id: str,
         returncode: int,
         run_id: str,
         keyword: str,
@@ -1806,10 +1995,12 @@ class SubprocessDiscoveryDispatcher:
             f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
         )
         candidates_reconciled = self._reconcile_candidate_attempts(
+            tenant_id=tenant_id,
             run_id=run_id,
             terminal_reason=CandidateTerminalReason.WORKER_TERMINATED.value,
         )
         run_terminalized = self._mark_active_run_failed(
+            tenant_id=tenant_id,
             run_id=run_id,
             error=error_message,
             failure_reason="worker_terminated",

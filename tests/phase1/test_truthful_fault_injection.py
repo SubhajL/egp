@@ -54,11 +54,13 @@ class RecordingRunRepository:
 
     def fail_run_if_active(
         self,
-        run_id: str,
         *,
+        tenant_id: str,
+        run_id: str,
         error: str,
         failure_reason: str,
     ) -> SimpleNamespace | None:
+        assert tenant_id == self.runs[run_id]["tenant_id"]
         run = self.runs[run_id]
         if run["status"] not in {"queued", "running"}:
             return None
@@ -149,7 +151,7 @@ def test_every_injected_fault_terminalizes_run(
     monkeypatch.setattr(
         dispatcher,
         "_reconcile_candidate_attempts",
-        lambda *, run_id, terminal_reason: (
+        lambda *, tenant_id, run_id, terminal_reason: (
             reconciliations.append((run_id, terminal_reason)) or True
         ),
     )
@@ -226,7 +228,7 @@ def test_unknown_injected_fault_terminalizes_reserved_run_without_spawning(
     monkeypatch.setattr(
         dispatcher,
         "_reconcile_candidate_attempts",
-        lambda *, run_id, terminal_reason: (
+        lambda *, tenant_id, run_id, terminal_reason: (
             reconciliations.append((run_id, terminal_reason)) or True
         ),
     )
@@ -387,7 +389,7 @@ def test_unexpected_injected_communication_failure_reaps_child(
         tracking_popen,
     )
     monkeypatch.setattr(
-        "egp_api.services.discovery_worker_dispatcher._communicate_with_cancellation",
+        "egp_api.services.discovery_worker_dispatcher.observe_child_process",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             RuntimeError("communication failed")
         ),
