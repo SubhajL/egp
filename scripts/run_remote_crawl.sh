@@ -53,6 +53,58 @@ load_validated_env() {
 run_module() {  # guard → load validated env → exec a venv python module
   guard_check
   load_validated_env
+  local release_sha
+  release_sha="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "unable to derive exact release revision from tracked source" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --quiet --; then
+    echo "tracked source is dirty (unstaged changes)" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --cached --quiet --; then
+    echo "tracked source is dirty (staged changes)" >&2
+    exit 1
+  fi
+  local untracked_runtime_source
+  untracked_runtime_source="$(
+    git -C "$ROOT" ls-files --others --exclude-standard -- \
+      pyproject.toml uv.lock apps/api apps/worker packages
+  )"
+  local untracked_runtime_executable
+  while IFS= read -r untracked_path; do
+    case "$untracked_path" in
+      pyproject.toml|uv.lock|*.py|*.pyc|*.pth|*.so|*.pyd)
+        untracked_runtime_executable="$untracked_path"
+        break
+        ;;
+    esac
+  done <<< "$untracked_runtime_source"
+  if [[ -n "${untracked_runtime_executable:-}" ]]; then
+    echo "untracked runtime source detected; refusing remote crawl" >&2
+    exit 1
+  fi
+  local ignored_runtime_source
+  ignored_runtime_source="$(
+    git -C "$ROOT" ls-files --others --ignored --exclude-standard -- \
+      pyproject.toml uv.lock apps/api apps/worker packages
+  )"
+  local ignored_runtime_executable=""
+  while IFS= read -r ignored_path; do
+    case "$ignored_path" in
+      pyproject.toml|uv.lock|*.py|*.pyc|*.pth|*.so|*.pyd)
+        ignored_runtime_executable="$ignored_path"
+        break
+        ;;
+    esac
+  done <<< "$ignored_runtime_source"
+  if [[ -n "$ignored_runtime_executable" ]]; then
+    echo "ignored runtime source detected; refusing remote crawl" >&2
+    exit 1
+  fi
+  cd /
+  export EGP_RELEASE_SHA="$release_sha"
   exec "$PY" -m "$@"
 }
 

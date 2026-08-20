@@ -33,9 +33,22 @@ def test_run_remote_crawl_sh_guards_before_dispatching() -> None:
     text = (REPO_ROOT / "scripts" / "run_remote_crawl.sh").read_text(encoding="utf-8")
     assert "remote_crawl_guard.py" in text
     assert "egp_api.executors.discovery_dispatch" in text
-    # The crawl/watch paths must validate first (fail-closed): run_module calls
-    # guard_check before exec'ing the module.
-    assert "guard_check\n  load_validated_env\n  exec" in text
+    # The crawl/watch paths must validate first, then derive immutable release
+    # provenance from a clean tracked checkout before exec'ing the module.
+    run_module = text.split("run_module()", maxsplit=1)[1].split("\n}\n", maxsplit=1)[0]
+    ordered_steps = (
+        "guard_check",
+        "load_validated_env",
+        'git -C "$ROOT" rev-parse --verify HEAD',
+        'git -C "$ROOT" diff --quiet --',
+        'git -C "$ROOT" diff --cached --quiet --',
+        'git -C "$ROOT" ls-files --others --',
+        "cd /",
+        'export EGP_RELEASE_SHA="$release_sha"',
+        'exec "$PY" -m "$@"',
+    )
+    positions = [run_module.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
     assert "wait-database)" in text
     assert "egp_api.executors.discovery_doctor" in text
 

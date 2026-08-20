@@ -98,10 +98,10 @@ ssh <lightsail-host>
 cd /srv/egp
 git fetch origin
 git merge --ff-only origin/main
-docker compose --env-file /etc/egp/egp.env -f docker-compose.yml -f docker-compose.pg-tunnel.yml build api webhook-executor discovery-executor
-docker compose --env-file /etc/egp/egp.env -f docker-compose.yml -f docker-compose.pg-tunnel.yml run --rm migrate
-docker compose --env-file /etc/egp/egp.env -f docker-compose.yml -f docker-compose.pg-tunnel.yml up -d api webhook-executor --scale discovery-executor=0
-docker compose --env-file /etc/egp/egp.env -f docker-compose.yml -f docker-compose.pg-tunnel.yml ps
+./scripts/release_compose.sh --env-file /etc/egp/egp.env -f docker-compose.pg-tunnel.yml build migrate api webhook-executor discovery-executor
+./scripts/release_compose.sh --env-file /etc/egp/egp.env -f docker-compose.pg-tunnel.yml run --rm migrate
+./scripts/release_compose.sh --env-file /etc/egp/egp.env -f docker-compose.pg-tunnel.yml up -d api webhook-executor --scale discovery-executor=0
+./scripts/release_compose.sh --env-file /etc/egp/egp.env -f docker-compose.pg-tunnel.yml ps
 ```
 
 Keep `discovery-executor=0` for Track C. The Mac crawler is the sole production

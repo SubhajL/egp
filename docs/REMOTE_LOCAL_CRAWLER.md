@@ -110,8 +110,8 @@ After a full deploy to #139+, delete the override (the base compose then carries
 2. Bring the stack up **without** the in-box crawler, **with** the tunnel overlay:
    ```bash
    cd /srv/egp
-   docker compose --env-file /etc/egp/egp.env \
-     -f docker-compose.yml -f docker-compose.pg-tunnel.yml \
+   ./scripts/release_compose.sh --env-file /etc/egp/egp.env \
+     -f docker-compose.pg-tunnel.yml \
      up -d --build --scale discovery-executor=0
    docker compose --env-file /etc/egp/egp.env ps discovery-executor   # → 0 replicas
    curl -fsS https://api.<domain>/ready

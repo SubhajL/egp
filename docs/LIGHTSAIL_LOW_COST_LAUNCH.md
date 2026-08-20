@@ -361,10 +361,11 @@ The API image contains only the control-plane runtime. `discovery-executor` uses
 which also contains the API executor package plus the Playwright browser payload it dispatches.
 Both images run as UID/GID `10001:10001`.
 
-A typical launch command on the VM will look like:
+A typical launch command on the VM uses the release wrapper so the image revision is derived from
+the clean checked-out commit rather than accepted from a persistent env file:
 
 ```bash
-docker compose --env-file /etc/egp/egp.env up -d --build
+./scripts/release_compose.sh --env-file /etc/egp/egp.env up -d --build
 ```
 
 ### Important runtime behavior from the codebase
@@ -403,10 +404,18 @@ docker compose --env-file /etc/egp/egp.env stop api webhook-executor discovery-e
 2. check out the previous known-good release SHA and restart the same topology:
 
 ```bash
-git switch --detach <previous-release-sha>
-docker compose --env-file /etc/egp/egp.env up -d --build api webhook-executor discovery-executor
+git worktree add --detach ../egp-rollback <previous-release-sha>
+./scripts/release_compose.sh --source-root ../egp-rollback --project-name egp --env-file /etc/egp/egp.env up -d --build api webhook-executor discovery-executor
 curl -fsS https://api.yourdomain.com/ready
+git worktree remove ../egp-rollback
 ```
+
+The current release's wrapper stays available while it targets the detached rollback worktree. A
+pre-wrapper revision is supported only when it still defines all five current Python services; the
+wrapper fails closed for a pre-U7c or otherwise incompatible topology. Follow the historical
+image/digest procedure in [`DEPLOYMENT.md`](DEPLOYMENT.md#rollback) for those older targets. For a
+compatible target, the wrapper overwrites any caller value with the exact clean rollback `HEAD` and
+fails before Compose on source drift.
 
 Do not enable embedded mode against PostgreSQL; startup rejects it to prevent duplicate queue
 ownership.

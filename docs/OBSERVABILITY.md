@@ -448,6 +448,16 @@ run-log API reads them by exact path.
 
 ### EGP_RELEASE_SHA
 
-Optional env var stamped into structured log events. Set in CI/CD or manually
-in `.env.remotecrawl`. Passed through in `docker-compose.yml` and
-`docker-compose-localdev.yml` for the discovery-executor service.
+Release identity stamped into structured events and baked into production runtime images. It is
+derived at trusted entrypoints rather than persisted in an env file:
+
+- CI and image publishing use the workflow commit SHA.
+- Production and rollback builds must run through `scripts/release_compose.sh`, which derives a
+  40-character SHA from the clean tracked checkout immediately before Compose and overwrites any
+  caller value.
+- `scripts/run_remote_crawl.sh` independently derives the clean native checkout SHA before module
+  execution and ignores any stale `.env.remotecrawl` value.
+
+The image OCI revision label and baked `EGP_RELEASE_SHA` must agree. The runtime-image smoke gate
+checks both against the trusted entrypoint's expected SHA. Local development images intentionally
+use the non-source-identifying marker `localdev`.

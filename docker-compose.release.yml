@@ -1,0 +1,45 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+    environment:
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+    environment:
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+
+  webhook-executor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+    environment:
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+
+  crawler-agent-inbox-executor:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+    environment:
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+
+  discovery-executor:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      args:
+        EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}
+    environment:
+      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:?use scripts/release_compose.sh for production builds}

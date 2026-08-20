@@ -266,12 +266,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate API Docker image
-        run: docker build -t egp-api:ci -f apps/api/Dockerfile .
+        run: docker build --build-arg EGP_RELEASE_SHA=${GITHUB_SHA} -t egp-api:ci -f apps/api/Dockerfile .
 
       - name: Validate Worker Docker image
-        run: docker build -t egp-worker:ci -f apps/worker/Dockerfile .
+        run: docker build --build-arg EGP_RELEASE_SHA=${GITHUB_SHA} -t egp-worker:ci -f apps/worker/Dockerfile .
 
       - name: Smoke runtime images
+        env:
+          EGP_EXPECTED_RELEASE_SHA: ${{ github.sha }}
         run: ./scripts/smoke_runtime_images.sh egp-api:ci egp-worker:ci
 
       - name: Validate Frontend Docker image
