@@ -39,6 +39,8 @@ jobs:
           context: .
           file: ./apps/api/Dockerfile
           push: true
+          build-args: |
+            EGP_RELEASE_SHA=${{ github.sha }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/api:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/api:${{ github.sha }}
@@ -49,6 +51,8 @@ jobs:
           context: .
           file: ./apps/worker/Dockerfile
           push: true
+          build-args: |
+            EGP_RELEASE_SHA=${{ github.sha }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/worker:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/worker:${{ github.sha }}

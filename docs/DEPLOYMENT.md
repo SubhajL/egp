@@ -59,7 +59,7 @@ The production compose stack runs the discovery dispatcher as a separate service
 > agent-sourced projects. It also drains **regardless of
 > `EGP_CRAWLER_AGENT_PROTOCOL`**, by design, so that turning ingress off cannot
 > strand already-accepted results. Those two facts combine: a routine
-> `docker compose up -d --build` can immediately email and webhook customers about
+> `./scripts/release_compose.sh up -d --build` can immediately email and webhook customers about
 > a backlog accepted *before* U8a, and entitlement and recipients are evaluated at
 > drain time, not at acceptance time. `EGP_CRAWLER_AGENT_PROTOCOL=off` is **not**
 > the emergency stop for this service — stopping the container is.
@@ -188,20 +188,35 @@ Next-PR gate:
 > `--remove-orphans` so the retired container is removed rather than left running
 > against the older schema.
 
+The generic trusted wrapper deliberately fails with `incompatible release topology` when the
+rollback tree does not define all current Python services; it never merges the current overlay into
+a pre-U7c topology. For such an older rollback, stop the retired executor and use a separately
+approved historical image/digest rollback procedure. Do not force the generic command below past
+that guard.
+
 PostgreSQL API startup requires `EGP_BACKGROUND_RUNTIME_MODE=external`. Do not fall back to
-embedded mode: that would make API and executor ownership ambiguous. Roll back the application
-release while keeping the external topology:
+embedded mode: that would make API and executor ownership ambiguous. The generic command below is
+only for a topology-compatible rollback target that still defines all five current Python services
+(`migrate`, `api`, `webhook-executor`, `crawler-agent-inbox-executor`, and
+`discovery-executor`). Roll back that application release while keeping the external topology:
 
 ```bash
-# Stop BEFORE checking out the rollback SHA. `crawler-agent-inbox-executor` was
-# introduced in U7c, so a pre-U7c SHA does not define it — naming it in a restart
-# command against that SHA makes Compose reject the whole command, and omitting it
-# leaves the container running as an orphan.
+# Stop BEFORE checking out the rollback SHA so a retired executor cannot remain
+# active as an orphan. The target SHA used below must still define all five current
+# Python services; pre-U7c targets require the separately approved historical
+# image/digest procedure described above.
 docker compose --env-file .deploy/egp.env stop webhook-executor discovery-executor crawler-agent-inbox-executor
-git switch --detach <previous-release-sha>
-docker compose --env-file .deploy/egp.env up -d --build --remove-orphans api webhook-executor discovery-executor crawler-agent-inbox-executor
+git worktree add --detach ../egp-rollback <previous-release-sha>
+./scripts/release_compose.sh --source-root ../egp-rollback --project-name egp --env-file "$PWD/.deploy/egp.env" up -d --build --remove-orphans api webhook-executor discovery-executor crawler-agent-inbox-executor
 curl -fsS https://api.example.com/ready
+git worktree remove ../egp-rollback
 ```
+
+The current release keeps the trusted driver available while it builds the clean detached rollback
+worktree. A revision may predate the wrapper itself only when it remains topology-compatible and
+defines all five services; a pre-U7c or otherwise incompatible revision fails closed and requires
+the separately approved historical image/digest procedure. Do not persist or hand-set
+`EGP_RELEASE_SHA` in the deployment env file.
 
 Keep the failed release SHA and logs for diagnosis, and return to the normal tracked deployment
 branch after the incident.

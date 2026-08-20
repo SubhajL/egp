@@ -31,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: localdev
     container_name: egp-migrate
     restart: "no"
     mem_limit: ${EGP_MIGRATE_MEMORY_LIMIT:-256m}
@@ -58,6 +60,8 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: localdev
     container_name: egp-api
     restart: unless-stopped
     mem_limit: ${EGP_API_MEMORY_LIMIT:-768m}
@@ -124,6 +128,8 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: localdev
     container_name: egp-webhook-executor
     restart: unless-stopped
     mem_limit: ${EGP_WEBHOOK_EXECUTOR_MEMORY_LIMIT:-256m}
@@ -151,6 +157,8 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args:
+        EGP_RELEASE_SHA: localdev
     restart: unless-stopped
     mem_limit: ${EGP_CRAWLER_AGENT_INBOX_MEMORY_LIMIT:-256m}
     cpus: ${EGP_CRAWLER_AGENT_INBOX_CPU_LIMIT:-0.5}
@@ -199,6 +207,8 @@ services:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
+      args:
+        EGP_RELEASE_SHA: localdev
     container_name: egp-discovery-executor
     restart: unless-stopped
     mem_limit: ${EGP_DISCOVERY_EXECUTOR_MEMORY_LIMIT:-2g}
@@ -225,7 +235,6 @@ services:
       EGP_BROWSER_CDP_PORT_BASE: ${EGP_BROWSER_CDP_PORT_BASE:-9222}
       EGP_BROWSER_CDP_PORT_RANGE: ${EGP_BROWSER_CDP_PORT_RANGE:-200}
       EGP_BROWSER_PROFILE_ROOT: /var/lib/egp/browser-profiles
-      EGP_RELEASE_SHA: ${EGP_RELEASE_SHA:-}
     volumes:
       - egp_artifacts:/var/lib/egp/artifacts
     depends_on:

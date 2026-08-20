@@ -10,6 +10,23 @@ api_image="$1"
 worker_image="$2"
 api_max_bytes="${EGP_API_IMAGE_MAX_BYTES:-800000000}"
 worker_max_bytes="${EGP_WORKER_IMAGE_MAX_BYTES:-2200000000}"
+expected_release_sha="${EGP_EXPECTED_RELEASE_SHA:-}"
+
+is_exact_release_sha() {
+  value="$1"
+  if [ "${#value}" -ne 40 ]; then
+    return 1
+  fi
+  case "$value" in
+    *[!0123456789abcdef]*) return 1 ;;
+  esac
+  return 0
+}
+
+if ! is_exact_release_sha "$expected_release_sha"; then
+  echo "EGP_EXPECTED_RELEASE_SHA must be an exact 40-character lowercase Git SHA for release revision smoke" >&2
+  exit 1
+fi
 
 require_non_root_user() {
   image="$1"
@@ -24,6 +41,28 @@ require_non_root_user() {
 
 require_non_root_user "$api_image"
 require_non_root_user "$worker_image"
+
+require_release_revision() {
+  image="$1"
+  revision="$(docker image inspect "$image" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+  if ! is_exact_release_sha "$revision"; then
+    echo "$image release revision must be an exact 40-character lowercase Git SHA" >&2
+    exit 1
+  fi
+  if [ "$revision" != "$expected_release_sha" ]; then
+    echo "$image release revision label mismatch: expected $expected_release_sha, got ${revision:-<missing>}" >&2
+    exit 1
+  fi
+
+  config_env="$(docker image inspect "$image" --format '{{range .Config.Env}}{{println .}}{{end}}')"
+  if ! printf '%s\n' "$config_env" | grep -Fqx "EGP_RELEASE_SHA=$expected_release_sha"; then
+    echo "$image release revision environment mismatch: missing EGP_RELEASE_SHA=$expected_release_sha" >&2
+    exit 1
+  fi
+}
+
+require_release_revision "$api_image"
+require_release_revision "$worker_image"
 
 docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 \
   --mount type=volume,destination=/var/lib/egp/artifacts \

@@ -33,8 +33,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "deploy" / ".env.production.example"
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 LOCALDEV_COMPOSE_PATH = REPO_ROOT / "docker-compose-localdev.yml"
+RELEASE_COMPOSE_PATH = REPO_ROOT / "docker-compose.release.yml"
 
 ENV_READ_FUNCTIONS = {"getenv", "environ.get"}
+
+# Compose values derived by a trusted entrypoint immediately before invocation.
+# Persisting these in the production env template would permit stale provenance.
+COMPOSE_DERIVED_VARS: frozenset[str] = frozenset({"EGP_RELEASE_SHA"})
 
 # Vars read via Mapping-style indirection (PR-A's build_target_from_env)
 # or only referenced as constants — AST scan can't see them, but they MUST
@@ -109,6 +114,10 @@ TEMPLATE_ONLY_VARS: frozenset[str] = frozenset(
 # Vars referenced only by dev/test helpers; intentionally NOT in prod template.
 SOURCE_ONLY_VARS: frozenset[str] = frozenset(
     {
+        # Derived ephemerally from a clean checkout by release_compose.sh (and
+        # by CI/publish/native entrypoints); persisting it permits stale or
+        # forged image provenance during deploy and rollback.
+        "EGP_RELEASE_SHA",
         "EGP_LOCAL_DEV_OWNER_EMAIL",
         "EGP_LOCAL_DEV_OWNER_NAME",
         "EGP_LOCAL_DEV_OWNER_PASSWORD",
@@ -380,13 +389,18 @@ def test_env_template_has_no_duplicate_keys() -> None:
     assert duplicates == set(), f"duplicate keys in template: {sorted(duplicates)}"
 
 
-def test_runtime_diagnostics_and_release_vars_are_optional() -> None:
+def test_runtime_diagnostics_var_is_optional() -> None:
     template = _parse_env_template(TEMPLATE_PATH)
 
-    for name in {"EGP_BROWSER_DIAGNOSTICS_DIR", "EGP_RELEASE_SHA"}:
-        entry = template[name]
-        assert entry.section == "optional"
-        assert entry.placeholder == ""
+    entry = template["EGP_BROWSER_DIAGNOSTICS_DIR"]
+    assert entry.section == "optional"
+    assert entry.placeholder == ""
+
+
+def test_release_sha_is_derived_not_persisted_in_production_template() -> None:
+    template = _parse_env_template(TEMPLATE_PATH)
+
+    assert "EGP_RELEASE_SHA" not in template
 
 
 def test_strict_jwt_identity_is_required_and_relayed_to_api() -> None:
@@ -422,12 +436,19 @@ def test_strict_jwt_identity_is_required_and_relayed_to_api() -> None:
 
 def test_discovery_executor_relays_optional_observability_vars() -> None:
     compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+    release = yaml.safe_load(RELEASE_COMPOSE_PATH.read_text(encoding="utf-8"))
     environment = compose["services"]["discovery-executor"]["environment"]
 
     assert environment["EGP_BROWSER_DIAGNOSTICS_DIR"] == (
         "${EGP_BROWSER_DIAGNOSTICS_DIR:-}"
     )
-    assert environment["EGP_RELEASE_SHA"] == "${EGP_RELEASE_SHA:-}"
+    assert "EGP_RELEASE_SHA" not in environment
+    assert "EGP_RELEASE_SHA" not in compose["services"]["discovery-executor"][
+        "build"
+    ].get("args", {})
+    assert release["services"]["discovery-executor"]["build"]["args"][
+        "EGP_RELEASE_SHA"
+    ].startswith("${EGP_RELEASE_SHA:?")
 
 
 def test_env_template_tracks_runtime_egp_vars() -> None:
@@ -546,11 +567,12 @@ def test_env_template_covers_all_compose_required_vars() -> None:
     compose_text = compose_path.read_text(encoding="utf-8")
     referenced = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*)", compose_text))
     template = _parse_env_template(TEMPLATE_PATH)
-    missing = referenced - set(template.keys())
+    missing = referenced - set(template.keys()) - COMPOSE_DERIVED_VARS
     assert missing == set(), (
         "docker-compose.yml interpolates these vars but the template doesn't "
         f"declare them: {sorted(missing)}. "
-        "Add them to deploy/.env.production.example so "
+        "Add persistent values to deploy/.env.production.example or explicitly "
+        "classify trusted-entrypoint-derived values in COMPOSE_DERIVED_VARS so "
         "`docker compose --env-file ... config -q` does not fail at deploy time."
     )
 

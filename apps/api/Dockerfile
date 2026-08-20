@@ -26,6 +26,18 @@ RUN uv sync --frozen --package egp-api --no-dev --no-editable
 # Runtime
 FROM python:3.12-slim-bookworm AS runtime
 
+ARG EGP_RELEASE_SHA
+RUN case "$EGP_RELEASE_SHA" in \
+      localdev) ;; \
+      *) \
+        release_sha_length="$(printf '%s' "$EGP_RELEASE_SHA" | wc -c)" && \
+        release_sha_invalid="$(printf '%s' "$EGP_RELEASE_SHA" | LC_ALL=C tr -d '0123456789abcdef' | wc -c)" && \
+        test "$release_sha_length" -eq 40 && \
+        test "$release_sha_invalid" -eq 0 \
+        ;; \
+    esac || { echo "release revision must be localdev or an exact 40-character lowercase Git SHA" >&2; exit 1; }
+LABEL org.opencontainers.image.revision="${EGP_RELEASE_SHA}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 curl && \
     groupadd --system --gid 10001 egp && \
@@ -39,7 +51,8 @@ COPY --from=deps /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HOME=/home/egp
+    HOME=/home/egp \
+    EGP_RELEASE_SHA="${EGP_RELEASE_SHA}"
 
 COPY packages/db/src/migrations packages/db/src/migrations
 
