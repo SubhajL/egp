@@ -45,6 +45,7 @@ class AbnormalRunCompletionReport:
     candidate_reconciliation_error_type: str | None
     run_terminalized: bool
     run_already_terminal: bool
+    run_terminal_status: str | None
     run_terminalization_error_type: str | None
 
     @property
@@ -67,6 +68,7 @@ class AbnormalRunCompletionReport:
             ),
             "run_terminalized": self.run_terminalized,
             "run_already_terminal": self.run_already_terminal,
+            "run_terminal_status": self.run_terminal_status,
             "run_terminalization_error_type": self.run_terminalization_error_type,
         }
 
@@ -81,23 +83,12 @@ def complete_abnormal_run(
     candidate_repository: CandidateReconciliationRepository,
     run_repository: ActiveRunFailureRepository,
 ) -> AbnormalRunCompletionReport:
-    """Reconcile candidates and terminalize one abnormal tenant/run.
+    """Terminalize one abnormal tenant/run, then reconcile its candidates.
 
-    Each durable operation is attempted independently. A reconciliation outage
-    must not prevent the run row from becoming terminal, and a run-write outage
-    must not erase successful candidate reconciliation evidence.
+    Candidate cleanup is allowed only after the run transition succeeds or a
+    tenant-scoped readback confirms a failed/cancelled terminal status. This
+    prevents a parent-side write outage from racing a successful worker commit.
     """
-
-    reconciled_count: int | None = None
-    candidate_error_type: str | None = None
-    try:
-        reconciled_count = candidate_repository.reconcile_open_candidates(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            terminal_reason=candidate_reason,
-        )
-    except Exception as exc:  # noqa: BLE001 - the report preserves independent cleanup
-        candidate_error_type = type(exc).__name__
 
     failed_run: CrawlRunRecord | None = None
     run_error_type: str | None = None
@@ -111,19 +102,44 @@ def complete_abnormal_run(
     except Exception as exc:  # noqa: BLE001 - candidate cleanup already happened
         run_error_type = type(exc).__name__
 
-    run_already_terminal = False
-    if failed_run is None and run_error_type is None:
+    failed_status = getattr(failed_run, "status", "failed")
+    current_status: str | None = (
+        str(getattr(failed_status, "value", failed_status))
+        if failed_run is not None
+        else None
+    )
+    if failed_run is None:
         try:
             current_run = run_repository.find_run_by_id_for_tenant(
                 tenant_id=tenant_id,
                 run_id=run_id,
             )
-            run_already_terminal = current_run is not None and current_run.status.value in {
-                "failed",
-                "cancelled",
-            }
+            current_status = (
+                current_run.status.value if current_run is not None else None
+            )
         except Exception as exc:  # noqa: BLE001 - report the read failure without raising
-            run_error_type = type(exc).__name__
+            if run_error_type is None:
+                run_error_type = type(exc).__name__
+    run_already_terminal = current_status is not None and current_status not in {
+        "queued",
+        "running",
+    }
+
+    reconciled_count: int | None = None
+    candidate_error_type: str | None = None
+    if current_status in {"succeeded", "partial"}:
+        reconciled_count = 0
+    elif current_status in {"failed", "cancelled"}:
+        try:
+            reconciled_count = candidate_repository.reconcile_open_candidates(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_reason=candidate_reason,
+            )
+        except Exception as exc:  # noqa: BLE001 - run completion was independent
+            candidate_error_type = type(exc).__name__
+    else:
+        candidate_error_type = "RunTerminalStatusUnconfirmed"
 
     return AbnormalRunCompletionReport(
         tenant_id=tenant_id,
@@ -133,5 +149,6 @@ def complete_abnormal_run(
         candidate_reconciliation_error_type=candidate_error_type,
         run_terminalized=failed_run is not None,
         run_already_terminal=run_already_terminal,
+        run_terminal_status=current_status,
         run_terminalization_error_type=run_error_type,
     )

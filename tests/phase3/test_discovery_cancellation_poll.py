@@ -31,6 +31,7 @@ import pytest
 from egp_api.services.discovery_worker_dispatcher import (
     _DiscoveryLeaseCancellation,
     _communicate_with_cancellation,
+    _kill_process_group,
 )
 
 
@@ -150,23 +151,29 @@ def test_the_no_cancellation_fast_path_is_unchanged() -> None:
     assert proc.calls == 1
 
 
-def test_an_unexpected_exception_still_reaps_the_browser_process_group() -> None:
-    """The orphaned-Chrome half of the incident.
+def test_cleanup_uses_captured_process_group_after_leader_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reaped leader cannot be queried for its surviving process group."""
 
-    The named handlers kill the process group for the failures they expect. An
-    UNEXPECTED exception escaped without killing anything, and every escape left a
-    real Chrome plus its helpers holding the persistent profile. One production
-    bug produced 27 stray processes and a permanently locked profile, so cleanup
-    must not depend on having anticipated the exception.
-    """
+    process_group_signals: list[tuple[int, int]] = []
 
-    import inspect
+    class _ExitedProc:
+        pid = 90_909
+        returncode = -15
 
-    from egp_api.services import discovery_worker_dispatcher as module
+        def kill(self) -> None:
+            raise AssertionError("leader-only fallback cannot clean descendants")
 
-    source = inspect.getsource(module.SubprocessDiscoveryDispatcher)
-    finally_reap = "_kill_process_group(proc)" in source and "poll() is None" in source
-    assert finally_reap, (
-        "dispatch must reap the worker process group from a finally block, not "
-        "only from the exception handlers it happens to name"
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.os.getpgid",
+        lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
     )
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.os.killpg",
+        lambda pgid, sig: process_group_signals.append((pgid, sig)),
+    )
+
+    _kill_process_group(_ExitedProc(), process_group_id=90_909)
+
+    assert process_group_signals == [(90_909, 9)]

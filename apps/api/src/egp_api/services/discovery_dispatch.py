@@ -31,6 +31,32 @@ class NonRetriableDiscoveryDispatchError(RuntimeError):
         super().__init__(message)
 
 
+class DiscoveryRunTerminalizationIncompleteError(RuntimeError):
+    """A reserved crawl run could not be confirmed terminal after dispatch failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str,
+        failure_code: DiscoveryFailureCode,
+        original_error_type: str,
+    ) -> None:
+        self.run_id = run_id
+        self.failure_code = failure_code
+        self.original_error_type = original_error_type
+        super().__init__(message)
+
+
+class DiscoveryRunAlreadyCompletedError(RuntimeError):
+    """The durable child run completed despite a parent-side transport error."""
+
+    def __init__(self, *, run_id: str, status: str) -> None:
+        self.run_id = run_id
+        self.status = status
+        super().__init__(f"crawl run {run_id} already completed with status {status}")
+
+
 class DiscoveryJobStore(Protocol):
     def get_discovery_queue_snapshot(
         self,
@@ -436,7 +462,8 @@ class DiscoveryDispatchProcessor:
                         self.dispatcher.dispatch(request)
                 except Exception as exc:
                     dispatch_error = exc
-                lease_keeper.ensure_owned()
+                if not isinstance(dispatch_error, DiscoveryRunAlreadyCompletedError):
+                    lease_keeper.ensure_owned()
         except StaleDiscoveryJobClaimError:
             return DiscoveryJobDispatchDisposition(
                 job_id=job.id,
@@ -452,6 +479,49 @@ class DiscoveryDispatchProcessor:
                 last_error=None,
                 last_error_code=None,
                 dispatched=True,
+            )
+
+        if isinstance(dispatch_error, StaleDiscoveryJobClaimError):
+            return DiscoveryJobDispatchDisposition(
+                job_id=job.id,
+                outcome="stale_claim",
+                failure_code=DiscoveryFailureCode.LEASE_LOST,
+            )
+
+        if isinstance(dispatch_error, DiscoveryRunAlreadyCompletedError):
+            recover_completed = getattr(
+                self.repository,
+                "recover_completed_discovery_job",
+                None,
+            )
+            if callable(recover_completed):
+                recovered = recover_completed(
+                    tenant_id=job.tenant_id,
+                    job_id=job.id,
+                )
+                if recovered is not None:
+                    return DiscoveryJobDispatchDisposition(
+                        job_id=job.id,
+                        outcome="dispatched",
+                    )
+            return self._record_disposition(
+                job=job,
+                job_status="dispatched",
+                outcome="dispatched",
+                last_error=None,
+                last_error_code=None,
+                dispatched=True,
+            )
+
+        if isinstance(dispatch_error, DiscoveryRunTerminalizationIncompleteError):
+            return self._record_disposition(
+                job=job,
+                job_status="pending",
+                outcome="retrying",
+                last_error=str(dispatch_error),
+                last_error_code=dispatch_error.failure_code,
+                next_attempt_at=datetime.now(UTC)
+                + timedelta(seconds=max(0.0, self.retry_delay_seconds)),
             )
 
         if isinstance(dispatch_error, NonRetriableDiscoveryDispatchError):

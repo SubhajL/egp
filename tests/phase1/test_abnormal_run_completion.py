@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from egp_db.abnormal_run_completion import complete_abnormal_run
 from egp_db.repositories.run_repo import CrawlRunRecord
 from egp_shared_types.enums import CrawlRunStatus
@@ -96,10 +98,21 @@ def test_complete_abnormal_run_attempts_both_operations() -> None:
     assert report.succeeded is False
 
 
-def test_complete_abnormal_run_reports_already_failed_as_terminal() -> None:
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        CrawlRunStatus.FAILED,
+        CrawlRunStatus.CANCELLED,
+        CrawlRunStatus.SUCCEEDED,
+        CrawlRunStatus.PARTIAL,
+    ],
+)
+def test_complete_abnormal_run_reports_terminal_status(
+    terminal_status: CrawlRunStatus,
+) -> None:
     candidates = CandidateRepo()
     runs = RunRepo()
-    runs.current = _run(CrawlRunStatus.FAILED)
+    runs.current = _run(terminal_status)
     runs.fail_run_if_active = lambda **kwargs: None  # type: ignore[method-assign]
 
     report = complete_abnormal_run(
@@ -112,7 +125,61 @@ def test_complete_abnormal_run_reports_already_failed_as_terminal() -> None:
         run_repository=runs,
     )
 
-    assert report.reconciled_candidate_count == 3
     assert report.run_terminalized is False
     assert report.run_already_terminal is True
     assert report.succeeded is True
+    if terminal_status in {CrawlRunStatus.SUCCEEDED, CrawlRunStatus.PARTIAL}:
+        assert candidates.calls == []
+        assert report.reconciled_candidate_count == 0
+    else:
+        assert len(candidates.calls) == 1
+        assert report.reconciled_candidate_count == 3
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [CrawlRunStatus.SUCCEEDED, CrawlRunStatus.PARTIAL],
+)
+def test_failed_terminal_write_reads_back_success_before_candidate_reconciliation(
+    terminal_status: CrawlRunStatus,
+) -> None:
+    candidates = CandidateRepo()
+    runs = RunRepo(error=RuntimeError("terminal write unavailable"))
+    runs.current = _run(terminal_status)
+
+    report = complete_abnormal_run(
+        tenant_id=TENANT_ID,
+        run_id=RUN_ID,
+        failure_code="worker_lost",
+        candidate_reason="worker_lost",
+        error="worker lost",
+        candidate_repository=candidates,
+        run_repository=runs,
+    )
+
+    assert candidates.calls == []
+    assert report.run_already_terminal is True
+    assert report.reconciled_candidate_count == 0
+
+
+def test_unconfirmed_terminal_status_never_reconciles_candidates() -> None:
+    candidates = CandidateRepo()
+    runs = RunRepo(error=RuntimeError("terminal write unavailable"))
+    runs.find_run_by_id_for_tenant = (  # type: ignore[method-assign]
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("read unavailable"))
+    )
+
+    report = complete_abnormal_run(
+        tenant_id=TENANT_ID,
+        run_id=RUN_ID,
+        failure_code="worker_lost",
+        candidate_reason="worker_lost",
+        error="worker lost",
+        candidate_repository=candidates,
+        run_repository=runs,
+    )
+
+    assert candidates.calls == []
+    assert report.run_terminalized is False
+    assert report.run_already_terminal is False
+    assert report.candidate_reconciliation_succeeded is False

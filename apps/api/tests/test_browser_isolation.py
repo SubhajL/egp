@@ -61,6 +61,12 @@ class _FakeRunRepository:
     ) -> None:
         del run_id, summary_json
 
+    def fail_run_if_active(self, *, run_id: str, **kwargs):
+        return type("FailedRun", (), {"id": run_id})()
+
+    def find_run_by_id_for_tenant(self, **kwargs):
+        return None
+
 
 def _dispatch_once(spawner) -> None:
     spawner(

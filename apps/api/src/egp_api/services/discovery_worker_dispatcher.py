@@ -42,6 +42,8 @@ from egp_api.config import (
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
     DiscoveryPreDispatchResult,
+    DiscoveryRunAlreadyCompletedError,
+    DiscoveryRunTerminalizationIncompleteError,
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.run_trigger_mapping import map_job_trigger_to_run_trigger
@@ -399,7 +401,11 @@ def _release_profile_lock(handle) -> None:
     _shared_release_profile_lock(handle)
 
 
-def _kill_process_group(proc) -> None:
+def _kill_process_group(
+    proc,
+    *,
+    process_group_id: int | None = None,
+) -> None:
     """SIGKILL the worker and its descendants (Chrome/Xvfb) as a group.
 
     The worker is spawned with ``start_new_session=True`` so it leads its own
@@ -407,11 +413,19 @@ def _kill_process_group(proc) -> None:
     orphaned Chrome from holding a persistent profile after the lock is released.
     """
     pid = getattr(proc, "pid", None)
-    if isinstance(pid, int):
+    group_id = process_group_id if isinstance(process_group_id, int) else None
+    if group_id is None and isinstance(pid, int):
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-            return
+            group_id = os.getpgid(pid)
         except (ProcessLookupError, PermissionError, OSError):
+            pass
+    if group_id is not None:
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            return
+        except (PermissionError, OSError):
             pass
     try:
         proc.kill()
@@ -757,9 +771,26 @@ def _verified_fault_exception(
     ):
         exc.fault_evidence_verified = True
         return exc
-    return NonRetriableDiscoveryDispatchError(
+    replacement = NonRetriableDiscoveryDispatchError(
         "fault injection outcome or durable cleanup was not verified",
         failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+    )
+    if getattr(exc, "run_terminalization_confirmed", False):
+        replacement.run_terminalization_confirmed = True
+    return replacement
+
+
+def _terminalization_incomplete_error(
+    *,
+    run_id: str,
+    failure_code: DiscoveryFailureCode,
+    original_error_type: str,
+) -> DiscoveryRunTerminalizationIncompleteError:
+    return DiscoveryRunTerminalizationIncompleteError(
+        f"reserved crawl run {run_id} could not be durably terminalized",
+        run_id=run_id,
+        failure_code=failure_code,
+        original_error_type=original_error_type,
     )
 
 
@@ -1032,9 +1063,15 @@ class SubprocessDiscoveryDispatcher:
                 "profile_id": request.profile_id,
                 "trigger_type": run_trigger,
                 "run_id": run_id,
+                "summary_json": {
+                    "worker_owner_pid": os.getpid(),
+                    "worker_dispatch_phase": "reserved",
+                },
             }
             if request.discovery_job_id is not None:
                 run_values["discovery_job_id"] = request.discovery_job_id
+                if request.claim_token is not None:
+                    run_values["discovery_job_claim_token"] = request.claim_token
             if request.recrawl_request_id is not None:
                 run_values["recrawl_request_id"] = request.recrawl_request_id
             self._run_repository.create_run(
@@ -1103,22 +1140,30 @@ class SubprocessDiscoveryDispatcher:
                         )
                     except Exception:
                         pass
-                    self._terminalize_injected_run(
-                        tenant_id=request.tenant_id,
-                        run_id=run_id,
-                        fault_mode="invalid",
-                        error=str(exc),
-                        failure_code=exc.failure_code,
-                        pending_log_events=pending_log_events,
-                    )
-                    _flush_log_events(log_handle, pending_log_events)
-                    if log_handle is not None:
-                        try:
-                            log_handle.close()
-                        except Exception:
-                            pass
-                    if evidence_writer is not None:
-                        evidence_writer.close()
+                    try:
+                        self._terminalize_injected_run(
+                            tenant_id=request.tenant_id,
+                            run_id=run_id,
+                            fault_mode="invalid",
+                            error=str(exc),
+                            failure_code=exc.failure_code,
+                            pending_log_events=pending_log_events,
+                        )
+                    finally:
+                        _flush_log_events(log_handle, pending_log_events)
+                        if log_handle is not None:
+                            try:
+                                log_handle.close()
+                            except Exception:
+                                pass
+                        if evidence_writer is not None:
+                            try:
+                                evidence_writer.close()
+                            except Exception:
+                                _logger.warning(
+                                    "failed to close pre-spawn evidence writer",
+                                    exc_info=True,
+                                )
                     raise
                 if fault_mode == "worker_timeout":
                     worker_timeout_seconds = self._fault_timeout_seconds
@@ -1174,33 +1219,42 @@ class SubprocessDiscoveryDispatcher:
                     mode="w+b",
                 )
             except Exception as exc:
-                if fault_mode is not None:
-                    self._terminalize_injected_run(
-                        tenant_id=request.tenant_id,
-                        run_id=run_id,
-                        fault_mode=fault_mode,
-                        error=str(exc),
-                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
-                        pending_log_events=pending_log_events,
-                    )
-                else:
-                    self._complete_abnormal_run(
-                        tenant_id=request.tenant_id,
-                        run_id=run_id,
-                        error=str(exc),
-                        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
-                        candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
-                    )
-                _flush_log_events(log_handle, pending_log_events)
-                if log_handle is not None:
-                    try:
-                        log_handle.close()
-                    except Exception:
-                        pass
-                if evidence_writer is not None:
-                    evidence_writer.close()
+                try:
+                    if fault_mode is not None:
+                        self._terminalize_injected_run(
+                            tenant_id=request.tenant_id,
+                            run_id=run_id,
+                            fault_mode=fault_mode,
+                            error=str(exc),
+                            failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                            pending_log_events=pending_log_events,
+                        )
+                    elif not getattr(exc, "run_terminalization_confirmed", False):
+                        self._complete_abnormal_run(
+                            tenant_id=request.tenant_id,
+                            run_id=run_id,
+                            error=str(exc),
+                            failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                            candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
+                        )
+                finally:
+                    _flush_log_events(log_handle, pending_log_events)
+                    if log_handle is not None:
+                        try:
+                            log_handle.close()
+                        except Exception:
+                            pass
+                    if evidence_writer is not None:
+                        try:
+                            evidence_writer.close()
+                        except Exception:
+                            _logger.warning(
+                                "failed to close pre-spawn evidence writer",
+                                exc_info=True,
+                            )
                 raise
             proc = None
+            process_group_id: int | None = None
             try:
                 proc = subprocess.Popen(
                     worker_command,
@@ -1209,13 +1263,18 @@ class SubprocessDiscoveryDispatcher:
                     stderr=subprocess.PIPE,
                     start_new_session=True,
                 )
+                if isinstance(getattr(proc, "pid", None), int) and callable(
+                    getattr(proc, "poll", None)
+                ):
+                    process_group_id = proc.pid
                 if evidence_writer is not None:
                     evidence_writer.update_child_pid(getattr(proc, "pid", None))
-                self._safe_update_run_summary(
-                    run_id=run_id,
+                self._run_repository.update_run_summary(
+                    run_id,
                     summary_json={
                         **({"worker_log_path": str(log_path)} if log_path is not None else {}),
                         "worker_owner_pid": os.getpid(),
+                        "worker_dispatch_phase": "spawned",
                         **(
                             {"worker_pid": proc.pid}
                             if isinstance(getattr(proc, "pid", None), int)
@@ -1270,6 +1329,10 @@ class SubprocessDiscoveryDispatcher:
                     stderr_text = stderr
                     worker_result = _decode_framed_or_fallback_result(stdout)
                 if proc.returncode is not None and proc.returncode < 0:
+                    _kill_process_group(
+                        proc,
+                        process_group_id=process_group_id,
+                    )
                     terminated = self._worker_termination_error(
                         tenant_id=request.tenant_id,
                         returncode=int(proc.returncode),
@@ -1278,6 +1341,13 @@ class SubprocessDiscoveryDispatcher:
                     )
                     if terminated is not None:
                         termination_error, run_terminalized, candidates_reconciled = terminated
+                        if not run_terminalized:
+                            raise _terminalization_incomplete_error(
+                                run_id=run_id,
+                                failure_code=termination_error.failure_code,
+                                original_error_type=type(termination_error).__name__,
+                            ) from termination_error
+                        termination_error.run_terminalization_confirmed = True
                         if fault_mode is not None:
                             self._append_fault_terminalization_event(
                                 pending_log_events=pending_log_events,
@@ -1385,7 +1455,10 @@ class SubprocessDiscoveryDispatcher:
                     failure_code=DiscoveryFailureCode.LEASE_LOST,
                 ) from exc
             except subprocess.TimeoutExpired as exc:
-                _kill_process_group(proc)
+                _kill_process_group(
+                    proc,
+                    process_group_id=process_group_id,
+                )
                 error_message = f"discover worker timed out for keyword {request.keyword!r}"
                 try:
                     returned_stdout, stderr = proc.communicate()
@@ -1483,7 +1556,7 @@ class SubprocessDiscoveryDispatcher:
                         run_terminalized=run_terminalized,
                         candidates_reconciled=candidates_reconciled,
                     )
-                else:
+                elif not getattr(exc, "run_terminalization_confirmed", False):
                     self._complete_abnormal_run(
                         tenant_id=request.tenant_id,
                         run_id=run_id,
@@ -1511,6 +1584,7 @@ class SubprocessDiscoveryDispatcher:
                 raised_exc = exc
                 if (
                     fault_mode is not None
+                    and not getattr(exc, "run_terminalization_confirmed", False)
                     and exc.failure_code != DiscoveryFailureCode.WORKER_TERMINATED
                 ):
                     run_terminalized, candidates_reconciled = self._terminalize_injected_run(
@@ -1529,7 +1603,7 @@ class SubprocessDiscoveryDispatcher:
                         run_terminalized=run_terminalized,
                         candidates_reconciled=candidates_reconciled,
                     )
-                else:
+                elif not getattr(exc, "run_terminalization_confirmed", False):
                     self._complete_abnormal_run(
                         tenant_id=request.tenant_id,
                         run_id=run_id,
@@ -1557,7 +1631,31 @@ class SubprocessDiscoveryDispatcher:
                 if raised_exc is exc:
                     raise
                 raise raised_exc from exc
+            except DiscoveryRunTerminalizationIncompleteError:
+                raise
             except Exception as exc:
+                # Stop all worker-side mutation before the parent changes run
+                # or candidate state.  The captured group remains addressable
+                # even when the session leader has already exited.
+                if proc is not None and process_group_id is not None:
+                    try:
+                        _kill_process_group(
+                            proc,
+                            process_group_id=process_group_id,
+                        )
+                        proc.communicate(timeout=5)
+                        if callable(getattr(proc, "poll", None)) and proc.poll() is None:
+                            raise RuntimeError("discover worker remained live after reap")
+                    except Exception as cleanup_exc:
+                        _logger.warning(
+                            "failed to reap discover worker before terminalization",
+                            exc_info=True,
+                        )
+                        raise _terminalization_incomplete_error(
+                            run_id=run_id,
+                            failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+                            original_error_type=type(cleanup_exc).__name__,
+                        ) from exc
                 if fault_mode is not None:
                     self._terminalize_injected_run(
                         tenant_id=request.tenant_id,
@@ -1602,8 +1700,14 @@ class SubprocessDiscoveryDispatcher:
                 # produced 27 stray Chrome processes and a permanently locked
                 # persistent profile.
                 try:
+                    if process_group_id is not None:
+                        _kill_process_group(
+                            proc,
+                            process_group_id=process_group_id,
+                        )
                     if getattr(proc, "poll", None) is not None and proc.poll() is None:
-                        _kill_process_group(proc)
+                        if process_group_id is None:
+                            _kill_process_group(proc)
                         proc.communicate(timeout=5)
                 except Exception:  # noqa: BLE001 - cleanup must never mask the original error
                     _logger.warning("failed to reap discover worker process group", exc_info=True)
@@ -1871,6 +1975,25 @@ class SubprocessDiscoveryDispatcher:
             )
         return failed_run is not None
 
+    def _run_terminal_status(self, *, tenant_id: str, run_id: str) -> str | None:
+        try:
+            current = self._run_repository.find_run_by_id_for_tenant(
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+        except Exception:
+            _logger.warning(
+                "Failed to confirm discover run terminality (run_id=%s)",
+                run_id,
+                exc_info=True,
+            )
+            return None
+        status = getattr(current, "status", None)
+        status_value = getattr(status, "value", status)
+        if current is None or status_value in {"queued", "running"}:
+            return None
+        return str(status_value)
+
     def _complete_abnormal_run(
         self,
         *,
@@ -1895,6 +2018,11 @@ class SubprocessDiscoveryDispatcher:
             candidate_repository=candidate_repository,
             run_repository=self._run_repository,
         )
+        if report.run_terminal_status in {"succeeded", "partial"}:
+            raise DiscoveryRunAlreadyCompletedError(
+                run_id=run_id,
+                status=report.run_terminal_status,
+            )
         if not report.succeeded:
             _logger.warning(
                 "Abnormal run completion was incomplete "
@@ -1903,6 +2031,14 @@ class SubprocessDiscoveryDispatcher:
                 run_id,
                 report.candidate_reconciliation_error_type,
                 report.run_terminalization_error_type,
+            )
+        if not (report.run_terminalized or report.run_already_terminal):
+            raise _terminalization_incomplete_error(
+                run_id=run_id,
+                failure_code=failure_code,
+                original_error_type=(
+                    report.run_terminalization_error_type or "RunTerminalizationUnconfirmed"
+                ),
             )
         return report
 
@@ -1923,16 +2059,36 @@ class SubprocessDiscoveryDispatcher:
                 CandidateTerminalReason.WORKER_TERMINATED.value
             ),
         }.get(failure_code, CandidateTerminalReason.WORKER_LOST.value)
-        candidates_reconciled = self._reconcile_candidate_attempts(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            terminal_reason=terminal_reason,
-        )
         run_terminalized = self._mark_active_run_failed(
             tenant_id=tenant_id,
             run_id=run_id,
             error=error,
             failure_reason=failure_code.value,
+        )
+        terminal_status = "failed" if run_terminalized else None
+        if terminal_status is None:
+            terminal_status = self._run_terminal_status(
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+            run_terminalized = terminal_status is not None
+        if terminal_status in {"succeeded", "partial"}:
+            raise DiscoveryRunAlreadyCompletedError(
+                run_id=run_id,
+                status=terminal_status,
+            )
+        candidates_reconciled = (
+            True
+            if terminal_status in {"succeeded", "partial"}
+            else (
+                self._reconcile_candidate_attempts(
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    terminal_reason=terminal_reason,
+                )
+                if terminal_status in {"failed", "cancelled"}
+                else False
+            )
         )
         self._append_fault_terminalization_event(
             pending_log_events=pending_log_events,
@@ -1943,6 +2099,12 @@ class SubprocessDiscoveryDispatcher:
             run_terminalized=run_terminalized,
             candidates_reconciled=candidates_reconciled,
         )
+        if not run_terminalized:
+            raise _terminalization_incomplete_error(
+                run_id=run_id,
+                failure_code=failure_code,
+                original_error_type="RunTerminalizationUnconfirmed",
+            )
         return run_terminalized, candidates_reconciled
 
     @staticmethod
@@ -1994,16 +2156,36 @@ class SubprocessDiscoveryDispatcher:
         error_message = (
             f"discover worker terminated by signal {signal_name} for keyword {keyword!r}"
         )
-        candidates_reconciled = self._reconcile_candidate_attempts(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            terminal_reason=CandidateTerminalReason.WORKER_TERMINATED.value,
-        )
         run_terminalized = self._mark_active_run_failed(
             tenant_id=tenant_id,
             run_id=run_id,
             error=error_message,
             failure_reason="worker_terminated",
+        )
+        terminal_status = "failed" if run_terminalized else None
+        if terminal_status is None:
+            terminal_status = self._run_terminal_status(
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+            run_terminalized = terminal_status is not None
+        if terminal_status in {"succeeded", "partial"}:
+            raise DiscoveryRunAlreadyCompletedError(
+                run_id=run_id,
+                status=terminal_status,
+            )
+        candidates_reconciled = (
+            True
+            if terminal_status in {"succeeded", "partial"}
+            else (
+                self._reconcile_candidate_attempts(
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    terminal_reason=CandidateTerminalReason.WORKER_TERMINATED.value,
+                )
+                if terminal_status in {"failed", "cancelled"}
+                else False
+            )
         )
         return (
             NonRetriableDiscoveryDispatchError(

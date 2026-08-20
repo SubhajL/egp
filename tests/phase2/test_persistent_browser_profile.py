@@ -69,8 +69,8 @@ class _FakeRunRepository:
         del run_id, summary_json
 
     def fail_run_if_active(self, *args, **kwargs):
-        del args, kwargs
-        return None
+        del args
+        return SimpleNamespace(id=kwargs["run_id"])
 
 
 def _request() -> DiscoveryDispatchRequest:

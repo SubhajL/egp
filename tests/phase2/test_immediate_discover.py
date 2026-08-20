@@ -47,6 +47,22 @@ class FailingDiscoveryProcessor:
         raise AssertionError("route handlers must not execute discovery dispatch")
 
 
+class ConfirmingRunRepository:
+    """Minimal persistence seam for tests focused on subprocess diagnostics."""
+
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run_summary(self, *args, **kwargs):
+        return None
+
+    def fail_run_if_active(self, *, run_id: str, **kwargs):
+        return type("FailedRun", (), {"id": run_id})()
+
+    def find_run_by_id_for_tenant(self, **kwargs):
+        return None
+
+
 def _make_app_with_recorder(tmp_path, *, spawner=None):
     """Create a test app with an injected discover_spawner recorder."""
     database_url = f"sqlite+pysqlite:///{tmp_path / 'discover-trigger.sqlite3'}"
@@ -417,7 +433,10 @@ def test_make_discover_spawner_logs_spawn_failure_with_keyword_context(
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     caplog.set_level(logging.WARNING, logger=_logger.name)
-    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        run_repository=ConfirmingRunRepository(),
+    )
 
     with pytest.raises(RuntimeError, match="worker exited early"):
         spawner(
@@ -444,7 +463,10 @@ def test_make_discover_spawner_logs_non_zero_exit_with_stderr_preview(
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     caplog.set_level(logging.WARNING, logger=_logger.name)
-    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        run_repository=ConfirmingRunRepository(),
+    )
 
     with pytest.raises(RuntimeError, match="discover worker exited non-zero"):
         spawner(
@@ -485,7 +507,10 @@ def test_make_discover_spawner_logs_timeout_with_keyword_context(
     fake_process = FakeProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake_process)
     caplog.set_level(logging.WARNING, logger=_logger.name)
-    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        run_repository=ConfirmingRunRepository(),
+    )
 
     with pytest.raises(RuntimeError, match="discover worker timed out"):
         spawner(
@@ -516,7 +541,10 @@ def test_make_discover_spawner_raises_non_retriable_error_for_entitlement_denial
 
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
     caplog.set_level(logging.WARNING, logger=_logger.name)
-    spawner = _make_discover_spawner("sqlite+pysqlite:///test.sqlite3")
+    spawner = _make_discover_spawner(
+        "sqlite+pysqlite:///test.sqlite3",
+        run_repository=ConfirmingRunRepository(),
+    )
 
     with pytest.raises(
         NonRetriableDiscoveryDispatchError,
