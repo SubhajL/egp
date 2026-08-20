@@ -99,6 +99,24 @@ DISCOVERY_JOBS_TABLE = Table(
     ),
 )
 
+
+def _no_active_correlated_run_predicate():
+    """Exclude jobs while a tenant-matched correlated run is still active."""
+    from egp_db.repositories.run_repo import CRAWL_RUNS_TABLE
+
+    return (
+        ~select(CRAWL_RUNS_TABLE.c.id)
+        .where(
+            and_(
+                CRAWL_RUNS_TABLE.c.tenant_id == DISCOVERY_JOBS_TABLE.c.tenant_id,
+                CRAWL_RUNS_TABLE.c.discovery_job_id == DISCOVERY_JOBS_TABLE.c.id,
+                CRAWL_RUNS_TABLE.c.status.in_(("queued", "running")),
+            )
+        )
+        .exists()
+    )
+
+
 Index(
     "idx_discovery_jobs_pending_due",
     DISCOVERY_JOBS_TABLE.c.job_status,
@@ -497,6 +515,7 @@ class SqlDiscoveryJobRepository:
         claimable = and_(
             pending,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= resolved_now,
+            _no_active_correlated_run_predicate(),
             or_(
                 DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
                 DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
@@ -557,6 +576,7 @@ class SqlDiscoveryJobRepository:
             # same jobs.
             DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
+            _no_active_correlated_run_predicate(),
             or_(
                 DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
                 DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
@@ -611,7 +631,7 @@ class SqlDiscoveryJobRepository:
         exclude_trigger_types: Collection[str] | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
-        lease_expires_at = now + timedelta(seconds=max(0.01, float(lease_seconds)))
+        normalized_lease_seconds = max(0.01, float(lease_seconds))
         normalized_limit = max(1, int(limit))
         excluded_job_ids = {
             normalize_uuid_string(job_id) for job_id in (exclude_job_ids or ())
@@ -622,6 +642,7 @@ class SqlDiscoveryJobRepository:
             # claim agent-owned rows.
             DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
+            _no_active_correlated_run_predicate(),
         ]
         if excluded_job_ids:
             pending_conditions.append(
@@ -689,6 +710,20 @@ class SqlDiscoveryJobRepository:
             )
             for row in rows:
                 job_id = str(row["id"])
+                # Serialize with run reservation, which locks this same job
+                # row.  The UPDATE below is then a separate statement with a
+                # fresh READ COMMITTED snapshot of the active-run barrier.
+                locked_job_id = connection.execute(
+                    select(DISCOVERY_JOBS_TABLE.c.id)
+                    .where(DISCOVERY_JOBS_TABLE.c.id == job_id)
+                    .with_for_update()
+                ).scalar_one_or_none()
+                if locked_job_id is None:
+                    continue
+                claim_now = _now()
+                claim_lease_expires_at = claim_now + timedelta(
+                    seconds=normalized_lease_seconds
+                )
                 claim_token = str(uuid4())
                 updated = connection.execute(
                     update(DISCOVERY_JOBS_TABLE)
@@ -702,20 +737,21 @@ class SqlDiscoveryJobRepository:
                             # still be leased by the legacy executor.
                             DISCOVERY_JOBS_TABLE.c.execution_backend
                             == ExecutionBackend.LEGACY.value,
-                            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
+                            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= claim_now,
+                            _no_active_correlated_run_predicate(),
                             or_(
                                 DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
                                 DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
-                                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= now,
+                                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= claim_now,
                             ),
                         )
                     )
                     .values(
-                        processing_started_at=now,
+                        processing_started_at=claim_now,
                         claim_token=claim_token,
-                        lease_expires_at=lease_expires_at,
-                        lease_heartbeat_at=now,
-                        updated_at=now,
+                        lease_expires_at=claim_lease_expires_at,
+                        lease_heartbeat_at=claim_now,
+                        updated_at=claim_now,
                     )
                 )
                 if updated.rowcount:
@@ -735,6 +771,81 @@ class SqlDiscoveryJobRepository:
         return [
             claimed_by_id[job_id] for job_id in claimed_ids if job_id in claimed_by_id
         ]
+
+    def recover_completed_discovery_job(
+        self,
+        *,
+        tenant_id: str,
+        job_id: str,
+    ) -> DiscoveryJobRecord | None:
+        """Atomically dispatch a job whose correlated run already completed."""
+
+        from egp_db.repositories.run_repo import CRAWL_RUNS_TABLE
+
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
+        normalized_job_id = normalize_uuid_string(job_id)
+        now = _now()
+        with self._engine.begin() as connection:
+            locked = connection.execute(
+                select(DISCOVERY_JOBS_TABLE.c.id)
+                .where(
+                    and_(
+                        DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                        DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                    )
+                )
+                .with_for_update()
+            ).scalar_one_or_none()
+            if locked is None:
+                return None
+            completed_run = connection.execute(
+                select(CRAWL_RUNS_TABLE.c.id)
+                .where(
+                    and_(
+                        CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                        CRAWL_RUNS_TABLE.c.discovery_job_id == normalized_job_id,
+                        CRAWL_RUNS_TABLE.c.status.in_(("succeeded", "partial")),
+                    )
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if completed_run is None:
+                return None
+            connection.execute(
+                update(DISCOVERY_JOBS_TABLE)
+                .where(
+                    and_(
+                        DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                        DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                    )
+                )
+                .values(
+                    job_status="dispatched",
+                    attempt_count=DISCOVERY_JOBS_TABLE.c.attempt_count + 1,
+                    last_error=None,
+                    last_error_code=None,
+                    next_attempt_at=now,
+                    processing_started_at=None,
+                    claim_token=None,
+                    lease_expires_at=None,
+                    lease_heartbeat_at=None,
+                    dispatched_at=now,
+                    updated_at=now,
+                )
+            )
+            row = (
+                connection.execute(
+                    select(DISCOVERY_JOBS_TABLE).where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.id == normalized_job_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        return _job_from_mapping(row)
 
     def renew_discovery_job_lease(
         self,

@@ -164,6 +164,27 @@ def test_ci_enforces_postgres_browser_and_vulnerability_gates() -> None:
     assert "npm audit --audit-level=critical" in npm_audit["run"]
 
 
+def test_ci_verifies_uv_lock_before_frozen_sync() -> None:
+    lint_job = _workflow()["jobs"]["lint-python"]
+    steps = lint_job["steps"]
+    lock_step = _named_step(lint_job, "Verify uv lockfile")
+    sync_step = _named_step(lint_job, "Sync frozen Python workspace")
+
+    assert lock_step["run"] == "uv lock --check"
+    assert not lock_step.get("continue-on-error", False)
+    assert steps.index(lock_step) < steps.index(sync_step)
+
+
+def test_ci_runs_f7_postgres_contract() -> None:
+    migration_job = _workflow()["jobs"]["db-migrations"]
+    postgres_step = _named_step(migration_job, "Run PostgreSQL API contracts")
+
+    assert (
+        "tests/operations/test_f7_terminalization_postgres.py::"
+        "test_f7_ci_postgres_contract"
+    ) in postgres_step["run"]
+
+
 def test_critical_playwright_lane_covers_launch_paths() -> None:
     package_json = (REPO_ROOT / "apps/web/package.json").read_text(encoding="utf-8")
     assert (

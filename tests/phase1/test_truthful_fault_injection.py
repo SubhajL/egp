@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,8 @@ import pytest
 
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchRequest,
+    DiscoveryRunAlreadyCompletedError,
+    DiscoveryRunTerminalizationIncompleteError,
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import (
@@ -22,7 +25,8 @@ from egp_api.services.discovery_worker_dispatcher import (
     DiscoverySpawnError,
     SubprocessDiscoveryDispatcher,
 )
-from egp_shared_types.enums import DiscoveryFailureCode
+from egp_observability.subprocess_evidence import BoundedEvidenceWriter
+from egp_shared_types.enums import CrawlRunStatus, DiscoveryFailureCode
 from egp_worker.fault_injection import FAULT_MODES
 
 
@@ -39,7 +43,7 @@ class RecordingRunRepository:
             "status": "queued",
             "finished_at": None,
             "failure_reason": None,
-            "summary_json": {},
+            "summary_json": dict(values.get("summary_json") or {}),
         }
 
     def update_run_summary(
@@ -180,6 +184,8 @@ def test_every_injected_fault_terminalizes_run(
     assert run["status"] == "failed"
     assert run["finished_at"] is not None
     assert run["failure_reason"] == expected_reason
+    assert run["summary_json"]["worker_owner_pid"] == os.getpid()
+    assert run["summary_json"]["worker_dispatch_phase"] == "spawned"
 
     assert len(children) == 1
     child = children[0]
@@ -285,12 +291,13 @@ def test_terminalization_audit_reports_failed_durable_transition(
         lambda **kwargs: True,
     )
 
-    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
+    with pytest.raises(DiscoveryRunTerminalizationIncompleteError) as exc_info:
         dispatcher.dispatch_cancellable(
             _request("nonzero_exit"), cancellation_event=None
         )
 
-    assert exc_info.value.failure_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_EXIT_NONZERO
+    assert exc_info.value.run_id in repository.runs
     assert getattr(exc_info.value, "fault_evidence_verified", False) is False
     run_id, run = next(iter(repository.runs.items()))
     assert run["status"] == "queued"
@@ -302,6 +309,179 @@ def test_terminalization_audit_reports_failed_durable_transition(
     assert not any(
         event.get("event") == "fault_injection_terminalized" for event in events
     )
+
+
+def test_signal_terminalization_failure_is_not_retried_as_generic_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FailOnceRunRepository(RecordingRunRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failure_attempts = 0
+
+        def fail_run_if_active(self, **kwargs: object) -> SimpleNamespace | None:
+            self.failure_attempts += 1
+            if self.failure_attempts == 1:
+                raise RuntimeError("injected first terminalization outage")
+            return super().fail_run_if_active(**kwargs)
+
+    repository = FailOnceRunRepository()
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=repository,
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    reconciliations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_candidate_attempts",
+        lambda **kwargs: reconciliations.append(kwargs) or True,
+    )
+
+    with pytest.raises(DiscoveryRunTerminalizationIncompleteError) as exc_info:
+        dispatcher.dispatch_cancellable(
+            _request("worker_crash"), cancellation_event=None
+        )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TERMINATED
+    assert repository.failure_attempts == 1
+    assert reconciliations == []
+
+
+def test_signal_candidate_cleanup_failure_does_not_terminalize_twice(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class CountingRunRepository(RecordingRunRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failure_attempts = 0
+
+        def fail_run_if_active(self, **kwargs: object) -> SimpleNamespace | None:
+            self.failure_attempts += 1
+            return super().fail_run_if_active(**kwargs)
+
+    repository = CountingRunRepository()
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=repository,
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    reconciliations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_candidate_attempts",
+        lambda **kwargs: reconciliations.append(kwargs) or False,
+    )
+
+    with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
+        dispatcher.dispatch_cancellable(
+            _request("worker_crash"), cancellation_event=None
+        )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
+    assert repository.failure_attempts == 1
+    assert len(reconciliations) == 1
+
+
+def test_pre_spawn_close_failure_preserves_terminalization_retry_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = RecordingRunRepository()
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=repository,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    closed: list[bool] = []
+    original_close = BoundedEvidenceWriter.close
+
+    def track_close(writer: BoundedEvidenceWriter) -> None:
+        closed.append(True)
+        original_close(writer)
+        raise RuntimeError("injected evidence close failure")
+
+    def fail_spool(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("injected spool setup failure")
+
+    def fail_run_write(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("injected run repository outage")
+
+    monkeypatch.setattr(BoundedEvidenceWriter, "close", track_close)
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.tempfile.SpooledTemporaryFile",
+        fail_spool,
+    )
+    monkeypatch.setattr(repository, "fail_run_if_active", fail_run_write)
+
+    with pytest.raises(DiscoveryRunTerminalizationIncompleteError):
+        dispatcher.dispatch_cancellable(_request(None), cancellation_event=None)
+
+    assert closed == [True]
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        CrawlRunStatus.FAILED,
+        CrawlRunStatus.CANCELLED,
+        CrawlRunStatus.SUCCEEDED,
+        CrawlRunStatus.PARTIAL,
+    ],
+)
+def test_fault_terminalization_accepts_already_terminal_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    terminal_status: CrawlRunStatus,
+) -> None:
+    class AlreadyTerminalRunRepository(RecordingRunRepository):
+        def fail_run_if_active(self, **kwargs: object) -> None:
+            del kwargs
+            return None
+
+        def find_run_by_id_for_tenant(self, **kwargs: object) -> SimpleNamespace:
+            del kwargs
+            return SimpleNamespace(status=terminal_status)
+
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=AlreadyTerminalRunRepository(),
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    reconciliations: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_candidate_attempts",
+        lambda **kwargs: reconciliations.append(kwargs) or True,
+    )
+
+    expected_error = (
+        DiscoveryRunAlreadyCompletedError
+        if terminal_status in {CrawlRunStatus.SUCCEEDED, CrawlRunStatus.PARTIAL}
+        else DiscoverySpawnError
+    )
+    with pytest.raises(expected_error) as exc_info:
+        dispatcher.dispatch_cancellable(
+            _request("nonzero_exit"), cancellation_event=None
+        )
+
+    if terminal_status in {CrawlRunStatus.SUCCEEDED, CrawlRunStatus.PARTIAL}:
+        assert exc_info.value.status == terminal_status.value
+        assert reconciliations == []
+    else:
+        assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_EXIT_NONZERO
+        assert len(reconciliations) == 1
 
 
 def test_direct_fault_seam_requires_authorized_dispatcher(tmp_path: Path) -> None:
@@ -353,6 +533,8 @@ def test_injected_setup_failure_terminalizes_reserved_run(
     run_id, run = next(iter(repository.runs.items()))
     assert run["status"] == "failed"
     assert run["failure_reason"] == DiscoveryFailureCode.DISPATCH_EXCEPTION.value
+    assert run["summary_json"]["worker_owner_pid"] == os.getpid()
+    assert run["summary_json"]["worker_dispatch_phase"] == "reserved"
     assert any(
         event.get("event") == "fault_injection_terminalized"
         for event in _events(artifact_root, run_id)
@@ -394,6 +576,13 @@ def test_unexpected_injected_communication_failure_reaps_child(
             RuntimeError("communication failed")
         ),
     )
+    original_fail_run = repository.fail_run_if_active
+
+    def fail_only_after_child_exit(**kwargs: object) -> object:
+        assert children and children[0].poll() is not None
+        return original_fail_run(**kwargs)
+
+    monkeypatch.setattr(repository, "fail_run_if_active", fail_only_after_child_exit)
 
     with pytest.raises(RuntimeError, match="communication failed"):
         dispatcher.dispatch_cancellable(
@@ -405,6 +594,57 @@ def test_unexpected_injected_communication_failure_reaps_child(
     run = next(iter(repository.runs.values()))
     assert run["status"] == "failed"
     assert run["failure_reason"] == DiscoveryFailureCode.DISPATCH_EXCEPTION.value
+
+
+def test_failed_reap_keeps_reserved_run_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import egp_api.services.discovery_worker_dispatcher as dispatcher_module
+
+    repository = RecordingRunRepository()
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=repository,
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    real_popen = subprocess.Popen
+    real_kill_process_group = dispatcher_module._kill_process_group
+    children: list[subprocess.Popen[bytes]] = []
+
+    def tracking_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(dispatcher_module.subprocess, "Popen", tracking_popen)
+    monkeypatch.setattr(
+        dispatcher_module,
+        "observe_child_process",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("communication failed")
+        ),
+    )
+    monkeypatch.setattr(
+        dispatcher_module,
+        "_kill_process_group",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("reap unavailable")),
+    )
+
+    try:
+        with pytest.raises(DiscoveryRunTerminalizationIncompleteError):
+            dispatcher.dispatch_cancellable(
+                _request("worker_timeout"), cancellation_event=None
+            )
+        run = next(iter(repository.runs.values()))
+        assert run["status"] == "queued"
+    finally:
+        for child in children:
+            real_kill_process_group(child, process_group_id=child.pid)
+            with suppress(Exception):
+                child.communicate(timeout=5)
 
 
 def test_operator_fault_preflight_skips_real_circuit_and_profile_checks(
@@ -557,3 +797,68 @@ def test_timeout_cleanup_terminates_real_descendant_process_group(
     if descendant_exists:
         os.kill(descendant_pid, signal.SIGKILL)
     assert descendant_exists is False
+
+
+def test_signal_crash_cleanup_terminates_real_descendant_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repository = RecordingRunRepository()
+    descendant_pid_path = tmp_path / "signal-descendant.pid"
+    dispatcher = SubprocessDiscoveryDispatcher(
+        "sqlite+pysqlite:///:memory:",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=repository,
+        fault_injection_authorized=True,
+        browser_profile_root=tmp_path / "profiles",
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "_reconcile_candidate_attempts",
+        lambda **kwargs: True,
+    )
+    descendant_script = "import time; time.sleep(60)"
+    leader_script = (
+        "import os, pathlib, signal, subprocess, sys; "
+        "descendant = subprocess.Popen([sys.executable, '-c', sys.argv[2]], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        "pathlib.Path(sys.argv[1]).write_text(str(descendant.pid)); "
+        "os.kill(os.getpid(), signal.SIGTERM)"
+    )
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher._fault_worker_command",
+        lambda mode: [
+            sys.executable,
+            "-c",
+            leader_script,
+            str(descendant_pid_path),
+            descendant_script,
+        ],
+    )
+
+    descendant_pid: int | None = None
+    try:
+        with pytest.raises(NonRetriableDiscoveryDispatchError) as exc_info:
+            dispatcher.dispatch_cancellable(
+                _request("worker_crash"), cancellation_event=None
+            )
+
+        assert exc_info.value.failure_code == DiscoveryFailureCode.WORKER_TERMINATED
+        assert descendant_pid_path.exists()
+        descendant_pid = int(descendant_pid_path.read_text())
+        deadline = time.monotonic() + 2.0
+        descendant_exists = True
+        while descendant_exists and time.monotonic() < deadline:
+            try:
+                os.kill(descendant_pid, 0)
+            except ProcessLookupError:
+                descendant_exists = False
+            else:
+                time.sleep(0.02)
+        assert descendant_exists is False
+    finally:
+        if descendant_pid is None and descendant_pid_path.exists():
+            descendant_pid = int(descendant_pid_path.read_text())
+        if descendant_pid is not None:
+            with suppress(ProcessLookupError):
+                os.kill(descendant_pid, signal.SIGKILL)

@@ -5,13 +5,17 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import text
 
+from egp_db.repositories import discovery_job_repo as discovery_job_repo_module
 from egp_api.services.discovery_dispatch import (
     DiscoveryDispatchBatchResult,
     DiscoveryDispatchRequest,
     DiscoveryDispatchProcessor,
     DiscoveryPreDispatchResult,
+    DiscoveryRunAlreadyCompletedError,
+    DiscoveryRunTerminalizationIncompleteError,
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import SubprocessDiscoveryDispatcher
@@ -21,7 +25,12 @@ from egp_db.repositories.discovery_job_repo import (
     SqlDiscoveryJobRepository,
     StaleDiscoveryJobClaimError,
 )
-from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
+from egp_db.repositories.run_repo import SqlRunRepository
+from egp_shared_types.enums import (
+    CrawlRunStatus,
+    CrawlerBlockerCode,
+    DiscoveryFailureCode,
+)
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROFILE_ID = "22222222-2222-2222-2222-222222222222"
@@ -273,6 +282,271 @@ def test_discovery_queue_snapshot_distinguishes_due_leased_and_retrying(
         leased_count=1,
         retry_scheduled_count=1,
     )
+
+
+def test_active_correlated_run_blocks_claim_until_terminal(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'active-run-claim.sqlite3'}"
+    repo = SqlDiscoveryJobRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    run_repo = SqlRunRepository(database_url=database_url, bootstrap_schema=False)
+    run = run_repo.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+    )
+
+    blocked_snapshot = repo.get_discovery_queue_snapshot()
+    assert blocked_snapshot.pending_count == 1
+    assert blocked_snapshot.claimable_count == 0
+    assert repo.has_claimable_discovery_jobs() is False
+    assert repo.claim_pending_discovery_jobs(limit=1) == []
+
+    run_repo.fail_run_if_active(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+        error="reconciled",
+        failure_reason="worker_lost",
+    )
+
+    assert repo.get_discovery_queue_snapshot().claimable_count == 1
+    assert repo.has_claimable_discovery_jobs() is True
+    assert [claimed.id for claimed in repo.claim_pending_discovery_jobs(limit=1)] == [
+        job.id
+    ]
+
+
+def test_reconciliation_does_not_fail_live_same_process_reservation(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'same-owner-reservation.sqlite3'}"
+    jobs = SqlDiscoveryJobRepository(database_url=database_url, bootstrap_schema=True)
+    _seed_profile_row(jobs)
+    job = jobs.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="same-owner-reservation",
+    )
+    claimed = jobs.claim_pending_discovery_jobs(
+        only_job_id=job.id,
+        only_tenant_id=TENANT_ID,
+        lease_seconds=60.0,
+    )[0]
+    runs = SqlRunRepository(database_url=database_url)
+    reserved = runs.create_run(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_001,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+
+    assert runs.fail_runs_with_missing_workers(owner_pid=71_001) == []
+    still_reserved = runs.find_run_by_id_for_tenant(
+        tenant_id=TENANT_ID,
+        run_id=reserved.id,
+    )
+    assert still_reserved is not None
+    assert still_reserved.status is CrawlRunStatus.QUEUED
+
+    jobs.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=job.id,
+        claim_token=claimed.claim_token,
+        job_status="pending",
+        last_error="reserved run terminalization incomplete",
+        last_error_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+    )
+
+    failed = runs.fail_runs_with_missing_workers(owner_pid=71_001)
+    assert [run.id for run in failed] == [reserved.id]
+
+
+def test_active_database_lease_overrides_missing_foreign_pid(
+    tmp_path, monkeypatch
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'foreign-owner-lease.sqlite3'}"
+    jobs = SqlDiscoveryJobRepository(database_url=database_url, bootstrap_schema=True)
+    _seed_profile_row(jobs)
+    job = jobs.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="foreign-owner-lease",
+    )
+    jobs.claim_pending_discovery_jobs(
+        only_job_id=job.id,
+        only_tenant_id=TENANT_ID,
+        lease_seconds=60.0,
+    )
+    runs = SqlRunRepository(database_url=database_url)
+    reserved = runs.create_run(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_401,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+
+    monkeypatch.setattr(
+        "egp_db.repositories.run_repo.os.kill",
+        lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError(pid)),
+    )
+
+    assert runs.fail_runs_with_missing_workers(owner_pid=71_001) == []
+    current = runs.find_run_by_id_for_tenant(
+        tenant_id=TENANT_ID,
+        run_id=reserved.id,
+    )
+    assert current is not None
+    assert current.status is CrawlRunStatus.QUEUED
+
+
+def test_claim_token_cannot_reserve_a_second_active_run(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'duplicate-reservation.sqlite3'}"
+    jobs = SqlDiscoveryJobRepository(database_url=database_url, bootstrap_schema=True)
+    _seed_profile_row(jobs)
+    job = jobs.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="duplicate-reservation",
+    )
+    claim = jobs.claim_pending_discovery_jobs(
+        only_job_id=job.id,
+        only_tenant_id=TENANT_ID,
+        lease_seconds=60.0,
+    )[0]
+    runs = SqlRunRepository(database_url=database_url)
+    first = runs.create_run(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+        discovery_job_claim_token=claim.claim_token,
+        trigger_type="manual",
+    )
+
+    with pytest.raises(StaleDiscoveryJobClaimError):
+        runs.create_run(
+            tenant_id=TENANT_ID,
+            profile_id=PROFILE_ID,
+            discovery_job_id=job.id,
+            discovery_job_claim_token=claim.claim_token,
+            trigger_type="manual",
+        )
+
+    assert runs.find_run_by_id(first.id) is not None
+
+
+def test_claim_lease_is_sampled_after_job_row_lock(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'fresh-claim-clock.sqlite3'}"
+    jobs = SqlDiscoveryJobRepository(database_url=database_url, bootstrap_schema=True)
+    _seed_profile_row(jobs)
+    job = jobs.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="fresh-claim-clock",
+    )
+    initial = datetime.now(UTC) + timedelta(minutes=1)
+    after_lock = initial + timedelta(minutes=2)
+    sampled_times = iter([initial, after_lock])
+    monkeypatch.setattr(
+        discovery_job_repo_module,
+        "_now",
+        lambda: next(sampled_times),
+    )
+
+    claimed = jobs.claim_pending_discovery_jobs(
+        only_job_id=job.id,
+        only_tenant_id=TENANT_ID,
+        lease_seconds=60.0,
+    )[0]
+
+    assert (
+        datetime.fromisoformat(claimed.lease_heartbeat_at).replace(tzinfo=UTC)
+        == after_lock
+    )
+    assert datetime.fromisoformat(claimed.lease_expires_at).replace(
+        tzinfo=UTC
+    ) == after_lock + timedelta(seconds=60)
+
+
+def test_reconcile_legacy_run_for_failed_job_is_tenant_scoped(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'legacy-run-repair.sqlite3'}"
+    repo = SqlDiscoveryJobRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    claimed = repo.claim_pending_discovery_jobs(limit=1)[0]
+    repo.record_discovery_job_attempt(
+        tenant_id=TENANT_ID,
+        job_id=job.id,
+        claim_token=claimed.claim_token,
+        job_status="failed",
+        last_error="terminal dispatch failed",
+        last_error_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+    )
+    run_repo = SqlRunRepository(database_url=database_url, bootstrap_schema=False)
+    legacy = run_repo.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+    )
+    sibling_tenant = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    sibling_run_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    with run_repo._engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO crawl_runs "
+                "(id,tenant_id,discovery_job_id,trigger_type,status,last_activity_at,"
+                "error_count,created_at) VALUES "
+                "(:id,:tenant_id,:job_id,'manual','queued',CURRENT_TIMESTAMP,0,"
+                "CURRENT_TIMESTAMP)"
+            ),
+            {
+                "id": sibling_run_id,
+                "tenant_id": sibling_tenant,
+                "job_id": job.id,
+            },
+        )
+
+    failed = run_repo.fail_runs_with_missing_workers(owner_pid=72_001)
+
+    assert [run.id for run in failed] == [legacy.id]
+    assert failed[0].status is CrawlRunStatus.FAILED
+    assert failed[0].summary_json == {
+        "error": "terminal dispatch failed",
+        "failure_reason": DiscoveryFailureCode.DISPATCH_EXCEPTION.value,
+    }
+    untouched = run_repo.find_run_by_id_for_tenant(
+        tenant_id=sibling_tenant,
+        run_id=sibling_run_id,
+    )
+    assert untouched is not None
+    assert untouched.status is CrawlRunStatus.QUEUED
 
 
 def test_discovery_dispatch_processor_runs_claimed_jobs_with_worker_pool(
@@ -596,6 +870,87 @@ def test_discovery_dispatch_processor_fails_immediately_on_non_retriable_error(
     assert stored.last_error_code == DiscoveryFailureCode.ENTITLEMENT_DENIED
 
 
+@pytest.mark.parametrize("force_terminal_failures", [False, True])
+def test_incomplete_terminalization_overrides_terminal_attempt_rules(
+    tmp_path,
+    force_terminal_failures: bool,
+) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-incomplete.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    error = DiscoveryRunTerminalizationIncompleteError(
+        "reserved crawl run could not be durably terminalized",
+        run_id="run-incomplete",
+        failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
+        original_error_type="RuntimeError",
+    )
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=RaisingDiscoveryDispatcher(error),
+        max_attempts=1,
+        retry_delay_seconds=0.0,
+        force_terminal_failures=force_terminal_failures,
+    )
+
+    result = processor.process_pending()
+
+    assert result.dispositions[0].outcome == "retrying"
+    stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+    assert stored.job_status == "pending"
+    assert stored.attempt_count == 1
+    assert stored.last_error == "reserved crawl run could not be durably terminalized"
+    assert stored.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
+
+
+@pytest.mark.parametrize("status", ["succeeded", "partial"])
+def test_durable_completed_run_terminally_dispatches_queue_job(
+    tmp_path,
+    status: str,
+) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-completed.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    runs = SqlRunRepository(database_url=repo._database_url, bootstrap_schema=False)
+    durable_run = runs.create_run(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        discovery_job_id=job.id,
+        trigger_type="manual",
+    )
+    runs.mark_run_finished(durable_run.id, status=status)
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=RaisingDiscoveryDispatcher(
+            DiscoveryRunAlreadyCompletedError(run_id="run-complete", status=status)
+        ),
+        max_attempts=3,
+        retry_delay_seconds=0.0,
+    )
+
+    result = processor.process_pending()
+
+    assert result.dispositions[0].outcome == "dispatched"
+    stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+    assert stored.job_status == "dispatched"
+    assert stored.attempt_count == 1
+
+
 def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-renewal.sqlite3'}",
@@ -621,8 +976,8 @@ def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
         repository=repo,
         dispatcher=BlockingDispatcher(),
         claim_limit=1,
-        lease_seconds=0.12,
-        lease_heartbeat_seconds=0.02,
+        lease_seconds=0.5,
+        lease_heartbeat_seconds=0.05,
     )
     results: list[DiscoveryDispatchBatchResult] = []
     worker = threading.Thread(
@@ -632,8 +987,8 @@ def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
     worker.start()
     assert started.wait(timeout=1.0)
 
-    time.sleep(0.2)
-    competing_claim = repo.claim_pending_discovery_jobs(limit=1, lease_seconds=0.12)
+    time.sleep(0.65)
+    competing_claim = repo.claim_pending_discovery_jobs(limit=1, lease_seconds=0.5)
     release.set()
     worker.join(timeout=2.0)
 

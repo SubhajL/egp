@@ -844,6 +844,159 @@ def test_fail_runs_with_missing_worker_process_marks_worker_lost(
     assert candidate_summary.unknown == 1
 
 
+def test_reconcile_skips_uncorrelated_same_owner_reservation(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    reserved = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_001,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+
+    assert repository.fail_runs_with_missing_workers(owner_pid=71_001) == []
+    unchanged = repository.find_run_by_id_for_tenant(
+        tenant_id=TENANT_ID,
+        run_id=reserved.id,
+    )
+    assert unchanged is not None
+    assert unchanged.status is CrawlRunStatus.QUEUED
+    assert unchanged.summary_json == {
+        "worker_owner_pid": 71_001,
+        "worker_dispatch_phase": "reserved",
+    }
+
+
+def test_reconcile_reserved_run_for_dead_foreign_owner(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    current_time = datetime.now(UTC)
+    monkeypatch.setattr(
+        run_repo_module,
+        "_now",
+        lambda: current_time - timedelta(minutes=10),
+    )
+    reserved = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_101,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+    monkeypatch.setattr(run_repo_module, "_now", lambda: current_time)
+
+    def missing_owner(pid: int, sig: int) -> None:
+        assert sig == 0
+        if pid == 71_101:
+            raise ProcessLookupError(pid)
+
+    monkeypatch.setattr("egp_db.repositories.run_repo.os.kill", missing_owner)
+
+    failed = repository.fail_runs_with_missing_workers(owner_pid=71_001)
+
+    assert [run.id for run in failed] == [reserved.id]
+
+
+def test_reconcile_skips_live_foreign_owner_reservation(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    reserved = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_201,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+    probed: list[int] = []
+
+    def live_owner(pid: int, sig: int) -> None:
+        assert sig == 0
+        probed.append(pid)
+
+    monkeypatch.setattr("egp_db.repositories.run_repo.os.kill", live_owner)
+
+    assert repository.fail_runs_with_missing_workers(owner_pid=71_001) == []
+    assert probed == [71_201]
+    unchanged = repository.find_run_by_id(reserved.id)
+    assert unchanged is not None
+    assert unchanged.status is CrawlRunStatus.QUEUED
+
+
+def test_reconcile_recovers_stale_reservation_when_pid_was_reused(
+    tmp_path, monkeypatch
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    current_time = datetime.now(UTC)
+    monkeypatch.setattr(
+        run_repo_module,
+        "_now",
+        lambda: current_time - timedelta(minutes=10),
+    )
+    reserved = repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={
+            "worker_owner_pid": 71_301,
+            "worker_dispatch_phase": "reserved",
+        },
+    )
+    monkeypatch.setattr(run_repo_module, "_now", lambda: current_time)
+    monkeypatch.setattr(
+        "egp_db.repositories.run_repo.os.kill",
+        lambda pid, sig: None,
+    )
+
+    failed = repository.fail_runs_with_missing_workers(owner_pid=71_001)
+
+    assert [run.id for run in failed] == [reserved.id]
+    assert failed[0].status is CrawlRunStatus.FAILED
+
+
+def test_terminal_run_cannot_be_revived_by_late_worker_writes(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    repository = SqlRunRepository(
+        database_url=database_url,
+        bootstrap_schema=True,
+    )
+    run = repository.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    repository.mark_run_started(run.id)
+    failed = repository.fail_run_if_active(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+        error="worker lost",
+        failure_reason="worker_lost",
+    )
+    assert failed is not None
+
+    late_started = repository.mark_run_started(run.id)
+    late_finished = repository.mark_run_finished(
+        run.id,
+        status=CrawlRunStatus.SUCCEEDED,
+        summary_json={"late_worker_write": True},
+    )
+
+    assert late_started.status is CrawlRunStatus.FAILED
+    assert late_finished.status is CrawlRunStatus.FAILED
+    assert (late_finished.summary_json or {}).get("late_worker_write") is None
+
+
 def test_missing_worker_persists_incomplete_candidate_reconciliation(
     tmp_path, monkeypatch
 ) -> None:
@@ -857,6 +1010,16 @@ def test_missing_worker_persists_incomplete_candidate_reconciliation(
     repository.update_run_summary(
         run.id,
         summary_json={"worker_owner_pid": 71001, "worker_pid": 71002},
+    )
+    actual_candidate_repository = SqlCandidateAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    actual_candidate_repository.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=run.id,
+        candidate_key="retryable-cleanup",
+        keyword="retryable cleanup",
     )
 
     def fake_kill(pid: int, sig: int) -> None:
@@ -888,6 +1051,52 @@ def test_missing_worker_persists_incomplete_candidate_reconciliation(
     evidence = (current.summary_json or {})["abnormal_completion"]
     assert evidence["succeeded"] is False
     assert evidence["candidate_reconciliation_error_type"] == "RuntimeError"
+
+    monkeypatch.setattr(
+        "egp_api.services.run_service.create_candidate_attempt_repository",
+        lambda **_kwargs: actual_candidate_repository,
+    )
+    assert (
+        RunService(
+            repository,
+            database_url=database_url,
+        ).reconcile_missing_workers(owner_pid=71001)
+        == []
+    )
+    candidate_summary = actual_candidate_repository.get_run_candidate_summary(
+        TENANT_ID,
+        run.id,
+    )
+    assert candidate_summary.accepted == 0
+    assert candidate_summary.unknown == 1
+
+
+def test_open_candidate_sweep_is_not_starved_by_preserved_successes(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'phase1.sqlite3'}"
+    runs = SqlRunRepository(database_url=database_url, bootstrap_schema=True)
+    candidates = SqlCandidateAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+    for index in range(101):
+        run = runs.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+        runs.mark_run_finished(run.id, status=CrawlRunStatus.SUCCEEDED)
+        candidates.record_accepted(
+            tenant_id=TENANT_ID,
+            run_id=run.id,
+            candidate_key=f"preserved-success-{index}",
+            keyword="preserved success",
+        )
+    failed = runs.create_run(tenant_id=TENANT_ID, trigger_type="manual")
+    runs.mark_run_finished(failed.id, status=CrawlRunStatus.FAILED)
+    candidates.record_accepted(
+        tenant_id=TENANT_ID,
+        run_id=failed.id,
+        candidate_key="failed-cleanup",
+        keyword="failed cleanup",
+    )
+
+    assert candidates.list_open_candidate_runs(limit=100) == [(TENANT_ID, failed.id)]
 
 
 def test_project_and_run_listing_supports_limit_and_offset(tmp_path) -> None:

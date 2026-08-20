@@ -35,6 +35,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      - name: Verify uv lockfile
+        run: uv lock --check
+
       - name: Sync frozen Python workspace
         run: uv sync --frozen --all-packages --all-extras
 
@@ -139,6 +142,7 @@ jobs:
           tests/phase1/test_migration_runner.py::test_ci_postgres_records_exact_migration_set
           tests/phase1/test_api_readiness.py::test_ci_postgres_readiness_accepts_exact_migration_set
           tests/operations/test_session_activity_postgres.py::test_ci_postgres_activity_touch_contract
+          tests/operations/test_f7_terminalization_postgres.py::test_f7_ci_postgres_contract
 
   test-python:
     name: Python Tests

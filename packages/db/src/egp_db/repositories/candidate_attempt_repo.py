@@ -181,6 +181,7 @@ class CandidateRunSummary:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -203,10 +204,16 @@ def _record_from_mapping(row: RowMapping) -> CandidateAttemptRecord:
         page_number=int(row["page_number"]) if row["page_number"] is not None else None,
         row_ordinal=int(row["row_ordinal"]) if row["row_ordinal"] is not None else None,
         candidate_status=str(row["candidate_status"]),
-        terminal_reason=str(row["terminal_reason"]) if row["terminal_reason"] is not None else None,
-        terminal_detail=str(row["terminal_detail"]) if row["terminal_detail"] is not None else None,
+        terminal_reason=str(row["terminal_reason"])
+        if row["terminal_reason"] is not None
+        else None,
+        terminal_detail=str(row["terminal_detail"])
+        if row["terminal_detail"] is not None
+        else None,
         project_id=str(row["project_id"]) if row["project_id"] is not None else None,
-        project_number=str(row["project_number"]) if row["project_number"] is not None else None,
+        project_number=str(row["project_number"])
+        if row["project_number"] is not None
+        else None,
         row_marker=str(row["row_marker"]) if row["row_marker"] is not None else None,
         created_at=_dt_to_iso(row["created_at"]),
         updated_at=_dt_to_iso(row["updated_at"]),
@@ -250,6 +257,7 @@ def _dialect_insert(table, connection):
 # ---------------------------------------------------------------------------
 # Repository
 # ---------------------------------------------------------------------------
+
 
 class SqlCandidateAttemptRepository:
     """Durable accounting for discovery candidate rows."""
@@ -323,13 +331,15 @@ class SqlCandidateAttemptRepository:
             conn.execute(stmt)
             row = (
                 conn.execute(
-                    select(t).where(
+                    select(t)
+                    .where(
                         and_(
                             t.c.tenant_id == normalized_tenant,
                             t.c.run_id == normalized_run,
                             t.c.candidate_key == candidate_key,
                         )
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 .mappings()
                 .one()
@@ -387,13 +397,15 @@ class SqlCandidateAttemptRepository:
             )
             row = (
                 conn.execute(
-                    select(t).where(
+                    select(t)
+                    .where(
                         and_(
                             t.c.tenant_id == normalized_tenant,
                             t.c.run_id == normalized_run,
                             t.c.candidate_key == candidate_key,
                         )
-                    ).limit(1)
+                    )
+                    .limit(1)
                 )
                 .mappings()
                 .one_or_none()
@@ -438,7 +450,9 @@ class SqlCandidateAttemptRepository:
         project_id: str,
     ) -> CandidateAttemptRecord | None:
         return self._finalize(
-            tenant_id, run_id, candidate_key,
+            tenant_id,
+            run_id,
+            candidate_key,
             new_status="persisted",
             project_id=project_id,
         )
@@ -452,7 +466,9 @@ class SqlCandidateAttemptRepository:
         terminal_detail: str | None = None,
     ) -> CandidateAttemptRecord | None:
         return self._finalize(
-            tenant_id, run_id, candidate_key,
+            tenant_id,
+            run_id,
+            candidate_key,
             new_status="failed",
             terminal_reason=terminal_reason,
             terminal_detail=terminal_detail,
@@ -467,7 +483,9 @@ class SqlCandidateAttemptRepository:
         terminal_detail: str | None = None,
     ) -> CandidateAttemptRecord | None:
         return self._finalize(
-            tenant_id, run_id, candidate_key,
+            tenant_id,
+            run_id,
+            candidate_key,
             new_status="dropped",
             terminal_reason=terminal_reason,
             terminal_detail=terminal_detail,
@@ -507,6 +525,41 @@ class SqlCandidateAttemptRepository:
 
     # -- read: summary ---------------------------------------------------
 
+    def list_open_candidate_runs(self, *, limit: int = 100) -> list[tuple[str, str]]:
+        """Return failed/cancelled tenant/run keys with accepted candidates."""
+
+        from egp_db.repositories.run_repo import CRAWL_RUNS_TABLE
+
+        bounded_limit = max(1, min(int(limit), 1000))
+        t = DISCOVERY_CANDIDATE_ATTEMPTS_TABLE
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    select(t.c.tenant_id, t.c.run_id)
+                    .select_from(
+                        t.join(
+                            CRAWL_RUNS_TABLE,
+                            and_(
+                                t.c.tenant_id == CRAWL_RUNS_TABLE.c.tenant_id,
+                                t.c.run_id == CRAWL_RUNS_TABLE.c.id,
+                            ),
+                        )
+                    )
+                    .where(
+                        and_(
+                            t.c.candidate_status == "accepted",
+                            CRAWL_RUNS_TABLE.c.status.in_(["failed", "cancelled"]),
+                        )
+                    )
+                    .group_by(t.c.tenant_id, t.c.run_id)
+                    .order_by(func.min(t.c.updated_at), t.c.tenant_id, t.c.run_id)
+                    .limit(bounded_limit)
+                )
+                .mappings()
+                .all()
+            )
+        return [(str(row["tenant_id"]), str(row["run_id"])) for row in rows]
+
     def get_run_candidate_summary(
         self,
         tenant_id: str,
@@ -533,7 +586,9 @@ class SqlCandidateAttemptRepository:
                 .mappings()
                 .all()
             )
-        counts: dict[str, int] = {str(r["candidate_status"]): int(r["cnt"]) for r in rows}
+        counts: dict[str, int] = {
+            str(r["candidate_status"]): int(r["cnt"]) for r in rows
+        }
         return CandidateRunSummary(
             accepted=counts.get("accepted", 0),
             persisted=counts.get("persisted", 0),

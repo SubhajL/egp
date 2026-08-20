@@ -25,6 +25,22 @@ from egp_observability.logging import (
 )
 
 
+class _ConfirmingRunRepository:
+    """Minimal seam for tests whose subject is logging, not run persistence."""
+
+    def create_run(self, **kwargs):
+        return None
+
+    def update_run_summary(self, *args, **kwargs):
+        return None
+
+    def fail_run_if_active(self, *, run_id: str, **kwargs):
+        return type("FailedRun", (), {"id": run_id})()
+
+    def find_run_by_id_for_tenant(self, **kwargs):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # T1: make_event produces UTC-timestamped single-line JSON
 # ---------------------------------------------------------------------------
@@ -359,6 +375,7 @@ def test_dispatch_failed_event_on_nonzero_exit(
     spawner = _make_discover_spawner(
         "sqlite+pysqlite:///test.sqlite3",
         artifact_root=tmp_path,
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(DiscoverySpawnError):
@@ -444,6 +461,7 @@ def test_non_retriable_error_gets_specific_dispatch_failed_reason(
     spawner = _make_discover_spawner(
         "sqlite+pysqlite:///test.sqlite3",
         artifact_root=tmp_path,
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(NonRetriableDiscoveryDispatchError):
@@ -545,6 +563,7 @@ def test_stdout_capture_close_failure_does_not_prevent_log_handle_close(
     spawner = _make_discover_spawner(
         "sqlite+pysqlite:///test.sqlite3",
         artifact_root=tmp_path,
+        run_repository=_ConfirmingRunRepository(),
     )
     spawner(
         tenant_id="t1",
@@ -597,6 +616,7 @@ def test_log_handle_closed_on_payload_serialization_failure(
     spawner = _make_discover_spawner(
         "sqlite+pysqlite:///test.sqlite3",
         artifact_root=tmp_path,
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(TypeError, match="simulated"):

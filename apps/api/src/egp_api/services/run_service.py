@@ -32,11 +32,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _candidate_reason_for_terminal_run(run: CrawlRunRecord) -> str:
+    failure_reason = str((run.summary_json or {}).get("failure_reason") or "")
+    return {
+        "worker_timeout": CandidateTerminalReason.WORKER_TIMEOUT.value,
+        "worker_terminated": CandidateTerminalReason.WORKER_TERMINATED.value,
+        "lease_lost": CandidateTerminalReason.LEASE_LOST.value,
+    }.get(failure_reason, CandidateTerminalReason.WORKER_LOST.value)
+
+
 class _UnavailableCandidateRepository:
     def __init__(self, error: Exception) -> None:
         self._error = error
 
     def reconcile_open_candidates(self, **_kwargs: object) -> int:
+        raise self._error
+
+    def list_open_candidate_runs(self, *, limit: int = 100) -> list[tuple[str, str]]:
+        del limit
         raise self._error
 
 
@@ -250,7 +263,7 @@ class RunService:
 
     def reconcile_missing_workers(self, *, owner_pid: int) -> list[CrawlRunRecord]:
         failed_runs = self._repository.fail_runs_with_missing_workers(owner_pid=owner_pid)
-        if not failed_runs or self._database_url is None:
+        if self._database_url is None:
             return failed_runs
         try:
             candidate_repository = create_candidate_attempt_repository(
@@ -258,12 +271,13 @@ class RunService:
             )
         except Exception as exc:  # preserve per-run terminalization/reporting
             candidate_repository = _UnavailableCandidateRepository(exc)
+        newly_failed_keys = {(run.tenant_id, run.id) for run in failed_runs}
         for run in failed_runs:
             report = complete_abnormal_run(
                 tenant_id=run.tenant_id,
                 run_id=run.id,
                 failure_code="worker_lost",
-                candidate_reason=CandidateTerminalReason.WORKER_LOST.value,
+                candidate_reason=_candidate_reason_for_terminal_run(run),
                 error=f"discover worker for run {run.id} disappeared before completion",
                 candidate_repository=candidate_repository,
                 run_repository=self._repository,
@@ -284,11 +298,46 @@ class RunService:
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to persist incomplete abnormal completion "
-                        "(tenant_id=%s run_id=%s)",
+                        "Failed to persist incomplete abnormal completion (tenant_id=%s run_id=%s)",
                         run.tenant_id,
                         run.id,
                     )
+        try:
+            open_candidate_runs = candidate_repository.list_open_candidate_runs(limit=100)
+        except Exception:
+            logger.exception("Failed to enumerate accepted candidates needing repair")
+            open_candidate_runs = []
+        for tenant_id, run_id in open_candidate_runs:
+            if (tenant_id, run_id) in newly_failed_keys:
+                continue
+            run = self._repository.find_run_by_id_for_tenant(
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+            if run is None or run.status not in {
+                CrawlRunStatus.FAILED,
+                CrawlRunStatus.CANCELLED,
+            }:
+                continue
+            report = complete_abnormal_run(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                failure_code="worker_lost",
+                candidate_reason=_candidate_reason_for_terminal_run(run),
+                error=f"retrying incomplete candidate cleanup for run {run_id}",
+                candidate_repository=candidate_repository,
+                run_repository=self._repository,
+            )
+            if report.succeeded:
+                continue
+            logger.error(
+                "Terminal-run candidate cleanup remains incomplete "
+                "(tenant_id=%s run_id=%s candidate_error=%s run_error=%s)",
+                tenant_id,
+                run_id,
+                report.candidate_reconciliation_error_type,
+                report.run_terminalization_error_type,
+            )
         return failed_runs
 
 

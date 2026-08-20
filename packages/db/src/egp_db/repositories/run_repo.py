@@ -24,9 +24,15 @@ from sqlalchemy.engine import Connection, Engine, RowMapping
 
 from egp_db.connection import DB_METADATA, create_shared_engine
 from egp_db.db_utils import UUID_SQL_TYPE, normalize_database_url, normalize_uuid_string
-from egp_db.repositories.discovery_job_repo import DISCOVERY_JOBS_TABLE
+from egp_db.repositories.discovery_job_repo import (
+    DISCOVERY_JOBS_TABLE,
+    StaleDiscoveryJobClaimError,
+)
 from egp_db.repositories.recrawl_request_repo import RECRAWL_REQUESTS_TABLE
 from egp_shared_types.enums import CrawlRunStatus, CrawlTaskType
+
+
+LEGACY_RESERVATION_STALE_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,6 +415,7 @@ class SqlRunRepository:
         trigger_type: str,
         profile_id: str | None = None,
         discovery_job_id: str | None = None,
+        discovery_job_claim_token: str | None = None,
         recrawl_request_id: str | None = None,
         summary_json: dict[str, object] | None = None,
         run_id: str | None = None,
@@ -421,15 +428,102 @@ class SqlRunRepository:
         normalized_discovery_job_id = (
             normalize_uuid_string(discovery_job_id) if discovery_job_id else None
         )
+        normalized_claim_token = (
+            normalize_uuid_string(discovery_job_claim_token)
+            if discovery_job_claim_token
+            else None
+        )
+        if normalized_claim_token is not None and normalized_discovery_job_id is None:
+            raise ValueError("discovery_job_id is required with a claim token")
         normalized_recrawl_request_id = (
             normalize_uuid_string(recrawl_request_id) if recrawl_request_id else None
         )
         normalized_trigger_type = _validate_run_trigger_type(trigger_type)
+        normalized_tenant_id = normalize_uuid_string(tenant_id)
         with self._engine.begin() as connection:
+            if (
+                normalized_discovery_job_id is not None
+                and normalized_claim_token is None
+            ):
+                correlated_job_id = connection.execute(
+                    select(DISCOVERY_JOBS_TABLE.c.id)
+                    .where(
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.tenant_id == normalized_tenant_id,
+                            DISCOVERY_JOBS_TABLE.c.id == normalized_discovery_job_id,
+                        )
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if correlated_job_id is None:
+                    raise ValueError("discovery_job_id must belong to the run tenant")
+            if normalized_claim_token is not None:
+                claimed_job = (
+                    connection.execute(
+                        select(
+                            DISCOVERY_JOBS_TABLE.c.id,
+                            DISCOVERY_JOBS_TABLE.c.lease_expires_at,
+                        )
+                        .where(
+                            and_(
+                                DISCOVERY_JOBS_TABLE.c.tenant_id
+                                == normalized_tenant_id,
+                                DISCOVERY_JOBS_TABLE.c.id
+                                == normalized_discovery_job_id,
+                                DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                                DISCOVERY_JOBS_TABLE.c.claim_token
+                                == normalized_claim_token,
+                                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_not(None),
+                            )
+                        )
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                lease_expires_at = (
+                    claimed_job["lease_expires_at"] if claimed_job is not None else None
+                )
+                if isinstance(lease_expires_at, datetime):
+                    if lease_expires_at.tzinfo is None:
+                        lease_expires_at = lease_expires_at.replace(tzinfo=UTC)
+                    else:
+                        lease_expires_at = lease_expires_at.astimezone(UTC)
+                if (
+                    claimed_job is None
+                    or not isinstance(lease_expires_at, datetime)
+                    or lease_expires_at <= _now()
+                ):
+                    raise StaleDiscoveryJobClaimError(
+                        "discovery job claim is stale before run reservation "
+                        f"for job {discovery_job_id}"
+                    )
+                active_run_id = connection.execute(
+                    select(CRAWL_RUNS_TABLE.c.id)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
+                            CRAWL_RUNS_TABLE.c.discovery_job_id
+                            == normalized_discovery_job_id,
+                            CRAWL_RUNS_TABLE.c.status.in_(
+                                [
+                                    CrawlRunStatus.QUEUED.value,
+                                    CrawlRunStatus.RUNNING.value,
+                                ]
+                            ),
+                        )
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if active_run_id is not None:
+                    raise StaleDiscoveryJobClaimError(
+                        "discovery job already has an active reserved run "
+                        f"for job {discovery_job_id}"
+                    )
             connection.execute(
                 insert(CRAWL_RUNS_TABLE).values(
                     id=normalized_run_id,
-                    tenant_id=normalize_uuid_string(tenant_id),
+                    tenant_id=normalized_tenant_id,
                     profile_id=normalized_profile_id,
                     discovery_job_id=normalized_discovery_job_id,
                     recrawl_request_id=normalized_recrawl_request_id,
@@ -460,7 +554,12 @@ class SqlRunRepository:
         with self._engine.begin() as connection:
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
-                .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                .where(
+                    and_(
+                        CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        CRAWL_RUNS_TABLE.c.status == CrawlRunStatus.QUEUED.value,
+                    )
+                )
                 .values(
                     status=CrawlRunStatus.RUNNING.value,
                     started_at=now,
@@ -501,7 +600,17 @@ class SqlRunRepository:
             )
             connection.execute(
                 update(CRAWL_RUNS_TABLE)
-                .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
+                .where(
+                    and_(
+                        CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        CRAWL_RUNS_TABLE.c.status.in_(
+                            [
+                                CrawlRunStatus.QUEUED.value,
+                                CrawlRunStatus.RUNNING.value,
+                            ]
+                        ),
+                    )
+                )
                 .values(
                     status=normalized_status,
                     finished_at=now,
@@ -538,6 +647,7 @@ class SqlRunRepository:
                     select(CRAWL_RUNS_TABLE)
                     .where(CRAWL_RUNS_TABLE.c.id == normalized_run_id)
                     .limit(1)
+                    .with_for_update()
                 )
                 .mappings()
                 .one()
@@ -642,6 +752,7 @@ class SqlRunRepository:
                         )
                     )
                     .limit(1)
+                    .with_for_update()
                 )
                 .mappings()
                 .one_or_none()
@@ -656,12 +767,18 @@ class SqlRunRepository:
             summary = dict(row["summary_json"] or {})
             summary["error"] = str(error)
             summary["failure_reason"] = str(failure_reason)
-            connection.execute(
+            updated = connection.execute(
                 update(CRAWL_RUNS_TABLE)
                 .where(
                     and_(
                         CRAWL_RUNS_TABLE.c.tenant_id == normalized_tenant_id,
                         CRAWL_RUNS_TABLE.c.id == normalized_run_id,
+                        CRAWL_RUNS_TABLE.c.status.in_(
+                            [
+                                CrawlRunStatus.QUEUED.value,
+                                CrawlRunStatus.RUNNING.value,
+                            ]
+                        ),
                     )
                 )
                 .values(
@@ -672,6 +789,8 @@ class SqlRunRepository:
                     error_count=max(1, int(row["error_count"])),
                 )
             )
+            if not updated.rowcount:
+                return None
             failed_row = (
                 connection.execute(
                     select(CRAWL_RUNS_TABLE)
@@ -694,7 +813,39 @@ class SqlRunRepository:
         with self._engine.begin() as connection:
             rows = (
                 connection.execute(
-                    select(CRAWL_RUNS_TABLE).where(
+                    select(
+                        CRAWL_RUNS_TABLE,
+                        DISCOVERY_JOBS_TABLE.c.job_status.label(
+                            "correlated_job_status"
+                        ),
+                        DISCOVERY_JOBS_TABLE.c.last_error.label(
+                            "correlated_job_last_error"
+                        ),
+                        DISCOVERY_JOBS_TABLE.c.last_error_code.label(
+                            "correlated_job_last_error_code"
+                        ),
+                        and_(
+                            DISCOVERY_JOBS_TABLE.c.claim_token.is_not(None),
+                            DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_not(None),
+                            DISCOVERY_JOBS_TABLE.c.lease_expires_at > now,
+                        ).label("correlated_job_claim_active"),
+                        (
+                            CRAWL_RUNS_TABLE.c.last_activity_at
+                            <= now - timedelta(seconds=LEGACY_RESERVATION_STALE_SECONDS)
+                        ).label("legacy_reservation_stale"),
+                    )
+                    .select_from(
+                        CRAWL_RUNS_TABLE.outerjoin(
+                            DISCOVERY_JOBS_TABLE,
+                            and_(
+                                CRAWL_RUNS_TABLE.c.discovery_job_id
+                                == DISCOVERY_JOBS_TABLE.c.id,
+                                CRAWL_RUNS_TABLE.c.tenant_id
+                                == DISCOVERY_JOBS_TABLE.c.tenant_id,
+                            ),
+                        )
+                    )
+                    .where(
                         CRAWL_RUNS_TABLE.c.status.in_(
                             [
                                 CrawlRunStatus.QUEUED.value,
@@ -708,40 +859,146 @@ class SqlRunRepository:
             )
             for row in rows:
                 summary = dict(row["summary_json"] or {})
-                if _summary_int(summary, "worker_owner_pid") != int(owner_pid):
-                    continue
+                correlated_job_failed = row["correlated_job_status"] == "failed"
+                failure_error: str | None = None
+                failure_reason: str | None = None
+                if correlated_job_failed:
+                    failure_error = str(
+                        row["correlated_job_last_error"]
+                        or "correlated discovery job failed before run terminalization"
+                    )
+                    failure_reason = str(
+                        row["correlated_job_last_error_code"] or "worker_lost"
+                    )
+
+                recorded_owner_pid = _summary_int(summary, "worker_owner_pid")
                 worker_pid = _summary_int(summary, "worker_pid")
-                if worker_pid is None:
+                owner_is_current = recorded_owner_pid == int(owner_pid)
+                correlated_job_claim_active = bool(row["correlated_job_claim_active"])
+                reservation_is_stale = bool(row["legacy_reservation_stale"])
+                has_correlated_job = row["correlated_job_status"] is not None
+                owner_is_missing = False
+                # The database lease is the cross-host ownership authority.
+                # Local PID visibility must never override a still-valid claim.
+                if failure_error is None and correlated_job_claim_active:
                     continue
-                try:
-                    os.kill(worker_pid, 0)
-                except PermissionError:
-                    continue
-                except ProcessLookupError:
-                    summary["error"] = (
-                        f"discover worker process {worker_pid} disappeared before completion"
+                if (
+                    failure_error is None
+                    and recorded_owner_pid is not None
+                    and not owner_is_current
+                ):
+                    try:
+                        os.kill(recorded_owner_pid, 0)
+                    except PermissionError:
+                        if correlated_job_claim_active or not reservation_is_stale:
+                            continue
+                        owner_is_missing = True
+                    except ProcessLookupError:
+                        if not owner_is_current and not reservation_is_stale:
+                            continue
+                        owner_is_missing = True
+                    else:
+                        if correlated_job_claim_active or not reservation_is_stale:
+                            continue
+                        # A live PID alone is not durable process identity: the
+                        # original owner may have exited and its PID been reused.
+                        owner_is_missing = True
+
+                if failure_error is None and worker_pid is None:
+                    dispatch_phase = summary.get("worker_dispatch_phase")
+                    if dispatch_phase == "reserved" and (
+                        owner_is_missing
+                        or (
+                            owner_is_current
+                            and has_correlated_job
+                            and not correlated_job_claim_active
+                        )
+                    ):
+                        failure_error = (
+                            "discover worker reservation was abandoned before spawn"
+                        )
+                        failure_reason = "worker_lost"
+                    elif (
+                        dispatch_phase is None
+                        and recorded_owner_pid is None
+                        and has_correlated_job
+                        and not correlated_job_claim_active
+                        and bool(row["legacy_reservation_stale"])
+                    ):
+                        failure_error = (
+                            "legacy discover worker reservation remained inactive "
+                            "without ownership metadata"
+                        )
+                        failure_reason = "worker_lost"
+                    else:
+                        continue
+                elif failure_error is None:
+                    if not (owner_is_current or owner_is_missing):
+                        continue
+                    try:
+                        os.kill(worker_pid, 0)
+                    except PermissionError:
+                        if correlated_job_claim_active or not reservation_is_stale:
+                            continue
+                        failure_error = (
+                            "discover worker identity could not be confirmed after "
+                            "its inactive reservation became stale"
+                        )
+                        failure_reason = "worker_lost"
+                    except ProcessLookupError:
+                        if not owner_is_current and not reservation_is_stale:
+                            continue
+                        failure_error = f"discover worker process {worker_pid} disappeared before completion"
+                        failure_reason = "worker_lost"
+                    else:
+                        if correlated_job_claim_active or not reservation_is_stale:
+                            continue
+                        failure_error = (
+                            "discover worker PID remained live after its inactive "
+                            "reservation became stale"
+                        )
+                        failure_reason = "worker_lost"
+
+                summary["error"] = failure_error
+                summary["failure_reason"] = failure_reason
+                updated = connection.execute(
+                    update(CRAWL_RUNS_TABLE)
+                    .where(
+                        and_(
+                            CRAWL_RUNS_TABLE.c.tenant_id == row["tenant_id"],
+                            CRAWL_RUNS_TABLE.c.id == row["id"],
+                            CRAWL_RUNS_TABLE.c.status.in_(
+                                [
+                                    CrawlRunStatus.QUEUED.value,
+                                    CrawlRunStatus.RUNNING.value,
+                                ]
+                            ),
+                        )
                     )
-                    summary["failure_reason"] = "worker_lost"
+                    .values(
+                        status=CrawlRunStatus.FAILED.value,
+                        finished_at=now,
+                        last_activity_at=now,
+                        summary_json=summary,
+                        error_count=max(1, int(row["error_count"])),
+                    )
+                )
+                if not updated.rowcount:
+                    continue
+                failed_rows.append(
                     connection.execute(
-                        update(CRAWL_RUNS_TABLE)
-                        .where(CRAWL_RUNS_TABLE.c.id == row["id"])
-                        .values(
-                            status=CrawlRunStatus.FAILED.value,
-                            finished_at=now,
-                            last_activity_at=now,
-                            summary_json=summary,
-                            error_count=max(1, int(row["error_count"])),
+                        select(CRAWL_RUNS_TABLE)
+                        .where(
+                            and_(
+                                CRAWL_RUNS_TABLE.c.tenant_id == row["tenant_id"],
+                                CRAWL_RUNS_TABLE.c.id == row["id"],
+                            )
                         )
+                        .limit(1)
                     )
-                    failed_rows.append(
-                        connection.execute(
-                            select(CRAWL_RUNS_TABLE)
-                            .where(CRAWL_RUNS_TABLE.c.id == row["id"])
-                            .limit(1)
-                        )
-                        .mappings()
-                        .one()
-                    )
+                    .mappings()
+                    .one()
+                )
         return [_run_from_mapping(row) for row in failed_rows]
 
     def create_task(

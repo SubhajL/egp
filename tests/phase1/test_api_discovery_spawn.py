@@ -66,6 +66,32 @@ class _FakeProcess:
         return (json.dumps(result).encode("utf-8"), b"")
 
 
+class _ConfirmingRunRepository:
+    """Test double that explicitly confirms durable run terminalization."""
+
+    def __init__(self) -> None:
+        self._active_run_ids: set[str] = set()
+        self._failed_run_ids: set[str] = set()
+
+    def create_run(self, **values: object) -> None:
+        self._active_run_ids.add(str(values["run_id"]))
+
+    def update_run_summary(self, run_id: str, *, summary_json) -> None:
+        del run_id, summary_json
+
+    def fail_run_if_active(self, *, run_id: str, **_kwargs):
+        if run_id not in self._active_run_ids:
+            return None
+        self._active_run_ids.remove(run_id)
+        self._failed_run_ids.add(run_id)
+        return SimpleNamespace(id=run_id)
+
+    def find_run_by_id_for_tenant(self, *, run_id: str, **_kwargs):
+        if run_id not in self._failed_run_ids:
+            return None
+        return SimpleNamespace(status=SimpleNamespace(value="failed"))
+
+
 def test_discover_spawner_reserves_run_and_forwards_artifact_root(
     monkeypatch, tmp_path
 ) -> None:
@@ -135,6 +161,7 @@ def test_discover_spawner_reserves_run_and_forwards_artifact_root(
             / "worker.log"
         ),
         "worker_owner_pid": os.getpid(),
+        "worker_dispatch_phase": "spawned",
         "worker_pid": process.pid,
     }
     assert popen_kwargs["stdout"] is subprocess.PIPE
@@ -196,6 +223,7 @@ def test_discover_spawner_retries_semantic_failed_worker_result(
     spawner = _make_discover_spawner(
         "postgresql://example.test/egp",
         artifact_root=tmp_path / "artifacts",
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(
@@ -350,11 +378,12 @@ def test_discover_spawner_kills_worker_when_lease_cancellation_is_signalled(
             run_id: str,
             error: str,
             failure_reason: str,
-        ) -> None:
+        ) -> SimpleNamespace:
             captured["failed_tenant_id"] = tenant_id
             captured["failed_run_id"] = run_id
             captured["error"] = error
             captured["failure_reason"] = failure_reason
+            return SimpleNamespace(id=run_id)
 
     process = BlockingProcess()
     monkeypatch.setattr(
@@ -422,6 +451,7 @@ def test_discover_spawner_retries_missing_or_malformed_worker_result(
     spawner = _make_discover_spawner(
         "postgresql://example.test/egp",
         artifact_root=tmp_path / "artifacts",
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(DiscoverySpawnError, match="returned no result"):
@@ -444,6 +474,7 @@ def test_discover_spawner_retries_mismatched_worker_run_id(
     spawner = _make_discover_spawner(
         "postgresql://example.test/egp",
         artifact_root=tmp_path / "artifacts",
+        run_repository=_ConfirmingRunRepository(),
     )
 
     with pytest.raises(DiscoverySpawnError, match="invalid run_id"):
@@ -543,7 +574,7 @@ def test_discover_spawner_treats_terminated_worker_as_non_retriable(
             captured["failed_run_id"] = run_id
             captured["error"] = error
             captured["failure_reason"] = failure_reason
-            return None
+            return SimpleNamespace(id=run_id)
 
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
@@ -700,6 +731,7 @@ def test_discover_spawner_persists_absolute_worker_log_path_for_relative_artifac
     assert captured["summary_json"] == {
         "worker_log_path": str(expected_log_path),
         "worker_owner_pid": os.getpid(),
+        "worker_dispatch_phase": "spawned",
         "worker_pid": process.pid,
     }
 
