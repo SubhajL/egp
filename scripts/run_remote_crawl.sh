@@ -26,6 +26,7 @@
 #   scripts/run_remote_crawl.sh supervise <seconds> --evidence <runtime-evidence.json>
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 ENV_FILE="${EGP_REMOTECRAWL_ENV_FILE:-$ROOT/.env.remotecrawl}"
@@ -50,6 +51,7 @@ load_validated_env() {
   while IFS= read -r -d '' kv; do
     export "$kv"
   done < <("$PY" "$GUARD" print-env --env-file "$ENV_FILE")
+  export PYTHONDONTWRITEBYTECODE=1
 }
 
 run_module() {  # guard → load validated env → exec a venv python module
