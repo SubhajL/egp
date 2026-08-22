@@ -54,6 +54,7 @@ def test_doctor_reports_profile_circuit_queue_and_heartbeat() -> None:
             claimable_count=2,
             leased_count=1,
             retry_scheduled_count=1,
+            oldest_claimable_age_seconds=7_200,
         ),
         heartbeat_probe=_online_heartbeat,
         profile_probe=lambda: ProfileDoctorSnapshot(
@@ -75,6 +76,7 @@ def test_doctor_reports_profile_circuit_queue_and_heartbeat() -> None:
     assert snapshot.defer_reasons == ()
     assert snapshot.queue is not None
     assert snapshot.queue.pending_count == 4
+    assert snapshot.queue.oldest_claimable_age_seconds == 7_200
     assert snapshot.heartbeat is not None
     assert snapshot.heartbeat.heartbeat_status == "online"
     assert snapshot.profile.status == "ready"

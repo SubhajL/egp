@@ -161,6 +161,7 @@ class DiscoveryQueueSnapshot:
     claimable_count: int
     leased_count: int
     retry_scheduled_count: int
+    oldest_claimable_age_seconds: int | None = None
 
     @classmethod
     def empty(cls) -> DiscoveryQueueSnapshot:
@@ -169,6 +170,7 @@ class DiscoveryQueueSnapshot:
             claimable_count=0,
             leased_count=0,
             retry_scheduled_count=0,
+            oldest_claimable_age_seconds=None,
         )
 
 
@@ -543,16 +545,36 @@ class SqlDiscoveryJobRepository:
                         func.sum(case((retry_scheduled, 1), else_=0)).label(
                             "retry_scheduled_count"
                         ),
+                        func.current_timestamp().label("database_now"),
+                        func.min(
+                            case(
+                                (claimable, DISCOVERY_JOBS_TABLE.c.created_at),
+                                else_=None,
+                            )
+                        ).label("oldest_claimable_created_at"),
                     ).select_from(DISCOVERY_JOBS_TABLE)
                 )
                 .mappings()
                 .one()
+            )
+        database_now = _as_utc(row["database_now"])
+        oldest_claimable_created_at = row["oldest_claimable_created_at"]
+        oldest_claimable_age_seconds = None
+        if oldest_claimable_created_at is not None:
+            oldest_claimable_age_seconds = max(
+                0,
+                int(
+                    (
+                        database_now - _as_utc(oldest_claimable_created_at)
+                    ).total_seconds()
+                ),
             )
         return DiscoveryQueueSnapshot(
             pending_count=int(row["pending_count"] or 0),
             claimable_count=int(row["claimable_count"] or 0),
             leased_count=int(row["leased_count"] or 0),
             retry_scheduled_count=int(row["retry_scheduled_count"] or 0),
+            oldest_claimable_age_seconds=oldest_claimable_age_seconds,
         )
 
     def has_claimable_discovery_jobs(

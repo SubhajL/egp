@@ -21,7 +21,9 @@
 #   scripts/run_remote_crawl.sh wait-database # bounded tunnel/database readiness check
 #   scripts/run_remote_crawl.sh doctor        # read-only sanitized runtime diagnosis
 #   scripts/run_remote_crawl.sh crawl [N]     # drain N pending prod jobs once, then exit
+#   scripts/run_remote_crawl.sh crawl-canary <private-target.json>
 #   scripts/run_remote_crawl.sh watch         # continuously claim + crawl prod jobs
+#   scripts/run_remote_crawl.sh supervise <seconds> --evidence <runtime-evidence.json>
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -108,6 +110,43 @@ run_module() {  # guard → load validated env → exec a venv python module
   exec "$PY" -m "$@"
 }
 
+run_supervise() {
+  if [[ $# -ne 3 || "$2" != "--evidence" ]]; then
+    echo "usage: $0 supervise <seconds> --evidence <runtime-evidence.json>" >&2
+    exit 2
+  fi
+  local duration_seconds="$1"
+  local runtime_evidence="$3"
+  guard_check
+  load_validated_env
+  local release_sha
+  release_sha="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "unable to derive exact release revision from tracked source" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --quiet --; then
+    echo "tracked source is dirty (unstaged changes)" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --cached --quiet --; then
+    echo "tracked source is dirty (staged changes)" >&2
+    exit 1
+  fi
+  local command_json
+  command_json="$("$PY" -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \
+    "$ROOT/scripts/run_remote_crawl.sh" "watch")"
+  local doctor_command_json
+  doctor_command_json="$("$PY" -c 'import json, sys; print(json.dumps(sys.argv[1:]))' \
+    "$ROOT/scripts/run_remote_crawl.sh" "doctor")"
+  exec "$PY" "$ROOT/scripts/supervise_remote_crawl.py" \
+    --duration-seconds "$duration_seconds" \
+    --expected-release-sha "$release_sha" \
+    --runtime-evidence "$runtime_evidence" \
+    --command-json "$command_json" \
+    --doctor-command-json "$doctor_command_json"
+}
+
 case "${1:-check}" in
   check)        require_env_file; guard_check; echo "OK — safe to crawl production." ;;
   # Python execs the ssh argv directly (no bash word-split / option injection).
@@ -116,8 +155,10 @@ case "${1:-check}" in
   warm-profile) require_env_file; run_module egp_worker.warmup ;;
   doctor)       require_env_file; run_module egp_api.executors.discovery_doctor ;;
   crawl)        require_env_file; shift || true; run_module egp_api.executors.discovery_dispatch --once --limit "${1:-5}" ;;
+  crawl-canary) require_env_file; if [[ $# -ne 2 ]]; then echo "usage: $0 crawl-canary <private-target.json>" >&2; exit 2; fi; target_file="$2"; run_module egp_api.executors.discovery_dispatch --once --limit 1 --target-file "$target_file" ;;
   watch)        require_env_file; run_module egp_api.executors.discovery_dispatch --poll-interval-seconds 2 ;;
+  supervise)    require_env_file; shift || true; run_supervise "$@" ;;
   # Read-only WS0 diagnostic: dump search rows for a keyword (no persistence, no DB).
   diagnose)     require_env_file; shift || true; guard_check; load_validated_env; exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" "$@" ;;
-  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|watch|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
+  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|crawl-canary <private-target.json>|watch|supervise <seconds> --evidence <runtime-evidence.json>|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
 esac

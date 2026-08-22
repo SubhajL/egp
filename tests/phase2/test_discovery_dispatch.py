@@ -259,12 +259,13 @@ def test_discovery_queue_snapshot_distinguishes_due_leased_and_retrying(
         keyword="second",
     )
 
-    assert repo.get_discovery_queue_snapshot() == DiscoveryQueueSnapshot(
-        pending_count=2,
-        claimable_count=2,
-        leased_count=0,
-        retry_scheduled_count=0,
-    )
+    initial_snapshot = repo.get_discovery_queue_snapshot()
+    assert initial_snapshot.pending_count == 2
+    assert initial_snapshot.claimable_count == 2
+    assert initial_snapshot.leased_count == 0
+    assert initial_snapshot.retry_scheduled_count == 0
+    assert initial_snapshot.oldest_claimable_age_seconds is not None
+    assert initial_snapshot.oldest_claimable_age_seconds >= 0
 
     claimed = repo.claim_pending_discovery_jobs(limit=1, lease_seconds=60)
     assert len(claimed) == 1
@@ -276,12 +277,34 @@ def test_discovery_queue_snapshot_distinguishes_due_leased_and_retrying(
         next_attempt_at=datetime.now(UTC) + timedelta(minutes=5),
     )
 
-    assert repo.get_discovery_queue_snapshot() == DiscoveryQueueSnapshot(
-        pending_count=2,
-        claimable_count=0,
-        leased_count=1,
-        retry_scheduled_count=1,
+    blocked_snapshot = repo.get_discovery_queue_snapshot()
+    assert blocked_snapshot.pending_count == 2
+    assert blocked_snapshot.claimable_count == 0
+    assert blocked_snapshot.leased_count == 1
+    assert blocked_snapshot.retry_scheduled_count == 1
+    assert blocked_snapshot.oldest_claimable_age_seconds is None
+
+
+def test_discovery_queue_age_uses_database_clock_not_caller_clock(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-queue-db-clock.sqlite3'}",
+        bootstrap_schema=True,
     )
+    _seed_profile_row(repo)
+    repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="clock-skew",
+    )
+
+    snapshot = repo.get_discovery_queue_snapshot(
+        now=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+
+    assert snapshot.claimable_count == 1
+    assert snapshot.oldest_claimable_age_seconds is not None
+    assert 0 <= snapshot.oldest_claimable_age_seconds < 60
 
 
 def test_active_correlated_run_blocks_claim_until_terminal(tmp_path) -> None:
@@ -1060,6 +1083,50 @@ def test_fault_target_claims_only_explicit_canary_job(tmp_path) -> None:
             job_id=canary_job.id,
         ).job_status
         == "failed"
+    )
+
+
+def test_exact_non_live_target_leaves_older_unrelated_legacy_job_pending(
+    tmp_path,
+) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'exact-canary.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    older_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="older-unrelated-job",
+        live=False,
+    )
+    target_job = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="approved-canary-job",
+        live=False,
+    )
+    dispatcher = RecordingDiscoveryDispatcher()
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=dispatcher,
+        claim_limit=1,
+        target_job_id=target_job.id,
+        target_tenant_id=TENANT_ID,
+        require_non_live_target=True,
+    )
+
+    result = processor.process_pending(limit=1)
+
+    assert result.processed_count == 1
+    assert [request.discovery_job_id for request in dispatcher.requests] == [
+        target_job.id
+    ]
+    assert (
+        repo.get_discovery_job(tenant_id=TENANT_ID, job_id=older_job.id).job_status
+        == "pending"
     )
 
 

@@ -5,13 +5,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import asdict, dataclass, field
+import fcntl
 import json
 import logging
 import os
-from contextlib import suppress
+import stat
+from contextlib import contextmanager, suppress
 from pathlib import Path
 import threading
-from typing import Callable, Literal, Protocol
+from typing import Callable, Iterator, Literal, Protocol
 from uuid import UUID
 
 import sys
@@ -23,6 +25,9 @@ from egp_api.config import (
     get_artifact_prefix,
     get_artifact_root,
     get_artifact_storage_backend,
+    get_browser_persistent_profile_dir,
+    get_browser_profile_mode,
+    get_browser_profile_root,
     get_crawler_agent_protocol,
     get_database_url,
     get_discovery_lease_heartbeat_seconds,
@@ -55,6 +60,8 @@ from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
 
 logger = logging.getLogger(__name__)
 
+_DISPATCH_LOCK_FILENAME = ".egp-dispatch.lock"
+
 _FAULT_MODE_EXPECTED_FAILURE = {
     "worker_timeout": DiscoveryFailureCode.WORKER_TIMEOUT.value,
     "nonzero_exit": DiscoveryFailureCode.WORKER_EXIT_NONZERO.value,
@@ -62,6 +69,45 @@ _FAULT_MODE_EXPECTED_FAILURE = {
     "entitlement_denied": DiscoveryFailureCode.ENTITLEMENT_DENIED.value,
     "worker_crash": DiscoveryFailureCode.WORKER_TERMINATED.value,
 }
+
+
+@contextmanager
+def _hold_dispatch_lock(*, release_sha: str | None) -> Iterator[bool]:
+    """Hold the one native dispatcher lock for the complete executor invocation."""
+
+    lock_handle = None
+    try:
+        if get_browser_profile_mode() == "persistent":
+            profile_root = get_browser_persistent_profile_dir()
+            if profile_root is None:
+                raise RuntimeError("persistent browser profile directory is required")
+        else:
+            profile_root = get_browser_profile_root()
+        profile_root.mkdir(parents=True, exist_ok=True)
+        lock_handle = (profile_root / _DISPATCH_LOCK_FILENAME).open("a+", encoding="utf-8")
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
+        if lock_handle is not None:
+            with suppress(OSError, ValueError):
+                lock_handle.close()
+        print(
+            make_event(
+                "executor_lock_unavailable",
+                execution_backend="discovery_dispatch",
+                release_sha=release_sha,
+            ),
+            file=sys.stderr,
+        )
+        yield False
+        return
+
+    try:
+        yield True
+    finally:
+        with suppress(OSError, ValueError):
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        with suppress(OSError, ValueError):
+            lock_handle.close()
 
 
 class PendingDiscoveryProcessor(Protocol):
@@ -273,11 +319,19 @@ def build_discovery_dispatch_runtime(
     *,
     artifact_root: Path | None = None,
     worker_count: int | str | None = None,
+    target_job_id: str | None = None,
+    target_tenant_id: str | None = None,
     fault_mode: str | None = None,
     fault_job_id: str | None = None,
     fault_tenant_id: str | None = None,
 ) -> DiscoveryDispatchRuntime:
     """Build repository-backed discovery dispatch runtime dependencies."""
+
+    target_values = (target_job_id, target_tenant_id)
+    if any(value is not None for value in target_values) and not all(
+        value is not None for value in target_values
+    ):
+        raise RuntimeError("target_job_id and target_tenant_id must be provided together")
 
     fault_values = (fault_mode, fault_job_id, fault_tenant_id)
     if any(value is not None for value in fault_values) and not all(
@@ -286,6 +340,10 @@ def build_discovery_dispatch_runtime(
         raise RuntimeError(
             "fault_mode, fault_job_id, and fault_tenant_id must be provided together"
         )
+    if any(value is not None for value in target_values) and any(
+        value is not None for value in fault_values
+    ):
+        raise RuntimeError("regular target and fault target are mutually exclusive")
 
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(
@@ -324,11 +382,11 @@ def build_discovery_dispatch_runtime(
         lease_seconds=get_discovery_lease_seconds(),
         lease_heartbeat_seconds=get_discovery_lease_heartbeat_seconds(),
         worker_count=get_discovery_worker_count(worker_count),
-        target_job_id=fault_job_id,
-        target_tenant_id=fault_tenant_id,
+        target_job_id=target_job_id if target_job_id is not None else fault_job_id,
+        target_tenant_id=(target_tenant_id if target_tenant_id is not None else fault_tenant_id),
         target_trigger_type="fault_injection" if fault_mode is not None else None,
         excluded_trigger_types=() if fault_mode is not None else ("fault_injection",),
-        require_non_live_target=fault_mode is not None,
+        require_non_live_target=(target_job_id is not None or fault_mode is not None),
         force_terminal_failures=fault_mode is not None,
     )
     return DiscoveryDispatchRuntime(
@@ -681,6 +739,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Concurrent discovery workers. Defaults to EGP_DISCOVERY_WORKER_COUNT or 1.",
     )
     parser.add_argument(
+        "--target-file",
+        type=Path,
+        default=None,
+        help="Operator-only private JSON file containing one exact regular canary target.",
+    )
+    parser.add_argument(
         "--fault-mode",
         default=None,
         help="Operator-only truthful fault mode; requires the explicit one-shot safety gate.",
@@ -696,6 +760,105 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Expected tenant UUID for the non-live canary job required with --fault-mode.",
     )
     return parser
+
+
+def _read_exact_canary_target(target_file: Path) -> tuple[str, str]:
+    """Read one private regular-canary target without exposing its identifiers."""
+
+    try:
+        if target_file.is_symlink():
+            raise ValueError("target_file_symlink")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(os.fspath(target_file), flags)
+    except (OSError, ValueError):
+        raise ValueError("target_file_not_private") from None
+
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("target_file_not_regular")
+        if metadata.st_uid != os.getuid():
+            raise ValueError("target_file_owner_invalid")
+        if metadata.st_mode & 0o077:
+            raise ValueError("target_file_permissions_invalid")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            try:
+                payload = json.load(handle)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ValueError("target_file_json_invalid") from None
+    except OSError:
+        raise ValueError("target_file_not_private") from None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+    if not isinstance(payload, dict) or set(payload) != {"tenant_id", "job_id"}:
+        raise ValueError("target_file_schema_invalid")
+    tenant_id = payload.get("tenant_id")
+    job_id = payload.get("job_id")
+    if not isinstance(tenant_id, str) or not isinstance(job_id, str):
+        raise ValueError("target_file_schema_invalid")
+    try:
+        return str(UUID(job_id)), str(UUID(tenant_id))
+    except ValueError:
+        raise ValueError("target_file_uuid_invalid") from None
+
+
+def _authorize_exact_canary_target(
+    args: argparse.Namespace,
+    *,
+    release_sha: str | None,
+) -> tuple[str, str] | None:
+    target_file = args.target_file
+    if target_file is None:
+        return None
+
+    reason: str | None = None
+    if any(
+        value is not None for value in (args.fault_mode, args.fault_job_id, args.fault_tenant_id)
+    ):
+        reason = "fault_target_combination"
+    elif not args.once:
+        reason = "once_required"
+    elif args.limit != 1:
+        reason = "limit_one_required"
+    else:
+        try:
+            protocol = get_crawler_agent_protocol(None)
+        except RuntimeError:
+            reason = "agent_protocol_invalid"
+        else:
+            if protocol != "off":
+                reason = "agent_protocol_must_be_off"
+
+    target: tuple[str, str] | None = None
+    if reason is None:
+        try:
+            target = _read_exact_canary_target(target_file)
+        except ValueError as exc:
+            reason = str(exc)
+
+    if reason is not None:
+        print(
+            make_event(
+                "exact_canary_target_denied",
+                reason=reason,
+                release_sha=release_sha,
+            ),
+            file=sys.stderr,
+        )
+        raise ValueError(reason)
+
+    print(
+        make_event(
+            "exact_canary_target_authorized",
+            source="operator_cli",
+            release_sha=release_sha,
+        ),
+        file=sys.stderr,
+    )
+    return target
 
 
 def _authorize_fault_injection(
@@ -800,19 +963,15 @@ def _report_fault_injection_outcome(
     return matched
 
 
-def main(
-    argv: list[str] | None = None,
+def _run_authorized_dispatch(
+    args: argparse.Namespace,
     *,
-    runtime_factory=build_discovery_dispatch_runtime,
-    owner_pid: int | None = None,
+    exact_target: tuple[str, str] | None,
+    fault_mode: str | None,
+    release_sha: str | None,
+    runtime_factory,
+    owner_pid: int | None,
 ) -> int:
-    args = _build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.INFO)
-    release_sha = os.environ.get("EGP_RELEASE_SHA") or None
-    try:
-        fault_mode = _authorize_fault_injection(args, release_sha=release_sha)
-    except ValueError:
-        return 2
     aggregate_log = Path.home() / "Library" / "Logs" / "egp" / "crawl.log"
     if aggregate_log.exists():
         rotate_log_copytruncate(aggregate_log)
@@ -835,6 +994,8 @@ def main(
             runtime_kwargs["fault_mode"] = fault_mode
             runtime_kwargs["fault_job_id"] = args.fault_job_id
             runtime_kwargs["fault_tenant_id"] = args.fault_tenant_id
+        if exact_target is not None:
+            runtime_kwargs["target_job_id"], runtime_kwargs["target_tenant_id"] = exact_target
         runtime = runtime_factory(args.database_url, **runtime_kwargs)
     except Exception as exc:
         _report_runtime_error(runtime_reporter, exc)
@@ -925,6 +1086,33 @@ def main(
         logger.info("Discovery dispatch executor stopped")
         return 130
     return 0
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    runtime_factory=build_discovery_dispatch_runtime,
+    owner_pid: int | None = None,
+) -> int:
+    args = _build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
+    release_sha = os.environ.get("EGP_RELEASE_SHA") or None
+    try:
+        exact_target = _authorize_exact_canary_target(args, release_sha=release_sha)
+        fault_mode = _authorize_fault_injection(args, release_sha=release_sha)
+    except ValueError:
+        return 2
+    with _hold_dispatch_lock(release_sha=release_sha) as lock_acquired:
+        if not lock_acquired:
+            return 5
+        return _run_authorized_dispatch(
+            args,
+            exact_target=exact_target,
+            fault_mode=fault_mode,
+            release_sha=release_sha,
+            runtime_factory=runtime_factory,
+            owner_pid=owner_pid,
+        )
 
 
 async def _run_forever(
