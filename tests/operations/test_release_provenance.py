@@ -175,14 +175,38 @@ def test_release_compose_derives_checkout_sha_and_overrides_caller(
     assert "compose" in result.stdout
     assert "docker-compose.yml" in result.stdout
     assert "docker-compose.release.yml" in result.stdout
-    assert "docker-compose.override.yml" in result.stdout
+    assert "docker-compose.override.yml" not in result.stdout
     assert "--env-file /etc/egp/egp.env up -d --build" in result.stdout
     assert f"cwd={script.parents[1]}" in result.stdout
     args = result.stdout.split("args=", maxsplit=1)[1].splitlines()[0]
-    assert args.index("docker-compose.yml") < args.index("docker-compose.override.yml")
-    assert args.index("docker-compose.override.yml") < args.index(
-        "docker-compose.release.yml"
+    assert args.index("docker-compose.yml") < args.index("docker-compose.release.yml")
+
+
+@pytest.mark.parametrize(
+    "project_directory_args",
+    [
+        ["--project-directory", "/tmp/untrusted-compose-root"],
+        ["--project-directory=/tmp/untrusted-compose-root"],
+    ],
+)
+def test_release_compose_rejects_caller_project_directory_override(
+    tmp_path: Path,
+    project_directory_args: list[str],
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+
+    result = subprocess.run(
+        [str(script), *project_directory_args, "build", "api"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
+
+    assert result.returncode != 0
+    assert "project directory override" in result.stderr
+    assert "release=" not in result.stdout
 
 
 def test_release_compose_can_target_clean_rollback_worktree(tmp_path: Path) -> None:
@@ -312,10 +336,11 @@ def test_release_compose_refuses_ignored_runtime_source(tmp_path: Path) -> None:
     assert "release=" not in result.stdout
 
 
-def test_release_compose_refuses_override_mount_over_app(tmp_path: Path) -> None:
+def test_release_compose_ignores_implicit_override(tmp_path: Path) -> None:
     script, env = _release_compose_fixture(tmp_path)
     (script.parents[1] / "docker-compose.override.yml").write_text(
-        "services:\n  api:\n    volumes:\n      - ./apps:/app\n", encoding="utf-8"
+        "services:\n  api:\n    command: ['untrusted']\n    volumes:\n      - ./apps:/app\n",
+        encoding="utf-8",
     )
 
     result = subprocess.run(
@@ -327,8 +352,39 @@ def test_release_compose_refuses_override_mount_over_app(tmp_path: Path) -> None
         check=False,
     )
 
+    assert result.returncode == 0, result.stderr
+    assert f"release={TARGET_SHA}" in result.stdout
+    assert "docker-compose.override.yml" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "file_args",
+    [
+        ["-f", "untrusted.yml"],
+        ["--file", "untrusted.yml"],
+        ["--file=untrusted.yml"],
+    ],
+)
+def test_release_compose_rejects_caller_compose_file_override(
+    tmp_path: Path,
+    file_args: list[str],
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+    (script.parents[1] / "untrusted.yml").write_text(
+        "services:\n  api:\n    command: ['untrusted']\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [str(script), *file_args, "build", "api"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
     assert result.returncode != 0
-    assert "runtime source mount" in result.stderr
+    assert "compose file override" in result.stderr
     assert "release=" not in result.stdout
 
 

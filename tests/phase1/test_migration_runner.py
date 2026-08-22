@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 import os
 from pathlib import Path
 from shutil import copy2
+import sys
 from uuid import UUID
 
 from psycopg import connect
@@ -12,6 +14,17 @@ import pytest
 
 from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
 from egp_shared_types.enums import DiscoveryFailureCode
+
+
+def _write_manifest(migrations_dir: Path) -> None:
+    lines = [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in sorted(migrations_dir.glob("*.sql"))
+    ]
+    (migrations_dir / "manifest.sha256").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_ci_postgres_records_exact_migration_set(repo_root: Path) -> None:
@@ -55,14 +68,272 @@ def test_migration_runner_applies_and_records_all_versions(repo_root: Path) -> N
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
-                rows = [row[0] for row in cursor.fetchall()]
+                cursor.execute(
+                    "SELECT version, sha256 FROM schema_migrations ORDER BY version"
+                )
+                rows = [(str(row[0]), str(row[1])) for row in cursor.fetchall()]
 
         assert first_run.applied_versions == expected_versions
         assert first_run.pending_versions == []
         assert second_run.applied_versions == []
         assert second_run.pending_versions == []
-        assert rows == expected_versions
+        assert rows == [
+            (path.name, hashlib.sha256(path.read_bytes()).hexdigest())
+            for path in list_migration_files(migrations_dir)
+        ]
+
+
+def test_migration_runner_rejects_manifest_byte_drift(tmp_path: Path) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration integrity")
+
+    from egp_db.migration_runner import MigrationManifestError, apply_migrations
+
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    migration = migrations_dir / "001_create_example.sql"
+    migration.write_text(
+        "CREATE TABLE example (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    _write_manifest(migrations_dir)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_manifest_drift_test")
+        database_url = cluster.database_url("egp_migration_manifest_drift_test")
+        apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+        migration.write_text(
+            "CREATE TABLE example (id INTEGER PRIMARY KEY); -- changed\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(MigrationManifestError, match="manifest"):
+            apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+
+
+def test_migration_runner_rejects_applied_ledger_digest_mismatch(
+    tmp_path: Path,
+) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration integrity")
+
+    from egp_db.migration_runner import MigrationChecksumMismatchError, apply_migrations
+
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    migration = migrations_dir / "001_create_example.sql"
+    migration.write_text(
+        "CREATE TABLE example (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    _write_manifest(migrations_dir)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_ledger_drift_test")
+        database_url = cluster.database_url("egp_migration_ledger_drift_test")
+        apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE schema_migrations SET sha256 = %s WHERE version = %s",
+                    ("0" * 64, migration.name),
+                )
+            connection.commit()
+
+        with pytest.raises(MigrationChecksumMismatchError, match=migration.name):
+            apply_migrations(database_url=database_url, migrations_dir=migrations_dir)
+
+
+def test_migration_runner_backfills_legacy_ledger_digest_once(tmp_path: Path) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration integrity")
+
+    from egp_db.migration_runner import apply_migrations
+
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    migration = migrations_dir / "001_already_applied.sql"
+    migration.write_text(
+        "CREATE TABLE historical (id INTEGER PRIMARY KEY);", encoding="utf-8"
+    )
+    _write_manifest(migrations_dir)
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_legacy_ledger_test")
+        database_url = cluster.database_url("egp_migration_legacy_ledger_test")
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE TABLE schema_migrations ("
+                    "version TEXT PRIMARY KEY, "
+                    "applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                    ")"
+                )
+                cursor.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (%s)",
+                    (migration.name,),
+                )
+            connection.commit()
+
+        result = apply_migrations(
+            database_url=database_url,
+            migrations_dir=migrations_dir,
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT sha256 FROM schema_migrations WHERE version = %s",
+                    (migration.name,),
+                )
+                stored_digest = cursor.fetchone()[0]
+
+        assert result.applied_versions == []
+        assert stored_digest == hashlib.sha256(migration.read_bytes()).hexdigest()
+
+
+def test_migration_runner_can_require_manifest_for_release_cli(tmp_path: Path) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration integrity")
+
+    from egp_db.migration_runner import MigrationManifestError, apply_migrations
+
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "001_create_example.sql").write_text(
+        "CREATE TABLE example (id INTEGER PRIMARY KEY);",
+        encoding="utf-8",
+    )
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_manifest_required_test")
+        database_url = cluster.database_url("egp_migration_manifest_required_test")
+        with pytest.raises(MigrationManifestError, match="manifest"):
+            apply_migrations(
+                database_url=database_url,
+                migrations_dir=migrations_dir,
+                require_manifest=True,
+            )
+
+
+def test_migration_runner_cli_always_requires_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from egp_db import migration_runner
+
+    calls: list[bool] = []
+
+    def fake_apply_migrations(
+        *, database_url: str, migrations_dir: Path, require_manifest: bool
+    ) -> migration_runner.MigrationRunResult:
+        del database_url, migrations_dir
+        calls.append(require_manifest)
+        return migration_runner.MigrationRunResult(
+            applied_versions=[],
+            pending_versions=[],
+        )
+
+    monkeypatch.setattr(migration_runner, "apply_migrations", fake_apply_migrations)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "migration_runner",
+            "--database-url",
+            "postgresql://example.invalid/egp",
+            "--migrations-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert migration_runner.main() == 0
+    assert calls == [True]
+
+
+def test_migration_runner_fails_closed_while_another_session_holds_lock(
+    repo_root: Path,
+) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration locking")
+
+    from egp_db.migration_runner import (
+        MIGRATION_ADVISORY_LOCK_KEY,
+        MigrationLockUnavailableError,
+        apply_migrations,
+    )
+
+    migrations_dir = repo_root / "packages/db/src/migrations"
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_lock_test")
+        database_url = cluster.database_url("egp_migration_lock_test")
+
+        with connect(database_url, autocommit=True) as lock_owner:
+            with lock_owner.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_lock(%s)",
+                    (MIGRATION_ADVISORY_LOCK_KEY,),
+                )
+
+            with pytest.raises(
+                MigrationLockUnavailableError,
+                match="another migration runner holds the database lock",
+            ):
+                apply_migrations(
+                    database_url=database_url,
+                    migrations_dir=migrations_dir,
+                )
+
+            with lock_owner.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.schema_migrations')")
+                assert cursor.fetchone() == (None,)
+                cursor.execute(
+                    "SELECT pg_advisory_unlock(%s)",
+                    (MIGRATION_ADVISORY_LOCK_KEY,),
+                )
+                assert cursor.fetchone() == (True,)
+
+        result = apply_migrations(
+            database_url=database_url,
+            migrations_dir=migrations_dir,
+        )
+        assert result.pending_versions == []
+        assert result.applied_versions == [
+            path.name for path in sorted(migrations_dir.glob("*.sql"))
+        ]
+
+
+def test_migration_runner_releases_lock_after_migration_failure(tmp_path: Path) -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for migration locking")
+
+    from egp_db.migration_runner import apply_migrations
+
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    broken = migrations_dir / "001_broken.sql"
+    broken.write_text("THIS IS NOT SQL;", encoding="utf-8")
+
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_migration_failure_unlock_test")
+        database_url = cluster.database_url("egp_migration_failure_unlock_test")
+
+        with pytest.raises(Exception, match="syntax error"):
+            apply_migrations(
+                database_url=database_url,
+                migrations_dir=migrations_dir,
+            )
+
+        broken.write_text(
+            "CREATE TABLE recovered (id INTEGER PRIMARY KEY);", encoding="utf-8"
+        )
+        result = apply_migrations(
+            database_url=database_url,
+            migrations_dir=migrations_dir,
+        )
+
+        assert result.applied_versions == [broken.name]
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT to_regclass('public.recovered')")
+                assert cursor.fetchone() == ("recovered",)
 
 
 def test_migrated_postgres_starts_without_repository_bootstrap(

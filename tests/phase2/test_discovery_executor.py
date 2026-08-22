@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+import fcntl
 import json
 from pathlib import Path
 import threading
@@ -22,6 +23,8 @@ from egp_shared_types.enums import CrawlerBlockerCode
 
 FAULT_JOB_ID = "11111111-1111-4111-8111-111111111111"
 FAULT_TENANT_ID = "22222222-2222-4222-8222-222222222222"
+CANARY_JOB_ID = "33333333-3333-4333-8333-333333333333"
+CANARY_TENANT_ID = "44444444-4444-4444-8444-444444444444"
 
 
 def _fault_cli_args(
@@ -40,6 +43,16 @@ def _fault_cli_args(
     if tenant_id is not None:
         args.extend(["--fault-tenant-id", tenant_id])
     return args
+
+
+def _private_canary_target(tmp_path: Path) -> Path:
+    target = tmp_path / "canary-target.json"
+    target.write_text(
+        json.dumps({"tenant_id": CANARY_TENANT_ID, "job_id": CANARY_JOB_ID}),
+        encoding="utf-8",
+    )
+    target.chmod(0o600)
+    return target
 
 
 class RecordingDiscoveryProcessor:
@@ -517,6 +530,142 @@ def test_main_once_builds_runtime_and_reports_batch(
     }
 
 
+def test_main_exact_canary_target_wires_private_job_and_tenant_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    processor = RecordingDiscoveryProcessor()
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=processor,
+        run_service=RecordingRunService(),
+    )
+    built_kwargs: list[dict[str, object]] = []
+
+    def runtime_factory(*args: object, **kwargs: object):
+        del args
+        built_kwargs.append(kwargs)
+        return runtime
+
+    exit_code = discovery_dispatch.main(
+        ["--once", "--limit", "1", "--target-file", str(target_file)],
+        runtime_factory=runtime_factory,
+    )
+
+    assert exit_code == 0
+    assert built_kwargs == [
+        {
+            "artifact_root": None,
+            "worker_count": None,
+            "target_job_id": CANARY_JOB_ID,
+            "target_tenant_id": CANARY_TENANT_ID,
+        }
+    ]
+    assert processor.limits == [1]
+
+
+@pytest.mark.parametrize(
+    ("mutate_target", "limit", "protocol"),
+    [
+        (lambda path: path.chmod(0o644), "1", "off"),
+        (
+            lambda path: path.write_text(
+                json.dumps({"tenant_id": CANARY_TENANT_ID}), encoding="utf-8"
+            ),
+            "1",
+            "off",
+        ),
+        (
+            lambda path: path.write_text(
+                json.dumps(
+                    {
+                        "tenant_id": CANARY_TENANT_ID,
+                        "job_id": "not-a-uuid",
+                    }
+                ),
+                encoding="utf-8",
+            ),
+            "1",
+            "off",
+        ),
+        (lambda path: None, "2", "off"),
+        (lambda path: None, "1", "shadow"),
+    ],
+)
+def test_main_exact_canary_target_fails_closed_before_runtime_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutate_target,
+    limit: str,
+    protocol: str,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    mutate_target(target_file)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", protocol)
+    built = False
+
+    def runtime_factory(*args: object, **kwargs: object):
+        nonlocal built
+        built = True
+        pytest.fail(f"invalid target built runtime: {args!r} {kwargs!r}")
+
+    assert (
+        discovery_dispatch.main(
+            ["--once", "--limit", limit, "--target-file", str(target_file)],
+            runtime_factory=runtime_factory,
+        )
+        == 2
+    )
+    assert built is False
+
+
+def test_main_exact_canary_target_rejects_symlink_and_fault_combination(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    symlink = tmp_path / "target-link.json"
+    symlink.symlink_to(target_file)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+
+    def runtime_factory(*args: object, **kwargs: object):
+        pytest.fail(f"unsafe target built runtime: {args!r} {kwargs!r}")
+
+    assert (
+        discovery_dispatch.main(
+            ["--once", "--limit", "1", "--target-file", str(symlink)],
+            runtime_factory=runtime_factory,
+        )
+        == 2
+    )
+    assert (
+        discovery_dispatch.main(
+            [
+                "--once",
+                "--limit",
+                "1",
+                "--target-file",
+                str(target_file),
+                "--fault-mode",
+                "nonzero_exit",
+                "--fault-job-id",
+                FAULT_JOB_ID,
+                "--fault-tenant-id",
+                FAULT_TENANT_ID,
+            ],
+            runtime_factory=runtime_factory,
+        )
+        == 2
+    )
+
+
 def test_main_once_returns_blocked_exit_code_and_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -568,6 +717,54 @@ def test_main_once_returns_blocked_exit_code_and_summary(
         "remaining_retry_scheduled_count": 0,
         "requested_limit": 1,
     }
+
+
+def test_main_refuses_a_second_dispatcher_for_the_configured_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile_dir = tmp_path / "persistent-profile"
+    profile_dir.mkdir()
+    lock_path = profile_dir / ".egp-dispatch.lock"
+    lock_handle = lock_path.open("a+", encoding="utf-8")
+    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    monkeypatch.setenv("EGP_BROWSER_PROFILE_MODE", "persistent")
+    monkeypatch.setenv("EGP_BROWSER_PERSISTENT_PROFILE_DIR", str(profile_dir))
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+    built = False
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=RecordingDiscoveryProcessor(),
+        run_service=RecordingRunService(),
+    )
+
+    def runtime_factory(*args: object, **kwargs: object):
+        del args, kwargs
+        nonlocal built
+        built = True
+        return runtime
+
+    try:
+        exit_code = discovery_dispatch.main(
+            ["--once", "--limit", "1"],
+            runtime_factory=runtime_factory,
+        )
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+
+    assert exit_code == 5
+    assert built is False
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("{")
+    ]
+    assert any(event.get("event") == "executor_lock_unavailable" for event in events)
 
 
 def test_main_once_heartbeats_while_batch_is_running_then_reports_stopping(

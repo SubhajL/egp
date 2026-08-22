@@ -74,29 +74,20 @@ if [[ -n "$ignored_runtime_executable" ]]; then
   exit 1
 fi
 
-caller_overlays=()
 remaining_args=()
-resolve_overlay_path() {
-  local overlay_path="$1"
-  if [[ "$overlay_path" == /* ]]; then
-    printf '%s\n' "$overlay_path"
-  else
-    printf '%s/%s\n' "$TARGET_ROOT" "$overlay_path"
-  fi
-}
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
+    --project-directory|--project-directory=*)
+      echo "project directory override is not permitted" >&2
+      exit 2
+      ;;
     -f|--file)
-      if [[ "$#" -lt 2 ]]; then
-        echo "$1 requires a path" >&2
-        exit 2
-      fi
-      caller_overlays+=("$(resolve_overlay_path "$2")")
-      shift 2
+      echo "compose file override is not permitted" >&2
+      exit 2
       ;;
     --file=*)
-      caller_overlays+=("$(resolve_overlay_path "${1#--file=}")")
-      shift
+      echo "compose file override is not permitted" >&2
+      exit 2
       ;;
     *)
       remaining_args+=("$1")
@@ -133,44 +124,12 @@ for required_service in "${required_release_services[@]}"; do
   fi
 done
 
-overlay_has_runtime_source_mount() {
-  local overlay_path="$1"
-  local short_mount_pattern
-  local long_mount_pattern
-  short_mount_pattern=":[[:space:]]*[\"']?/app([/,:[:space:]]|[\"']|\$)"
-  long_mount_pattern="target[[:space:]]*[:=][[:space:]]*[\"']?/app([/,:[:space:]]|[\"']|\$)"
-  [[ -f "$overlay_path" ]] || return 1
-  LC_ALL=C grep -Eq "$short_mount_pattern|$long_mount_pattern" "$overlay_path"
-}
-
-if [[ -f "$TARGET_ROOT/docker-compose.override.yml" ]] &&
-  overlay_has_runtime_source_mount "$TARGET_ROOT/docker-compose.override.yml"; then
-  echo "runtime source mount detected; refusing release Compose" >&2
-  exit 1
-fi
-if [[ "${#caller_overlays[@]}" -gt 0 ]]; then
-  for caller_overlay in "${caller_overlays[@]}"; do
-    if overlay_has_runtime_source_mount "$caller_overlay"; then
-      echo "runtime source mount detected; refusing release Compose" >&2
-      exit 1
-    fi
-  done
-fi
-
 export EGP_RELEASE_SHA="$release_sha"
 cd "$TARGET_ROOT"
 compose_args=(
   --project-directory "$TARGET_ROOT"
   -f "$TARGET_ROOT/docker-compose.yml"
 )
-if [[ -f "$TARGET_ROOT/docker-compose.override.yml" ]]; then
-  compose_args+=(-f "$TARGET_ROOT/docker-compose.override.yml")
-fi
-if [[ "${#caller_overlays[@]}" -gt 0 ]]; then
-  for caller_overlay in "${caller_overlays[@]}"; do
-    compose_args+=(-f "$caller_overlay")
-  done
-fi
 compose_args+=(-f "$DRIVER_ROOT/docker-compose.release.yml")
 if [[ "${#remaining_args[@]}" -gt 0 ]]; then
   compose_args+=("${remaining_args[@]}")
