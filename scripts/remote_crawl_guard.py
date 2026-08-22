@@ -33,6 +33,7 @@ import sys
 import time
 from urllib.parse import parse_qs, urlsplit
 
+from egp_db.db_utils import normalize_database_url
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -63,7 +64,7 @@ class DatabaseReadinessResult:
 
 
 def _probe_database_once(database_url: str, timeout_seconds: float) -> None:
-    url = make_url(database_url)
+    url = make_url(normalize_database_url(database_url))
     connect_args: dict[str, object] = {}
     if url.get_backend_name().startswith("postgresql"):
         connect_args["connect_timeout"] = max(
