@@ -434,6 +434,48 @@ def test_database_probe_waits_then_succeeds() -> None:
     )
 
 
+def test_database_probe_uses_psycopg3_for_plain_postgresql_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_driver_names: list[str] = []
+
+    class _ScalarResult:
+        def scalar_one(self) -> int:
+            return 1
+
+    class _Connection:
+        def __enter__(self) -> _Connection:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            del args
+
+        def execute(self, statement: object) -> _ScalarResult:
+            del statement
+            return _ScalarResult()
+
+    class _Engine:
+        def connect(self) -> _Connection:
+            return _Connection()
+
+        def dispose(self) -> None:
+            return None
+
+    def create_engine(url: object, **kwargs: object) -> _Engine:
+        del kwargs
+        captured_driver_names.append(getattr(url, "drivername"))
+        return _Engine()
+
+    monkeypatch.setattr(remote_crawl_guard, "create_engine", create_engine)
+
+    remote_crawl_guard._probe_database_once(
+        "postgresql://operator:secret@127.0.0.1:15432/egp",
+        5.0,
+    )
+
+    assert captured_driver_names == ["postgresql+psycopg"]
+
+
 def test_database_probe_times_out_actionably_without_credentials() -> None:
     clock = [0.0]
 

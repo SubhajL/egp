@@ -1048,3 +1048,101 @@ migration, Track-C canary, supervision, rollback rehearsal, and launchd activati
 later lifecycle gates and are not claimed here.
 - This review is blocking. Every production correction must use a new bounded Luna-Max slice; the
   primary will not edit production code.
+
+### Delivery and runtime preflight
+
+- PR #223 merged the accepted candidate as
+  `0a10452515fb855b5a433b021629ce34b35eb16f`; local `main` was fast-forwarded to the same
+  `origin/main` SHA without touching the pre-existing dirty primary paths.
+- GitHub Actions jobs ended before meaningful execution under the standing billing-lock policy;
+  they were unavailable, not passing. The merge relied on the recorded local gates, exact accepted
+  head, mergeability, and clean formal review.
+- Candidate images at feature SHA `47942747d555eccfd5b76b6aab401e689690713e` and final images at
+  merge SHA `0a10452515fb855b5a433b021629ce34b35eb16f` both passed the exact-SHA runtime-image smoke.
+- Read-only production inspection stopped deployment before mutation. Lightsail remains at old
+  source/container identity, the API reports crawler-agent protocol `shadow` rather than `off`,
+  and the host lacks `pg_dump`, `rclone`, configured off-host backup credentials, and retrievable
+  backup artifacts. The database has four roughly 67-day-old `running` crawl runs and 13 claimable
+  jobs; the oldest claimable job is roughly 15.6 days old. These violate the backup, zero-active-run,
+  and 12-hour backlog stop conditions. No process, environment, container, database row, package,
+  or deployment state was changed.
+
+### S32 Track C database-readiness driver correction
+
+The exact production preflight exposed a separate source defect: `wait-database` passed a plain
+`postgresql://` URL directly to SQLAlchemy, which selected unavailable legacy `psycopg2` even
+though the locked runtime intentionally provides Psycopg 3. The primary added
+`test_database_probe_uses_psycopg3_for_plain_postgresql_url`; expected RED captured driver
+`postgresql` instead of `postgresql+psycopg`.
+
+S32 changed only `scripts/remote_crawl_guard.py`: `_probe_database_once` now applies the shared
+`egp_db.db_utils.normalize_database_url` helper before `make_url`. Existing timeout, retry,
+credential redaction, `SELECT 1`, and disposal behavior remain unchanged. Ownership evidence:
+`/tmp/egp-trackbc-s32.EfG5bw/{snapshot,receipt}.json`; verified role `luna_implementer`, model
+`gpt-5.6-luna`, effort `max`, exact production allowlist and protected-test hash.
+
+Primary verification:
+
+- RED: the new focused test failed on the wrong SQLAlchemy driver as expected.
+- GREEN: all 53 remote-crawl-guard tests passed; the focused regression passed three consecutive
+  times; Ruff lint and format checks passed.
+- Live read-only proof: guarded `wait-database` changed from a sanitized 60-second failure caused by
+  missing `psycopg2` to `database-ready attempts=1 elapsed_seconds=0.708` against the existing
+  production tunnel.
+- Full scoped suite: 1,974 passed / 4 skipped / 114 warnings in 262.12 seconds.
+
+S32 now requires formal review, final root gate, a sequential hotfix PR, exact merge-SHA image
+rebuild/smoke, and local-main landing before runtime preflight may resume. Production deployment
+remains blocked independently on backup readiness, stale active-run disposition, backlog age,
+private deletion-count acknowledgement, canary target, and maintenance-window authority.
+
+## Review (2026-08-23 02:29:59 +07) - S32 working tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-public-mvp-track-bc`
+- Branch: `fix/track-c-readiness-psycopg3`
+- Scope: working tree against `0a10452515fb855b5a433b021629ce34b35eb16f`
+- Commands Run: targeted and full `git diff`; focused RED/GREEN pytest; three focused repeats;
+  full 1,974-test scoped suite; Ruff lint/format; guarded live `wait-database`; RepoPrompt focused
+  Context Builder review of probe, helper, packaging, callers, tests, and Coding Log evidence.
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Open Questions / Assumptions
+
+- The source review does not claim production deployment acceptance. Backup readiness, stale active
+  runs, backlog age, protocol cutover, private migration-count acknowledgement, canary selection,
+  and the maintenance window remain separate runtime gates.
+
+### Recommended Tests / Validation
+
+- Run the definitive root Python suite after this review.
+- After sequential merge, rebuild and smoke exact merge-SHA images, then rerun guarded
+  `wait-database` from a clean exact-SHA Mac worktree before any production mutation.
+
+### Rollout Notes
+
+- Formal review result: no actionable findings. S32 correctly reuses the canonical URL normalizer,
+  Psycopg 3 is present in the locked Mac environment, and the existing retry/redaction/disposal
+  behavior is preserved.
+- Definitive post-review root suite: 2,131 passed / 4 skipped / 114 warnings in 267.89 seconds;
+  the suite-created `test.sqlite3` was moved recoverably to macOS Trash.
+- Keep `EGP_CRAWLER_AGENT_PROTOCOL=off`, Track B discovery executor count zero, and exactly one
+  native legacy Mac dispatcher for the MVP. Do not bypass any documented stop condition.
