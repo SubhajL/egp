@@ -1146,3 +1146,110 @@ LOW
   the suite-created `test.sqlite3` was moved recoverably to macOS Trash.
 - Keep `EGP_CRAWLER_AGENT_PROTOCOL=off`, Track B discovery executor count zero, and exactly one
   native legacy Mac dispatcher for the MVP. Do not bypass any documented stop condition.
+
+### S33 guarded-runner bytecode/provenance closure
+
+After PR #224 merged S32 as `16ff3aa869eaf96ee7b124e2b56894e441b1a618`, the primary rebuilt
+and smoked exact merge-SHA images, then ran the documented Track C sequence. `wait-database`
+succeeded, but its editable-source imports created `packages/db/src/egp_db/__pycache__`; the
+immediately following `doctor` correctly failed the ignored-runtime-source provenance gate. The
+worktree therefore could not execute its own sequential runbook commands without manual cache
+cleanup.
+
+The primary added
+`test_run_remote_crawl_disables_bytecode_writes_before_python_commands`; expected RED showed the
+standard Python bytecode-control export was absent. S33 changes only `scripts/run_remote_crawl.sh`,
+exporting `PYTHONDONTWRITEBYTECODE=1` immediately after strict shell options and before every guard,
+module, supervisor, worker, or diagnostic Python child. It does not weaken ignored-source checks or
+delete/redirect generated files. Ownership evidence:
+`/tmp/egp-trackbc-s33.J5stCn/{snapshot,receipt}.json`; verified role `luna_implementer`, model
+`gpt-5.6-luna`, effort `max`, exact one-file allowlist, unchanged protected test.
+
+Primary verification:
+
+- 23 remote-crawl asset tests passed; the focused regression passed three consecutive times;
+  `bash -n` passed.
+- The live guarded `check` and `wait-database` sequence passed, database readiness took 1.064
+  seconds, and the post-sequence runtime `__pycache__` count remained zero.
+- The first pre-commit doctor attempt now stopped on the intended tracked-source-dirty gate because
+  S33 itself was uncommitted; the prior ignored-runtime-source failure did not recur.
+
+S33 still requires formal review, post-review root/static gates, a clean-source doctor proof, and a
+sequential PR/merge/local-main landing. Deployment remains paused on the independently documented
+backup, stale-run, backlog, protocol, authority, and canary stop conditions.
+
+## Review (2026-08-23) - S33/S34 bytecode provenance guard
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-public-mvp-track-bc`
+- Base: `16ff3aa869eaf96ee7b124e2b56894e441b1a618` (PR #224 merge)
+- Scope: the uncommitted changes to `scripts/run_remote_crawl.sh` and
+  `tests/operations/test_remote_crawl_assets.py`.
+- Evidence: focused RED/GREEN tests, three focused repeats, the 24-test asset suite, Ruff
+  lint/format, shell syntax, guarded live `check` then `wait-database`, a zero runtime
+  `__pycache__` count under `apps/api`, `apps/worker`, and `packages`, and RepoPrompt formal review.
+
+### Findings
+
+CRITICAL
+
+- No findings.
+
+HIGH
+
+- No findings.
+
+MEDIUM
+
+- No findings.
+
+LOW
+
+- No findings.
+
+### Prior P1 disposition
+
+The first S33 formal review found that the validated environment loader could overwrite the initial
+`PYTHONDONTWRITEBYTECODE=1` export. That would have re-enabled ignored bytecode generation for every
+later operational Python child and made the next provenance-guarded command fail. S34 added a
+primary-owned executable regression test that injects `PYTHONDONTWRITEBYTECODE=` from the fake
+validated guard and proves the operational child still receives `1`. The Luna implementer then
+reasserted the guard immediately after the NUL-delimited environment-import loop. Ownership
+evidence: `/tmp/egp-trackbc-s34.pdeKn6/{snapshot,receipt}.json`; the receipt and ownership validator
+confirmed `luna_implementer`, `gpt-5.6-luna`, effort `max`, exact one-file production allowlist, and
+unchanged protected tests.
+
+The continued formal review reported no actionable findings: the reassertion covers module,
+supervisor, diagnostic, and nested wrapper paths, and the regression test exercises the original
+bypass. This closes the P1 at source level. It does not claim deployment or production runtime
+acceptance.
+
+### Remaining gates
+
+- Run the final affected and root quality gates.
+- Deliver the sequential hotfix PR, merge it under the authorized policy, land exact local main,
+  and rebuild/smoke exact merge-SHA images.
+- From a clean exact-SHA source tree, rerun `check`, `wait-database`, and `doctor`. A runtime stop
+  caused by backup readiness, stale active runs, backlog age, protocol state, canary selection, or
+  maintenance-window authority remains expected and must not be bypassed.
+
+### Final S34 source gates
+
+- Focused asset suite: 24 passed; both bytecode/provenance regressions passed three consecutive
+  times.
+- Live read-only sequence: guarded `check` passed, guarded `wait-database` returned
+  `database-ready attempts=1 elapsed_seconds=1.151`, and no runtime `__pycache__` remained under
+  `apps/api`, `apps/worker`, or `packages`.
+- Definitive root suite: 2,133 passed / 4 skipped / 114 warnings in 262.38 seconds.
+- Full Ruff lint, changed-test formatting, Python compilation, 41-file migration manifest,
+  `uv lock --check`, `pip check`, and shell syntax all passed.
+- Suite- and compilation-generated `__pycache__` directories and `test.sqlite3` were moved
+  recoverably to `/Users/subhajlimanond/.Trash/egp-trackbc-s34-generated.O5trtz` before candidate
+  provenance/build operations.
+- The initial frozen candidate `646f3abeab4f42da6a7d460d8d2324e1c2853d75` built API and
+  discovery-executor images through the trusted release wrapper. Runtime smoke passed with exact
+  revision label/environment agreement, non-root/read-only execution, API/worker dependency
+  separation, a live worker-browser smoke, and bounded image sizes (API 286,969,548 bytes; worker
+  1,734,477,991 bytes). The lifecycle-log update requires one final amend and exact final-feature-SHA
+  rebuild/smoke before submission.

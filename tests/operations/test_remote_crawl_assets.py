@@ -121,6 +121,80 @@ def test_run_remote_crawl_sh_parses() -> None:
     _bash_syntax_ok(REPO_ROOT / "scripts" / "run_remote_crawl.sh")
 
 
+def test_run_remote_crawl_disables_bytecode_writes_before_python_commands() -> None:
+    text = (REPO_ROOT / "scripts" / "run_remote_crawl.sh").read_text(encoding="utf-8")
+
+    export = "export PYTHONDONTWRITEBYTECODE=1"
+    assert export in text
+    assert text.index(export) < text.index("guard_check()")
+
+
+def test_run_remote_crawl_reasserts_bytecode_guard_after_validated_env(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    scripts_dir = root / "scripts"
+    python_dir = root / ".venv" / "bin"
+    fake_bin = tmp_path / "fake-bin"
+    for directory in (scripts_dir, python_dir, fake_bin):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    runner = scripts_dir / "run_remote_crawl.sh"
+    shutil.copy2(REPO_ROOT / "scripts" / "run_remote_crawl.sh", runner)
+    runner.chmod(0o755)
+    (scripts_dir / "remote_crawl_guard.py").write_text(
+        "# fake guard\n", encoding="utf-8"
+    )
+    env_file = root / ".env.remotecrawl"
+    env_file.write_text("placeholder=true\n", encoding="utf-8")
+    observed_env = tmp_path / "bytecode-env.txt"
+
+    fake_python = python_dir / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"print-env"* ]]; then\n'
+        "  printf 'PYTHONDONTWRITEBYTECODE=\\0'\n"
+        "  exit 0\n"
+        "fi\n"
+        'if [[ "${1:-}" == "-m" ]]; then\n'
+        '  printf "%s" "${PYTHONDONTWRITEBYTECODE-unset}" > "$OBSERVED_ENV_FILE"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"rev-parse --verify HEAD"* ]]; then\n'
+        "  printf '1111111111111111111111111111111111111111\\n'\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "EGP_REMOTECRAWL_ENV_FILE": str(env_file),
+            "OBSERVED_ENV_FILE": str(observed_env),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+        }
+    )
+    completed = subprocess.run(
+        [str(runner), "doctor"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert observed_env.read_text(encoding="utf-8") == "1"
+
+
 def test_run_remote_crawl_sh_guards_before_dispatching() -> None:
     text = (REPO_ROOT / "scripts" / "run_remote_crawl.sh").read_text(encoding="utf-8")
     assert "remote_crawl_guard.py" in text
