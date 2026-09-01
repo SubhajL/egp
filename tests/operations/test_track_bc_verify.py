@@ -5,7 +5,9 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 from uuid import UUID
 
 from psycopg import connect
@@ -1218,17 +1220,74 @@ def test_public_mvp_runbook_invokes_runtime_image_smoke_with_built_images() -> N
         Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
     ).read_text(encoding="utf-8")
 
-    assert (
-        'API_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && '
-        './scripts/release_compose.sh images -q api)"' in runbook
-    )
-    assert (
-        'WORKER_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && '
-        './scripts/release_compose.sh images -q discovery-executor)"' in runbook
-    )
+    assert "resolve_release_image()" in runbook
+    assert "./scripts/release_compose.sh config --images" in runbook
+    assert 'awk -v suffix="-$service_name"' in runbook
+    assert "if (matches != 1)" in runbook
+    assert "expected exactly one release image for service" in runbook
+    assert 'API_IMAGE="$(resolve_release_image api)"' in runbook
+    assert 'WORKER_IMAGE="$(resolve_release_image discovery-executor)"' in runbook
+    assert "./scripts/release_compose.sh images -q" not in runbook
     assert 'EGP_EXPECTED_RELEASE_SHA="$TRACK_BC_SHA"' in runbook
     assert './scripts/smoke_runtime_images.sh "$API_IMAGE" "$WORKER_IMAGE"' in runbook
     assert './scripts/smoke_runtime_images.sh "$TRACK_BC_SHA"' not in runbook
+
+
+@pytest.mark.parametrize(
+    ("producer_output", "producer_status", "accepted"),
+    [
+        ("egp-api\n", 0, True),
+        ("", 0, False),
+        ("first-api\nsecond-api\n", 0, False),
+        ("egp-api\n", 7, False),
+    ],
+)
+def test_public_mvp_runbook_image_resolver_fails_closed(
+    producer_output: str,
+    producer_status: int,
+    accepted: bool,
+) -> None:
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    helper = (
+        "resolve_release_image() {"
+        + runbook.split("resolve_release_image() {", maxsplit=1)[1].split(
+            "\nAPI_IMAGE=", maxsplit=1
+        )[0]
+    )
+    injected_helper = helper.replace(
+        '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh config --images)',
+        "produce_images",
+    )
+    assert injected_helper != helper
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "produce_images() { "
+            'printf \'%s\' "$IMAGE_OUTPUT"; return "$IMAGE_STATUS"; }\n'
+            f"{injected_helper}\n"
+            "resolve_release_image api",
+        ],
+        check=False,
+        capture_output=True,
+        env={
+            **os.environ,
+            "IMAGE_OUTPUT": producer_output,
+            "IMAGE_STATUS": str(producer_status),
+        },
+        text=True,
+    )
+
+    if accepted:
+        assert result.returncode == 0
+        assert result.stdout == "egp-api\n"
+    else:
+        assert result.returncode != 0
+    if producer_status:
+        assert "set -o pipefail" in helper
 
 
 def test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytecode() -> (
@@ -1266,14 +1325,15 @@ def test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytec
         source_gate.count(
             '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh'
         )
-        >= 3
+        >= 2
     )
     assert (
         normalized_runbook.count(
             'cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh'
         )
-        == 5
+        == 4
     )
+    assert normalized_runbook.count("resolve_release_image ") == 2
     assert (
         '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh '
         "run --rm migrate)" in normalized_runbook

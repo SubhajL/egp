@@ -120,8 +120,33 @@ test -z "$(find_ignored_runtime_executable "$TRACK_BC_GATE_ROOT")"
 
 (cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh build migrate api webhook-executor \
   crawler-agent-inbox-executor discovery-executor)
-API_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh images -q api)"
-WORKER_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh images -q discovery-executor)"
+resolve_release_image() {
+  local service_name="$1"
+  local image_ref
+  if ! image_ref="$(
+    set -o pipefail
+    (cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh config --images) |
+      awk -v suffix="-$service_name" '
+        length($0) >= length(suffix) &&
+          substr($0, length($0) - length(suffix) + 1) == suffix {
+            matches += 1
+            image_ref = $0
+          }
+        END {
+          if (matches != 1) {
+            exit 1
+          }
+          print image_ref
+        }
+      '
+  )"; then
+    printf 'expected exactly one release image for service %s\n' "$service_name" >&2
+    return 1
+  fi
+  printf '%s\n' "$image_ref"
+}
+API_IMAGE="$(resolve_release_image api)"
+WORKER_IMAGE="$(resolve_release_image discovery-executor)"
 test -n "$API_IMAGE"
 test -n "$WORKER_IMAGE"
 
