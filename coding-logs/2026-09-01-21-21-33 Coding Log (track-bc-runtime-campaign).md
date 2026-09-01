@@ -618,3 +618,168 @@ LOW
 
 - No findings. The staged candidate is accepted for commit subject to preserving the exact changed
   set and rerunning post-commit identity/status checks.
+
+## Delivery update - formatter prerequisite (2026-09-01 21:48 +0700)
+
+- Candidate commit: `473a851637a9bb458f7381e91f601cae1d184f87`.
+- PR: `#228`; accepted head matched the candidate and was mergeable.
+- GitHub Actions jobs failed before useful execution in 2-4 seconds under the standing billing-lock
+  condition. They were recorded once as unavailable, not passing, and were not investigated or
+  retried. The separate Vercel preview was pending and was not a source/security/conflict failure.
+- Authorized admin merge result: `f64af80acda28b7ad331c30740fb5a8503ec3bee`.
+- Local dirty `main` fast-forwarded exactly to `origin/main` at that SHA without changing its
+  protected pre-existing modified/untracked inventory.
+- The stale session release worktree at `ab19e43e` was tracked-clean; only session-generated ignored
+  virtualenv/tool/cache files remained. It was force-removed under the closeout protocol and pruned.
+- New detached release gate worktree:
+  `/Users/subhajlimanond/dev/egp-track-bc-release-f64af80a` at the exact merge SHA.
+- Post-merge source gates: identity/ancestry/cleanliness, frozen lock, compileall, manifest `42/42`,
+  Ruff lint, changed-Python format, full Python `2085 passed, 4 skipped`, web npm/typecheck/build,
+  and zero npm vulnerabilities passed.
+
+## Qualification RED - release wrapper versus generated cache (2026-09-01 22:02 +0700)
+
+- Exact image-build command failed before Docker with:
+  `ignored runtime source detected; refusing release Compose`.
+- Root cause: the governing runbook bootstrapped and ran `compileall` in the same checkout later
+  used as the Docker/Compose source. Those mandated gates create ignored `.pyc` files; the release
+  wrapper intentionally rejects them, and the Docker context does not exclude them.
+- Security decision: do not weaken the production wrapper and do not clean caches with broad or
+  destructive commands. Keep a pristine exact-SHA release worktree for all Compose operations and
+  a distinct exact-SHA gate worktree for bootstrap/compile/tests.
+- Primary-owned RED:
+  `test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytecode` failed because
+  the build followed bootstrap/compile and no distinct worktree contract existed.
+- Primary-owned GREEN: updated only
+  `docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md` and
+  `tests/operations/test_track_bc_verify.py`; the named regression now passes.
+- No production source, shell implementation, runtime configuration, schema, migration, or wiring
+  changed; therefore no Luna production slice was required.
+
+### Two-worktree contract validation
+
+- Focused operational suite: `145 passed`.
+- Three consecutive repeats: `145 passed` in 12.92s, 11.88s, and 11.61s.
+- Full Python: `2086 passed, 4 skipped` in 229.43s.
+- Ruff format/check for the changed test, release-wrapper shell syntax, and diff check passed.
+- Full tests again created an untracked zero-byte `test.sqlite3`; the primary verified exact size and
+  removed only that session-generated file before review/staging.
+- Wiring impact: documentation commands now address the pristine release source and generated-cache
+  gate source explicitly. Existing wrapper, Compose roles, verifier, migration, and runtime entry
+  points are unchanged.
+
+## Independent QCHECK remediation - two-worktree contract (2026-09-01 22:15 +0700)
+
+The first independent review found two valid gaps in the initial documentation/test repair:
+
+- P1: candidate pre/postflight, migration-040 attestation, and runtime/canary/bundle verifier
+  commands remained relative to the operator's parent shell despite the new gate-worktree rule.
+- P2: the initial checks did not prove detached HEAD or inspect ignored executable runtime inputs;
+  `git status --untracked-files=all` does not include ignored files.
+
+Primary-owned contract expansion and expected RED:
+
+- Extended
+  `test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytecode` to require two
+  detached-head assertions, explicit ignored-runtime executable inspection for both roots, two
+  gate-rooted candidate-preflight commands, the gate-rooted migration-040 heredoc, and gate-rooted
+  runtime/canary/bundle verifier commands.
+- The named test failed on the pre-remediation runbook at the first detached-head assertion:
+  expected two `symbolic-ref --quiet HEAD` checks, found zero.
+
+GREEN remediation:
+
+- Added detached-head and ignored executable runtime-input checks for both initial worktrees. The
+  ignored-input filter mirrors the unchanged fail-closed release wrapper's runtime path and suffix
+  contract.
+- Rooted every later local Python/verifier command in `TRACK_BC_GATE_ROOT`; all five release Compose
+  invocations remain rooted in the pristine `TRACK_BC_RELEASE_ROOT`.
+- No production source, runtime shell implementation, configuration, migration, schema, or wiring
+  changed; this remained primary-owned documentation and acceptance-test work.
+
+Final primary gates for the remediated candidate:
+
+- Named regression: passed.
+- Complete `test_track_bc_verify.py`: `93 passed` on three consecutive runs.
+- Full Python: `2086 passed, 4 skipped` in 233.09 seconds.
+- Changed-test Ruff format/check and complete diff check passed.
+- Full tests recreated only the known session-generated zero-byte `test.sqlite3`; exact size was
+  verified and that one file was removed before review.
+
+Follow-up QCHECK confirmed both operational defects fixed and found one remaining test-coverage
+gap: the later migration and deploy release-wrapper calls were correctly release-rooted but not
+protected by an assertion. The primary extended the same regression to require exactly five
+release-rooted wrapper calls and the exact later `run --rm migrate` and zero-discovery `up -d`
+forms. The complete verifier test file then passed three consecutive times (`93 passed` each),
+with changed-test Ruff format/check and diff check passing.
+
+Final independent QCHECK reported no findings. It confirmed all five release-wrapper calls are
+release-rooted and protected, all five later local verifier operations are gate-rooted, and the
+detached/ignored-runtime checks remain present. The primary's final complete Python rerun passed
+`2086 passed, 4 skipped` in 228.86 seconds. It recreated only the known zero-byte `test.sqlite3`;
+the exact file was verified and removed again before formal review.
+
+## Review (2026-09-01 22:23:19 +0700) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-track-bc-runtime-campaign`
+- Branch: `fix/release-qualification-order`
+- Scope: staged documentation, acceptance-test, and lifecycle-log candidate against
+  `f64af80acda28b7ad331c30740fb5a8503ec3bee`.
+- Complete diff inspected for the runbook and test; lifecycle-log delta inspected for evidence and
+  scope accuracy. No production source, shell implementation, configuration, migration, schema,
+  generated runtime asset, signature, seam, registration, or wiring file is changed.
+- RepoPrompt: no workspace exists for this exact session-owned worktree and the earlier binding
+  attempt failed. Per `g-check` fallback policy, the formal review used the complete staged diff,
+  relevant unchanged wrapper implementation, exact-string wiring/rooting searches, Bash syntax,
+  test evidence, and independent QCHECK without retrying the unavailable binding.
+
+### Findings
+
+CRITICAL
+
+- None.
+
+HIGH
+
+- None.
+
+MEDIUM
+
+- None.
+
+LOW
+
+- None. The two-worktree fail-closed contract and its regression coverage are accepted.
+
+### Open Questions / Assumptions
+
+- Assumption: after this prerequisite merges, both release and gate worktrees will be recreated as
+  detached exact-SHA checkouts at the new merge result. The release root will remain unbootstrapped
+  and pristine for every wrapper call.
+- Production identities, secret-backed authority values, evidence directory, target IDs, backup
+  destinations, and activation window remain private runtime inputs and are not represented by
+  this source review.
+
+### Recommended Tests / Validation
+
+- Preserve the current `93 passed` x3 verifier repeats, final `2086 passed, 4 skipped` full Python
+  gate, Ruff format/lint, Bash syntax, diff check, and no-findings independent QCHECK.
+- After merge, create two new detached worktrees at the exact merge SHA and execute image build and
+  identity resolution from the pristine release root before bootstrapping the gate root.
+- Continue only through the runbook's separately authorized, fresh production evidence sequence;
+  this review is source acceptance, not runtime or activation proof.
+
+### Rollout Notes
+
+- No runtime behavior changes in this candidate. The change prevents generated Python cache files
+  from contaminating the Docker build context while retaining the wrapper's fail-closed checks.
+- Rollback is source-only: revert this documentation/test commit if the operator contract is found
+  incorrect before the production campaign. Do not weaken the unchanged wrapper as a workaround.
+- Billing-locked no-step hosted jobs remain unavailable, not passing, under the standing policy.
+
+### Formal disposition
+
+- No findings. The staged candidate is accepted for commit and delivery with the exact three-file
+  scope above.
