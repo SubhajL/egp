@@ -67,37 +67,81 @@ git merge-base --is-ancestor "$TRACK_BC_BASE_SHA" "$TRACK_BC_SHA"
 The value must be the merge result, not the feature-branch head or the earlier `846f8286`
 baseline. Store it in the private authority record and use it for every later comparison.
 
-## 2. Use a clean release worktree
+## 2. Use separate clean release and gate worktrees
 
-Create or select a clean, detached worktree at `TRACK_BC_SHA`. Do not use the dirty primary
-checkout or the historical `egp-ops-main` checkout. Confirm no staged/unstaged changes and no
-untracked or ignored executable Python inputs under `apps/`, `packages/`, `pyproject.toml`, or
-`uv.lock`. The release wrapper and Mac runner repeat these checks. Release Compose uses only the
-tracked base file and tracked release overlay: it ignores an implicit `docker-compose.override.yml`
-and rejects every caller `-f`/`--file` or `--project-directory` override.
+Create or select two distinct clean, detached worktrees at `TRACK_BC_SHA`. The release worktree is
+the immutable Docker Compose source and must never be bootstrapped, compiled, tested, or used for
+web dependency installation. The gate worktree runs local source/web checks and may therefore
+contain ignored generated caches after its initial cleanliness check. Do not use the dirty primary
+checkout or the historical `egp-ops-main` checkout for either role.
+
+Confirm both worktrees start with the exact SHA, no staged/unstaged changes, and no untracked or
+ignored executable Python inputs under `apps/`, `packages/`, `pyproject.toml`, or `uv.lock`. Keep the
+release worktree pristine for every later `release_compose.sh` command. The release wrapper and Mac
+runner repeat their own source checks. Release Compose uses only the tracked base file and tracked
+release overlay: it ignores an implicit `docker-compose.override.yml` and rejects every caller
+`-f`/`--file` or `--project-directory` override.
 
 ## 3. Run source and release gates
 
-From the clean worktree, save bounded outputs under the private evidence directory:
+From the two clean worktrees, save bounded outputs under the private evidence directory. Resolve
+and inspect the images from the pristine release worktree before local Python gates create ignored
+executable Python cache files in the gate worktree. Those files must never enter the Docker build
+context, and the release wrapper must continue to reject them.
 
 ```bash
-./scripts/bootstrap_python_env.sh
-.venv/bin/python -m compileall apps packages scripts
-.venv/bin/python scripts/check_migration_manifest.py --check
-.venv/bin/python -m ruff check apps packages tests scripts
-git diff --name-only -z --diff-filter=ACMR \
-  "$TRACK_BC_BASE_SHA..$TRACK_BC_SHA" -- '*.py' \
-  | xargs -0 .venv/bin/python -m ruff format --check
-.venv/bin/python -m pytest tests apps packages -q
-(cd apps/web && npm ci && npm run typecheck && npm run build)
-./scripts/release_compose.sh build migrate api webhook-executor \
-  crawler-agent-inbox-executor discovery-executor
-API_IMAGE="$(./scripts/release_compose.sh images -q api)"
-WORKER_IMAGE="$(./scripts/release_compose.sh images -q discovery-executor)"
+TRACK_BC_RELEASE_ROOT="<clean-release-worktree>"
+TRACK_BC_GATE_ROOT="<clean-gate-worktree>"
+test "$TRACK_BC_RELEASE_ROOT" != "$TRACK_BC_GATE_ROOT"
+test "$(git -C "$TRACK_BC_RELEASE_ROOT" rev-parse --verify HEAD)" = "$TRACK_BC_SHA"
+test "$(git -C "$TRACK_BC_GATE_ROOT" rev-parse --verify HEAD)" = "$TRACK_BC_SHA"
+test -z "$(git -C "$TRACK_BC_RELEASE_ROOT" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+test -z "$(git -C "$TRACK_BC_GATE_ROOT" symbolic-ref --quiet HEAD 2>/dev/null || true)"
+test -z "$(git -C "$TRACK_BC_RELEASE_ROOT" status --porcelain=v1 --untracked-files=all)"
+test -z "$(git -C "$TRACK_BC_GATE_ROOT" status --porcelain=v1 --untracked-files=all)"
+
+find_ignored_runtime_executable() {
+  local root="$1"
+  local ignored_path
+  while IFS= read -r ignored_path; do
+    case "$ignored_path" in
+      pyproject.toml|uv.lock|*.py|*.pyc|*.pth|*.so|*.pyd)
+        printf '%s\n' "$ignored_path"
+        return 0
+        ;;
+    esac
+  done < <(
+    git -C "$root" ls-files --others --ignored --exclude-standard -- \
+      pyproject.toml uv.lock apps/api apps/worker packages
+  )
+}
+test -z "$(find_ignored_runtime_executable "$TRACK_BC_RELEASE_ROOT")"
+test -z "$(find_ignored_runtime_executable "$TRACK_BC_GATE_ROOT")"
+
+(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh build migrate api webhook-executor \
+  crawler-agent-inbox-executor discovery-executor)
+API_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh images -q api)"
+WORKER_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh images -q discovery-executor)"
 test -n "$API_IMAGE"
 test -n "$WORKER_IMAGE"
-EGP_EXPECTED_RELEASE_SHA="$TRACK_BC_SHA" \
-  ./scripts/smoke_runtime_images.sh "$API_IMAGE" "$WORKER_IMAGE"
+
+(cd "$TRACK_BC_GATE_ROOT" && ./scripts/bootstrap_python_env.sh)
+(cd "$TRACK_BC_GATE_ROOT" && .venv/bin/python -m compileall apps packages scripts)
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/check_migration_manifest.py --check
+)
+(cd "$TRACK_BC_GATE_ROOT" && .venv/bin/python -m ruff check apps packages tests scripts)
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  git diff --name-only -z --diff-filter=ACMR \
+    "$TRACK_BC_BASE_SHA..$TRACK_BC_SHA" -- '*.py' \
+    | xargs -0 .venv/bin/python -m ruff format --check
+)
+(cd "$TRACK_BC_GATE_ROOT" && .venv/bin/python -m pytest tests apps packages -q)
+(cd "$TRACK_BC_GATE_ROOT/apps/web" && npm ci && npm run typecheck && npm run build)
+(cd "$TRACK_BC_GATE_ROOT" && EGP_EXPECTED_RELEASE_SHA="$TRACK_BC_SHA" \
+  ./scripts/smoke_runtime_images.sh "$API_IMAGE" "$WORKER_IMAGE")
 ```
 
 Hosted jobs that fail before their first step solely because of the standing GitHub billing lock
@@ -105,6 +149,10 @@ are unavailable, not passing. The accepted local gates and exact candidate SHA r
 The formatter gate is intentionally limited to Python files changed by this campaign from the
 frozen pre-campaign main SHA; the baseline has known unrelated formatter drift. The full-tree Ruff
 lint and both full Python suites remain mandatory.
+
+Unless a later section explicitly names the native Mac worktree, run local Python/verifier commands
+from `TRACK_BC_GATE_ROOT` and every `release_compose.sh` command from the still-pristine
+`TRACK_BC_RELEASE_ROOT`.
 
 ## 4. Confirm mutation authority
 
@@ -138,9 +186,12 @@ off-host object is not accepted backup evidence.
 With `DATABASE_URL` present only in the process environment:
 
 ```bash
-.venv/bin/python scripts/candidate_integrity_preflight.py \
-  --migrations-dir packages/db/src/migrations \
-  --phase pre > <private-evidence-dir>/candidate-preflight.json
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/candidate_integrity_preflight.py \
+    --migrations-dir packages/db/src/migrations \
+    --phase pre
+) > <private-evidence-dir>/candidate-preflight.json
 ```
 
 Require `active_run_count=0`. Record `candidate_count`, both manifest digests, and all seven repair
@@ -158,7 +209,7 @@ closes the procedural interval between count approval and the advisory-locked mi
 exactly one release-wrapper migration container:
 
 ```bash
-./scripts/release_compose.sh run --rm migrate
+(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh run --rm migrate)
 ```
 
 The runner loads the tracked migration bytes and verifies them against `manifest.sha256` before
@@ -171,12 +222,14 @@ retry loop. Then run postflight using the exact preflight candidate count and ap
 deletion count:
 
 ```bash
-.venv/bin/python scripts/candidate_integrity_preflight.py \
-  --migrations-dir packages/db/src/migrations \
-  --phase post \
-  --expected-pre-candidate-count <pre-candidate-count> \
-  --expected-deleted-orphan-run-count <approved-delete-count> \
-  > <private-evidence-dir>/candidate-postflight.json
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/candidate_integrity_preflight.py \
+    --migrations-dir packages/db/src/migrations \
+    --phase post \
+    --expected-pre-candidate-count <pre-candidate-count> \
+    --expected-deleted-orphan-run-count <approved-delete-count>
+) > <private-evidence-dir>/candidate-postflight.json
 ```
 
 Require `status=ready`, `migration_038_applied=true`, `migration_039_applied=true`, every repair
@@ -186,8 +239,9 @@ the database URL remains in the process environment rather than a command argume
 bounded output stays private:
 
 ```bash
-.venv/bin/python - \
-  > <private-evidence-dir>/migration-040-attestation.json <<'PY'
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -260,6 +314,7 @@ print(
     )
 )
 PY
+) > <private-evidence-dir>/migration-040-attestation.json
 ```
 
 Require exactly one ledger row whose version is `040_exact_canary_failure_codes.sql` and whose
@@ -276,8 +331,8 @@ and Compose-file overrides and does not load an implicit override; do not bypass
 Compose:
 
 ```bash
-./scripts/release_compose.sh up -d --scale discovery-executor=0 \
-  api webhook-executor crawler-agent-inbox-executor
+(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh up -d \
+  --scale discovery-executor=0 api webhook-executor crawler-agent-inbox-executor)
 ```
 
 Deploy the public web/Caddy/Vercel surface through its existing governed path. Do not start the
@@ -365,10 +420,13 @@ object. The doctor heartbeat must include an absolute UTC `reported_at`; an age-
 not sufficient. Collect the inputs as one bounded evidence operation and verify them immediately:
 
 ```bash
-.venv/bin/python scripts/track_bc_verify.py runtime \
-  --evidence <private-evidence-dir>/runtime-input.json \
-  --expected-release-sha "$TRACK_BC_SHA" \
-  --output <private-evidence-dir>/runtime-receipt.json
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/track_bc_verify.py runtime \
+    --evidence <private-evidence-dir>/runtime-input.json \
+    --expected-release-sha "$TRACK_BC_SHA" \
+    --output <private-evidence-dir>/runtime-receipt.json
+)
 ```
 
 Require `status=accepted`.
@@ -464,10 +522,13 @@ bounded/redacted JSONL evidence, probes the recorded child PID, and checks the c
 lock:
 
 ```bash
-.venv/bin/python scripts/track_bc_verify.py canary \
-  --request <private-evidence-dir>/canary-request.json \
-  --expected-release-sha "$TRACK_BC_SHA" \
-  --output <private-evidence-dir>/canary-receipt.json
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/track_bc_verify.py canary \
+    --request <private-evidence-dir>/canary-request.json \
+    --expected-release-sha "$TRACK_BC_SHA" \
+    --output <private-evidence-dir>/canary-receipt.json
+)
 ```
 
 Require an exact target match, dispatched job, succeeded correlated run finished no more than one
@@ -529,11 +590,14 @@ the command:
 ```bash
 test "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" -gt 0 &&
 test "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" -lt 86400 &&
-.venv/bin/python scripts/track_bc_verify.py bundle \
-  --evidence <private-evidence-dir>/bundle-input.json \
-  --expected-release-sha "$TRACK_BC_SHA" \
-  --max-age-seconds "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" \
-  --output <private-evidence-dir>/acceptance-bundle.json
+(
+  cd "$TRACK_BC_GATE_ROOT"
+  .venv/bin/python scripts/track_bc_verify.py bundle \
+    --evidence <private-evidence-dir>/bundle-input.json \
+    --expected-release-sha "$TRACK_BC_SHA" \
+    --max-age-seconds "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" \
+    --output <private-evidence-dir>/acceptance-bundle.json
+)
 ```
 
 This explicit verification is a procedural campaign control, not a hard installer-enforced limit:

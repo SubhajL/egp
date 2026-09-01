@@ -1218,14 +1218,91 @@ def test_public_mvp_runbook_invokes_runtime_image_smoke_with_built_images() -> N
         Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
     ).read_text(encoding="utf-8")
 
-    assert 'API_IMAGE="$(./scripts/release_compose.sh images -q api)"' in runbook
     assert (
-        'WORKER_IMAGE="$(./scripts/release_compose.sh images -q discovery-executor)"'
-        in runbook
+        'API_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && '
+        './scripts/release_compose.sh images -q api)"' in runbook
+    )
+    assert (
+        'WORKER_IMAGE="$(cd "$TRACK_BC_RELEASE_ROOT" && '
+        './scripts/release_compose.sh images -q discovery-executor)"' in runbook
     )
     assert 'EGP_EXPECTED_RELEASE_SHA="$TRACK_BC_SHA"' in runbook
     assert './scripts/smoke_runtime_images.sh "$API_IMAGE" "$WORKER_IMAGE"' in runbook
     assert './scripts/smoke_runtime_images.sh "$TRACK_BC_SHA"' not in runbook
+
+
+def test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytecode() -> (
+    None
+):
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    source_gate = runbook.split("## 3. Run source and release gates", maxsplit=1)[
+        1
+    ].split("## 4. Confirm mutation authority", maxsplit=1)[0]
+    normalized_source_gate = " ".join(source_gate.split())
+    normalized_runbook = " ".join(runbook.replace("\\\n", " ").split())
+
+    build_command = "./scripts/release_compose.sh build migrate api webhook-executor"
+    bootstrap_command = "./scripts/bootstrap_python_env.sh"
+    compile_command = ".venv/bin/python -m compileall apps packages scripts"
+    assert 'TRACK_BC_RELEASE_ROOT="<clean-release-worktree>"' in runbook
+    assert 'TRACK_BC_GATE_ROOT="<clean-gate-worktree>"' in runbook
+    assert 'test "$TRACK_BC_RELEASE_ROOT" != "$TRACK_BC_GATE_ROOT"' in runbook
+    assert runbook.count("symbolic-ref --quiet HEAD 2>/dev/null || true") == 2
+    assert 'git -C "$root" ls-files --others --ignored --exclude-standard --' in runbook
+    assert (
+        'test -z "$(find_ignored_runtime_executable "$TRACK_BC_RELEASE_ROOT")"'
+        in runbook
+    )
+    assert (
+        'test -z "$(find_ignored_runtime_executable "$TRACK_BC_GATE_ROOT")"' in runbook
+    )
+    assert source_gate.index(build_command) < source_gate.index(bootstrap_command)
+    assert source_gate.index(build_command) < source_gate.index(compile_command)
+    assert "ignored executable Python cache files" in normalized_source_gate
+    assert "release wrapper must continue to reject them" in normalized_source_gate
+    assert (
+        source_gate.count(
+            '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh'
+        )
+        >= 3
+    )
+    assert (
+        normalized_runbook.count(
+            'cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh'
+        )
+        == 5
+    )
+    assert (
+        '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh '
+        "run --rm migrate)" in normalized_runbook
+    )
+    assert (
+        '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh up -d '
+        "--scale discovery-executor=0 api webhook-executor "
+        "crawler-agent-inbox-executor)" in normalized_runbook
+    )
+    assert (
+        '(cd "$TRACK_BC_GATE_ROOT" && ./scripts/bootstrap_python_env.sh)' in source_gate
+    )
+
+    assert (
+        normalized_runbook.count(
+            'cd "$TRACK_BC_GATE_ROOT" .venv/bin/python '
+            "scripts/candidate_integrity_preflight.py"
+        )
+        == 2
+    )
+    assert "cd \"$TRACK_BC_GATE_ROOT\" .venv/bin/python - <<'PY'" in normalized_runbook
+    assert ") > <private-evidence-dir>/migration-040-attestation.json" in (
+        normalized_runbook
+    )
+    for stage in ("runtime", "canary", "bundle"):
+        assert (
+            'cd "$TRACK_BC_GATE_ROOT" .venv/bin/python '
+            f"scripts/track_bc_verify.py {stage}" in normalized_runbook
+        )
 
 
 def test_public_mvp_runbook_uses_reproducible_changed_python_format_gate() -> None:
