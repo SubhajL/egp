@@ -312,7 +312,15 @@ def _run_bounded_doctor(
                     termination_grace_seconds=1.0,
                 )
             return None
-        decoded = json.loads(bytes(output).decode("utf-8"))
+        decoded_output = bytes(output).decode("utf-8")
+        output_lines = decoded_output.splitlines()
+        if len(output_lines) > 1:
+            if len(output_lines) != 2 or output_lines[0] != (
+                "remote-crawl guard: OK (environment is safe to crawl PRODUCTION)"
+            ):
+                return None
+            decoded_output = output_lines[1]
+        decoded = json.loads(decoded_output)
         return decoded if isinstance(decoded, Mapping) else None
     except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError):
         _terminate_process_group(

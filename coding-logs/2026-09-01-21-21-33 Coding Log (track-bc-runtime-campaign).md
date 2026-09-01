@@ -1204,3 +1204,100 @@ LOW
   through the real imports and CLI parser, and that the runtime/canary/RED-GREEN evidence recorded
   above agrees with the staged three-file candidate.
 - Disposition: approved for commit and delivery while the exact staged candidate remains unchanged.
+
+## Exact merge-SHA deployment and canary acceptance (2026-09-02 02:49 +0700)
+
+- PR #232 was admin-merged as `385363744fe76d76e75488576a8f109b983bb6d9` and landed on
+  local `main` by exact fast-forward with the protected dirty-primary inventory unchanged. Fresh
+  detached release, gate, and Mac worktrees were created at that merge SHA.
+- All five governed images built with matching immutable image IDs, OCI revisions, and baked
+  release SHAs. The separate nonexecuting migrate/discovery identity containers matched their
+  independently inspected images before removal. Production preflight matched twice with zero
+  active runs and zero repairs; the one-off migrator applied zero pending migrations; postflight
+  and migration-040 digest/constraint attestation passed.
+- Targeted API/webhook/inbox deployment passed with `/ready` healthy, migrations pending/unexpected
+  both zero, crawler-agent protocol `off`, Track B discovery zero, and no external discovery
+  process. The native Mac at the same exact SHA passed guard, database, profile warm, and doctor.
+  Runtime schema 1 accepted all 15 checks.
+- Four terminal or pre-ingestion-rejected exact campaigns were retained without retrying their
+  jobs: two live runs failed closed on upstream project-detail anomalies, one read-only observation
+  stopped at four pages/no eligible later-page content and its unclaimed row was terminalized
+  through the repository, and one live run failed `later_page_not_persisted`. A preflight-only
+  `profile_warm_retry` claimed nothing and left attempt count zero before the prescribed warm.
+- The next independently qualified keyword had six historical successes, an active subscription,
+  legacy routing, and the fixed 15-page cap. Its read-only observation accepted pages 1 through 15
+  with eligible content on page 4. The one live job dispatched successfully with zero errors and
+  drained the queue. The independent schema-2 verifier accepted all 22 checks, including exact
+  target/run correlation, later-page persistence, document capture, artifact retrieval,
+  bounded/redacted exact-SHA evidence, terminal ordering, dead child, and free profile lock.
+
+## Supervision postflight parser RED and Luna-Max GREEN (2026-09-02 03:03 +0700)
+
+- Fresh supervision preflight accepted all 15 runtime checks. The merged direct-script entrypoint
+  then reached its 120-second deadline and reaped the complete watcher process group, proving the
+  first fix in production, but rejected postflight as `postflight_doctor_invalid`.
+- Runtime diagnosis found the fixed doctor command is `run_remote_crawl.sh doctor`: its guard writes
+  one exact success line before the doctor module writes its JSON mapping. The bounded parser still
+  passed the complete two-line stdout directly to `json.loads`, so it could never accept the real
+  wrapper path.
+- Primary-owned tests locked acceptance of either one JSON mapping or the exact guard line plus one
+  JSON mapping, while preserving rejection of arbitrary preambles and a valid guarded mapping with
+  forbidden third-line output. Expected RED was exact: guarded real output rejected; arbitrary
+  preamble already rejected.
+- GREEN snapshot `supervise-guarded-doctor-output` allowed only
+  `scripts/supervise_remote_crawl.py`. Logical `luna_implementer` on `gpt-5.6-luna`/max changed only
+  the bounded parser. Its model-bound receipt and ownership validation passed. Primary complete-diff
+  inspection confirmed that only the exact authentic preamble is accepted and that timeout, cap,
+  exit-status, mapping, interruption, and process-group rejection remain fail-closed.
+- Primary gates passed: `155` focused supervisor/runner/verifier tests; compileall; full Ruff;
+  changed-file formatting; Bash syntax; diff check; `2113 passed, 4 skipped` across `tests apps
+  packages`; and `157 passed` in the root legacy crawler suite, for `2270 passed, 4 skipped` total.
+  The suite-generated `test.sqlite3` was verified as exactly zero bytes before removing that exact
+  untracked artifact.
+
+## Supervision postflight parser QCHECK (2026-09-02 03:05 +0700)
+
+- Independent Terra QCHECK found no P0/P1 production issue and raised one P2 test gap: the locked
+  no-extra-stdout boundary lacked a direct authentic-guard + valid-mapping + third-line rejection
+  test. Primary added that test without changing production code.
+- The three exact parser-boundary tests passed, the full supervisor file passed `23` tests, and
+  Ruff format/check plus diff check passed. Terra re-review confirmed the P2 closed and reported no
+  P0-P3 findings.
+
+## Review (2026-09-02 03:06 +0700) - supervisor guarded-doctor parser working tree
+
+### Reviewed
+- Repo: `/Users/subhajlimanond/dev/egp-track-bc-runtime-campaign`
+- Branch: `ops/track-bc-runtime-evidence-final`
+- Scope: working tree over `385363744fe76d76e75488576a8f109b983bb6d9`
+- Commands Run: bounded/full `pytest`, compileall, Ruff lint/format, Bash syntax, diff check,
+  RepoPrompt diff artifacts/context review, independent Terra QCHECK
+
+### Findings
+CRITICAL
+- None.
+
+HIGH
+- None.
+
+MEDIUM
+- None. The independent QCHECK test-gap finding was remediated and re-reviewed before disposition.
+
+LOW
+- None.
+
+### Open Questions / Assumptions
+- The production guard success string remains the exact tracked literal consumed by the parser.
+- Direct one-line JSON remains supported for focused tools/tests; the governed wrapper emits the
+  exact two-line form.
+
+### Recommended Tests / Validation
+- Preserve the three stdout-boundary tests and existing timeout, interruption, output-cap,
+  nonzero-exit, non-mapping, and process-group cleanup coverage.
+- After merge, deploy a fresh exact SHA and rerun runtime, canary, 120-second supervision,
+  rollback, bundle-v2, and launchd activation evidence.
+
+### Rollout Notes
+- No P0/CRITICAL, P1/HIGH, P2/MEDIUM, or P3/LOW findings remain.
+- Formal RepoPrompt-backed `g-check` disposition: approve the exact three-file candidate. The
+  source fix is not runtime acceptance; the post-merge exact-SHA production tail remains required.

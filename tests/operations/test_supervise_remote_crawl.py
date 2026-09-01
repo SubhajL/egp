@@ -96,6 +96,14 @@ def _doctor_command(*, online: bool = True) -> list[str]:
     ]
 
 
+def _doctor_command_with_stdout_lines(*lines: str) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        f"import sys; sys.stdout.write({(''.join(f'{line}{chr(10)}' for line in lines))!r})",
+    ]
+
+
 def _blocking_doctor_tree(tmp_path: Path) -> tuple[list[str], Path, Path]:
     doctor_pid_path = tmp_path / "doctor.pid"
     child_pid_path = tmp_path / "doctor-descendant.pid"
@@ -182,6 +190,85 @@ def test_supervised_interval_stops_and_reaps_the_complete_process_group(
     while _pid_exists(child_pid) and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not _pid_exists(child_pid)
+
+
+def test_supervised_interval_accepts_the_guarded_runner_doctor_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.supervise_remote_crawl as supervisor
+
+    monkeypatch.setattr(supervisor, "MIN_DURATION_SECONDS", 0.1)
+    command, _ = _write_long_running_tree(tmp_path)
+    doctor = json.dumps(_runtime_evidence()["doctor"], sort_keys=True)
+
+    report = supervisor.supervise(
+        command=command,
+        doctor_command=_doctor_command_with_stdout_lines(
+            "remote-crawl guard: OK (environment is safe to crawl PRODUCTION)",
+            doctor,
+        ),
+        duration_seconds=0.2,
+        expected_release_sha=RELEASE_SHA,
+        runtime_evidence=_runtime_evidence(),
+        termination_grace_seconds=1.0,
+    )
+
+    assert report.status == "accepted"
+    assert report.postflight_runtime_accepted is True
+    assert report.errors == ()
+
+
+def test_supervised_interval_rejects_unrecognized_doctor_stdout_preamble(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.supervise_remote_crawl as supervisor
+
+    monkeypatch.setattr(supervisor, "MIN_DURATION_SECONDS", 0.1)
+    command, _ = _write_long_running_tree(tmp_path)
+    doctor = json.dumps(_runtime_evidence()["doctor"], sort_keys=True)
+
+    report = supervisor.supervise(
+        command=command,
+        doctor_command=_doctor_command_with_stdout_lines("unexpected output", doctor),
+        duration_seconds=0.2,
+        expected_release_sha=RELEASE_SHA,
+        runtime_evidence=_runtime_evidence(),
+        termination_grace_seconds=1.0,
+    )
+
+    assert report.status == "rejected"
+    assert report.postflight_runtime_accepted is False
+    assert report.errors == ("postflight_doctor_invalid",)
+
+
+def test_supervised_interval_rejects_extra_stdout_after_guarded_doctor_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.supervise_remote_crawl as supervisor
+
+    monkeypatch.setattr(supervisor, "MIN_DURATION_SECONDS", 0.1)
+    command, _ = _write_long_running_tree(tmp_path)
+    doctor = json.dumps(_runtime_evidence()["doctor"], sort_keys=True)
+
+    report = supervisor.supervise(
+        command=command,
+        doctor_command=_doctor_command_with_stdout_lines(
+            "remote-crawl guard: OK (environment is safe to crawl PRODUCTION)",
+            doctor,
+            "unexpected output",
+        ),
+        duration_seconds=0.2,
+        expected_release_sha=RELEASE_SHA,
+        runtime_evidence=_runtime_evidence(),
+        termination_grace_seconds=1.0,
+    )
+
+    assert report.status == "rejected"
+    assert report.postflight_runtime_accepted is False
+    assert report.errors == ("postflight_doctor_invalid",)
 
 
 def test_supervised_interval_rejects_early_watcher_exit(
