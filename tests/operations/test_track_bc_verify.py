@@ -1333,16 +1333,19 @@ def test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytec
         )
         == 4
     )
-    assert normalized_runbook.count("resolve_release_image ") == 2
+    assert normalized_runbook.count("resolve_release_image ") == 4
     assert (
         '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh '
-        "run --rm migrate)" in normalized_runbook
+        "--with-pg-tunnel run --rm migrate)" in normalized_runbook
     )
     assert (
-        '(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh up -d '
-        "--scale discovery-executor=0 api webhook-executor "
-        "crawler-agent-inbox-executor)" in normalized_runbook
+        'cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh '
+        "--with-pg-tunnel stop discovery-executor && ./scripts/release_compose.sh "
+        "--with-pg-tunnel up -d --no-deps api webhook-executor "
+        "crawler-agent-inbox-executor" in normalized_runbook
     )
+    assert "--scale discovery-executor=0" not in normalized_runbook
+    assert normalized_runbook.count("--with-pg-tunnel") == 6
     assert (
         '(cd "$TRACK_BC_GATE_ROOT" && ./scripts/bootstrap_python_env.sh)' in source_gate
     )
@@ -1363,6 +1366,246 @@ def test_public_mvp_runbook_isolates_release_compose_from_generated_python_bytec
             'cd "$TRACK_BC_GATE_ROOT" .venv/bin/python '
             f"scripts/track_bc_verify.py {stage}" in normalized_runbook
         )
+
+
+@pytest.mark.parametrize(
+    ("stop_status", "expected_returncode", "expected_call_count"),
+    [(0, 0, 2), (7, 7, 1)],
+)
+def test_public_mvp_runbook_track_b_deploy_is_fail_closed_after_discovery_stop(
+    tmp_path: Path,
+    stop_status: int,
+    expected_returncode: int,
+    expected_call_count: int,
+) -> None:
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    section = runbook.split("## 8. Deploy Track B Python roles", maxsplit=1)[1].split(
+        "## 9. Prove immutable Track B identity", maxsplit=1
+    )[0]
+    deployment_block = section.split("```bash", maxsplit=1)[1].split("```", maxsplit=1)[
+        0
+    ]
+    release_root = tmp_path / "release"
+    wrapper = release_root / "scripts/release_compose.sh"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        """#!/bin/sh
+printf '%s\\n' "$*" >> "$CALL_LOG"
+case "$*" in
+  *"stop discovery-executor"*) exit "$STOP_STATUS" ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    call_log = tmp_path / "calls.log"
+
+    result = subprocess.run(
+        ["bash", "-c", deployment_block],
+        check=False,
+        capture_output=True,
+        env={
+            **os.environ,
+            "CALL_LOG": str(call_log),
+            "STOP_STATUS": str(stop_status),
+            "TRACK_BC_RELEASE_ROOT": str(release_root),
+        },
+        text=True,
+    )
+
+    assert result.returncode == expected_returncode, result.stderr
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == expected_call_count
+    assert calls[0] == "--with-pg-tunnel stop discovery-executor"
+    if stop_status == 0:
+        assert calls[1] == (
+            "--with-pg-tunnel up -d --no-deps api webhook-executor "
+            "crawler-agent-inbox-executor"
+        )
+
+
+def test_public_mvp_runbook_creates_nonexecuting_migrate_identity_container() -> None:
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    section = runbook.split("## 9. Prove immutable Track B identity", maxsplit=1)[
+        1
+    ].split("## 10. Prove Track B discovery executor is zero", maxsplit=1)[0]
+    normalized = " ".join(section.replace("\\\n", " ").split())
+
+    migrate_create = (
+        "--with-pg-tunnel run --no-deps --no-TTY "
+        "--name egp-track-bc-migrate-identity --entrypoint /bin/true migrate"
+    )
+    discovery_create = (
+        "--with-pg-tunnel run --no-deps --no-TTY "
+        "--name egp-track-bc-discovery-identity --entrypoint /bin/true "
+        "discovery-executor"
+    )
+    migrate_inspect = (
+        "docker inspect --type container --format '{{.Image}}' "
+        "egp-track-bc-migrate-identity"
+    )
+    discovery_inspect = (
+        "docker inspect --type container --format '{{.Image}}' "
+        "egp-track-bc-discovery-identity"
+    )
+    cleanup = (
+        "docker rm -f egp-track-bc-migrate-identity egp-track-bc-discovery-identity"
+    )
+
+    assert migrate_create in normalized
+    assert discovery_create in normalized
+    assert migrate_inspect in normalized
+    assert discovery_inspect in normalized
+    assert cleanup in normalized
+    assert normalized.index(migrate_create) < normalized.index(migrate_inspect)
+    assert normalized.index(discovery_create) < normalized.index(discovery_inspect)
+    assert normalized.index(migrate_inspect) < normalized.index(cleanup)
+    assert normalized.index(discovery_inspect) < normalized.index(cleanup)
+    assert 'test "$MIGRATE_CONTAINER_IMAGE_ID" = "$MIGRATE_IMAGE_ID"' in normalized
+    assert 'test "$DISCOVERY_CONTAINER_IMAGE_ID" = "$DISCOVERY_IMAGE_ID"' in normalized
+    assert "do not execute either service command" in normalized.lower()
+
+
+@pytest.mark.parametrize(
+    ("wrapper_fail_role", "mismatch_role", "accepted"),
+    [("migrate", "", False), ("", "migrate", False), ("", "", True)],
+)
+def test_public_mvp_runbook_nonrunning_identity_sequence_fails_closed(
+    tmp_path: Path,
+    wrapper_fail_role: str,
+    mismatch_role: str,
+    accepted: bool,
+) -> None:
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    section = runbook.split("## 9. Prove immutable Track B identity", maxsplit=1)[
+        1
+    ].split("## 10. Prove Track B discovery executor is zero", maxsplit=1)[0]
+    block = section.split("```bash", maxsplit=1)[1].split("```", maxsplit=1)[0]
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    block = block.replace("<private-evidence-dir>", str(evidence_dir))
+
+    release_root = tmp_path / "release"
+    wrapper = release_root / "scripts/release_compose.sh"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        """#!/bin/sh
+printf 'wrapper %s\\n' "$*" >> "$CALL_LOG"
+role=""
+for argument in "$@"; do
+  case "$argument" in migrate|discovery-executor) role="$argument" ;; esac
+done
+[ "$WRAPPER_FAIL_ROLE" != "$role" ] || exit 7
+""",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+with Path(os.environ["CALL_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(f"docker {' '.join(args)}\\n")
+if args[:2] == ["image", "inspect"]:
+    role = args[-1].removeprefix("image-")
+    print("sha256:" + ("1" if role == "migrate" else "2") * 64)
+elif args and args[0] == "inspect":
+    role = "migrate" if "migrate" in args[-1] else "discovery-executor"
+    marker = "9" if os.environ.get("MISMATCH_ROLE") == role else (
+        "1" if role == "migrate" else "2"
+    )
+    print("sha256:" + marker * 64)
+elif args[:2] == ["rm", "-f"]:
+    pass
+else:
+    raise SystemExit(98)
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    call_log = tmp_path / "calls.log"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "resolve_release_image() { printf 'image-%s\\n' \"$1\"; }\n" + block,
+        ],
+        check=False,
+        capture_output=True,
+        env={
+            **os.environ,
+            "CALL_LOG": str(call_log),
+            "MISMATCH_ROLE": mismatch_role,
+            "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+            "TRACK_BC_RELEASE_ROOT": str(release_root),
+            "WRAPPER_FAIL_ROLE": wrapper_fail_role,
+        },
+        text=True,
+    )
+
+    calls = call_log.read_text(encoding="utf-8") if call_log.exists() else ""
+    evidence = evidence_dir / "nonrunning-container-identity.txt"
+    if accepted:
+        assert result.returncode == 0, result.stderr
+        assert evidence.is_file()
+        assert "docker rm -f" in calls
+    else:
+        assert result.returncode != 0
+        assert not evidence.exists()
+        assert "docker rm -f" not in calls
+
+
+def test_remote_local_crawler_guide_requires_acceptance_evidence_for_install() -> None:
+    guide = (Path(__file__).parents[2] / "docs/REMOTE_LOCAL_CRAWLER.md").read_text(
+        encoding="utf-8"
+    )
+    always_on = guide.split("### Always-on (launchd)", maxsplit=1)[1].split(
+        "### Keeping the profile warm", maxsplit=1
+    )[0]
+    normalized = " ".join(always_on.replace("\\\n", " ").split())
+    evidence_arg = "--acceptance-evidence <private-evidence-dir>/bundle-input.json"
+
+    assert f"scripts/install_launchd.sh install {evidence_arg}" in normalized
+    assert (
+        f"scripts/install_launchd.sh install {evidence_arg} --with-warm" in normalized
+    )
+    assert "scripts/install_launchd.sh status" in normalized
+    assert "scripts/install_launchd.sh uninstall" in normalized
+    assert "status and uninstall commands remain evidence-free" in normalized.lower()
+
+
+def test_remote_local_crawler_guide_uses_governed_track_b_tunnel_sequence() -> None:
+    guide = (Path(__file__).parents[2] / "docs/REMOTE_LOCAL_CRAWLER.md").read_text(
+        encoding="utf-8"
+    )
+    lightsail = guide.split("### Lightsail (control-plane only)", maxsplit=1)[1].split(
+        "### Mac (native crawler)", maxsplit=1
+    )[0]
+    normalized = " ".join(lightsail.replace("\\\n", " ").split())
+
+    assert "-f docker-compose.pg-tunnel.yml" not in normalized
+    assert "--scale discovery-executor=0" not in normalized
+    assert "--with-pg-tunnel --env-file /etc/egp/egp.env run --rm migrate" in normalized
+    assert (
+        "--with-pg-tunnel --env-file /etc/egp/egp.env stop discovery-executor && "
+        "./scripts/release_compose.sh --with-pg-tunnel "
+        "--env-file /etc/egp/egp.env up -d --no-deps "
+        "api webhook-executor crawler-agent-inbox-executor" in normalized
+    )
 
 
 def test_public_mvp_runbook_uses_reproducible_changed_python_format_gate() -> None:

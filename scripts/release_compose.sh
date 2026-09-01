@@ -4,19 +4,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DRIVER_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 TARGET_ROOT="$DRIVER_ROOT"
+with_pg_tunnel=false
 
-if [[ "${1:-}" == "--source-root" ]]; then
-  if [[ "$#" -lt 2 ]]; then
-    echo "--source-root requires a path" >&2
-    exit 2
-  fi
-  source_root_arg="$2"
-  shift 2
-  if ! TARGET_ROOT="$(cd -- "$source_root_arg" 2>/dev/null && pwd -P)"; then
-    echo "source root is not an absolute, resolved checkout directory" >&2
-    exit 1
-  fi
-fi
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --with-pg-tunnel)
+      with_pg_tunnel=true
+      shift
+      ;;
+    --source-root)
+      if [[ "$#" -lt 2 ]]; then
+        echo "--source-root requires a path" >&2
+        exit 2
+      fi
+      source_root_arg="$2"
+      shift 2
+      if ! TARGET_ROOT="$(cd -- "$source_root_arg" 2>/dev/null && pwd -P)"; then
+        echo "source root is not an absolute, resolved checkout directory" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [[ "$TARGET_ROOT" != /* ]]; then
   echo "source root is not an absolute, resolved checkout directory" >&2
@@ -81,7 +93,7 @@ while [[ "$#" -gt 0 ]]; do
       echo "project directory override is not permitted" >&2
       exit 2
       ;;
-    -f|--file)
+    -f|-f?*|--file)
       echo "compose file override is not permitted" >&2
       exit 2
       ;;
@@ -124,13 +136,46 @@ for required_service in "${required_release_services[@]}"; do
   fi
 done
 
+release_overlay="$DRIVER_ROOT/docker-compose.release.yml"
+if [[ ! -f "$release_overlay" ]] || ! git -C "$DRIVER_ROOT" ls-files --error-unmatch -- docker-compose.release.yml >/dev/null 2>&1; then
+  echo "trusted release Compose overlay is unavailable" >&2
+  exit 1
+fi
+if ! git -C "$DRIVER_ROOT" diff --cached --quiet -- docker-compose.release.yml; then
+  echo "trusted release Compose overlay is dirty" >&2
+  exit 1
+fi
+if ! git -C "$DRIVER_ROOT" diff --quiet -- docker-compose.release.yml; then
+  echo "trusted release Compose overlay is dirty" >&2
+  exit 1
+fi
+
+pg_tunnel_overlay="$DRIVER_ROOT/docker-compose.pg-tunnel.yml"
+if [[ "$with_pg_tunnel" == true ]]; then
+  if [[ ! -f "$pg_tunnel_overlay" ]] || ! git -C "$DRIVER_ROOT" ls-files --error-unmatch -- docker-compose.pg-tunnel.yml >/dev/null 2>&1; then
+    echo "trusted PostgreSQL tunnel overlay is unavailable" >&2
+    exit 1
+  fi
+  if ! git -C "$DRIVER_ROOT" diff --cached --quiet -- docker-compose.pg-tunnel.yml; then
+    echo "trusted PostgreSQL tunnel overlay is dirty" >&2
+    exit 1
+  fi
+  if ! git -C "$DRIVER_ROOT" diff --quiet -- docker-compose.pg-tunnel.yml; then
+    echo "trusted PostgreSQL tunnel overlay is dirty" >&2
+    exit 1
+  fi
+fi
+
 export EGP_RELEASE_SHA="$release_sha"
 cd "$TARGET_ROOT"
 compose_args=(
   --project-directory "$TARGET_ROOT"
   -f "$TARGET_ROOT/docker-compose.yml"
 )
-compose_args+=(-f "$DRIVER_ROOT/docker-compose.release.yml")
+compose_args+=(-f "$release_overlay")
+if [[ "$with_pg_tunnel" == true ]]; then
+  compose_args+=(-f "$pg_tunnel_overlay")
+fi
 if [[ "${#remaining_args[@]}" -gt 0 ]]; then
   compose_args+=("${remaining_args[@]}")
 fi

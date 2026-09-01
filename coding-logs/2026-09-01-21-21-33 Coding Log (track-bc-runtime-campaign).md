@@ -906,3 +906,210 @@ LOW
 ### Formal disposition
 
 - No findings. The staged exact three-file candidate is accepted for commit and delivery.
+
+## Production preflight and backup evidence (2026-09-01 23:23 +0700)
+
+- Final source/image qualification at merged SHA
+  `028ad6e9fdd42b47152267fd0413619c33ea7f7d` passed in separate pristine release,
+  bootstrapped gate, and native-Mac worktrees. The five Python-role images all carried matching
+  immutable image IDs, OCI revisions, and baked release SHAs; the image smoke passed.
+- Exact-SHA source gates: bootstrap, compile, migration manifest `42/42`, Ruff, web install,
+  typecheck/build/audit, and full Python `2090 passed, 4 skipped` all passed.
+- Private mutation authority covers the exact production database, R2 artifact bucket, Lightsail
+  project, Mac, persistent profile, observation, one exact live ingestion canary, supervision,
+  rollback, and activation inside the recorded maintenance window. Secrets and target IDs remain
+  outside Git.
+- Initial candidate preflight and the final fenced recheck both reported `status=ready`, zero
+  active runs, zero candidates, and all seven repair categories at zero. Migration 038/039
+  manifest digests matched the tracked bytes.
+- The historical launchd labels, Mac watcher, discovery dispatcher, and Chrome debug processes
+  were already absent. The fenced database receipt proved zero queued/running crawl runs, zero
+  pending discovery jobs, and zero live discovery leases.
+- Database backup: PostgreSQL 15 custom dump compressed to 502004 bytes; local and off-host R2
+  content matched SHA-256 `749726194656c0052c45b4780f04cc5fe48296a5d3f4e129da2efc398eef4644`,
+  including the retrievable sidecar and named backout owner.
+- Artifact backup: a frozen ETag-conditional snapshot copied and verified 316/316 objects and
+  1781845268/1781845268 bytes. The destination is a separate timestamped prefix in the same R2
+  bucket, not cross-bucket disaster recovery; that limitation is explicit in the private receipt.
+
+## Runtime RED - release wrapper dropped the Mac tunnel (2026-09-01 23:23 +0700)
+
+- The exact release wrapper built five amd64 images successfully and their OCI/baked identities
+  matched `028ad6e9fdd42b47152267fd0413619c33ea7f7d`.
+- After the writer fence, exactly one `release_compose.sh run --rm migrate` invocation applied the
+  sole pending migration, `040_exact_canary_failure_codes.sql`.
+- That wrapper invocation reconciled PostgreSQL from only the base and release Compose files. It
+  omitted the tracked loopback-only `docker-compose.pg-tunnel.yml`, recreated PostgreSQL without
+  `127.0.0.1:15432:5432`, and broke the already-running Mac SSH forward. The generic postflight
+  error was correctly traced to loss of the database endpoint rather than migration corruption.
+- Campaign mutation stopped immediately. The backout owner restored service from the same clean
+  source, exact release SHA, tracked base/release/tunnel files, and private environment. This one
+  exceptional direct Compose invocation was necessary because the governed wrapper lacked any
+  way to select its own trusted tunnel overlay; it was not treated as accepted deployment proof.
+- Recovery evidence: the Mac database probe passed, public `/ready` returned database OK with
+  `pending_count=0` and `unexpected_count=0`, migration-039 postflight returned `ready` with zero
+  repairs and `survivor_delta_matches=true`, and migration 040 was the exact ledger tail with
+  tracked digest `e6f28ae96bd4bc4cf6bf70b7612518d1841d68bd49874661381419fa4ec13d3b`
+  plus the required failure-code constraint vocabulary.
+- A second runbook incompatibility was reproduced on host Docker Compose v5.1.4: the documented
+  zero-scale argument rejected the discovery executor as disabled before deploying the requested
+  services. The recovery therefore targeted only API/webhook/inbox and kept discovery stopped.
+
+## GREEN ownership - trusted tunnel overlay (2026-09-01 23:23 +0700)
+
+- Primary-owned contract/tests add a dedicated `--with-pg-tunnel` wrapper option, require the
+  driver-root tracked overlay after base/release files, prove unchanged behavior without the flag,
+  and retain rejection of caller-selected Compose files and project directories.
+- The runbook now uses the trusted flag for migration and deployment, stops discovery explicitly,
+  and uses targeted `up` without the rejected zero-scale option.
+- Expected primary RED: one new wrapper test failed because the overlay was absent while the other
+  25 scoped contracts passed.
+- Snapshot `track-bc-pg-tunnel-overlay` allowed only `scripts/release_compose.sh`. The sole GREEN
+  writer was logical role `luna_implementer`, model `gpt-5.6-luna`, effort `max`.
+- Model-bound receipt validation passed with exactly one changed production file and no protected
+  drift. Primary complete-diff audit accepted the fail-closed option parser, tracked-file check,
+  overlay order, and unchanged provenance/override guards.
+- Independent primary GREEN: Bash syntax, diff check, all release-provenance and Track B/C verifier
+  tests passed: `122 passed`.
+- Final primary gates: the two locked wrapper/runbook contracts passed three consecutive repeats;
+  compileall, Ruff format/check, Bash syntax, and diff check passed; the full Python suite passed
+  `2248 passed, 4 skipped` in 227.35 seconds. The suite created only the known zero-byte
+  `test.sqlite3`; its exact size was verified before removing that session-generated file.
+
+### QCHECK P1 remediation - driver overlay trust and fail-closed discovery stop
+
+- Independent Terra QCHECK rejected the first candidate with two P1 findings. A separate clean
+  `--source-root` could bypass the target-root cleanliness check while consuming a staged or
+  unstaged dirty driver-root tunnel overlay, and the runbook expressed discovery stop and targeted
+  deployment as independent commands that an operator could continue after a failed stop.
+- Primary-owned tests now execute the option together with a clean rollback source root and require
+  both staged and unstaged driver-overlay drift to fail before Docker. The runbook's exact Bash
+  deployment block is executed with a controlled wrapper: successful stop yields two ordered calls,
+  while exit 7 yields exactly one call and propagates exit 7 without deployment.
+- Primary documentation remediation chains stop and targeted `up` in one `&&` expression. The
+  post-deploy executor-zero proof remains mandatory.
+- A second GREEN snapshot, `track-bc-dirty-overlay-guard`, again allowed only
+  `scripts/release_compose.sh`. Luna-Max added only index/worktree cleanliness checks for the
+  tracked tunnel overlay and returned a valid `luna_implementer`/`gpt-5.6-luna`/max receipt.
+- Ownership validation and primary full-diff audit passed. Scoped GREEN: `30 passed`; both P1
+  contracts passed three consecutive repetitions; Bash syntax and diff check passed.
+- Remediated final gates: compileall, Ruff format/check, Bash syntax, and diff check passed; the
+  full Python suite passed `2252 passed, 4 skipped` in 226.55 seconds. The known generated
+  `test.sqlite3` was again exactly zero bytes and was removed before re-review.
+- Terra re-review confirmed both P1s closed and identified one P2 fixture-fidelity gap: fake Git
+  always treated the overlay as tracked. Primary-only test remediation now controls tracked state
+  explicitly and covers both a missing file and an untracked file, each rejected before Docker
+  with the fail-closed diagnostic. The complete release-provenance/Track B-C verifier scope passed
+  `128 passed`; the two P2 cases passed three consecutive repeats; Ruff, Bash syntax, and diff
+  check passed. No production file changed for this final test-strengthening step.
+- Final post-P2 gates: compileall, Ruff format/check, Bash syntax, and diff check passed; the full
+  suite passed `2254 passed, 4 skipped` in 227.35 seconds. The generated `test.sqlite3` was exactly
+  zero bytes and was removed before final QCHECK and formal review.
+- Final independent Terra QCHECK: no findings. Both P1s and the tracked-file P2 are closed; bounded
+  Bash syntax, Ruff, and diff checks independently passed without mutation.
+
+## Formal g-check rejection and remediation (2026-09-01 23:59 +0700)
+
+- Formal RepoPrompt-backed `g-check` rejected the staged candidate with three P1 findings:
+  targeted `up` would start the regular `migrate` dependency a second time; a separate clean
+  rollback source still consumed an unchecked driver-root `docker-compose.release.yml`; and
+  `docs/REMOTE_LOCAL_CRAWLER.md` still taught the wrapper-rejected caller `-f` plus zero-scale path.
+- Primary-owned runbook remediation adds mandatory `--no-deps` after the separately completed
+  one-off migrator, so targeted API/webhook/inbox deployment cannot reconcile the regular migrate
+  service. The executable deployment-block test now requires that exact argument.
+- The main Track C guide now uses the governed build, `--with-pg-tunnel` one-off migration,
+  fail-closed discovery stop, targeted `up -d --no-deps`, and governed executor-zero inventory.
+  A dedicated consistency test rejects caller `-f`, zero-scale, missing trusted flag, missing
+  one-off migration, or missing no-deps sequencing in the Lightsail section.
+- Primary RED for release-overlay provenance was exactly four cases: missing, untracked, staged,
+  and unstaged driver `docker-compose.release.yml` all incorrectly reached Docker with a separate
+  clean `--source-root`; the other 33 scoped contracts passed.
+- Snapshot `track-bc-release-overlay-guard` allowed only `scripts/release_compose.sh`. Luna-Max
+  added regular/tracked/index/worktree validation for the always-consumed driver release overlay,
+  preserved base-release-tunnel order, and returned a valid model-bound receipt. Primary ownership
+  validation and complete-diff audit passed.
+- Scoped GREEN: `37 passed`. The four release-overlay cases, exact no-deps deployment block, and
+  corrected Track C guide passed three consecutive repetitions (`7 passed` each). Bash syntax and
+  diff check passed.
+- Final post-remediation primary gates: compileall, Ruff format/check, Bash syntax, and diff check
+  passed; the full Python suite passed `2259 passed, 4 skipped` in 231.92 seconds. The suite's
+  generated `test.sqlite3` was verified as exactly zero bytes and removed before re-review.
+
+## Formal g-check second rejection and locked contracts (2026-09-02 00:12 +0700)
+
+- Independent Terra QCHECK found no remaining issue and reconfirmed all three earlier P1 closures.
+  Formal RepoPrompt-backed `g-check` nevertheless rejected the candidate with two additional P1s:
+  attached short-form Compose file arguments such as `-funtrusted.yml` remained unguarded, and the
+  runbook removed the one-off migrator before documenting any replacement container for its five-role
+  identity proof.
+- Primary-owned override tests add both `-funtrusted.yml` and `-f=untrusted.yml` to the fail-before-
+  Docker contract. Primary-owned runbook tests require distinct no-dependency, non-service-command
+  identity containers for migrate and discovery, bounded inspection before removal, and explicit
+  cleanup ordering.
+- Expected RED was exact: the two attached `-f` cases reached fake Docker, and the new runbook
+  identity contract was absent; the other three existing file-override cases passed (`3 failed,
+  3 passed`).
+- Documentation remediation now uses `run --no-deps --no-TTY` with `/bin/true` as the entrypoint for
+  both non-running roles, performs bounded name/image inspection, and removes both identity-only
+  containers before the discovery-zero proof. It explicitly forbids executing either service
+  command.
+- Snapshot `track-bc-attached-file-guard` allowed only `scripts/release_compose.sh`. Luna-Max added
+  the attached `-f?*` rejection alongside the existing standalone/long-form guard and returned a
+  valid `luna_implementer`/`gpt-5.6-luna`/max receipt. Primary ownership validation and complete
+  diff audit passed with HEAD unchanged and no protected-file mutation by the delegate.
+- Scoped GREEN passed `136` release-provenance and Track B/C verifier tests. The five file-override
+  spellings plus non-executing identity-container contract passed three consecutive repetitions
+  (`6 passed` each). Two pre-existing exact-count assertions were updated to account for the two
+  new governed identity wrapper calls; Ruff formatting/check, Bash syntax, and diff check passed.
+- Final post-second-remediation gates passed: compileall; the governed 39-file changed-Python
+  formatter oracle plus both currently modified tests; full Ruff lint; Bash syntax; diff check; and
+  the full Python suite at `2262 passed, 4 skipped` in 232.45 seconds. A broader whole-tree Ruff
+  format check remains outside the governed oracle and reports 37 pre-existing files, so it was not
+  used to mutate unrelated source. The suite-generated `test.sqlite3` was exactly zero bytes and
+  was removed before re-review.
+
+## Third review rejection and expanded operator-contract RED (2026-09-02 00:27 +0700)
+
+- Formal `g-check` confirmed all five accumulated P1s closed but found two stale operator examples:
+  the tracked tunnel overlay header still recommended plain Compose/caller `-f`/zero-scale, and the
+  Track C guide's launchd block omitted the installer's mandatory acceptance evidence. Independent
+  Terra QCHECK also found the new identity block allowed creation failure to fall through to stale
+  inspection/removal and removed containers before performing the required comparison.
+- Primary-owned contracts now reject prohibited Compose/zero-scale text in the tunnel overlay
+  header, require both normal and warm launchd installs to pass the private bundle input, and
+  execute the identity block under simulated creation failure, image mismatch, and success.
+- Expected RED was exact: the overlay header, wrapper-creation-failure propagation, image-mismatch
+  propagation, and launchd evidence contract failed while the old identity success path passed
+  (`4 failed, 1 passed`).
+- Documentation remediation makes launchd installation evidence-gated in both variants. The
+  identity subshell now uses `set -euo pipefail`, resolves immutable image IDs, creates both roles
+  without dependencies or service commands, compares each container image ID before receipt write,
+  and only then removes the two identity containers. Any failure stops before cleanup/next stage.
+- Snapshot `track-bc-tunnel-header-governance` allowed only
+  `docker-compose.pg-tunnel.yml`. Luna-Max replaced the stale plain-Compose example with the
+  governed wrapper migration entrypoint plus both authoritative guides and returned a valid
+  `luna_implementer`/`gpt-5.6-luna`/max receipt. The service/port topology remained byte-identical;
+  primary ownership validation and complete-diff audit passed.
+- Scoped GREEN passed `141` release-provenance and Track B/C verifier tests. The accumulated eleven
+  critical header/override/identity/launchd contracts passed three consecutive repetitions. Two
+  exact-count assertions were updated for the additional image resolutions and fail-closed command
+  layout; Ruff formatting/check, Bash syntax, and diff check passed.
+- Final post-third-remediation gates passed: compileall; the governed 39-file changed-Python
+  formatter oracle plus both currently modified tests; full Ruff lint; Bash syntax; diff check; and
+  the full Python suite at `2267 passed, 4 skipped` in 233.28 seconds. The suite-generated
+  `test.sqlite3` was verified as exactly zero bytes and removed before re-review.
+
+## Final QCHECK and formal g-check disposition (2026-09-02 00:36 +0700)
+
+- Independent Terra QCHECK: no findings. It verified the fail-closed identity sequence and its
+  rejection paths, evidence-gated launchd instructions, governed tunnel header, all earlier
+  overlay/argument/deployment closures, exact seven-file stage, and bounded Bash/Ruff/diff gates.
+- Formal RepoPrompt-backed `g-check`: no findings. It confirmed all accumulated findings closed and
+  found no remaining correctness, security, provenance, operational, or material test risk.
+- CRITICAL: none.
+- HIGH/P1: none open.
+- MEDIUM/P2: none open.
+- LOW: none.
+- Disposition: eligible for acceptance, commit, and delivery only while the staged seven-file set
+  remains unchanged. Source gates are not runtime campaign acceptance; production execution still
+  requires the separate evidence-gated stages in this log and runbook.

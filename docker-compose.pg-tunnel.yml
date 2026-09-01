@@ -5,12 +5,12 @@
 # interface. The Mac forwards this loopback port over SSH:
 #   ssh -N -L 15432:127.0.0.1:15432 ubuntu@<vm>
 #
-# Bring the stack up WITH this overlay and WITHOUT the in-box crawler:
-#   docker compose --env-file /etc/egp/egp.env \
-#     -f docker-compose.yml -f docker-compose.pg-tunnel.yml \
-#     up -d --scale discovery-executor=0
+# Enable this overlay only through the governed release wrapper:
+#   ./scripts/release_compose.sh --with-pg-tunnel run --rm migrate
 #
-# See docs/REMOTE_LOCAL_CRAWLER.md.
+# Follow migration, deployment, and acceptance sequencing in:
+#   docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md
+#   docs/REMOTE_LOCAL_CRAWLER.md
 services:
   postgres:
     ports:
