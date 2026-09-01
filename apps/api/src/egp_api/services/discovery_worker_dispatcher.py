@@ -654,16 +654,10 @@ def _validate_exact_canary_dispatch_request(
         mismatches.append("execution_backend")
     if type(target.browser_required) is not bool or target.browser_required is not True:
         mismatches.append("browser_required")
-    if (
-        type(target.max_pages_per_keyword) is not int
-        or target.max_pages_per_keyword != 15
-    ):
+    if type(target.max_pages_per_keyword) is not int or target.max_pages_per_keyword != 15:
         mismatches.append("target_max_pages_per_keyword")
     resolved_max_pages = browser_settings.get("max_pages_per_keyword", 15)
-    if (
-        type(resolved_max_pages) is not int
-        or resolved_max_pages != target.max_pages_per_keyword
-    ):
+    if type(resolved_max_pages) is not int or resolved_max_pages != target.max_pages_per_keyword:
         mismatches.append("max_pages_per_keyword")
     explicit_chrome_path = browser_settings.get("browser_chrome_path")
     if explicit_chrome_path is not None and (

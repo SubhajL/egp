@@ -327,7 +327,12 @@ def _run_observation_canary(
     profile_lock = None
 
     def _observe() -> bool:
-        nonlocal browser_started, browser, chrome_proc, eligible_invitation_page, page_sequence
+        nonlocal \
+            browser_started, \
+            browser, \
+            chrome_proc, \
+            eligible_invitation_page, \
+            page_sequence
         nonlocal profile_lock, pw, settings, terminal_outcome
 
         try:
@@ -507,7 +512,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--observation-canary requires --max-pages 15")
         release_sha = os.environ.get("EGP_RELEASE_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
-            parser.error("--observation-canary requires a 40-character lower-hex EGP_RELEASE_SHA")
+            parser.error(
+                "--observation-canary requires a 40-character lower-hex EGP_RELEASE_SHA"
+            )
         try:
             target = _read_exact_canary_target(args.target_file)
         except ValueError as exc:

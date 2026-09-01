@@ -35,9 +35,12 @@ def test_exact_canary_target_round_trips_and_hashes_canonical_contract() -> None
 
     assert target.to_mapping() == TARGET_PAYLOAD
     assert len(target.canonical_digest()) == 64
-    assert target.canonical_digest() == target_type.from_mapping(
-        dict(reversed(list(TARGET_PAYLOAD.items())))
-    ).canonical_digest()
+    assert (
+        target.canonical_digest()
+        == target_type.from_mapping(
+            dict(reversed(list(TARGET_PAYLOAD.items())))
+        ).canonical_digest()
+    )
     assert TARGET_PAYLOAD["keyword"] not in target.canonical_digest()
 
 
@@ -60,7 +63,9 @@ def test_exact_canary_target_round_trips_and_hashes_canonical_contract() -> None
         ("max_pages_per_keyword", 16),
     ],
 )
-def test_exact_canary_target_rejects_invalid_locked_field(field: str, value: object) -> None:
+def test_exact_canary_target_rejects_invalid_locked_field(
+    field: str, value: object
+) -> None:
     payload = dict(TARGET_PAYLOAD)
     payload[field] = value
 

@@ -97,7 +97,9 @@ def test_live_canary_proof_allows_page_one_candidate_when_later_page_persists() 
             "later_page_not_persisted",
         ),
         (
-            lambda accumulator: setattr(accumulator, "terminal_outcome", "max_pages_reached"),
+            lambda accumulator: setattr(
+                accumulator, "terminal_outcome", "max_pages_reached"
+            ),
             "max_pages_before_pinned_cap",
         ),
     ],

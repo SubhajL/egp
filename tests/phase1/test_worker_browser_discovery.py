@@ -414,7 +414,10 @@ class FixturePaginationPage:
         self.tables = [
             FakeTable(
                 headers,
-                [FakeRow([FakeCell(str(value)) for value in row]) for row in page["rows"]],
+                [
+                    FakeRow([FakeCell(str(value)) for value in row])
+                    for row in page["rows"]
+                ],
             )
             for page in fixture["pages"]
         ]
@@ -3862,7 +3865,9 @@ def test_discovery_pagination_outcome_covers_every_terminal_and_failure() -> Non
     }
 
 
-def test_advance_results_page_distinguishes_absent_hidden_and_disabled(monkeypatch) -> None:
+def test_advance_results_page_distinguishes_absent_hidden_and_disabled(
+    monkeypatch,
+) -> None:
     settings = BrowserDiscoverySettings()
     monkeypatch.setattr(
         "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
@@ -3923,10 +3928,7 @@ def test_advance_results_page_types_click_timeout_no_results_and_site_error(
     unexpected_empty = browser_discovery_module.advance_results_page(
         TypedPaginationPage([TypedPaginationButton()]), settings, page_num=1
     )
-    assert (
-        unexpected_empty.outcome
-        is pagination_outcome.UNEXPECTED_NO_RESULTS
-    )
+    assert unexpected_empty.outcome is pagination_outcome.UNEXPECTED_NO_RESULTS
 
     monkeypatch.setattr(
         "egp_worker.browser_discovery.is_no_results_page", lambda page: False
@@ -3980,16 +3982,22 @@ def test_collect_keyword_projects_scans_fixture_pages_one_through_five_under_cap
     finally:
         _LIVE_PROGRESS_CALLBACK.reset(token)
 
-    assert [event["page_num"] for event in events if event["stage"] == "page_scan_finished"] == [1, 2, 3, 4, 5]
+    assert [
+        event["page_num"] for event in events if event["stage"] == "page_scan_finished"
+    ] == [1, 2, 3, 4, 5]
     assert [result["project_number"] for result in results] == ["SAN-0002"]
-    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    summary = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert summary["page_sequence"] == [1, 2, 3, 4, 5]
     assert summary["terminal_page"] == 5
     assert summary["max_pages_per_keyword"] == 15
     assert summary["pagination_outcome"] == "next_control_absent"
 
 
-def test_collect_keyword_projects_raises_typed_failure_for_hidden_next_control() -> None:
+def test_collect_keyword_projects_raises_typed_failure_for_hidden_next_control() -> (
+    None
+):
     page = TypedPaginationPage([TypedPaginationButton(visible=False)])
 
     with pytest.raises(browser_discovery_module.PaginationScanError) as exc_info:
@@ -4024,8 +4032,12 @@ def test_collect_keyword_projects_resume_keeps_logical_page_number() -> None:
     finally:
         _LIVE_PROGRESS_CALLBACK.reset(token)
 
-    page_event = next(event for event in events if event["stage"] == "page_scan_finished")
-    terminal = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    page_event = next(
+        event for event in events if event["stage"] == "page_scan_finished"
+    )
+    terminal = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert page_event["page_num"] == 4
     assert terminal["page_sequence"] == [4]
     assert terminal["terminal_page"] == 4
@@ -4369,12 +4381,20 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
         return "KEY-1"
 
     def fake_open(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ):
         seq.append("open")
         return None  # invalid detail / payload is None AFTER acceptance
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda page, settings, keyword, target_page_num, row_marker=None: None,
@@ -4403,7 +4423,9 @@ def test_collect_keyword_projects_records_candidate_strictly_before_detail(
     # the content key consumes (org/budget/status) — QCHECK Tier-2 finding 7.
     for marker_field in ("organization_name", "budget_text", "source_status_text"):
         assert marker_field in seen_candidate["row_marker"]
-    assert project_calls == []  # detail returned None -> persistence callback not reached
+    assert (
+        project_calls == []
+    )  # detail returned None -> persistence callback not reached
     assert terminal_calls == [
         ("KEY-1", "failed", CandidateTerminalReason.DETAIL_UNKNOWN.value)
     ]
@@ -4419,7 +4441,13 @@ def test_collect_keyword_projects_fail_closed_unwrapped_on_write_failure(
     open_calls: list[int] = []
 
     def fake_open(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ):
         open_calls.append(row_index)
         return {
@@ -4428,7 +4456,9 @@ def test_collect_keyword_projects_fail_closed_unwrapped_on_write_failure(
             "source_status_text": source_status_text,
         }
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda page, settings, keyword, target_page_num, row_marker=None: None,
@@ -4458,7 +4488,13 @@ def test_collect_keyword_projects_threads_authoritative_candidate_key(
     # to project_callback, AUTHORITATIVELY (overwriting any stale detail key), so
     # finalize targets the same accepted row.
     def fake_open(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ):
         return {
             "project_name": "detail-name",
@@ -4467,7 +4503,9 @@ def test_collect_keyword_projects_threads_authoritative_candidate_key(
             "candidate_key": "STALE",  # must be overwritten by the pre-detail key
         }
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda page, settings, keyword, target_page_num, row_marker=None: None,
@@ -4492,7 +4530,13 @@ def test_collect_keyword_projects_terminalizes_post_detail_duplicate(
     monkeypatch,
 ) -> None:
     def fake_open(
-        *, page, row_index, keyword, search_name=None, include_documents, source_status_text
+        *,
+        page,
+        row_index,
+        keyword,
+        search_name=None,
+        include_documents,
+        source_status_text,
     ):
         return {
             "project_name": "detail-name",
@@ -4500,7 +4544,9 @@ def test_collect_keyword_projects_terminalizes_post_detail_duplicate(
             "source_status_text": source_status_text,
         }
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda page, settings, keyword, target_page_num, row_marker=None: None,
@@ -4538,7 +4584,8 @@ def test_crawl_live_discovery_forwards_candidate_callback_to_collector(
     chrome = SimpleNamespace()
 
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+        "egp_worker.browser_discovery.launch_real_chrome",
+        lambda settings, **kwargs: chrome,
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.sync_playwright",
@@ -4559,7 +4606,8 @@ def test_crawl_live_discovery_forwards_candidate_callback_to_collector(
         "egp_worker.browser_discovery.wait_for_cloudflare", lambda *args, **kwargs: True
     )
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.search_keyword", lambda page, keyword, settings: None
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: None,
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.clear_search", lambda page, settings: None
@@ -4618,13 +4666,17 @@ def test_classify_detail_page_results_page_beats_placeholder_on_blanks() -> None
     )
     blank_detail = {"project_name": "", "organization": "", "project_number": ""}
     assert (
-        classify_detail_page(page, blank_detail) is ProjectDetailReason.RESULTS_PAGE_RETURNED
+        classify_detail_page(page, blank_detail)
+        is ProjectDetailReason.RESULTS_PAGE_RETURNED
     )
     procurement_page = _f3_detail_page(
         body=results_body,
         url="https://process5.gprocurement.go.th/egp-agpc01-web/announcement/procurement/detail",
     )
-    assert classify_detail_page(procurement_page, blank_detail) is ProjectDetailReason.VALID
+    assert (
+        classify_detail_page(procurement_page, blank_detail)
+        is ProjectDetailReason.VALID
+    )
 
 
 def test_classify_detail_page_placeholder_for_header_values() -> None:
@@ -4658,11 +4710,15 @@ def _f3_patch_open_common(monkeypatch, *, extract) -> None:
         "egp_worker.browser_discovery.navigate_to_project_by_row",
         lambda page, row_index: True,
     )
-    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.check_has_preliminary_pricing", lambda page: False
     )
-    monkeypatch.setattr("egp_worker.browser_discovery.extract_project_info", lambda page: extract)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.extract_project_info", lambda page: extract
+    )
 
 
 def test_open_and_extract_missing_required_when_blank(monkeypatch) -> None:
@@ -4697,10 +4753,14 @@ def test_open_and_extract_writes_navigation_failure_to_sink(monkeypatch) -> None
         "egp_worker.browser_discovery.navigate_to_project_by_row",
         lambda page, row_index: False,
     )
-    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *a, **k: None
+    )
     page = SimpleNamespace(url="x", inner_text=lambda selector: "")
     sink = DetailOutcomeSink()
-    payload = open_and_extract_project(page=page, row_index=0, keyword="k", outcome_sink=sink)
+    payload = open_and_extract_project(
+        page=page, row_index=0, keyword="k", outcome_sink=sink
+    )
     assert payload is None
     assert sink.reason is ProjectDetailReason.NAVIGATION_FAILURE
 
@@ -4770,7 +4830,9 @@ def _f3_seq_resolver(monkeypatch, indices) -> None:
     def _resolve(page, row_marker):
         return seq.pop(0) if seq else 0
 
-    monkeypatch.setattr("egp_worker.browser_discovery._resolve_results_row_index", _resolve)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._resolve_results_row_index", _resolve
+    )
 
 
 def test_collect_retries_once_on_transient_then_succeeds(monkeypatch) -> None:
@@ -4791,8 +4853,12 @@ def test_collect_retries_once_on_transient_then_succeeds(monkeypatch) -> None:
             "source_status_text": source_status_text,
         }
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
-    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results", lambda *a, **k: None
+    )
     _f3_seq_resolver(monkeypatch, [0, 5])
     collected: list[dict] = []
     results = _collect_keyword_projects(
@@ -4819,7 +4885,9 @@ def test_collect_does_not_retry_definitive_rejection(monkeypatch) -> None:
             outcome_sink.reason = ProjectDetailReason.REJECTION_PAGE
         return None
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._return_to_results",
         lambda *a, **k: restore_calls.append(1),
@@ -4846,8 +4914,12 @@ def _f3_run_collect_terminal(monkeypatch, reason, *, diagnostics_dir=None):
             outcome_sink.reason = reason
         return None
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
-    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results", lambda *a, **k: None
+    )
     _f3_seq_resolver(monkeypatch, [0])
     events: list[dict] = []
     token = _LIVE_PROGRESS_CALLBACK.set(events.append)
@@ -4867,7 +4939,9 @@ def _f3_run_collect_terminal(monkeypatch, reason, *, diagnostics_dir=None):
 
 
 def test_collect_emits_terminal_anomaly_stage_once_for_rejection(monkeypatch) -> None:
-    _results, events = _f3_run_collect_terminal(monkeypatch, ProjectDetailReason.REJECTION_PAGE)
+    _results, events = _f3_run_collect_terminal(
+        monkeypatch, ProjectDetailReason.REJECTION_PAGE
+    )
     stages = [event["stage"] for event in events]
     assert stages.count("project_detail_invalid") == 1
 
@@ -4898,8 +4972,12 @@ def test_collect_no_anomaly_stage_when_transient_recovers(monkeypatch) -> None:
             "source_status_text": source_status_text,
         }
 
-    monkeypatch.setattr("egp_worker.browser_discovery.open_and_extract_project", fake_open)
-    monkeypatch.setattr("egp_worker.browser_discovery._return_to_results", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project", fake_open
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results", lambda *a, **k: None
+    )
     _f3_seq_resolver(monkeypatch, [0, 0])
     events: list[dict] = []
     token = _LIVE_PROGRESS_CALLBACK.set(events.append)
@@ -4919,7 +4997,9 @@ def test_collect_no_anomaly_stage_when_transient_recovers(monkeypatch) -> None:
     assert len(results) == 1
 
 
-def test_collect_captures_one_diagnostic_on_terminal_anomaly(monkeypatch, tmp_path) -> None:
+def test_collect_captures_one_diagnostic_on_terminal_anomaly(
+    monkeypatch, tmp_path
+) -> None:
     results, events = _f3_run_collect_terminal(
         monkeypatch, ProjectDetailReason.REJECTION_PAGE, diagnostics_dir=tmp_path
     )
@@ -4931,7 +5011,9 @@ def test_collect_captures_one_diagnostic_on_terminal_anomaly(monkeypatch, tmp_pa
     assert diag_events[0].get("diagnostic") == "captured"
 
 
-def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypatch) -> None:
+def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(
+    monkeypatch,
+) -> None:
     # F3: a NEW keyword whose first search returns no results must consume the
     # recovery budget before `keyword_no_results` is terminal (Codex-A2 fix).
     settings = BrowserDiscoverySettings(search_page_recovery_retries=1)
@@ -4940,7 +5022,8 @@ def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypa
     playwright = SimpleNamespace(stop=lambda: None)
     chrome = SimpleNamespace()
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+        "egp_worker.browser_discovery.launch_real_chrome",
+        lambda settings, **kwargs: chrome,
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.sync_playwright",
@@ -4958,7 +5041,9 @@ def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypa
         "egp_worker.browser_discovery.search_keyword",
         lambda page, keyword, settings: search_calls.append(keyword),
     )
-    monkeypatch.setattr("egp_worker.browser_discovery.clear_search", lambda page, settings: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.clear_search", lambda page, settings: None
+    )
     no_results_states = iter([True, False])
     monkeypatch.setattr(
         "egp_worker.browser_discovery.is_no_results_page",
@@ -4968,8 +5053,12 @@ def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypa
         "egp_worker.browser_discovery.restore_results_page",
         lambda page, keyword, target_page_num, settings: None,
     )
-    monkeypatch.setattr("egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None)
-    monkeypatch.setattr("egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(
         "egp_worker.browser_discovery._collect_keyword_projects",
         lambda **kwargs: [{"project_name": "Recovered", "project_number": "6901"}],
@@ -4997,7 +5086,8 @@ def test_crawl_live_discovery_emits_typed_success_for_legitimate_initial_no_resu
     playwright = SimpleNamespace(stop=lambda: None)
     chrome = SimpleNamespace()
     monkeypatch.setattr(
-        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+        "egp_worker.browser_discovery.launch_real_chrome",
+        lambda settings, **kwargs: chrome,
     )
     monkeypatch.setattr(
         "egp_worker.browser_discovery.sync_playwright",
@@ -5042,7 +5132,9 @@ def test_crawl_live_discovery_emits_typed_success_for_legitimate_initial_no_resu
 
     assert discovered == []
     assert events[0]["stage"] == "browser_session_started"
-    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    summary = next(
+        event for event in events if event["stage"] == "keyword_scan_summary"
+    )
     assert summary["outcome"] == "ok"
     assert summary["reason_code"] == "keyword_no_results"
     assert summary["pages_scanned"] == 0

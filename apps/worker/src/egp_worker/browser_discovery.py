@@ -625,9 +625,7 @@ class KeywordScanAccumulator:
             "terminal_page": self.terminal_page,
             "max_pages_per_keyword": self.max_pages_per_keyword,
             "pagination_outcome": (
-                self.pagination_outcome.value
-                if self.pagination_outcome is not None
-                else None
+                self.pagination_outcome.value if self.pagination_outcome is not None else None
             ),
             "header_signature": self.header_signature,
             "header_signature_drift": self.header_signature_drift,
@@ -812,9 +810,7 @@ def _collect_keyword_projects(
             if parsed_row.skip_keyword_hit is not None:
                 scan.record_skip_hit()
                 continue
-            dedupe_key = str(
-                parsed_row.project_number or parsed_row.project_name
-            ).casefold()
+            dedupe_key = str(parsed_row.project_number or parsed_row.project_name).casefold()
             if dedupe_key in seen_keys:
                 scan.record_dedup_hit()
                 continue
@@ -832,9 +828,7 @@ def _collect_keyword_projects(
                     "eligible_ordinal": len(eligible_rows),
                 }
             )
-        scan.record_page(
-            rows=len(rows), header_signature=header_signature, page_num=page_num
-        )
+        scan.record_page(rows=len(rows), header_signature=header_signature, page_num=page_num)
         _log_live_progress(
             "page_scan_finished",
             keyword=keyword,
@@ -1254,8 +1248,7 @@ def restore_results_page(
                 _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
             except Exception as exc:
                 raise SearchPageStateError(
-                    f"results page could not advance while restoring page {target_page_num}: "
-                    f"{exc}"
+                    f"results page could not advance while restoring page {target_page_num}: {exc}"
                 ) from exc
         _logged_sleep(3)
         _raise_on_site_error_toast(page, action=f"restore page {target_page_num}")
@@ -2582,6 +2575,7 @@ def parse_results_page(page) -> ParsedResultsPage:
             cell_texts = ()
         if _cell_texts_are_no_results_placeholder(cell_texts):
             continue
+
         def _value(field: str) -> str:
             index = columns.get(field)
             if index is None or index >= len(cell_texts):
@@ -3298,9 +3292,7 @@ def advance_results_page(
     previous_marker = _safe_results_page_marker(page)
     try:
         try:
-            _run_egp_limited_action(
-                lambda: page.evaluate("(el) => el.click()", next_control)
-            )
+            _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_control))
         except Exception:
             _run_egp_limited_action(lambda: next_control.click(timeout=10_000))
     except Exception:
@@ -3315,9 +3307,7 @@ def advance_results_page(
             outcome=DiscoveryPaginationOutcome.SITE_ERROR,
             next_page_num=page_num,
         )
-    if not wait_for_results_page_change(
-        page, previous_marker, timeout_ms=settings.nav_timeout_ms
-    ):
+    if not wait_for_results_page_change(page, previous_marker, timeout_ms=settings.nav_timeout_ms):
         return PaginationAdvanceResult(
             outcome=DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT,
             next_page_num=page_num,

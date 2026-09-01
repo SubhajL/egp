@@ -16,7 +16,9 @@ from egp_api.services.discovery_dispatch import (
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
-from egp_api.services.discovery_worker_dispatcher import _validate_discovery_worker_result
+from egp_api.services.discovery_worker_dispatcher import (
+    _validate_discovery_worker_result,
+)
 from egp_db.repositories.candidate_attempt_repo import (
     SqlCandidateAttemptRepository,
 )
@@ -911,7 +913,9 @@ def test_exact_canary_worker_result_rejects_missing_or_invalid_proof(
 def test_exact_canary_worker_result_rejects_failed_run_with_valid_proof() -> None:
     target = _exact_canary_target()
 
-    with pytest.raises(DiscoverySpawnError, match="exact canary worker did not succeed"):
+    with pytest.raises(
+        DiscoverySpawnError, match="exact canary worker did not succeed"
+    ):
         _validate_discovery_worker_result(
             {
                 "run_id": "44444444-4444-4444-4444-444444444444",
@@ -1058,7 +1062,9 @@ def test_exact_canary_dispatch_requires_persistent_profile_before_run_reservatio
 
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
-        lambda *args, **kwargs: pytest.fail("worker spawned without persistent profile"),
+        lambda *args, **kwargs: pytest.fail(
+            "worker spawned without persistent profile"
+        ),
     )
     dispatcher = _make_discover_spawner(
         "postgresql://example.test/egp",

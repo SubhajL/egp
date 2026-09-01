@@ -126,7 +126,9 @@ def test_exact_canary_worker_forwards_target_and_returns_bounded_proof(
             projects=[],
         )
 
-    monkeypatch.setattr(worker_main, "run_discover_workflow", fake_run_discover_workflow)
+    monkeypatch.setattr(
+        worker_main, "run_discover_workflow", fake_run_discover_workflow
+    )
 
     result = worker_main.run_worker_job(
         {
@@ -194,7 +196,9 @@ def test_exact_canary_worker_rejects_effective_input_mismatch_before_workflow(
     monkeypatch.setattr(
         worker_main,
         "run_discover_workflow",
-        lambda **kwargs: pytest.fail(f"workflow started with mismatched target: {kwargs}"),
+        lambda **kwargs: pytest.fail(
+            f"workflow started with mismatched target: {kwargs}"
+        ),
     )
 
     with pytest.raises(ValueError, match="exact canary target mismatch"):

@@ -882,9 +882,7 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
     assert evidence["child_pid_alive"] is False
     report = verify_canary_evidence(evidence, expected_release_sha=RELEASE_SHA)
     assert report.status == "accepted"
-    report_v2 = verify_canary_evidence_v2(
-        evidence_v2, expected_release_sha=RELEASE_SHA
-    )
+    report_v2 = verify_canary_evidence_v2(evidence_v2, expected_release_sha=RELEASE_SHA)
     assert report_v2.status == "accepted"
     assert matching_non_tor_evidence_v2["exact_target_match"] is True
     assert matching_non_tor_evidence_v2["artifact_retrievable"] is True
@@ -1186,7 +1184,9 @@ def test_bundle_cli_emits_only_sanitized_final_receipt(
 
     evidence_path = tmp_path / "bundle-input.json"
     output_path = tmp_path / "bundle-receipt.json"
-    evidence_path.write_text(json.dumps(_accepted_bundle_evidence_v2()), encoding="utf-8")
+    evidence_path.write_text(
+        json.dumps(_accepted_bundle_evidence_v2()), encoding="utf-8"
+    )
 
     exit_code = main(
         [
@@ -1245,7 +1245,9 @@ def test_public_mvp_runbook_uses_reproducible_changed_python_format_gate() -> No
     )
 
 
-def test_public_mvp_runbook_separates_observation_and_exact_ingestion_canaries() -> None:
+def test_public_mvp_runbook_separates_observation_and_exact_ingestion_canaries() -> (
+    None
+):
     runbook = (
         Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
     ).read_text(encoding="utf-8")
@@ -1310,20 +1312,26 @@ def test_canary_request_v2_embeds_exact_target_and_run_id_without_downgrade() ->
     )
 
     assert parsed == (target, "44444444-4444-4444-4444-444444444444")
-    assert _parse_canary_request_v2(
-        {
-            "tenant_id": target.tenant_id,
-            "job_id": target.job_id,
-            "run_id": "44444444-4444-4444-4444-444444444444",
-        }
-    ) is None
-    assert _parse_canary_request_v2(
-        {
-            "schema_version": 2,
-            "target": {**target.to_mapping(), "max_pages_per_keyword": 5},
-            "run_id": "44444444-4444-4444-4444-444444444444",
-        }
-    ) is None
+    assert (
+        _parse_canary_request_v2(
+            {
+                "tenant_id": target.tenant_id,
+                "job_id": target.job_id,
+                "run_id": "44444444-4444-4444-4444-444444444444",
+            }
+        )
+        is None
+    )
+    assert (
+        _parse_canary_request_v2(
+            {
+                "schema_version": 2,
+                "target": {**target.to_mapping(), "max_pages_per_keyword": 5},
+                "run_id": "44444444-4444-4444-4444-444444444444",
+            }
+        )
+        is None
+    )
 
 
 def test_private_canary_request_v2_is_owner_only_and_rejects_v1(
@@ -1368,7 +1376,9 @@ def test_private_canary_request_v2_is_owner_only_and_rejects_v1(
         _read_private_canary_request_v2(request)
 
 
-def test_canary_verification_v2_accepts_exact_correlated_proof_and_redacts_target() -> None:
+def test_canary_verification_v2_accepts_exact_correlated_proof_and_redacts_target() -> (
+    None
+):
     from scripts.track_bc_verify import verify_canary_evidence_v2
 
     target = _exact_target_v1()
@@ -1406,11 +1416,14 @@ def test_canary_proof_v2_rejects_non_strict_contract_version(
         "later_page_persisted": True,
     }
 
-    assert _canary_proof_checks(
-        proof,
-        target_digest=target.canonical_digest(),
-        max_pages_per_keyword=15,
-    )[0] is False
+    assert (
+        _canary_proof_checks(
+            proof,
+            target_digest=target.canonical_digest(),
+            max_pages_per_keyword=15,
+        )[0]
+        is False
+    )
 
 
 def test_canary_ingestion_evidence_requires_strict_exact_database_graph() -> None:
@@ -1434,14 +1447,17 @@ def test_canary_ingestion_evidence_requires_strict_exact_database_graph() -> Non
 
     assert _parse_canary_ingestion_evidence(evidence) == evidence
     assert _parse_canary_ingestion_evidence({**evidence, "extra": True}) is None
-    assert _parse_canary_ingestion_evidence(
-        {**evidence, "contract_version": True}
-    ) is None
+    assert (
+        _parse_canary_ingestion_evidence({**evidence, "contract_version": True}) is None
+    )
     assert _parse_canary_ingestion_evidence({**evidence, "page_number": 1}) is None
     assert _parse_canary_ingestion_evidence({**evidence, "artifacts": []}) is None
-    assert _parse_canary_ingestion_evidence(
-        {**evidence, "artifacts": [evidence["artifacts"][0]] * 2}
-    ) is None
+    assert (
+        _parse_canary_ingestion_evidence(
+            {**evidence, "artifacts": [evidence["artifacts"][0]] * 2}
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -1521,7 +1537,9 @@ def _accepted_bundle_evidence_v2() -> dict[str, object]:
     return evidence
 
 
-def test_bundle_v2_requires_runtime_observation_canary_v2_supervision_and_rollback() -> None:
+def test_bundle_v2_requires_runtime_observation_canary_v2_supervision_and_rollback() -> (
+    None
+):
     from scripts.track_bc_verify import verify_acceptance_bundle_v2
 
     report = verify_acceptance_bundle_v2(
@@ -1603,9 +1621,7 @@ def test_bundle_v2_rejects_missing_observation_downgraded_canary_or_wrong_order(
     if mutation == "missing_observation":
         receipts.pop(1)
     elif mutation == "canary_v1":
-        receipts[2] = _accepted_stage_receipt(
-            "canary", "2026-08-24T08:10:00+00:00"
-        )
+        receipts[2] = _accepted_stage_receipt("canary", "2026-08-24T08:10:00+00:00")
     else:
         receipts[1], receipts[2] = receipts[2], receipts[1]
 
