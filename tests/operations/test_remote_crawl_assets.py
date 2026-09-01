@@ -510,6 +510,76 @@ def test_systemd_enqueue_timer_is_periodic() -> None:
     assert "OnUnitActiveSec=" in text
 
 
+def test_public_mvp_runbook_uses_explicit_manifest_check_mode() -> None:
+    text = (
+        REPO_ROOT / "docs" / "operations" / "PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    manifest_commands = {
+        line.strip()
+        for line in text.splitlines()
+        if "scripts/check_migration_manifest.py" in line
+    }
+
+    assert ".venv/bin/python scripts/check_migration_manifest.py --check" in manifest_commands
+    assert ".venv/bin/python scripts/check_migration_manifest.py" not in manifest_commands
+
+
+def test_public_mvp_runbook_describes_actual_migration_lock_order() -> None:
+    text = (
+        REPO_ROOT / "docs" / "operations" / "PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    stage = text.split("## 7. Apply migrations 038-040 with one migrator", maxsplit=1)[
+        1
+    ].split("## 8. Deploy Track B Python roles", maxsplit=1)[0]
+    normalized_stage = " ".join(stage.split())
+    before_connection = "before opening the database connection"
+    advisory_lock = "nonblocking PostgreSQL advisory lock"
+    locked_ledger = "Under the acquired lock, ledger creation and reads"
+
+    assert before_connection in normalized_stage
+    assert advisory_lock in normalized_stage
+    assert locked_ledger in normalized_stage
+    assert normalized_stage.index(before_connection) < normalized_stage.index(advisory_lock)
+    assert normalized_stage.index(advisory_lock) < normalized_stage.index(locked_ledger)
+    assert (
+        "Under that lock it verifies the tracked manifest against raw migration bytes"
+        not in normalized_stage
+    )
+
+
+def test_public_mvp_runbook_separates_migration_040_attestation() -> None:
+    text = (
+        REPO_ROOT / "docs" / "operations" / "PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+    stage = text.split("## 7. Apply migrations 038-040 with one migrator", maxsplit=1)[
+        1
+    ].split("## 8. Deploy Track B Python roles", maxsplit=1)[0]
+    normalized_stage = " ".join(stage.split())
+
+    for postflight_field in (
+        "migration_038_applied=true",
+        "migration_039_applied=true",
+        "every repair count zero",
+        "survivor_delta_matches=true",
+    ):
+        assert postflight_field in normalized_stage
+    assert "does not attest migration 040" in normalized_stage
+    for independent_proof in (
+        "040_exact_canary_failure_codes.sql",
+        "discovery_jobs_last_error_code_check",
+        "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+        "SELECT version, sha256",
+        "pg_get_constraintdef(oid, true)",
+        "/ready",
+        "pending_count=0",
+        "unexpected_count=0",
+    ):
+        assert independent_proof in normalized_stage
+    assert 'os.environ["DATABASE_URL"]' in stage
+    assert 'psql "$DATABASE_URL"' not in stage
+    assert "migrations 039 and 040 applied" not in normalized_stage
+
+
 def test_env_example_is_production_safe_template() -> None:
     text = (REPO_ROOT / ".env.remotecrawl.example").read_text(encoding="utf-8")
     # Artifacts go to Cloudflare R2 via the s3 backend (not Supabase).
