@@ -15,8 +15,12 @@ from pathlib import Path
 import selectors
 import signal
 import subprocess
+import sys
 import threading
 import time
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts import track_bc_verify
 from scripts.track_bc_verify import verify_runtime_evidence
