@@ -289,6 +289,37 @@ def test_install_launchd_sh_parses_and_targets_both_agents() -> None:
     assert "launchctl" in text
 
 
+def test_install_launchd_disables_bytecode_before_bundle_verification(
+    tmp_path: Path,
+) -> None:
+    install_script, environment, evidence, _state_dir, _launchctl_log = (
+        _stage_launchd_harness(tmp_path)
+    )
+    observed_env = tmp_path / "python-env.txt"
+    fake_python = install_script.parents[1] / ".venv" / "bin" / "python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "${PYTHONDONTWRITEBYTECODE-unset}" >> "$OBSERVED_ENV_FILE"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    environment["OBSERVED_ENV_FILE"] = str(observed_env)
+
+    installed = subprocess.run(
+        [str(install_script), "install", "--acceptance-evidence", str(evidence)],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert installed.returncode == 0, installed.stderr
+    observed_values = observed_env.read_text(encoding="utf-8").splitlines()
+    assert observed_values
+    assert set(observed_values) == {"1"}
+
+
 def test_install_launchd_sh_keeps_warm_profile_timer_opt_in() -> None:
     text = (REPO_ROOT / "scripts" / "install_launchd.sh").read_text(encoding="utf-8")
     assert "DEFAULT_LABELS=(com.egp.pg-tunnel com.egp.remote-crawl)" in text

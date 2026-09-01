@@ -1301,3 +1301,40 @@ LOW
 - No P0/CRITICAL, P1/HIGH, P2/MEDIUM, or P3/LOW findings remain.
 - Formal RepoPrompt-backed `g-check` disposition: approve the exact three-file candidate. The
   source fix is not runtime acceptance; the post-merge exact-SHA production tail remains required.
+
+## Exact 60688b3 runtime acceptance and launchd bytecode RED (2026-09-02 03:46 +0700)
+
+- Merge SHA `60688b3fd325477a9a1c48d26ca6ded1f9d730dd` passed immutable five-image
+  identity, `2271 passed, 4 skipped` source gates, two identical production preflights, a zero-step
+  governed migrator, migration-040 attestation, healthy Track B deployment, and all 15 runtime
+  checks. Pre/post candidate count was 31 with zero active runs, zero repairs, and zero deletion.
+- A fresh qualified exact target passed read-only observation over pages 1 through 15 with eligible
+  content on page 4. Exactly one live legacy job dispatched, drained the queue, and produced a
+  successful correlated run. The schema-2 verifier accepted all 22 canary checks.
+- The repaired supervisor reached 120 seconds, reaped its process group, accepted postflight, and
+  returned no errors. Rollback rehearsal proved launchd absent, watcher/browser stopped, tunnel
+  closed, and remote discovery zero; tunnel restoration passed on the first database probe and was
+  closed again. The ordered schema-2 bundle accepted all six checks.
+- Documented launchd activation then failed closed during the watcher doctor check and fully rolled
+  back. The installer's own bundle-verifier Python invocation had written ignored `__pycache__`
+  files into the exact Mac runtime tree before watcher bootstrap. The watcher correctly refused
+  contaminated runtime source; no managed label remained loaded.
+
+## GREEN ownership, gates, and review - launchd bytecode guard (2026-09-02 03:46 +0700)
+
+- Primary-owned executable RED removed inherited `PYTHONDONTWRITEBYTECODE`, ran the real staged
+  installer harness, and observed `unset` in the installer verifier process.
+- Snapshot `launchd-bytecode-guard` allowed only `scripts/install_launchd.sh`. Logical
+  `luna_implementer`, model `gpt-5.6-luna`, effort `max`, added the single early unconditional
+  `export PYTHONDONTWRITEBYTECODE=1`. Its model-bound receipt and ownership validation passed; the
+  protected test was unchanged by the production writer.
+- Primary complete-diff inspection accepted the two-file candidate. Focused assets passed `29`;
+  lock and migration-manifest checks, compileall, Ruff lint/format, Bash syntax, and diff check
+  passed. The full repository suite passed `2272 passed, 4 skipped`; generated `test.sqlite3` was
+  verified as zero bytes and removed.
+- Independent Terra QCHECK reported no P0-P3 findings. Formal RepoPrompt-backed `g-check` also
+  reported no P0-P3 findings and approved the candidate, confirming the export precedes the first
+  verifier invocation and the executable test observes the verifier rather than matching text.
+- This source candidate still requires merge, fresh exact-SHA image/source gates, runtime/canary/
+  supervision/rollback/bundle evidence, and successful launchd activation before public-MVP
+  completion.
