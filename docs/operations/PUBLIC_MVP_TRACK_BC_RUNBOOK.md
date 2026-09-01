@@ -30,6 +30,7 @@ Record the following before any production write:
   and launchd installation;
 - the frozen merge SHA;
 - the approved migration-039 orphan-run deletion count, including zero;
+- the approved maximum bundle age as a positive integer below 86,400 seconds;
 - stop/backout authority and the person responsible for the Mac browser interaction.
 
 ## Stop conditions
@@ -82,7 +83,7 @@ From the clean worktree, save bounded outputs under the private evidence directo
 ```bash
 ./scripts/bootstrap_python_env.sh
 .venv/bin/python -m compileall apps packages scripts
-.venv/bin/python scripts/check_migration_manifest.py
+.venv/bin/python scripts/check_migration_manifest.py --check
 .venv/bin/python -m ruff check apps packages tests scripts
 git diff --name-only -z --diff-filter=ACMR \
   "$TRACK_BC_BASE_SHA..$TRACK_BC_SHA" -- '*.py' \
@@ -160,12 +161,14 @@ exactly one release-wrapper migration container:
 ./scripts/release_compose.sh run --rm migrate
 ```
 
-The runner obtains the nonblocking PostgreSQL advisory lock before reading or creating its ledger.
-Under that lock it verifies the tracked manifest against raw migration bytes and stores the
-SHA-256 beside each applied version. A legacy ledger row with a null digest is backfilled only after
-the current file matches the manifest; any later byte mismatch fails closed. Lock contention or
-digest mismatch is a stop condition, not a retry loop. Then run postflight using the exact
-preflight candidate count and approved orphan-run deletion count:
+The runner loads the tracked migration bytes and verifies them against `manifest.sha256` before
+opening the database connection. It then obtains the nonblocking PostgreSQL advisory lock before
+reading or creating its ledger. Under the acquired lock, ledger creation and reads, stored-digest
+validation or backfill, and pending migration application use the already verified bytes. A legacy
+ledger row with a null digest is backfilled only after the current file matches the manifest; any
+later byte mismatch fails closed. Lock contention or digest mismatch is a stop condition, not a
+retry loop. Then run postflight using the exact preflight candidate count and approved orphan-run
+deletion count:
 
 ```bash
 .venv/bin/python scripts/candidate_integrity_preflight.py \
@@ -176,11 +179,94 @@ preflight candidate count and approved orphan-run deletion count:
   > <private-evidence-dir>/candidate-postflight.json
 ```
 
-Require status `ready`, migrations 039 and 040 applied, every repair count zero, and
-`survivor_delta_matches=true`. Migration 040 must recreate
-`discovery_jobs_last_error_code_check` with the browser, pagination, target, and proof failure
-codes used by the exact canary. Also confirm the migration ledger ends at 040 and `/ready` reports
-no pending migration.
+Require `status=ready`, `migration_038_applied=true`, `migration_039_applied=true`, every repair
+count zero, and `survivor_delta_matches=true`. This candidate preflight does not attest migration
+040. Capture the separate 040 ledger/digest and constraint proof with the frozen Python environment;
+the database URL remains in the process environment rather than a command argument, and the
+bounded output stays private:
+
+```bash
+.venv/bin/python - \
+  > <private-evidence-dir>/migration-040-attestation.json <<'PY'
+import json
+import os
+from pathlib import Path
+
+from psycopg import connect
+
+migration_name = "040_exact_canary_failure_codes.sql"
+manifest_lines = (
+    Path("packages/db/src/migrations/manifest.sha256")
+    .read_text(encoding="utf-8")
+    .splitlines()
+)
+manifest_matches = []
+for line in manifest_lines:
+    parts = line.split(maxsplit=1)
+    if len(parts) == 2 and parts[1] == migration_name:
+        manifest_matches.append(parts[0])
+if len(manifest_matches) != 1:
+    raise SystemExit("expected exactly one migration-040 manifest entry")
+
+database_url = os.environ["DATABASE_URL"]
+if database_url.startswith("postgresql+psycopg://"):
+    database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+with connect(database_url) as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        cursor.execute(
+            "SELECT version, sha256 FROM schema_migrations "
+            "ORDER BY version DESC LIMIT 1"
+        )
+        ledger_row = cursor.fetchone()
+        cursor.execute(
+            "SELECT conname, pg_get_constraintdef(oid, true) "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'public.discovery_jobs'::regclass AND conname = %s",
+            ("discovery_jobs_last_error_code_check",),
+        )
+        constraint_rows = cursor.fetchall()
+        connection.rollback()
+
+expected_ledger = (migration_name, manifest_matches[0])
+if ledger_row != expected_ledger:
+    raise SystemExit("migration-040 ledger tail or digest mismatch")
+if len(constraint_rows) != 1:
+    raise SystemExit("expected exactly one migration-040 constraint")
+required_codes = {
+    "browser_start_failed",
+    "pagination_control_hidden",
+    "pagination_next_click_failed",
+    "pagination_page_change_timeout",
+    "pagination_unexpected_no_results",
+    "pagination_site_error",
+    "canary_target_mismatch",
+    "canary_proof_invalid",
+}
+constraint_definition = constraint_rows[0][1]
+missing_codes = sorted(code for code in required_codes if code not in constraint_definition)
+if missing_codes:
+    raise SystemExit("migration-040 constraint vocabulary mismatch")
+print(
+    json.dumps(
+        {
+            "constraint_definition": constraint_definition,
+            "constraint_name": constraint_rows[0][0],
+            "required_codes_present": True,
+            "sha256": ledger_row[1],
+            "version": ledger_row[0],
+        },
+        sort_keys=True,
+    )
+)
+PY
+```
+
+Require exactly one ledger row whose version is `040_exact_canary_failure_codes.sql` and whose
+SHA-256 equals its tracked `manifest.sha256` entry. Require exactly one constraint row containing
+the browser, pagination, target, and proof failure codes used by the exact canary. Also confirm the
+migration ledger ends at 040 and require `/ready` to report `pending_count=0` and
+`unexpected_count=0`.
 
 ## 8. Deploy Track B Python roles
 
@@ -437,16 +523,26 @@ timestamps and array order must satisfy
 `runtime <= observation <= canary <= supervised <= rollback`; a missing observation, downgraded
 schema-1 canary, observation/canary target-fingerprint mismatch, reordered stage, future-dated
 receipt, or newly re-stamped old input is rejected. Verify and save the sanitized schema-2 final
-receipt:
+receipt. Load `TRACK_BC_MAX_BUNDLE_AGE_SECONDS` from the private authority record before running
+the command:
 
 ```bash
+test "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" -gt 0 &&
+test "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" -lt 86400 &&
 .venv/bin/python scripts/track_bc_verify.py bundle \
   --evidence <private-evidence-dir>/bundle-input.json \
   --expected-release-sha "$TRACK_BC_SHA" \
+  --max-age-seconds "$TRACK_BC_MAX_BUNDLE_AGE_SECONDS" \
   --output <private-evidence-dir>/acceptance-bundle.json
 ```
 
-Finally, and only while the bundle remains fresh:
+This explicit verification is a procedural campaign control, not a hard installer-enforced limit:
+the unchanged installer independently re-verifies with its existing 86,400-second default. The
+operations record and immediate sequencing must therefore enforce the tighter campaign window
+rather than treating the installer default as equivalent. If a hard activation-boundary limit is
+required, stop and first land a separately tested installer contract that accepts the approved
+maximum age.
+Finally, and only while the bundle remains within the approved tighter window:
 
 ```bash
 scripts/install_launchd.sh install \
