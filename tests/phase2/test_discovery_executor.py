@@ -552,6 +552,7 @@ def test_main_exact_canary_target_wires_private_job_and_tenant_file(
 ) -> None:
     target_file = _private_canary_target(tmp_path)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "a" * 40)
     monkeypatch.setattr(
         discovery_dispatch,
         "build_crawler_runtime_reporter_from_env",
@@ -616,6 +617,7 @@ def test_main_exact_canary_target_rejects_zero_claim_as_mismatch(
 ) -> None:
     target_file = _private_canary_target(tmp_path)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "b" * 40)
     monkeypatch.setattr(
         discovery_dispatch,
         "build_crawler_runtime_reporter_from_env",
@@ -678,6 +680,7 @@ def test_main_exact_canary_target_fails_closed_before_runtime_build(
     target_file = _private_canary_target(tmp_path)
     mutate_target(target_file)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", protocol)
+    monkeypatch.setenv("EGP_RELEASE_SHA", "c" * 40)
     built = False
 
     def runtime_factory(*args: object, **kwargs: object):
@@ -704,6 +707,7 @@ def test_main_exact_canary_target_rejects_symlink_and_fault_combination(
     symlink.symlink_to(target_file)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
     monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "d" * 40)
 
     def runtime_factory(*args: object, **kwargs: object):
         pytest.fail(f"unsafe target built runtime: {args!r} {kwargs!r}")
@@ -730,6 +734,31 @@ def test_main_exact_canary_target_rejects_symlink_and_fault_combination(
                 "--fault-tenant-id",
                 FAULT_TENANT_ID,
             ],
+            runtime_factory=runtime_factory,
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize("release_sha", [None, "a" * 39, "A" * 40, "g" * 40])
+def test_main_exact_canary_target_requires_exact_release_sha_before_runtime_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    release_sha: str | None,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    if release_sha is None:
+        monkeypatch.delenv("EGP_RELEASE_SHA", raising=False)
+    else:
+        monkeypatch.setenv("EGP_RELEASE_SHA", release_sha)
+
+    def runtime_factory(*args: object, **kwargs: object):
+        pytest.fail(f"exact canary without release SHA built runtime: {args!r} {kwargs!r}")
+
+    assert (
+        discovery_dispatch.main(
+            ["--once", "--limit", "1", "--target-file", str(target_file)],
             runtime_factory=runtime_factory,
         )
         == 2

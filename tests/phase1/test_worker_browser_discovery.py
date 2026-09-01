@@ -1464,6 +1464,30 @@ def test_restore_results_page_fails_if_physical_page_cannot_reach_resume_target(
         restore_results_page(page, "ระบบวิเคราะห์", 4, settings)
 
 
+def test_restore_results_page_rejects_unchanged_active_page_marker(monkeypatch) -> None:
+    page = FakeNextPage(pages_to_advance=3)
+    settings = BrowserDiscoverySettings()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_page_marker",
+        lambda page: {"active_page": "1", "row_count": 10, "row_sample": "a"},
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda page, previous_marker, timeout_ms=None: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    with pytest.raises(SearchPageStateError, match="restore page 4"):
+        restore_results_page(page, "ระบบวิเคราะห์", 4, settings)
+
+
 def test_get_results_page_marker_uses_procurement_results_table_only() -> None:
     unrelated_table = FakeTable(
         ["หัวข้อ", "ค่า"],

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from egp_db.dev_postgres import (
+    TempPostgresCluster,
     postgres_backup_binaries_available,
     postgres_binaries_available,
 )
@@ -87,19 +88,20 @@ def test_pg_restore_sh_rejects_system_database_target(
     _pg_binaries_or_skip()
     fake_dump = tmp_path / "egp-pg-2026-05-26T143045Z-abc1234.dump.gz"
     fake_dump.write_bytes(b"x")
-    completed = subprocess.run(
-        [
-            "bash",
-            str(repo_root / "scripts" / "pg_restore.sh"),
-            "--source-path",
-            str(fake_dump),
-            "--target-url",
-            "postgresql://egp@127.0.0.1:5432/postgres",
-            "--yes",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    with TempPostgresCluster() as cluster:
+        completed = subprocess.run(
+            [
+                "bash",
+                str(repo_root / "scripts" / "pg_restore.sh"),
+                "--source-path",
+                str(fake_dump),
+                "--target-url",
+                cluster.postgres_url,
+                "--yes",
+            ],
+            capture_output=True,
+            text=True,
+        )
     assert completed.returncode != 0
     combined = (completed.stdout + completed.stderr).lower()
     assert "system database" in combined or "refus" in combined

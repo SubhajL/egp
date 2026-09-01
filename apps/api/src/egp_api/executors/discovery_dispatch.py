@@ -9,6 +9,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import stat
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -822,7 +823,9 @@ def _authorize_exact_canary_target(
         return None
 
     reason: str | None = None
-    if any(
+    if not re.fullmatch(r"[0-9a-f]{40}", release_sha or ""):
+        reason = "release_sha_invalid"
+    elif any(
         value is not None for value in (args.fault_mode, args.fault_job_id, args.fault_tenant_id)
     ):
         reason = "fault_target_combination"

@@ -1216,25 +1216,61 @@ def restore_results_page(
     settings: BrowserDiscoverySettings,
 ) -> None:
     search_keyword(page, keyword, settings)
+    requested_page = max(target_page_num, 1)
+    if requested_page == 1:
+        return
     current_page = 1
-    while current_page < max(target_page_num, 1):
-        previous_marker = get_results_page_marker(page)
-        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
-        if not (next_btn and next_btn.is_visible()):
+    current_marker = get_results_page_marker(page)
+
+    def _require_physical_page(
+        marker: dict[str, str | int],
+        *,
+        expected_page: int,
+    ) -> None:
+        active_page = marker.get("active_page")
+        if active_page in (None, ""):
+            return
+        if str(active_page).strip() != str(expected_page):
+            raise SearchPageStateError(
+                f"results page marker {active_page!r} did not reach physical page "
+                f"{expected_page} during restore page {target_page_num}"
+            )
+
+    _require_physical_page(current_marker, expected_page=current_page)
+    while current_page < requested_page:
+        previous_marker = current_marker
+        controls = _matching_next_controls(page)
+        visible_controls = [control for control in controls if _pagination_control_visible(control)]
+        enabled_controls = [
+            control for control in visible_controls if not _pagination_control_disabled(control)
+        ]
+        if not enabled_controls:
             break
+        next_btn = enabled_controls[0]
         try:
             _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_btn))
         except Exception:
-            _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
+            try:
+                _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
+            except Exception as exc:
+                raise SearchPageStateError(
+                    f"results page could not advance while restoring page {target_page_num}: "
+                    f"{exc}"
+                ) from exc
         _logged_sleep(3)
-        _raise_on_site_error_toast(page, action=f"restore page {current_page + 1}")
+        _raise_on_site_error_toast(page, action=f"restore page {target_page_num}")
         if not wait_for_results_page_change(
             page, previous_marker, timeout_ms=settings.nav_timeout_ms
         ):
             raise SearchPageStateError(
                 f"results page did not advance while restoring page {target_page_num}"
             )
-        current_page += 1
+        next_page = current_page + 1
+        current_marker = _safe_results_page_marker(page)
+        _require_physical_page(current_marker, expected_page=next_page)
+        current_page = next_page
+    if current_page < requested_page:
+        raise SearchPageStateError(f"results page did not reach restore page {target_page_num}")
 
 
 def _extract_search_row(row, columns: dict[str, int]) -> dict[str, object] | None:

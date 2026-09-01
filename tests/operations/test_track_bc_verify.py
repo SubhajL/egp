@@ -531,6 +531,8 @@ def _seed_canary_chain(
     job_id = "33333333-3333-3333-3333-333333333333"
     run_id = "44444444-4444-4444-4444-444444444444"
     project_id = "55555555-5555-5555-5555-555555555555"
+    document_id = "66666666-6666-6666-6666-666666666666"
+    capture_attempt_id = "77777777-7777-7777-7777-777777777777"
     with connect(database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -590,6 +592,21 @@ def _seed_canary_chain(
                                 "terminal_outcome": "next_control_absent",
                                 "later_page_persisted": True,
                             },
+                            "canary_ingestion_evidence": {
+                                "contract_version": 1,
+                                "candidate_key": "canary-key",
+                                "project_id": project_id,
+                                "page_number": 2,
+                                "capture_attempt_id": capture_attempt_id,
+                                "artifacts": [
+                                    {
+                                        "document_id": document_id,
+                                        "storage_key": storage_key,
+                                        "sha256": artifact_sha256,
+                                        "size_bytes": 7,
+                                    }
+                                ],
+                            },
                         }
                     ),
                 ),
@@ -613,20 +630,20 @@ def _seed_canary_chain(
             cursor.execute(
                 """
                 INSERT INTO documents (
-                    tenant_id, project_id, document_type, document_phase,
+                    id, tenant_id, project_id, document_type, document_phase,
                     source_label, source_status_text, file_name, size_bytes,
                     sha256, storage_key
-                ) VALUES (%s, %s, 'tor', 'final', '', '', 'contract.pdf', 7, %s, %s)
+                ) VALUES (%s, %s, %s, 'tor', 'final', '', '', 'contract.pdf', 7, %s, %s)
                 """,
-                (tenant_id, project_id, artifact_sha256, storage_key),
+                (document_id, tenant_id, project_id, artifact_sha256, storage_key),
             )
             cursor.execute(
                 """
                 INSERT INTO document_capture_attempts (
-                    tenant_id, project_id, run_id, status, doc_count
-                ) VALUES (%s, %s, %s, 'succeeded', 1)
+                    id, tenant_id, project_id, run_id, status, doc_count
+                ) VALUES (%s, %s, %s, %s, 'succeeded', 1)
                 """,
-                (tenant_id, project_id, run_id),
+                (capture_attempt_id, tenant_id, project_id, run_id),
             )
         connection.commit()
     return tenant_id, job_id, run_id
@@ -709,6 +726,38 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
             expected_release_sha=RELEASE_SHA,
             profile_dir=profile_dir,
         )
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT summary_json FROM crawl_runs WHERE id = %s",
+                    (run_id,),
+                )
+                valid_summary = cursor.fetchone()[0]
+                invalid_summary = json.loads(json.dumps(valid_summary))
+                invalid_summary["canary_ingestion_evidence"]["artifacts"][0][
+                    "document_id"
+                ] = "88888888-8888-8888-8888-888888888888"
+                cursor.execute(
+                    "UPDATE crawl_runs SET summary_json = %s WHERE id = %s",
+                    (json.dumps(invalid_summary), run_id),
+                )
+            connection.commit()
+        unrelated_artifact_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_runs SET summary_json = %s WHERE id = %s",
+                    (json.dumps(valid_summary), run_id),
+                )
+            connection.commit()
 
         with connect(database_url) as connection:
             with connection.cursor() as cursor:
@@ -839,6 +888,8 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
     assert report_v2.status == "accepted"
     assert matching_non_tor_evidence_v2["exact_target_match"] is True
     assert matching_non_tor_evidence_v2["artifact_retrievable"] is True
+    assert unrelated_artifact_evidence_v2["artifact_record_count"] == 0
+    assert unrelated_artifact_evidence_v2["artifact_retrievable"] is False
     assert tampered_artifact_evidence_v2["artifact_retrievable"] is False
     stdout = capsys.readouterr().out
     assert exit_code == 0
@@ -1211,7 +1262,7 @@ def test_public_mvp_runbook_separates_observation_and_exact_ingestion_canaries()
     assert "migrations 038-040" in runbook
     assert "migration ledger ends at 040" in runbook
     assert "observation/canary target-fingerprint mismatch" in runbook
-    assert "observe-canary \\\n+  <private-evidence-dir>/canary-target.json" in runbook
+    assert "observe-canary \\\n  <private-evidence-dir>/canary-target.json" in runbook
 
 
 def _exact_target_v1():
@@ -1360,6 +1411,37 @@ def test_canary_proof_v2_rejects_non_strict_contract_version(
         target_digest=target.canonical_digest(),
         max_pages_per_keyword=15,
     )[0] is False
+
+
+def test_canary_ingestion_evidence_requires_strict_exact_database_graph() -> None:
+    from scripts.track_bc_verify import _parse_canary_ingestion_evidence
+
+    evidence = {
+        "contract_version": 1,
+        "candidate_key": "canary-key",
+        "project_id": "55555555-5555-5555-5555-555555555555",
+        "page_number": 2,
+        "capture_attempt_id": "77777777-7777-7777-7777-777777777777",
+        "artifacts": [
+            {
+                "document_id": "66666666-6666-6666-6666-666666666666",
+                "storage_key": "canary/contract.pdf",
+                "sha256": hashlib.sha256(b"canary!").hexdigest(),
+                "size_bytes": 7,
+            }
+        ],
+    }
+
+    assert _parse_canary_ingestion_evidence(evidence) == evidence
+    assert _parse_canary_ingestion_evidence({**evidence, "extra": True}) is None
+    assert _parse_canary_ingestion_evidence(
+        {**evidence, "contract_version": True}
+    ) is None
+    assert _parse_canary_ingestion_evidence({**evidence, "page_number": 1}) is None
+    assert _parse_canary_ingestion_evidence({**evidence, "artifacts": []}) is None
+    assert _parse_canary_ingestion_evidence(
+        {**evidence, "artifacts": [evidence["artifacts"][0]] * 2}
+    ) is None
 
 
 @pytest.mark.parametrize(

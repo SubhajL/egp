@@ -12,6 +12,7 @@ from egp_api.auth import (
     resolve_request_tenant_id,
 )
 from egp_api.services.entitlement_service import EntitlementError
+from egp_api.services.public_run_summary import sanitize_public_run_summary
 from egp_api.services.run_service import (
     RunProfileNotFoundError,
     RunProjectNotFoundError,
@@ -105,7 +106,7 @@ def _serialize_run(run: CrawlRunRecord) -> RunResponse:
         finished_at=run.finished_at,
         last_activity_at=run.last_activity_at,
         is_stale=is_run_stale(run),
-        summary_json=run.summary_json,
+        summary_json=sanitize_public_run_summary(run.summary_json),
         error_count=run.error_count,
         created_at=run.created_at,
     )

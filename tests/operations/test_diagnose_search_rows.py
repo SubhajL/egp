@@ -282,6 +282,38 @@ def test_observation_canary_rejects_attach_and_requires_pinned_cap_and_receipt(
     assert receipt_error.value.code == 2
 
 
+def test_observation_canary_rejects_profile_dir_override_before_chrome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    diagnose_module,
+) -> None:
+    monkeypatch.setenv("EGP_RELEASE_SHA", "1" * 40)
+    monkeypatch.setenv(
+        "EGP_BROWSER_PERSISTENT_PROFILE_DIR",
+        str(tmp_path / "native-profile"),
+    )
+    monkeypatch.setattr(
+        diagnose_module.bd,
+        "launch_real_chrome",
+        lambda *args, **kwargs: pytest.fail("Chrome launched with overridden profile"),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        diagnose_module.main(
+            [
+                "--observation-canary",
+                "--target-file",
+                str(_private_target(tmp_path)),
+                "--profile-dir",
+                str(tmp_path / "disposable-profile"),
+                "--receipt",
+                str(tmp_path / "rejected.json"),
+            ]
+        )
+
+    assert error.value.code == 2
+
+
 def test_observation_canary_shutdown_failure_cannot_return_success(
     tmp_path: Path,
     monkeypatch,

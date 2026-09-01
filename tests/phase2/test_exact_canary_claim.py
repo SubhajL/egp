@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import importlib
 from pathlib import Path
+from threading import Event
+from time import monotonic, sleep
 from uuid import uuid4
 
 import pytest
+from psycopg import connect
 from sqlalchemy import text
 
+from egp_db.dev_postgres import TempPostgresCluster, postgres_binaries_available
+from egp_db.migration_runner import apply_migrations
 from egp_db.repositories.discovery_job_repo import SqlDiscoveryJobRepository
 
 
@@ -166,3 +172,119 @@ def test_exact_canary_claim_mismatch_does_not_mutate_job(
     assert stored.job_status == "pending"
     assert stored.claim_token is None
     assert stored.processing_started_at is None
+
+
+def test_exact_canary_postgres_claim_rechecks_live_after_concurrent_mutation() -> None:
+    if not postgres_binaries_available():
+        pytest.skip("PostgreSQL binaries are required for exact-canary claim race")
+
+    repo_root = Path(__file__).resolve().parents[2]
+    with TempPostgresCluster() as cluster:
+        cluster.create_database("egp_exact_canary_claim")
+        database_url = cluster.database_url("egp_exact_canary_claim")
+        apply_migrations(
+            database_url=database_url,
+            migrations_dir=repo_root / "packages/db/src/migrations",
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, slug, plan_code)
+                    VALUES (%s, 'Canary', 'exact-canary-claim', 'monthly_membership')
+                    """,
+                    (TENANT_ID,),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_profiles (
+                        id, tenant_id, name, profile_type,
+                        max_pages_per_keyword, execution_backend
+                    ) VALUES (%s, %s, 'Canary', 'custom', 15, 'legacy')
+                    """,
+                    (PROFILE_ID, TENANT_ID),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO crawl_profile_keywords (profile_id, keyword, position)
+                    VALUES (%s, %s, 1)
+                    """,
+                    (PROFILE_ID, KEYWORD),
+                )
+            connection.commit()
+
+        repository = SqlDiscoveryJobRepository(
+            database_url=database_url,
+            bootstrap_schema=False,
+        )
+        job = _job(repository)
+        target = _target(job_id=job.id)
+        claim_started = Event()
+        worker_application_name = "exact_canary_claim_racer"
+
+        def claim_exact_target():
+            claim_started.set()
+            worker_repository = SqlDiscoveryJobRepository(
+                database_url=(
+                    f"{database_url}?application_name={worker_application_name}"
+                ),
+                bootstrap_schema=False,
+            )
+            return worker_repository.claim_pending_discovery_jobs(
+                limit=1,
+                exact_canary_target=target,
+            )
+
+        with connect(database_url) as mutation_connection:
+            with mutation_connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM crawl_profiles WHERE id = %s FOR UPDATE",
+                    (PROFILE_ID,),
+                )
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(claim_exact_target)
+                    assert claim_started.wait(timeout=2)
+                    deadline = monotonic() + 2
+                    worker_is_blocked_on_profile_lock = False
+                    with connect(database_url, autocommit=True) as monitor_connection:
+                        with monitor_connection.cursor() as monitor_cursor:
+                            while monotonic() < deadline:
+                                monitor_cursor.execute(
+                                    """
+                                    SELECT EXISTS (
+                                        SELECT 1
+                                        FROM pg_stat_activity
+                                        WHERE application_name = %s
+                                          AND state = 'active'
+                                          AND wait_event_type = 'Lock'
+                                          AND query ILIKE '%%crawl_profiles%%'
+                                          AND query ILIKE '%%FOR UPDATE%%'
+                                    )
+                                    """,
+                                    (worker_application_name,),
+                                )
+                                worker_is_blocked_on_profile_lock = bool(
+                                    monitor_cursor.fetchone()[0]
+                                )
+                                if worker_is_blocked_on_profile_lock:
+                                    break
+                                sleep(0.01)
+                    if not worker_is_blocked_on_profile_lock:
+                        mutation_connection.rollback()
+                        future.result(timeout=5)
+                        pytest.fail(
+                            "claim worker did not block on the exact profile lock"
+                        )
+                    cursor.execute(
+                        "UPDATE discovery_jobs SET live = FALSE WHERE id = %s",
+                        (job.id,),
+                    )
+                    mutation_connection.commit()
+                    claimed = future.result(timeout=5)
+
+        assert claimed == []
+        stored = repository.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+        assert stored.live is False
+        assert stored.job_status == "pending"
+        assert stored.claim_token is None
+        assert stored.processing_started_at is None

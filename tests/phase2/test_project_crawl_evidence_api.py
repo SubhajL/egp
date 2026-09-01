@@ -57,7 +57,13 @@ def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(
     run = run_repository.create_run(
         tenant_id=TENANT_ID,
         trigger_type="manual",
-        summary_json={"projects_seen": 2},
+        summary_json={
+            "projects_seen": 2,
+            "canary_ingestion_evidence": {
+                "candidate_key": "private-project-evidence-candidate",
+                "storage_key": "private/project-evidence.pdf",
+            },
+        },
     )
     target_task = run_repository.create_task(
         run_id=run.id,
@@ -89,7 +95,14 @@ def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(
     run_repository.mark_run_finished(
         run.id,
         status=CrawlRunStatus.PARTIAL,
-        summary_json={"projects_seen": 2, "projects_failed": 1},
+        summary_json={
+            "projects_seen": 2,
+            "projects_failed": 1,
+            "canary_ingestion_evidence": {
+                "candidate_key": "private-project-evidence-candidate",
+                "storage_key": "private/project-evidence.pdf",
+            },
+        },
         error_count=1,
     )
 
@@ -121,3 +134,6 @@ def test_project_crawl_evidence_endpoint_returns_project_scoped_run_tasks(
         "projects_failed": 1,
     }
     assert body["evidence"][0]["run_error_count"] == 1
+    assert "canary_ingestion_evidence" not in response.text
+    assert "private-project-evidence-candidate" not in response.text
+    assert "private/project-evidence.pdf" not in response.text

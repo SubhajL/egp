@@ -32,12 +32,14 @@ import datetime
 import json
 import os
 import re
+import stat
 import time
 from collections import Counter
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from egp_crawler_core.profile_lock import acquire_profile_lock, release_profile_lock
 from egp_worker import browser_discovery as bd
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
@@ -46,6 +48,7 @@ from egp_worker.browser_discovery import (
 )
 from egp_crawler_core.invitation_rules import is_invitation_stage_status
 from egp_shared_types.enums import DiscoveryPaginationOutcome
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 KNOWN_MISSED_DEFAULT = [
@@ -55,6 +58,45 @@ KNOWN_MISSED_DEFAULT = [
     "69039582244",
     "68119364483",
 ]
+
+
+def _read_exact_canary_target(target_file: Path) -> ExactIngestionCanaryTarget:
+    """Read one private regular-canary target through a verified descriptor."""
+
+    fd = -1
+    try:
+        if target_file.is_symlink():
+            raise ValueError("target_file_symlink")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(os.fspath(target_file), flags)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("target_file_not_regular")
+        if metadata.st_uid != os.geteuid():
+            raise ValueError("target_file_owner_invalid")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise ValueError("target_file_permissions_invalid")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            try:
+                payload = json.load(handle)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ValueError("target_file_json_invalid") from None
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("target_file_not_private") from None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    try:
+        return ExactIngestionCanaryTarget.from_mapping(payload)
+    except (TypeError, ValueError):
+        raise ValueError("target_file_schema_invalid") from None
 
 
 def _safe_text(element) -> str:
@@ -223,6 +265,7 @@ def _write_observation_receipt(
     path: str,
     *,
     release_sha: str,
+    target_fingerprint: str,
     status: str,
     checks: dict[str, object],
     errors: list[str],
@@ -236,6 +279,7 @@ def _write_observation_receipt(
         "observed_at": datetime.datetime.now(datetime.UTC).isoformat(),
         "checks": checks,
         "errors": list(dict.fromkeys(errors)),
+        "target_fingerprint": target_fingerprint,
     }
     receipt_path = Path(path)
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +312,7 @@ def _run_observation_canary(
     args: argparse.Namespace,
     *,
     release_sha: str,
+    target: ExactIngestionCanaryTarget,
 ) -> int:
     """Run the identifier-free browser observation and emit its receipt."""
     settings: BrowserDiscoverySettings | None = None
@@ -275,18 +320,25 @@ def _run_observation_canary(
     eligible_invitation_page: int | None = None
     terminal_outcome: DiscoveryPaginationOutcome | None = None
     browser_started = False
-    keyword_exact = bool(args.keyword and args.keyword == args.keyword.strip())
+    keyword = target.keyword
+    keyword_exact = keyword == keyword.strip()
     errors: list[str] = []
     pw = browser = chrome_proc = None
+    profile_lock = None
 
     def _observe() -> bool:
-        nonlocal browser_started, chrome_proc, eligible_invitation_page, page_sequence
-        nonlocal pw, settings, terminal_outcome
+        nonlocal browser_started, browser, chrome_proc, eligible_invitation_page, page_sequence
+        nonlocal profile_lock, pw, settings, terminal_outcome
 
         try:
             settings = _build_settings(args)
         except SystemExit:
             errors.append("browser_start_failed")
+            return False
+        try:
+            profile_lock = acquire_profile_lock(settings.browser_profile_dir)
+        except Exception:
+            errors.append("profile_locked")
             return False
         # Observation must always launch a fresh, real Chrome session. Argument
         # validation rejects --attach before this function is reached.
@@ -310,7 +362,7 @@ def _run_observation_canary(
             errors.append("browser_navigation_failed")
             return False
 
-        bd.search_keyword(page, args.keyword, settings)
+        bd.search_keyword(page, keyword, settings)
         if bd.is_no_results_page(page):
             errors.append("keyword_no_results")
             return False
@@ -378,6 +430,12 @@ def _run_observation_canary(
         except Exception:
             errors.append("browser_shutdown_failed")
             success = False
+        if profile_lock is not None:
+            try:
+                release_profile_lock(profile_lock)
+            except Exception:
+                errors.append("profile_unlock_failed")
+                success = False
         checks = _observation_checks(
             browser_started=browser_started,
             eligible_invitation_page=eligible_invitation_page,
@@ -388,6 +446,7 @@ def _run_observation_canary(
         _write_observation_receipt(
             args.receipt,
             release_sha=release_sha,
+            target_fingerprint=target.canonical_digest(),
             status="accepted" if not errors else "rejected",
             checks=checks,
             errors=errors,
@@ -401,6 +460,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--keyword", default="วิเคราะห์ข้อมูล")
     parser.add_argument("--max-pages", type=int, default=15)
+    parser.add_argument(
+        "--target-file",
+        type=Path,
+        default=None,
+        help="Private exact-canary target file used by observation-canary.",
+    )
     parser.add_argument("--profile-dir", default=None)
     parser.add_argument("--chrome-path", default=None)
     parser.add_argument("--cdp-port", default=None)
@@ -430,8 +495,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.observation_canary:
+        if args.profile_dir is not None:
+            parser.error("--observation-canary cannot override --profile-dir")
         if args.attach:
             parser.error("--observation-canary cannot be used with --attach")
+        if args.target_file is None:
+            parser.error("--observation-canary requires --target-file")
         if not args.receipt:
             parser.error("--observation-canary requires --receipt")
         if args.max_pages != OBSERVATION_MAX_PAGES:
@@ -439,7 +508,11 @@ def main(argv: list[str] | None = None) -> int:
         release_sha = os.environ.get("EGP_RELEASE_SHA", "")
         if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
             parser.error("--observation-canary requires a 40-character lower-hex EGP_RELEASE_SHA")
-        return _run_observation_canary(args, release_sha=release_sha)
+        try:
+            target = _read_exact_canary_target(args.target_file)
+        except ValueError as exc:
+            parser.error(str(exc))
+        return _run_observation_canary(args, release_sha=release_sha, target=target)
 
     settings = _build_settings(args)
     out_dir = Path(args.out_dir)

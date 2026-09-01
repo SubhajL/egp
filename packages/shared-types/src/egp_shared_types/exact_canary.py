@@ -91,7 +91,7 @@ class ExactIngestionCanaryTarget:
         if type(browser_required) is not bool or browser_required is not True:
             raise ValueError("exact canary target requires a browser")
         max_pages = payload["max_pages_per_keyword"]
-        if type(max_pages) is not int or not 1 <= max_pages <= 15:
+        if type(max_pages) is not int or max_pages != 15:
             raise ValueError("exact canary page cap is invalid")
 
         return cls(

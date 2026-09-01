@@ -496,6 +496,17 @@ class DiscoveryDispatchProcessor:
             )
 
         if isinstance(dispatch_error, DiscoveryRunAlreadyCompletedError):
+            if self.exact_canary_target is not None:
+                return self._record_disposition(
+                    job=job,
+                    job_status="failed",
+                    outcome="failed",
+                    last_error=(
+                        f"invalid exact canary proof: completed run "
+                        f"{dispatch_error.run_id} has no independently validated proof"
+                    ),
+                    last_error_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+                )
             recover_completed = getattr(
                 self.repository,
                 "recover_completed_discovery_job",

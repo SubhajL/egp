@@ -908,6 +908,23 @@ def test_exact_canary_worker_result_rejects_missing_or_invalid_proof(
     assert exc_info.value.failure_code == DiscoveryFailureCode.CANARY_PROOF_INVALID
 
 
+def test_exact_canary_worker_result_rejects_failed_run_with_valid_proof() -> None:
+    target = _exact_canary_target()
+
+    with pytest.raises(DiscoverySpawnError, match="exact canary worker did not succeed"):
+        _validate_discovery_worker_result(
+            {
+                "run_id": "44444444-4444-4444-4444-444444444444",
+                "run_status": "failed",
+                "canary_proof": _valid_canary_proof(target),
+                "failure_code": DiscoveryFailureCode.CANARY_PROOF_INVALID,
+            },
+            expected_run_id="44444444-4444-4444-4444-444444444444",
+            keyword=target.keyword,
+            exact_canary_target=target,
+        )
+
+
 def test_exact_canary_dispatch_forwards_target_and_logs_proof_before_finish(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -916,6 +933,9 @@ def test_exact_canary_dispatch_forwards_target_and_logs_proof_before_finish(
     proof = _valid_canary_proof(target)
     process = _FakeProcess(canary_proof=proof)
     captured: dict[str, object] = {}
+    profile_dir = tmp_path / "persistent-profile"
+    monkeypatch.setenv("EGP_BROWSER_PROFILE_MODE", "persistent")
+    monkeypatch.setenv("EGP_BROWSER_PERSISTENT_PROFILE_DIR", str(profile_dir))
 
     class FakeRunRepository:
         def create_run(self, **values: object) -> None:
@@ -927,6 +947,11 @@ def test_exact_canary_dispatch_forwards_target_and_logs_proof_before_finish(
     monkeypatch.setattr(
         "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
         lambda *args, **kwargs: process,
+    )
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.SubprocessDiscoveryDispatcher."
+        "_warm_persistent_profile_if_stale",
+        lambda *args, **kwargs: None,
     )
     dispatcher = _make_discover_spawner(
         "postgresql://example.test/egp",
@@ -975,6 +1000,11 @@ def test_exact_canary_dispatch_rejects_resolved_page_cap_before_run_reservation(
     tmp_path: Path,
 ) -> None:
     target = _exact_canary_target()
+    monkeypatch.setenv("EGP_BROWSER_PROFILE_MODE", "persistent")
+    monkeypatch.setenv(
+        "EGP_BROWSER_PERSISTENT_PROFILE_DIR",
+        str(tmp_path / "persistent-profile"),
+    )
 
     class WrongCapProfileRepository:
         def get_profile_detail(self, *, tenant_id: str, profile_id: str):
@@ -1005,6 +1035,43 @@ def test_exact_canary_dispatch_rejects_resolved_page_cap_before_run_reservation(
                 tenant_id=target.tenant_id,
                 profile_id=target.profile_id,
                 profile_type="tor",
+                keyword=target.keyword,
+                live=True,
+                discovery_job_id=target.job_id,
+                exact_canary_target=target,
+            )
+        )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.CANARY_TARGET_MISMATCH
+
+
+def test_exact_canary_dispatch_requires_persistent_profile_before_run_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _exact_canary_target()
+    monkeypatch.setenv("EGP_BROWSER_PROFILE_MODE", "per_run")
+
+    class NoReservationRunRepository:
+        def create_run(self, **values: object) -> None:
+            pytest.fail(f"run reserved before native-profile validation: {values}")
+
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: pytest.fail("worker spawned without persistent profile"),
+    )
+    dispatcher = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=NoReservationRunRepository(),
+    )
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        dispatcher.dispatch(
+            DiscoveryDispatchRequest(
+                tenant_id=target.tenant_id,
+                profile_id=target.profile_id,
+                profile_type="manual",
                 keyword=target.keyword,
                 live=True,
                 discovery_job_id=target.job_id,

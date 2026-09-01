@@ -24,7 +24,7 @@
 #   scripts/run_remote_crawl.sh crawl-canary <private-target.json>
 #   scripts/run_remote_crawl.sh watch         # continuously claim + crawl prod jobs
 #   scripts/run_remote_crawl.sh supervise <seconds> --evidence <runtime-evidence.json>
-#   scripts/run_remote_crawl.sh observe-canary --keyword K --receipt <path>
+#   scripts/run_remote_crawl.sh observe-canary <private-target.json> --receipt <path>
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -114,6 +114,15 @@ run_module() {  # guard → load validated env → exec a venv python module
 }
 
 run_observation_canary() {
+  if [[ $# -lt 1 ]]; then
+    echo "usage: $0 observe-canary <private-target.json> [diagnostic options]" >&2
+    exit 2
+  fi
+  local target_file="$1"
+  shift
+  if [[ "$target_file" != /* ]]; then
+    target_file="$ROOT/$target_file"
+  fi
   guard_check
   load_validated_env
   local release_sha
@@ -174,7 +183,7 @@ run_observation_canary() {
   unset S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_SESSION_TOKEN
   unset R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID CLOUDFLARE_API_TOKEN
   exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" \
-    --observation-canary --max-pages 15 "$@"
+    --observation-canary --target-file "$target_file" --max-pages 15 "$@"
 }
 
 run_supervise() {
@@ -228,5 +237,5 @@ case "${1:-check}" in
   # Read-only WS0 diagnostic: dump search rows for a keyword (no persistence, no DB).
   diagnose)     require_env_file; shift || true; guard_check; load_validated_env; exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" "$@" ;;
   observe-canary) require_env_file; shift || true; run_observation_canary "$@" ;;
-  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|crawl-canary <private-target.json>|watch|supervise <seconds> --evidence <runtime-evidence.json>|diagnose [--keyword K --max-pages N --attach]|observe-canary --keyword K --receipt PATH}" >&2; exit 2 ;;
+  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|crawl-canary <private-target.json>|watch|supervise <seconds> --evidence <runtime-evidence.json>|diagnose [--keyword K --max-pages N --attach]|observe-canary <private-target.json> --receipt PATH}" >&2; exit 2 ;;
 esac
