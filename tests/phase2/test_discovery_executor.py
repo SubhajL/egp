@@ -558,11 +558,14 @@ def test_main_exact_canary_target_wires_private_job_and_tenant_file(
         "build_crawler_runtime_reporter_from_env",
         lambda: None,
     )
+
     class ExactProcessor:
         def __init__(self) -> None:
             self.limits: list[int | None] = []
 
-        def process_pending(self, *, limit: int | None = None) -> DiscoveryDispatchBatchResult:
+        def process_pending(
+            self, *, limit: int | None = None
+        ) -> DiscoveryDispatchBatchResult:
             self.limits.append(limit)
             return DiscoveryDispatchBatchResult(
                 requested_limit=limit or 1,
@@ -625,8 +628,12 @@ def test_main_exact_canary_target_rejects_zero_claim_as_mismatch(
     )
 
     class EmptyProcessor:
-        def process_pending(self, *, limit: int | None = None) -> DiscoveryDispatchBatchResult:
-            return DiscoveryDispatchBatchResult(requested_limit=limit or 1, dispositions=())
+        def process_pending(
+            self, *, limit: int | None = None
+        ) -> DiscoveryDispatchBatchResult:
+            return DiscoveryDispatchBatchResult(
+                requested_limit=limit or 1, dispositions=()
+            )
 
     runtime = discovery_dispatch.DiscoveryDispatchRuntime(
         processor=EmptyProcessor(),
@@ -754,7 +761,9 @@ def test_main_exact_canary_target_requires_exact_release_sha_before_runtime_buil
         monkeypatch.setenv("EGP_RELEASE_SHA", release_sha)
 
     def runtime_factory(*args: object, **kwargs: object):
-        pytest.fail(f"exact canary without release SHA built runtime: {args!r} {kwargs!r}")
+        pytest.fail(
+            f"exact canary without release SHA built runtime: {args!r} {kwargs!r}"
+        )
 
     assert (
         discovery_dispatch.main(

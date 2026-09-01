@@ -77,10 +77,16 @@ def _patch_observation_browser(monkeypatch, module, *, terminal) -> list[int]:
     browser = SimpleNamespace(close=lambda: None)
     playwright = SimpleNamespace(stop=lambda: None)
     chrome = SimpleNamespace()
-    monkeypatch.setattr(module, "acquire_profile_lock", lambda path: object(), raising=False)
-    monkeypatch.setattr(module, "release_profile_lock", lambda handle: None, raising=False)
+    monkeypatch.setattr(
+        module, "acquire_profile_lock", lambda path: object(), raising=False
+    )
+    monkeypatch.setattr(
+        module, "release_profile_lock", lambda handle: None, raising=False
+    )
 
-    monkeypatch.setattr(module.bd, "launch_real_chrome", lambda settings, **kwargs: chrome)
+    monkeypatch.setattr(
+        module.bd, "launch_real_chrome", lambda settings, **kwargs: chrome
+    )
     monkeypatch.setattr(
         module,
         "sync_playwright",
@@ -168,9 +174,10 @@ def test_observation_canary_accepts_pages_one_through_five_under_cap_fifteen(
     assert receipt["status"] == "accepted"
     assert receipt["release_sha"] == release_sha
     assert receipt["errors"] == []
-    assert receipt["target_fingerprint"] == ExactIngestionCanaryTarget.from_mapping(
-        TARGET_PAYLOAD
-    ).canonical_digest()
+    assert (
+        receipt["target_fingerprint"]
+        == ExactIngestionCanaryTarget.from_mapping(TARGET_PAYLOAD).canonical_digest()
+    )
     assert receipt["checks"] == {
         "browser_started": True,
         "eligible_invitation_page": 2,
@@ -200,7 +207,10 @@ def test_observation_canary_accepts_pages_one_through_five_under_cap_fifteen(
     ("terminal", "expected_error"),
     [
         (DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN, "pagination_control_hidden"),
-        (DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT, "pagination_page_change_timeout"),
+        (
+            DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT,
+            "pagination_page_change_timeout",
+        ),
         (DiscoveryPaginationOutcome.MAX_PAGES_REACHED, "max_pages_before_pinned_cap"),
     ],
 )

@@ -184,10 +184,7 @@ def _validate_exact_canary_worker_payload(
         mismatches.append("target_execution_backend")
     if type(target.browser_required) is not bool or target.browser_required is not True:
         mismatches.append("browser_required")
-    if (
-        type(target.max_pages_per_keyword) is not int
-        or target.max_pages_per_keyword != 15
-    ):
+    if type(target.max_pages_per_keyword) is not int or target.max_pages_per_keyword != 15:
         mismatches.append("target_max_pages_per_keyword")
 
     raw_browser_required = payload.get("browser_required")

@@ -656,7 +656,9 @@ def verify_canary_evidence_v2(
     expected_target_digest = (
         target.canonical_digest()
         if target is not None
-        else target_digest if _is_exact_digest(target_digest) else ""
+        else target_digest
+        if _is_exact_digest(target_digest)
+        else ""
     )
     target_fingerprint = expected_target_digest
     digest_matches = _is_exact_digest(target_digest) and (
@@ -1227,7 +1229,10 @@ def _parse_canary_ingestion_evidence(value: object) -> dict[str, object] | None:
     }
     if evidence is None or set(evidence) != required_keys:
         return None
-    if type(evidence.get("contract_version")) is not int or evidence.get("contract_version") != 1:
+    if (
+        type(evidence.get("contract_version")) is not int
+        or evidence.get("contract_version") != 1
+    ):
         return None
 
     candidate_key = evidence.get("candidate_key")
@@ -1248,7 +1253,11 @@ def _parse_canary_ingestion_evidence(value: object) -> dict[str, object] | None:
         return None
 
     raw_artifacts = evidence.get("artifacts")
-    if not isinstance(raw_artifacts, list) or not raw_artifacts or len(raw_artifacts) > 100:
+    if (
+        not isinstance(raw_artifacts, list)
+        or not raw_artifacts
+        or len(raw_artifacts) > 100
+    ):
         return None
     artifact_keys = {"document_id", "storage_key", "sha256", "size_bytes"}
     artifacts: list[dict[str, object]] = []
@@ -1418,9 +1427,7 @@ def _read_canary_evidence_log(
                 and len(finished_indices) == 1
                 and events[-1:] == ["dispatch_finished"]
                 and proof_index_and_record[0][0] < finished_indices[0]
-                and type(
-                    proof_index_and_record[0][1].get("target_contract_version")
-                )
+                and type(proof_index_and_record[0][1].get("target_contract_version"))
                 is int
                 and proof_index_and_record[0][1].get("target_contract_version")
                 == target_contract_version
@@ -1862,7 +1869,8 @@ def collect_canary_evidence_v2(
                                             evidence_project_id,
                                         )
                                         and type(candidate_row_page_number) is int
-                                        and candidate_row_page_number == evidence_page_number
+                                        and candidate_row_page_number
+                                        == evidence_page_number
                                         and candidate_row_page_number >= 2
                                     )
 
@@ -1981,9 +1989,15 @@ def collect_canary_evidence_v2(
                         if artifact_records:
                             result["artifact_record_count"] = len(artifact_records)
                             retrievable = True
-                            for storage_key, stored_sha256, stored_size_bytes in artifact_records:
+                            for (
+                                storage_key,
+                                stored_sha256,
+                                stored_size_bytes,
+                            ) in artifact_records:
                                 try:
-                                    artifact_bytes = artifact_store.get_bytes(storage_key)
+                                    artifact_bytes = artifact_store.get_bytes(
+                                        storage_key
+                                    )
                                     retrievable = (
                                         isinstance(artifact_bytes, bytes)
                                         and len(artifact_bytes) == stored_size_bytes

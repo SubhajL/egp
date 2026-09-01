@@ -163,8 +163,7 @@ def _exact_canary_claim_conditions(
             DISCOVERY_JOBS_TABLE.c.profile_id == target.profile_id,
             DISCOVERY_JOBS_TABLE.c.keyword == target.keyword,
             DISCOVERY_JOBS_TABLE.c.live.is_(True),
-            DISCOVERY_JOBS_TABLE.c.execution_backend
-            == ExecutionBackend.LEGACY.value,
+            DISCOVERY_JOBS_TABLE.c.execution_backend == ExecutionBackend.LEGACY.value,
             profile_matches,
             keyword_matches,
         ],
@@ -865,7 +864,8 @@ class SqlDiscoveryJobRepository:
                     )
                     cas_conditions.extend(exact_conditions)
                 updated = connection.execute(
-                    update(DISCOVERY_JOBS_TABLE).where(and_(*cas_conditions))
+                    update(DISCOVERY_JOBS_TABLE)
+                    .where(and_(*cas_conditions))
                     .values(
                         processing_started_at=claim_now,
                         claim_token=claim_token,

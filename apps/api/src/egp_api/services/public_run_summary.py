@@ -10,8 +10,4 @@ def sanitize_public_run_summary(
 
     if summary_json is None:
         return None
-    return {
-        key: value
-        for key, value in summary_json.items()
-        if key != "canary_ingestion_evidence"
-    }
+    return {key: value for key, value in summary_json.items() if key != "canary_ingestion_evidence"}

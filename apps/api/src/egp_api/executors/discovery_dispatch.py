@@ -395,8 +395,7 @@ def build_discovery_dispatch_runtime(
         target_trigger_type="fault_injection" if fault_mode is not None else None,
         excluded_trigger_types=() if fault_mode is not None else ("fault_injection",),
         require_non_live_target=(
-            target_job_id is not None
-            or (fault_mode is not None and exact_canary_target is None)
+            target_job_id is not None or (fault_mode is not None and exact_canary_target is None)
         ),
         force_terminal_failures=(fault_mode is not None or exact_canary_target is not None),
         exact_canary_target=exact_canary_target,
@@ -1093,10 +1092,14 @@ def _run_authorized_dispatch(
                 else 4
             )
         if exact_target is not None:
-            return 0 if _exact_canary_outcome_matches(
-                target=exact_target,
-                processed=processed,
-            ) else 4
+            return (
+                0
+                if _exact_canary_outcome_matches(
+                    target=exact_target,
+                    processed=processed,
+                )
+                else 4
+            )
         return 3 if summary.exit_reason == "blocked" else 0
 
     try:

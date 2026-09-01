@@ -147,26 +147,35 @@ def test_exact_canary_claim_mismatch_does_not_mutate_job(
     with repo._engine.begin() as connection:  # test setup only
         if mismatch == "profile_backend":
             connection.execute(
-                text("UPDATE crawl_profiles SET execution_backend = 'agent' WHERE id = :id"),
+                text(
+                    "UPDATE crawl_profiles SET execution_backend = 'agent' WHERE id = :id"
+                ),
                 {"id": PROFILE_ID},
             )
         elif mismatch == "profile_cap":
             connection.execute(
-                text("UPDATE crawl_profiles SET max_pages_per_keyword = 7 WHERE id = :id"),
+                text(
+                    "UPDATE crawl_profiles SET max_pages_per_keyword = 7 WHERE id = :id"
+                ),
                 {"id": PROFILE_ID},
             )
         elif mismatch == "profile_keyword":
             connection.execute(
-                text("UPDATE crawl_profile_keywords SET keyword = 'คำค้นอื่น' WHERE profile_id = :id"),
+                text(
+                    "UPDATE crawl_profile_keywords SET keyword = 'คำค้นอื่น' WHERE profile_id = :id"
+                ),
                 {"id": PROFILE_ID},
             )
 
     target = _target(**overrides)
     assert repo.has_claimable_discovery_jobs(exact_canary_target=target) is False
-    assert repo.claim_pending_discovery_jobs(
-        limit=1,
-        exact_canary_target=target,
-    ) == []
+    assert (
+        repo.claim_pending_discovery_jobs(
+            limit=1,
+            exact_canary_target=target,
+        )
+        == []
+    )
 
     stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
     assert stored.job_status == "pending"

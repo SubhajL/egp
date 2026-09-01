@@ -266,7 +266,9 @@ def test_run_remote_crawl_exposes_read_only_observation_canary() -> None:
         "\n}", maxsplit=1
     )[0]
     assert observation.index("guard_check") < observation.index("load_validated_env")
-    assert observation.index("load_validated_env") < observation.index("EGP_RELEASE_SHA")
+    assert observation.index("load_validated_env") < observation.index(
+        "EGP_RELEASE_SHA"
+    )
     assert "--attach" not in observation
     assert "DATABASE_URL" in observation
     assert "EGP_ARTIFACT_STORE" in observation
@@ -520,8 +522,13 @@ def test_public_mvp_runbook_uses_explicit_manifest_check_mode() -> None:
         if "scripts/check_migration_manifest.py" in line
     }
 
-    assert ".venv/bin/python scripts/check_migration_manifest.py --check" in manifest_commands
-    assert ".venv/bin/python scripts/check_migration_manifest.py" not in manifest_commands
+    assert (
+        ".venv/bin/python scripts/check_migration_manifest.py --check"
+        in manifest_commands
+    )
+    assert (
+        ".venv/bin/python scripts/check_migration_manifest.py" not in manifest_commands
+    )
 
 
 def test_public_mvp_runbook_describes_actual_migration_lock_order() -> None:
@@ -539,7 +546,9 @@ def test_public_mvp_runbook_describes_actual_migration_lock_order() -> None:
     assert before_connection in normalized_stage
     assert advisory_lock in normalized_stage
     assert locked_ledger in normalized_stage
-    assert normalized_stage.index(before_connection) < normalized_stage.index(advisory_lock)
+    assert normalized_stage.index(before_connection) < normalized_stage.index(
+        advisory_lock
+    )
     assert normalized_stage.index(advisory_lock) < normalized_stage.index(locked_ledger)
     assert (
         "Under that lock it verifies the tracked manifest against raw migration bytes"

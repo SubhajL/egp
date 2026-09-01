@@ -3282,7 +3282,9 @@ def test_run_discover_workflow_durable_candidate_survives_post_acceptance_loss(
 
     def fake_crawl_live_discovery(**kwargs):
         cb = kwargs.get("candidate_callback")
-        assert callable(cb), "workflow must pass candidate_callback to crawl_live_discovery"
+        assert callable(cb), (
+            "workflow must pass candidate_callback to crawl_live_discovery"
+        )
         cb(
             {
                 "keyword": "k",
@@ -3408,7 +3410,9 @@ def test_run_discover_workflow_finalizes_threaded_key_and_hides_it_from_product_
     assert "candidate_key" not in (sink.discovery_events[0].raw_snapshot or {})
 
 
-def test_direct_path_ignores_untrusted_candidate_key_field(monkeypatch, tmp_path) -> None:
+def test_direct_path_ignores_untrusted_candidate_key_field(
+    monkeypatch, tmp_path
+) -> None:
     # F2 (Tier-2 MEDIUM): a direct / materialized payload must NOT be able to spoof
     # acceptance by supplying a candidate_key field. The internal key has provenance
     # (it arrives only via the live callback path), so the direct path records a
@@ -3499,7 +3503,9 @@ def _read_candidate_rows(repo, run_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def test_live_candidate_callback_persists_content_provenance(monkeypatch, tmp_path) -> None:
+def test_live_candidate_callback_persists_content_provenance(
+    monkeypatch, tmp_path
+) -> None:
     # F6/T14 (R7+R8, workflow half): the live acceptance path stores
     # project_number + row_marker JSON and keys candidates by CONTENT identity
     # (golden-vector recomputed here, never via the production helper).
@@ -3646,7 +3652,9 @@ def test_direct_path_key_is_content_based_no_fabricated_coordinates(tmp_path) ->
     assert len(rows) == 1
     row = rows[0]
     assert row["candidate_key"] == _expected_content_key(
-        "k", "Direct Project", project_number="EGP-DIRECT-1",
+        "k",
+        "Direct Project",
+        project_number="EGP-DIRECT-1",
         organization_name="Direct Org",
     )
     assert row["page_number"] is None, "no fabricated 0 coordinate"
@@ -3720,9 +3728,7 @@ def test_workflow_persist_failure_writes_typed_reason(tmp_path) -> None:
 
     class ExplodingSink:
         def record_discovery(self, event):
-            raise RuntimeError(
-                "sink exploded: connection reset by peer | " + "x" * 600
-            )
+            raise RuntimeError("sink exploded: connection reset by peer | " + "x" * 600)
 
     run_discover_workflow(
         tenant_id=TENANT_ID,
@@ -3776,7 +3782,9 @@ def test_workflow_logs_distinct_event_on_terminal_conflict(tmp_path, caplog) -> 
     # Pre-finalize the SAME content key as failed, so the workflow's
     # finalize_persisted contradicts the terminal state.
     conflicting_key = _expected_content_key(
-        "k", "Conflicted Project", project_number="EGP-CONFLICT-1",
+        "k",
+        "Conflicted Project",
+        project_number="EGP-CONFLICT-1",
         organization_name="Org",
     )
     repo.record_accepted(
@@ -3921,10 +3929,20 @@ def test_run_discover_workflow_recovery_and_diagnostic_events_are_not_anomalies(
     def fake_crawl_live_discovery(**kwargs):
         progress_callback = kwargs["progress_callback"]
         progress_callback(
-            {"stage": "page_scan_finished", "keyword": "แพลตฟอร์ม", "page_num": 1, "eligible_count": 1}
+            {
+                "stage": "page_scan_finished",
+                "keyword": "แพลตฟอร์ม",
+                "page_num": 1,
+                "eligible_count": 1,
+            }
         )
         progress_callback(
-            {"stage": "keyword_no_results_recovery", "keyword": "แพลตฟอร์ม", "attempt": 1, "budget": 1}
+            {
+                "stage": "keyword_no_results_recovery",
+                "keyword": "แพลตฟอร์ม",
+                "attempt": 1,
+                "budget": 1,
+            }
         )
         progress_callback(
             {

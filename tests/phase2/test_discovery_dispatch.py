@@ -1022,7 +1022,9 @@ def test_durable_completed_run_terminally_dispatches_queue_job(
     assert stored.attempt_count == 1
 
 
-def test_exact_canary_completed_run_without_validated_proof_fails_closed(tmp_path) -> None:
+def test_exact_canary_completed_run_without_validated_proof_fails_closed(
+    tmp_path,
+) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'exact-completed.sqlite3'}",
         bootstrap_schema=True,

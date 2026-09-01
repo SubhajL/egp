@@ -173,10 +173,9 @@ class LiveCanaryProofAccumulator:
             raise ValueError("browser_start_missing")
         if self._page_sequence_invalid or self._max_pages_mismatch:
             raise ValueError("page_sequence_invalid")
-        if (
-            any(type(page) is not int or page < 1 for page in self.page_sequence)
-            or self.page_sequence != list(range(1, len(self.page_sequence) + 1))
-        ):
+        if any(
+            type(page) is not int or page < 1 for page in self.page_sequence
+        ) or self.page_sequence != list(range(1, len(self.page_sequence) + 1)):
             raise ValueError("page_sequence_invalid")
         if len(self.page_sequence) < 5:
             raise ValueError("page_sequence_invalid")
@@ -487,9 +486,11 @@ def _document_capture_attempt_reason_for_payload(
 def _copy_canary_ingestion_evidence(evidence: dict[str, object]) -> dict[str, object]:
     copied = dict(evidence)
     artifacts = evidence.get("artifacts")
-    copied["artifacts"] = [
-        dict(artifact) for artifact in artifacts if isinstance(artifact, dict)
-    ] if isinstance(artifacts, list) else []
+    copied["artifacts"] = (
+        [dict(artifact) for artifact in artifacts if isinstance(artifact, dict)]
+        if isinstance(artifacts, list)
+        else []
+    )
     return copied
 
 
@@ -507,10 +508,7 @@ def _build_exact_canary_ingestion_evidence(
 ) -> dict[str, object] | None:
     if tenant_id != target.tenant_id or project.tenant_id != target.tenant_id:
         return None
-    if (
-        not isinstance(candidate_key, str)
-        or re.fullmatch(r"[0-9a-f]{64}", candidate_key) is None
-    ):
+    if not isinstance(candidate_key, str) or re.fullmatch(r"[0-9a-f]{64}", candidate_key) is None:
         return None
     if type(page_number) is not int or page_number < 2:
         return None
@@ -1109,11 +1107,7 @@ def run_discover_workflow(
             page_number = discovered.get("page_number")
             if type(page_number) is not int and candidate_key_value is not None:
                 page_number = canary_candidate_pages.get(candidate_key_value)
-            if (
-                finalized
-                and canary_ingestion_evidence is None
-                and exact_canary_target is not None
-            ):
+            if finalized and canary_ingestion_evidence is None and exact_canary_target is not None:
                 evidence = _build_exact_canary_ingestion_evidence(
                     target=exact_canary_target,
                     tenant_id=tenant_id,
