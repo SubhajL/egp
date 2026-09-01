@@ -783,3 +783,126 @@ LOW
 
 - No findings. The staged candidate is accepted for commit and delivery with the exact three-file
   scope above.
+
+## Delivery update - two-worktree prerequisite (2026-09-01 22:30 +0700)
+
+- Candidate commit: `faf18eaade8d676ee3cd57cd475c1b8c929a1dc6`.
+- PR: `#229`; accepted head matched the candidate and was mergeable.
+- Hosted GitHub Actions jobs again failed before useful execution under the standing billing-lock
+  condition. They were unavailable, not passing, and were neither investigated nor retried. The
+  Vercel preview was pending and was not a source/security/conflict failure.
+- Authorized admin merge result: `82c4a4cf701a5fd32a64b58f9d205e85f882fba7`.
+- Dirty local `main` fast-forwarded exactly to `origin/main` at that SHA without changing its
+  protected modified/untracked inventory.
+- The stale session gate checkout at `f64af80a` had no tracked changes; only session-generated
+  virtualenv, tool, Python/web/test caches, test worker logs, and a verified zero-byte
+  `test.sqlite3` remained. It was force-removed under the worktree closeout protocol and pruned.
+- Fresh detached exact-SHA worktrees were created at the merge result:
+  `/Users/subhajlimanond/dev/egp-track-bc-release-82c4a4cf` (pristine release source) and
+  `/Users/subhajlimanond/dev/egp-track-bc-gates-82c4a4cf` (local gates).
+
+## Qualification RED - built-image resolver (2026-09-01 22:30 +0700)
+
+- The pristine release wrapper passed source checks. An initial build without an operator
+  interpolation environment failed safely before Docker; a nonsecret qualification-only set of
+  required Compose values was then used, and all five Python-role images built successfully.
+- Every built image label and baked `EGP_RELEASE_SHA` equaled
+  `82c4a4cf701a5fd32a64b58f9d205e85f882fba7`.
+- The next documented command, `release_compose.sh images -q <service>`, returned an empty result
+  for every service because Compose `images` reports images for created service containers, not
+  merely built images. No container had yet been created, as intended at this qualification stage.
+- Primary-owned acceptance RED: the two runbook image-resolution tests failed because they still
+  required the false `images -q` path and five old rooted call sites.
+- Primary-owned GREEN: replace the false resolver with a fail-closed portable-AWK helper over the
+  nonmutating `release_compose.sh config --images` output. It requires exactly one image suffix
+  match for each requested service and preserves the pristine release root.
+- Executable proof against the already-built images resolved all five service image references.
+  Docker inspection confirmed exact immutable image IDs, OCI revision labels, and baked release
+  SHAs for migrate, API, webhook executor, crawler-agent inbox executor, and discovery executor.
+- Scope remains documentation, acceptance test, and lifecycle log only. The release wrapper,
+  Compose configuration, Dockerfiles, runtime code, migrations, schemas, and wiring are unchanged.
+
+Resolver-remediation primary gates:
+
+- Named resolver/isolation tests passed after the expected RED.
+- Complete `test_track_bc_verify.py`: `93 passed` on three consecutive runs.
+- Full Python: `2086 passed, 4 skipped` in 229.13 seconds.
+- Changed-test Ruff format/check, the complete source-gate Bash snippet syntax, and diff check
+  passed.
+- Full tests created only the known zero-byte `test.sqlite3`; the primary verified its exact size
+  and removed that one session-generated file before review.
+
+### QCHECK remediation - upstream pipeline failure
+
+- Independent QCHECK found a P1 fail-closed bug: without `pipefail`, AWK could accept exactly one
+  emitted image name even if the upstream release-wrapper/config producer then failed. Its bounded
+  reproduction returned the false-success image.
+- Primary-owned executable RED extracted the exact helper from the runbook, replaced only its image
+  producer with a controlled Bash function, and exercised success, zero-match, duplicate-match,
+  and one-valid-line-then-exit-7 cases. The exit-7 case incorrectly returned zero before repair.
+- GREEN added `set -o pipefail` inside only the resolver command substitution. The extracted exact
+  helper now accepts the one/success case and rejects zero, duplicate, and upstream-failure cases.
+- Static tests also require the exactly-one AWK predicate and fail-closed diagnostic.
+- Final complete verifier suite: `97 passed` on three consecutive runs.
+- Final full Python: `2090 passed, 4 skipped` in 229.34 seconds. Ruff format/lint, Bash syntax, and
+  diff check passed. The known zero-byte `test.sqlite3` was verified and removed again.
+
+## Review (2026-09-01 22:43:18 +0700) - working-tree
+
+### Reviewed
+
+- Repo: `/Users/subhajlimanond/dev/egp-track-bc-runtime-campaign`
+- Branch: `ops/track-bc-runtime-execution`
+- Scope: staged documentation, acceptance-test, and lifecycle-log candidate against
+  `82c4a4cf701a5fd32a64b58f9d205e85f882fba7`.
+- Complete runbook/test diff, unchanged release wrapper, Compose build/config behavior, executable
+  five-image resolution evidence, extracted-helper failure matrix, and lifecycle evidence reviewed.
+- RepoPrompt: no workspace exists for this exact session-owned worktree and the earlier binding
+  attempt failed. Per `g-check` fallback policy, review used the complete staged diff, direct
+  source/wiring inspection, executable tests, and independent QCHECK without retrying the binding.
+
+### Findings
+
+CRITICAL
+
+- None.
+
+HIGH
+
+- None.
+
+MEDIUM
+
+- None.
+
+LOW
+
+- None. The post-build, pre-container image resolver is fail-closed and accepted.
+
+### Open Questions / Assumptions
+
+- Assumption: after merge, image qualification will be repeated at the new merge SHA; the already
+  built `82c4a4cf` images are defect-discovery evidence, not final release candidates.
+- The operator environment used for a real deployment remains private and separate from the
+  nonsecret Compose interpolation values used only for local image qualification.
+
+### Recommended Tests / Validation
+
+- Preserve `97 passed` x3, final `2090 passed, 4 skipped`, Ruff, Bash syntax, diff check, and the
+  no-findings independent QCHECK.
+- After merge, rebuild from a fresh pristine release root, resolve exact image refs through
+  `config --images`, run the image smoke from the separate gate root, and require exact merge-SHA
+  labels/baked revisions.
+
+### Rollout Notes
+
+- No runtime implementation or Compose topology changed. The correction affects only operator
+  resolution of already-built image names before containers exist.
+- The helper rejects wrapper/config failure, zero match, and duplicate match; it does not silently
+  select the first of multiple candidates.
+- Rollback is source-only: revert this docs/test commit before runtime use if its resolver contract
+  is invalid. Do not reintroduce `images -q` at the pre-container stage.
+
+### Formal disposition
+
+- No findings. The staged exact three-file candidate is accepted for commit and delivery.
