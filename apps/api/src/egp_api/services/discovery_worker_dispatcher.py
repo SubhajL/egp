@@ -80,6 +80,7 @@ from egp_shared_types.enums import (
     CrawlerBlockerCode,
     DiscoveryFailureCode,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -622,6 +623,80 @@ class DiscoverySpawnError(RuntimeError):
         super().__init__(message)
 
 
+def _validate_exact_canary_dispatch_request(
+    request: DiscoveryDispatchRequest,
+    *,
+    browser_settings: dict[str, object],
+) -> None:
+    target = request.exact_canary_target
+    if target is None:
+        return
+
+    mismatches: list[str] = []
+    if request.tenant_id != target.tenant_id:
+        mismatches.append("tenant_id")
+    if request.discovery_job_id != target.job_id:
+        mismatches.append("job_id")
+    if request.profile_id != target.profile_id:
+        mismatches.append("profile_id")
+    if request.keyword != target.keyword:
+        mismatches.append("keyword")
+    if type(request.live) is not bool or request.live is not True:
+        mismatches.append("live")
+    if type(target.live) is not bool or target.live is not True:
+        mismatches.append("target_live")
+    effective_execution_backend = (
+        target.execution_backend
+        if request.execution_backend == "subprocess"
+        else request.execution_backend
+    )
+    if effective_execution_backend != "legacy":
+        mismatches.append("execution_backend")
+    if type(target.browser_required) is not bool or target.browser_required is not True:
+        mismatches.append("browser_required")
+    if (
+        type(target.max_pages_per_keyword) is not int
+        or target.max_pages_per_keyword != 15
+    ):
+        mismatches.append("target_max_pages_per_keyword")
+    resolved_max_pages = browser_settings.get("max_pages_per_keyword", 15)
+    if (
+        type(resolved_max_pages) is not int
+        or resolved_max_pages != target.max_pages_per_keyword
+    ):
+        mismatches.append("max_pages_per_keyword")
+    explicit_chrome_path = browser_settings.get("browser_chrome_path")
+    if explicit_chrome_path is not None and (
+        not isinstance(explicit_chrome_path, str) or not explicit_chrome_path.strip()
+    ):
+        mismatches.append("browser_path")
+    if mismatches:
+        raise DiscoverySpawnError(
+            "exact canary target mismatch: " + ", ".join(mismatches),
+            failure_code=DiscoveryFailureCode.CANARY_TARGET_MISMATCH,
+        )
+
+
+def _validate_exact_canary_native_profile(
+    target: ExactIngestionCanaryTarget | None,
+    *,
+    browser_profile_mode: str,
+    browser_persistent_profile_dir: Path | None,
+) -> None:
+    if target is None:
+        return
+    mismatches: list[str] = []
+    if browser_profile_mode != "persistent":
+        mismatches.append("browser_profile_mode")
+    if browser_persistent_profile_dir is None:
+        mismatches.append("persistent_profile_dir")
+    if mismatches:
+        raise DiscoverySpawnError(
+            "exact canary target mismatch: " + ", ".join(mismatches),
+            failure_code=DiscoveryFailureCode.CANARY_TARGET_MISMATCH,
+        )
+
+
 def _decode_discovery_worker_result(stdout: bytes | str | None) -> dict[str, object] | None:
     if stdout is None:
         return None
@@ -658,11 +733,66 @@ def _decode_framed_or_fallback_result(
     return _decode_discovery_worker_result(stdout)
 
 
+_CANARY_PROOF_KEYS = frozenset(
+    {
+        "contract_version",
+        "target_digest",
+        "browser_started",
+        "page_sequence",
+        "max_pages_per_keyword",
+        "terminal_outcome",
+        "later_page_persisted",
+    }
+)
+
+
+def _validate_exact_canary_proof(
+    proof: object,
+    *,
+    target: ExactIngestionCanaryTarget,
+) -> None:
+    def invalid(reason: str) -> None:
+        raise DiscoverySpawnError(
+            f"invalid exact canary proof: {reason}",
+            failure_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+        )
+
+    if not isinstance(proof, dict) or set(proof) != _CANARY_PROOF_KEYS:
+        invalid("keys")
+    if type(proof.get("contract_version")) is not int or proof.get("contract_version") != 1:
+        invalid("contract_version")
+    if proof.get("target_digest") != target.canonical_digest():
+        invalid("target_digest")
+    if proof.get("browser_started") is not True:
+        invalid("browser_started")
+    sequence = proof.get("page_sequence")
+    if (
+        not isinstance(sequence, list)
+        or any(type(page) is not int or page < 1 for page in sequence)
+        or sequence != list(range(1, len(sequence) + 1))
+        or len(sequence) < 5
+    ):
+        invalid("page_sequence")
+    if proof.get("max_pages_per_keyword") != target.max_pages_per_keyword:
+        invalid("max_pages_per_keyword")
+    terminal_outcome = proof.get("terminal_outcome")
+    if terminal_outcome in {"next_control_absent", "next_control_disabled"}:
+        pass
+    elif terminal_outcome == "max_pages_reached":
+        if sequence[-1] != target.max_pages_per_keyword:
+            invalid("max_pages_before_pinned_cap")
+    else:
+        invalid("terminal_outcome")
+    if proof.get("later_page_persisted") is not True:
+        invalid("later_page_persisted")
+
+
 def _validate_discovery_worker_result(
     result: dict[str, object],
     *,
     expected_run_id: str,
     keyword: str,
+    exact_canary_target: ExactIngestionCanaryTarget | None = None,
 ) -> tuple[str, DiscoveryFailureCode | None]:
     result_run_id = str(result.get("run_id") or "").strip()
     if result_run_id != expected_run_id:
@@ -672,6 +802,17 @@ def _validate_discovery_worker_result(
             failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
         )
     run_status = str(result.get("run_status") or "").strip().casefold()
+    if exact_canary_target is not None:
+        if run_status != "succeeded":
+            raise DiscoverySpawnError(
+                "exact canary worker did not succeed",
+                failure_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+            )
+        _validate_exact_canary_proof(
+            result.get("canary_proof"),
+            target=exact_canary_target,
+        )
+        return run_status, None
     if run_status not in {"succeeded", "partial", "failed"}:
         raise DiscoverySpawnError(
             f"discover worker returned invalid run_status {run_status!r} for keyword {keyword!r}",
@@ -1018,6 +1159,16 @@ class SubprocessDiscoveryDispatcher:
                 "fault injection requires an authorized standalone executor",
                 failure_code=DiscoveryFailureCode.DISPATCH_EXCEPTION,
             )
+        if requested_fault_mode is not None and request.exact_canary_target is not None:
+            raise DiscoverySpawnError(
+                "exact canary target mismatch: fault injection is not allowed",
+                failure_code=DiscoveryFailureCode.CANARY_TARGET_MISMATCH,
+            )
+        _validate_exact_canary_native_profile(
+            request.exact_canary_target,
+            browser_profile_mode=self._browser_profile_mode,
+            browser_persistent_profile_dir=self._browser_persistent_profile_dir,
+        )
         run_id = str(uuid4())
         run_trigger = map_job_trigger_to_run_trigger(request.trigger_type)
         if requested_fault_mode is not None:
@@ -1047,6 +1198,11 @@ class SubprocessDiscoveryDispatcher:
                 cloudflare_operator_timeout_ms=self._browser_cloudflare_operator_timeout_ms,
                 project_detail_timeout_s=self._browser_project_detail_timeout_s,
             )
+            if request.exact_canary_target is not None:
+                _validate_exact_canary_dispatch_request(
+                    request,
+                    browser_settings=browser_settings,
+                )
             profile_lock = (
                 _acquire_profile_lock(browser_profile_dir)
                 if self._browser_profile_mode == "persistent"
@@ -1181,28 +1337,41 @@ class SubprocessDiscoveryDispatcher:
                 except Exception:
                     pass
             try:
+                payload_values: dict[str, object] = {
+                    "command": "discover",
+                    "database_url": self._database_url,
+                    "artifact_root": str(self._artifact_root),
+                    "artifact_storage_backend": self._artifact_storage_backend,
+                    "artifact_bucket": self._artifact_bucket,
+                    "artifact_prefix": self._artifact_prefix,
+                    "supabase_url": self._supabase_url,
+                    "supabase_service_role_key": self._supabase_service_role_key,
+                    "tenant_id": request.tenant_id,
+                    "run_id": run_id,
+                    "agent_job_id": request.discovery_job_id,
+                    "agent_claim_token": request.claim_token,
+                    "profile_id": request.profile_id,
+                    "keyword": request.keyword,
+                    "profile": request.profile_type,
+                    "trigger_type": run_trigger,
+                    "live": request.live,
+                    "live_include_documents": True,
+                    "browser_settings": browser_settings,
+                }
+                if request.exact_canary_target is not None:
+                    payload_values.update(
+                        {
+                            "exact_canary_target": request.exact_canary_target.to_mapping(),
+                            "execution_backend": request.exact_canary_target.execution_backend,
+                            "browser_required": request.exact_canary_target.browser_required,
+                            "browser_max_pages_per_keyword": browser_settings.get(
+                                "max_pages_per_keyword",
+                                request.exact_canary_target.max_pages_per_keyword,
+                            ),
+                        }
+                    )
                 payload = json.dumps(
-                    {
-                        "command": "discover",
-                        "database_url": self._database_url,
-                        "artifact_root": str(self._artifact_root),
-                        "artifact_storage_backend": self._artifact_storage_backend,
-                        "artifact_bucket": self._artifact_bucket,
-                        "artifact_prefix": self._artifact_prefix,
-                        "supabase_url": self._supabase_url,
-                        "supabase_service_role_key": self._supabase_service_role_key,
-                        "tenant_id": request.tenant_id,
-                        "run_id": run_id,
-                        "agent_job_id": request.discovery_job_id,
-                        "agent_claim_token": request.claim_token,
-                        "profile_id": request.profile_id,
-                        "keyword": request.keyword,
-                        "profile": request.profile_type,
-                        "trigger_type": run_trigger,
-                        "live": request.live,
-                        "live_include_documents": True,
-                        "browser_settings": browser_settings,
-                    },
+                    payload_values,
                     ensure_ascii=False,
                 ).encode()
                 if fault_mode is not None:
@@ -1371,6 +1540,7 @@ class SubprocessDiscoveryDispatcher:
                         worker_result,
                         expected_run_id=run_id,
                         keyword=request.keyword,
+                        exact_canary_target=request.exact_canary_target,
                     )
                     if run_status == "failed":
                         error = str(worker_result.get("error") or "").strip()
@@ -1414,6 +1584,20 @@ class SubprocessDiscoveryDispatcher:
                     tenant_id=request.tenant_id,
                     run_id=run_id,
                 )
+                if request.exact_canary_target is not None:
+                    try:
+                        pending_log_events.append(
+                            json.dumps(
+                                {
+                                    "event": "canary_proof_validated",
+                                    "target_contract_version": request.exact_canary_target.contract_version,
+                                    "target_digest": request.exact_canary_target.canonical_digest(),
+                                },
+                                sort_keys=True,
+                            )
+                        )
+                    except Exception:
+                        pass
                 try:
                     pending_log_events.append(
                         make_event(

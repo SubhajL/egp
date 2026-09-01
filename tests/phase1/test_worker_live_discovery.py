@@ -23,6 +23,7 @@ from egp_shared_types.enums import (
     ProcurementType,
     ProjectState,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 from egp_worker.browser_discovery import (
     BrowserDiscoverySettings,
     LiveDiscoveryPartialError,
@@ -588,6 +589,254 @@ def test_run_worker_job_backfill_records_success_doc_count(tmp_path) -> None:
     assert latest_attempt.doc_count == 1
 
 
+def test_exact_canary_records_run_linked_successful_document_capture(tmp_path) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'exact-canary-capture.sqlite3'}"
+    keyword = "analytics"
+    project_number = "69049163848"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    profile_id = _seed_profile(database_url=database_url, keywords=[keyword])
+    target = ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": TENANT_ID,
+            "job_id": "22222222-2222-2222-2222-222222222222",
+            "profile_id": profile_id,
+            "keyword": keyword,
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        profile_id=profile_id,
+        keyword=keyword,
+        discovered_projects=[],
+        trigger_type="manual",
+        database_url=database_url,
+        live=True,
+        exact_canary_target=target,
+        live_discovery=lambda _keyword: [
+            {
+                "keyword": keyword,
+                "page_number": 2,
+                "project_number": project_number,
+                "search_name": "ระบบข้อมูลกลาง",
+                "detail_name": "โครงการระบบข้อมูลกลาง",
+                "project_name": "โครงการระบบข้อมูลกลาง",
+                "organization_name": "กรมตัวอย่าง",
+                "proposal_submission_date": "2026-06-08",
+                "budget_amount": "1500000.00",
+                "project_state": ProjectState.OPEN_INVITATION.value,
+                "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                "downloaded_documents": [
+                    {
+                        "file_name": "invite.pdf",
+                        "file_bytes": b"invite",
+                        "source_label": "ประกาศเชิญชวน",
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                        "source_page_text": "",
+                        "project_state": ProjectState.OPEN_INVITATION.value,
+                    }
+                ],
+                "document_collection_status": "succeeded",
+            }
+        ],
+        artifact_root=tmp_path / "artifacts",
+    )
+    capture_repository = SqlDocumentCaptureAttemptRepository(
+        database_url=database_url,
+        bootstrap_schema=False,
+    )
+
+    latest_attempt = capture_repository.get_latest_attempt_for_project(
+        tenant_id=TENANT_ID,
+        project_number=project_number,
+    )
+    assert latest_attempt is not None
+    assert latest_attempt.status is DocumentCaptureAttemptStatus.SUCCEEDED
+    assert latest_attempt.doc_count == 1
+    assert latest_attempt.run_id == result.run.run.id
+    with capture_repository._engine.connect() as connection:
+        correlated = (
+            connection.execute(
+                text(
+                    """
+                    SELECT
+                        a.candidate_key,
+                        a.project_id,
+                        a.page_number,
+                        d.id AS document_id,
+                        d.storage_key,
+                        d.sha256,
+                        d.size_bytes
+                    FROM discovery_candidate_attempts AS a
+                    JOIN documents AS d
+                      ON d.tenant_id = a.tenant_id
+                     AND d.project_id = a.project_id
+                    WHERE a.tenant_id = :tenant_id
+                      AND a.run_id = :run_id
+                      AND a.candidate_status = 'persisted'
+                      AND a.page_number >= 2
+                    """
+                ),
+                {"tenant_id": TENANT_ID, "run_id": result.run.run.id},
+            )
+            .mappings()
+            .one()
+        )
+
+    evidence = result.run.run.summary_json["canary_ingestion_evidence"]
+    assert set(evidence) == {
+        "contract_version",
+        "candidate_key",
+        "project_id",
+        "page_number",
+        "capture_attempt_id",
+        "artifacts",
+    }
+    assert evidence == {
+        "contract_version": 1,
+        "candidate_key": correlated["candidate_key"],
+        "project_id": correlated["project_id"],
+        "page_number": 2,
+        "capture_attempt_id": latest_attempt.id,
+        "artifacts": [
+            {
+                "document_id": correlated["document_id"],
+                "storage_key": correlated["storage_key"],
+                "sha256": correlated["sha256"],
+                "size_bytes": correlated["size_bytes"],
+            }
+        ],
+    }
+
+
+def test_exact_canary_fails_closed_without_ingestion_custody(
+    monkeypatch, tmp_path
+) -> None:
+    database_url = f"sqlite+pysqlite:///{tmp_path / 'exact-canary-no-custody.sqlite3'}"
+    keyword = "analytics"
+    today = date.today()
+    _seed_subscription(
+        database_url=database_url,
+        plan_code="monthly_membership",
+        keyword_limit=5,
+        billing_period_start=today - timedelta(days=1),
+        billing_period_end=today + timedelta(days=29),
+    )
+    profile_id = _seed_profile(database_url=database_url, keywords=[keyword])
+    target = ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": TENANT_ID,
+            "job_id": "23232323-2323-2323-2323-232323232323",
+            "profile_id": profile_id,
+            "keyword": keyword,
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+
+    def fake_crawl_live_discovery(**kwargs) -> list[object]:
+        progress_callback = kwargs["progress_callback"]
+        candidate_callback = kwargs["candidate_callback"]
+        project_callback = kwargs["project_callback"]
+        progress_callback({"stage": "browser_session_started"})
+        for page_number in range(1, 6):
+            progress_callback(
+                {
+                    "stage": "page_scan_finished",
+                    "keyword": keyword,
+                    "page_num": page_number,
+                    "max_pages_per_keyword": 15,
+                }
+            )
+            if page_number == 2:
+                candidate_key = candidate_callback(
+                    {
+                        "keyword": keyword,
+                        "page_number": page_number,
+                        "eligible_ordinal": 0,
+                        "project_number": "69049163849",
+                        "project_name": "ระบบข้อมูลกลางไม่มีเอกสาร",
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                        "row_marker": {
+                            "organization_name": "กรมตัวอย่าง",
+                            "budget_text": "1,500,000.00",
+                            "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                        },
+                    }
+                )
+                project_callback(
+                    {
+                        "candidate_key": candidate_key,
+                        "keyword": keyword,
+                        "page_number": page_number,
+                        "project_number": "69049163849",
+                        "search_name": "ระบบข้อมูลกลางไม่มีเอกสาร",
+                        "detail_name": "โครงการระบบข้อมูลกลางไม่มีเอกสาร",
+                        "project_name": "โครงการระบบข้อมูลกลางไม่มีเอกสาร",
+                        "organization_name": "กรมตัวอย่าง",
+                        "proposal_submission_date": "2026-06-08",
+                        "budget_amount": "1500000.00",
+                        "project_state": ProjectState.OPEN_INVITATION.value,
+                        "source_status_text": "หนังสือเชิญชวน/ประกาศเชิญชวน",
+                        "downloaded_documents": [],
+                        "document_collection_status": "no_documents",
+                    }
+                )
+        progress_callback(
+            {
+                "stage": "pagination_terminal",
+                "keyword": keyword,
+                "page_num": 5,
+                "max_pages_per_keyword": 15,
+                "pagination_outcome": "next_control_absent",
+            }
+        )
+        return []
+
+    monkeypatch.setattr(
+        "egp_worker.workflows.discover.crawl_live_discovery",
+        fake_crawl_live_discovery,
+    )
+
+    result = run_discover_workflow(
+        tenant_id=TENANT_ID,
+        profile_id=profile_id,
+        keyword=keyword,
+        discovered_projects=[],
+        trigger_type="manual",
+        database_url=database_url,
+        live=True,
+        exact_canary_target=target,
+        live_include_documents=True,
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    summary = result.run.run.summary_json
+    assert summary["canary_proof"]["later_page_persisted"] is True
+    assert "canary_ingestion_evidence" not in summary
+    assert result.run.run.status == "failed"
+    assert summary["failure_code"] == DiscoveryFailureCode.CANARY_PROOF_INVALID
+    assert summary["error"] == "canary_ingestion_evidence_missing"
+    assert result.run.run.error_count == 1
+
+
 def test_run_worker_job_discover_allows_active_free_trial_entitled_keyword(
     tmp_path,
 ) -> None:
@@ -822,7 +1071,7 @@ def test_run_discover_workflow_persists_live_progress(monkeypatch) -> None:
     }
 
 
-def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
+def test_run_discover_workflow_accepts_legitimate_live_keyword_no_results(
     monkeypatch,
 ) -> None:
     run_repository = FakeRunRepository()
@@ -853,9 +1102,9 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
         live=True,
     )
 
-    assert result.run.run.status == "failed"
-    assert run_repository.finished_status == "failed"
-    assert run_repository.finished_error_count == 1
+    assert result.run.run.status == "succeeded"
+    assert run_repository.finished_status == "succeeded"
+    assert run_repository.finished_error_count == 0
     assert run_repository.finished_summary == {
         "projects_seen": 0,
         "live_progress": {
@@ -867,15 +1116,6 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
                 "updated_at"
             ],
         },
-        "live_crawl_anomaly_count": 1,
-        "live_crawl_latest_anomaly": {
-            "stage": "keyword_no_results",
-            "keyword": "แพลตฟอร์ม",
-            "keyword_index": 1,
-            "keyword_count": 1,
-        },
-        "error": "live crawl anomaly: keyword_no_results",
-        "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
     }
     assert run_repository.tasks == [
         {
@@ -887,12 +1127,8 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
                 "keyword": "แพลตฟอร์ม",
                 "source": "keyword_run",
             },
-            "status": "failed",
-            "result_json": {
-                "projects_seen": 0,
-                "error": "live crawl anomaly: keyword_no_results",
-                "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
-            },
+            "status": "succeeded",
+            "result_json": {"projects_seen": 0},
         }
     ]
     assert sink.discovery_events == []

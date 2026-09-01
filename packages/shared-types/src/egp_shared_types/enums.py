@@ -152,6 +152,27 @@ class DiscoveryFailureCode(StrEnum):
     ENTITLEMENT_DENIED = "entitlement_denied"
     DISPATCH_EXCEPTION = "dispatch_exception"
     LEASE_LOST = "lease_lost"
+    BROWSER_START_FAILED = "browser_start_failed"
+    PAGINATION_CONTROL_HIDDEN = "pagination_control_hidden"
+    PAGINATION_NEXT_CLICK_FAILED = "pagination_next_click_failed"
+    PAGINATION_PAGE_CHANGE_TIMEOUT = "pagination_page_change_timeout"
+    PAGINATION_UNEXPECTED_NO_RESULTS = "pagination_unexpected_no_results"
+    PAGINATION_SITE_ERROR = "pagination_site_error"
+    CANARY_TARGET_MISMATCH = "canary_target_mismatch"
+    CANARY_PROOF_INVALID = "canary_proof_invalid"
+
+
+class DiscoveryPaginationOutcome(StrEnum):
+    ADVANCED = "advanced"
+    KEYWORD_NO_RESULTS = "keyword_no_results"
+    NEXT_CONTROL_ABSENT = "next_control_absent"
+    NEXT_CONTROL_DISABLED = "next_control_disabled"
+    MAX_PAGES_REACHED = "max_pages_reached"
+    NEXT_CONTROL_HIDDEN = "next_control_hidden"
+    NEXT_CLICK_FAILED = "next_click_failed"
+    PAGE_CHANGE_TIMEOUT = "page_change_timeout"
+    UNEXPECTED_NO_RESULTS = "unexpected_no_results"
+    SITE_ERROR = "site_error"
 
 
 class CrawlerBlockerCode(StrEnum):

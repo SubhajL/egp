@@ -25,6 +25,8 @@ FAULT_JOB_ID = "11111111-1111-4111-8111-111111111111"
 FAULT_TENANT_ID = "22222222-2222-4222-8222-222222222222"
 CANARY_JOB_ID = "33333333-3333-4333-8333-333333333333"
 CANARY_TENANT_ID = "44444444-4444-4444-8444-444444444444"
+CANARY_PROFILE_ID = "55555555-5555-4555-8555-555555555555"
+CANARY_KEYWORD = "ประกวดราคาจ้างวิเคราะห์ข้อมูล"
 
 
 def _fault_cli_args(
@@ -48,7 +50,21 @@ def _fault_cli_args(
 def _private_canary_target(tmp_path: Path) -> Path:
     target = tmp_path / "canary-target.json"
     target.write_text(
-        json.dumps({"tenant_id": CANARY_TENANT_ID, "job_id": CANARY_JOB_ID}),
+        json.dumps(
+            {
+                "contract_version": 1,
+                "kind": "exact_ingestion_canary",
+                "tenant_id": CANARY_TENANT_ID,
+                "job_id": CANARY_JOB_ID,
+                "profile_id": CANARY_PROFILE_ID,
+                "keyword": CANARY_KEYWORD,
+                "live": True,
+                "execution_backend": "legacy",
+                "browser_required": True,
+                "max_pages_per_keyword": 15,
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     target.chmod(0o600)
@@ -536,12 +552,29 @@ def test_main_exact_canary_target_wires_private_job_and_tenant_file(
 ) -> None:
     target_file = _private_canary_target(tmp_path)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "a" * 40)
     monkeypatch.setattr(
         discovery_dispatch,
         "build_crawler_runtime_reporter_from_env",
         lambda: None,
     )
-    processor = RecordingDiscoveryProcessor()
+    class ExactProcessor:
+        def __init__(self) -> None:
+            self.limits: list[int | None] = []
+
+        def process_pending(self, *, limit: int | None = None) -> DiscoveryDispatchBatchResult:
+            self.limits.append(limit)
+            return DiscoveryDispatchBatchResult(
+                requested_limit=limit or 1,
+                dispositions=(
+                    DiscoveryJobDispatchDisposition(
+                        job_id=CANARY_JOB_ID,
+                        outcome="dispatched",
+                    ),
+                ),
+            )
+
+    processor = ExactProcessor()
     runtime = discovery_dispatch.DiscoveryDispatchRuntime(
         processor=processor,
         run_service=RecordingRunService(),
@@ -559,15 +592,54 @@ def test_main_exact_canary_target_wires_private_job_and_tenant_file(
     )
 
     assert exit_code == 0
-    assert built_kwargs == [
-        {
-            "artifact_root": None,
-            "worker_count": None,
-            "target_job_id": CANARY_JOB_ID,
-            "target_tenant_id": CANARY_TENANT_ID,
-        }
-    ]
+    assert len(built_kwargs) == 1
+    assert built_kwargs[0]["artifact_root"] is None
+    assert built_kwargs[0]["worker_count"] is None
+    exact_target = built_kwargs[0]["exact_canary_target"]
+    assert exact_target.to_mapping() == {
+        "contract_version": 1,
+        "kind": "exact_ingestion_canary",
+        "tenant_id": CANARY_TENANT_ID,
+        "job_id": CANARY_JOB_ID,
+        "profile_id": CANARY_PROFILE_ID,
+        "keyword": CANARY_KEYWORD,
+        "live": True,
+        "execution_backend": "legacy",
+        "browser_required": True,
+        "max_pages_per_keyword": 15,
+    }
     assert processor.limits == [1]
+
+
+def test_main_exact_canary_target_rejects_zero_claim_as_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "b" * 40)
+    monkeypatch.setattr(
+        discovery_dispatch,
+        "build_crawler_runtime_reporter_from_env",
+        lambda: None,
+    )
+
+    class EmptyProcessor:
+        def process_pending(self, *, limit: int | None = None) -> DiscoveryDispatchBatchResult:
+            return DiscoveryDispatchBatchResult(requested_limit=limit or 1, dispositions=())
+
+    runtime = discovery_dispatch.DiscoveryDispatchRuntime(
+        processor=EmptyProcessor(),
+        run_service=RecordingRunService(),
+    )
+
+    assert (
+        discovery_dispatch.main(
+            ["--once", "--limit", "1", "--target-file", str(target_file)],
+            runtime_factory=lambda *args, **kwargs: runtime,
+        )
+        == 4
+    )
 
 
 @pytest.mark.parametrize(
@@ -608,6 +680,7 @@ def test_main_exact_canary_target_fails_closed_before_runtime_build(
     target_file = _private_canary_target(tmp_path)
     mutate_target(target_file)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", protocol)
+    monkeypatch.setenv("EGP_RELEASE_SHA", "c" * 40)
     built = False
 
     def runtime_factory(*args: object, **kwargs: object):
@@ -634,6 +707,7 @@ def test_main_exact_canary_target_rejects_symlink_and_fault_combination(
     symlink.symlink_to(target_file)
     monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
     monkeypatch.setenv("EGP_DISCOVERY_FAULT_INJECTION_ENABLED", "true")
+    monkeypatch.setenv("EGP_RELEASE_SHA", "d" * 40)
 
     def runtime_factory(*args: object, **kwargs: object):
         pytest.fail(f"unsafe target built runtime: {args!r} {kwargs!r}")
@@ -660,6 +734,31 @@ def test_main_exact_canary_target_rejects_symlink_and_fault_combination(
                 "--fault-tenant-id",
                 FAULT_TENANT_ID,
             ],
+            runtime_factory=runtime_factory,
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize("release_sha", [None, "a" * 39, "A" * 40, "g" * 40])
+def test_main_exact_canary_target_requires_exact_release_sha_before_runtime_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    release_sha: str | None,
+) -> None:
+    target_file = _private_canary_target(tmp_path)
+    monkeypatch.setenv("EGP_CRAWLER_AGENT_PROTOCOL", "off")
+    if release_sha is None:
+        monkeypatch.delenv("EGP_RELEASE_SHA", raising=False)
+    else:
+        monkeypatch.setenv("EGP_RELEASE_SHA", release_sha)
+
+    def runtime_factory(*args: object, **kwargs: object):
+        pytest.fail(f"exact canary without release SHA built runtime: {args!r} {kwargs!r}")
+
+    assert (
+        discovery_dispatch.main(
+            ["--once", "--limit", "1", "--target-file", str(target_file)],
             runtime_factory=runtime_factory,
         )
         == 2

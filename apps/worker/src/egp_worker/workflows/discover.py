@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -28,10 +29,12 @@ from egp_db.repositories.candidate_attempt_repo import (
     create_candidate_attempt_repository,
 )
 from egp_db.repositories.document_capture_attempt_repo import (
+    DocumentCaptureAttemptRecord,
     SqlDocumentCaptureAttemptRepository,
     create_document_capture_attempt_repository,
 )
 from egp_db.repositories.billing_repo import create_billing_repository
+from egp_db.repositories.document_repo import DocumentRecord, StoreDocumentResult
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.project_repo import ProjectRecord, SqlProjectRepository
 from egp_db.repositories.run_repo import CrawlRunDetail, SqlRunRepository, create_run_repository
@@ -43,10 +46,13 @@ from egp_shared_types.enums import (
     DocumentCaptureAttemptStatus,
     DocumentCaptureReason,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_discovery import (
+    BrowserStartError,
     BrowserDiscoverySettings,
     LiveDiscoveryPartialError,
+    PaginationScanError,
     SearchPageStateError,
     crawl_live_discovery,
 )
@@ -79,9 +85,123 @@ _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
         "project_detail_missing_required_fields",
     }
 )
-_LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
+_LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset()
 _KEYWORD_SCAN_SUMMARY_STAGE = "keyword_scan_summary"
 _BACKFILL_TRIGGER_TYPE = "backfill"
+
+
+@dataclass
+class LiveCanaryProofAccumulator:
+    """Build the bounded proof for one exact live-ingestion canary."""
+
+    target: ExactIngestionCanaryTarget
+    browser_started: bool = False
+    page_sequence: list[int] = field(default_factory=list)
+    max_pages_per_keyword: int | None = None
+    terminal_outcome: str | None = None
+    later_page_persisted: bool = False
+    _event_after_terminal: bool = False
+    _keyword_mismatch: bool = False
+    _page_sequence_invalid: bool = False
+    _max_pages_mismatch: bool = False
+    _terminal_page: int | None = None
+    _persistence_invalid: bool = False
+    _event_before_browser: bool = False
+
+    def __post_init__(self) -> None:
+        if self.max_pages_per_keyword is None:
+            self.max_pages_per_keyword = self.target.max_pages_per_keyword
+
+    def record_progress(self, event: dict[str, object]) -> None:
+        """Record only browser, target-keyword page, and target terminal events."""
+        stage = str(event.get("stage") or "")
+        if stage == "browser_session_started":
+            if self.terminal_outcome is not None:
+                self._event_after_terminal = True
+            self.browser_started = True
+            return
+        if stage not in {"page_scan_finished", "pagination_terminal"}:
+            return
+        if self.browser_started is not True:
+            self._event_before_browser = True
+        if self.terminal_outcome is not None:
+            self._event_after_terminal = True
+            return
+        if event.get("keyword") != self.target.keyword:
+            self._keyword_mismatch = True
+        page_number = event.get("page_num")
+        if type(page_number) is not int or page_number < 1:
+            self._page_sequence_invalid = True
+        else:
+            if stage == "page_scan_finished":
+                self.page_sequence.append(page_number)
+            else:
+                self._terminal_page = page_number
+        raw_cap = event.get("max_pages_per_keyword")
+        if raw_cap is not None:
+            if type(raw_cap) is not int or raw_cap != self.target.max_pages_per_keyword:
+                self._max_pages_mismatch = True
+            else:
+                self.max_pages_per_keyword = raw_cap
+        if stage == "pagination_terminal":
+            outcome = event.get("pagination_outcome")
+            if not isinstance(outcome, str) or not outcome.strip():
+                self._page_sequence_invalid = True
+            self.terminal_outcome = str(outcome or "").strip()
+
+    def record_persisted_candidate(self, *, page_number: int) -> None:
+        if type(page_number) is not int:
+            self._persistence_invalid = True
+            return
+        if page_number == 1:
+            return
+        if page_number < 1:
+            self._persistence_invalid = True
+            return
+        self.later_page_persisted = True
+
+    def build(self) -> dict[str, object]:
+        if self._event_before_browser:
+            if self.browser_started is not True:
+                raise ValueError("event_before_browser: browser_start_missing")
+            raise ValueError("event_before_browser")
+        if self._event_after_terminal:
+            raise ValueError("event_after_terminal")
+        if self._keyword_mismatch:
+            raise ValueError("keyword_mismatch")
+        if self.browser_started is not True:
+            raise ValueError("browser_start_missing")
+        if self._page_sequence_invalid or self._max_pages_mismatch:
+            raise ValueError("page_sequence_invalid")
+        if (
+            any(type(page) is not int or page < 1 for page in self.page_sequence)
+            or self.page_sequence != list(range(1, len(self.page_sequence) + 1))
+        ):
+            raise ValueError("page_sequence_invalid")
+        if len(self.page_sequence) < 5:
+            raise ValueError("page_sequence_invalid")
+        if self.max_pages_per_keyword != self.target.max_pages_per_keyword:
+            raise ValueError("page_sequence_invalid")
+        if self.terminal_outcome is None:
+            raise ValueError("terminal_missing")
+        if self._terminal_page != self.page_sequence[-1]:
+            raise ValueError("terminal_page_mismatch")
+        if self.terminal_outcome == "max_pages_reached":
+            if self._terminal_page != self.target.max_pages_per_keyword:
+                raise ValueError("max_pages_before_pinned_cap")
+        elif self.terminal_outcome not in {"next_control_absent", "next_control_disabled"}:
+            raise ValueError("terminal_outcome_invalid")
+        if self._persistence_invalid or self.later_page_persisted is not True:
+            raise ValueError("later_page_not_persisted")
+        return {
+            "contract_version": 1,
+            "target_digest": self.target.canonical_digest(),
+            "browser_started": True,
+            "page_sequence": list(self.page_sequence),
+            "max_pages_per_keyword": self.target.max_pages_per_keyword,
+            "terminal_outcome": self.terminal_outcome,
+            "later_page_persisted": True,
+        }
 
 
 def _log_candidate_terminal_conflict(
@@ -364,6 +484,96 @@ def _document_capture_attempt_reason_for_payload(
     return DocumentCaptureReason.NO_DOCUMENTS.value
 
 
+def _copy_canary_ingestion_evidence(evidence: dict[str, object]) -> dict[str, object]:
+    copied = dict(evidence)
+    artifacts = evidence.get("artifacts")
+    copied["artifacts"] = [
+        dict(artifact) for artifact in artifacts if isinstance(artifact, dict)
+    ] if isinstance(artifacts, list) else []
+    return copied
+
+
+def _build_exact_canary_ingestion_evidence(
+    *,
+    target: ExactIngestionCanaryTarget,
+    tenant_id: str,
+    run_id: str,
+    project: ProjectRecord,
+    candidate_key: str | None,
+    page_number: object,
+    downloaded_documents: list[object],
+    ingested_documents: list[StoreDocumentResult],
+    capture_attempt: DocumentCaptureAttemptRecord | None,
+) -> dict[str, object] | None:
+    if tenant_id != target.tenant_id or project.tenant_id != target.tenant_id:
+        return None
+    if (
+        not isinstance(candidate_key, str)
+        or re.fullmatch(r"[0-9a-f]{64}", candidate_key) is None
+    ):
+        return None
+    if type(page_number) is not int or page_number < 2:
+        return None
+    if not isinstance(capture_attempt, DocumentCaptureAttemptRecord):
+        return None
+    if (
+        not isinstance(capture_attempt.id, str)
+        or not capture_attempt.id.strip()
+        or capture_attempt.tenant_id != tenant_id
+        or capture_attempt.project_id != project.id
+        or capture_attempt.run_id != run_id
+        or capture_attempt.status is not DocumentCaptureAttemptStatus.SUCCEEDED
+        or type(capture_attempt.doc_count) is not int
+        or capture_attempt.doc_count <= 0
+    ):
+        return None
+    if not ingested_documents or len(ingested_documents) != len(downloaded_documents):
+        return None
+
+    artifacts: list[dict[str, object]] = []
+    document_ids: set[str] = set()
+    storage_keys: set[str] = set()
+    for result in ingested_documents:
+        if not isinstance(result, StoreDocumentResult):
+            return None
+        document = result.document
+        if not isinstance(document, DocumentRecord) or document.project_id != project.id:
+            return None
+        if (
+            not isinstance(document.id, str)
+            or not document.id.strip()
+            or document.id in document_ids
+            or not isinstance(document.storage_key, str)
+            or not document.storage_key.strip()
+            or document.storage_key in storage_keys
+            or not isinstance(document.sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", document.sha256) is None
+            or type(document.size_bytes) is not int
+            or document.size_bytes < 0
+        ):
+            return None
+        document_ids.add(document.id)
+        storage_keys.add(document.storage_key)
+        artifacts.append(
+            {
+                "document_id": document.id,
+                "storage_key": document.storage_key,
+                "sha256": document.sha256,
+                "size_bytes": document.size_bytes,
+            }
+        )
+    if capture_attempt.doc_count != len(artifacts):
+        return None
+    return {
+        "contract_version": 1,
+        "candidate_key": candidate_key,
+        "project_id": project.id,
+        "page_number": page_number,
+        "capture_attempt_id": capture_attempt.id,
+        "artifacts": artifacts,
+    }
+
+
 def run_discover_workflow(
     *,
     tenant_id: str,
@@ -379,6 +589,7 @@ def run_discover_workflow(
     notification_dispatcher: NotificationDispatcher | None = None,
     candidate_attempt_repo: SqlCandidateAttemptRepository | None = None,
     live: bool = False,
+    exact_canary_target: ExactIngestionCanaryTarget | None = None,
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
     browser_settings: BrowserDiscoverySettings | None = None,
@@ -457,12 +668,19 @@ def run_discover_workflow(
     live_crawl_anomaly_count = 0
     live_crawl_latest_anomaly: dict[str, object] | None = None
     keyword_scans: dict[str, dict[str, object]] = {}
-    backfill_recorded_project_ids: set[str] = set()
+    capture_recorded_project_ids: set[str] = set()
     project_task_count = 0
     keyword_task_creation_blocked = False
     finalization_error_count = 0
     conflict_count = 0
     candidate_ledger: dict[str, object] | None = None
+    canary_proof_accumulator = (
+        LiveCanaryProofAccumulator(target=exact_canary_target)
+        if exact_canary_target is not None
+        else None
+    )
+    canary_candidate_pages: dict[str, int] = {}
+    canary_ingestion_evidence: dict[str, object] | None = None
 
     def _finalize_candidate(
         *,
@@ -633,6 +851,10 @@ def run_discover_workflow(
             summary["keyword_scans"] = {name: dict(scan) for name, scan in keyword_scans.items()}
         if candidate_ledger is not None:
             summary["candidate_ledger"] = dict(candidate_ledger)
+        if canary_ingestion_evidence is not None:
+            summary["canary_ingestion_evidence"] = _copy_canary_ingestion_evidence(
+                canary_ingestion_evidence
+            )
         return summary
 
     def _record_keyword_scan(event_snapshot: dict[str, object]) -> None:
@@ -655,6 +877,8 @@ def run_discover_workflow(
     def _record_live_progress(event: dict[str, object]) -> None:
         nonlocal live_crawl_anomaly_count, live_crawl_latest_anomaly, live_progress
         event_snapshot = _snapshot_live_progress_event(event)
+        if canary_proof_accumulator is not None:
+            canary_proof_accumulator.record_progress(event_snapshot)
         live_progress = {
             **event_snapshot,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -690,16 +914,18 @@ def run_discover_workflow(
     def _discovered_project_key(discovered: dict[str, object]) -> str:
         return str(discovered.get("project_number") or discovered["project_name"]).casefold()
 
-    def _record_backfill_capture_attempt(
+    def _record_capture_attempt(
         *,
         project_id: str,
         discovered: dict[str, object],
         downloaded_documents: list[object],
         failed: bool = False,
         failed_error: str | None = None,
-    ) -> None:
-        if not _is_backfill_trigger(trigger_type) or database_url is None:
-            return
+    ) -> DocumentCaptureAttemptRecord | None:
+        if database_url is None or (
+            not _is_backfill_trigger(trigger_type) and exact_canary_target is None
+        ):
+            return None
         repository = create_document_capture_attempt_repository(
             database_url=database_url,
             bootstrap_schema=False,
@@ -709,7 +935,7 @@ def run_discover_workflow(
             downloaded_documents=downloaded_documents,
             failed=failed,
         )
-        repository.record_attempt(
+        capture_attempt = repository.record_attempt(
             tenant_id=tenant_id,
             project_id=project_id,
             run_id=run.id,
@@ -720,13 +946,15 @@ def run_discover_workflow(
             ),
             doc_count=len(downloaded_documents),
         )
-        backfill_recorded_project_ids.add(project_id)
+        capture_recorded_project_ids.add(project_id)
+        return capture_attempt
 
     def _persist_discovered_project(
         discovered: dict[str, object], *, candidate_key: str | None = None
     ) -> ProjectRecord | None:
         nonlocal error_count, ignored_late_stage_projects, keyword_task_creation_blocked
         nonlocal project_task_count, run_failure_code, run_level_error
+        nonlocal canary_ingestion_evidence
         # F2: the authoritative pre-detail candidate key arrives ONLY via the
         # `candidate_key` parameter (set by the live browser path). Any candidate_key
         # FIELD carried in the payload is untrusted — pop it so it can neither leak
@@ -767,6 +995,8 @@ def run_discover_workflow(
         safe_discovered = _task_safe_payload(discovered)
         task = None
         project: ProjectRecord | None = None
+        ingested_documents: list[StoreDocumentResult] = []
+        capture_attempt: DocumentCaptureAttemptRecord | None = None
         if authorization_snapshot is not None:
             _authorize_discovery_request(
                 snapshot=authorization_snapshot,
@@ -846,7 +1076,7 @@ def run_discover_workflow(
                         "document_count": len(downloaded_documents),
                     },
                 )
-                ingest_downloaded_documents(
+                ingested_documents = ingest_downloaded_documents(
                     artifact_root=artifact_root,
                     database_url=database_url,
                     artifact_storage_backend=artifact_storage_backend,
@@ -863,7 +1093,7 @@ def run_discover_workflow(
                     project_id=project.id,
                     downloaded_documents=downloaded_documents,
                 )
-            _record_backfill_capture_attempt(
+            capture_attempt = _record_capture_attempt(
                 project_id=project.id,
                 discovered=discovered,
                 downloaded_documents=downloaded_documents,
@@ -871,11 +1101,37 @@ def run_discover_workflow(
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
-            _finalize_candidate(
+            finalized = _finalize_candidate(
                 candidate_key=candidate_key_value,
                 status="persisted",
                 project_id=project.id,
             )
+            page_number = discovered.get("page_number")
+            if type(page_number) is not int and candidate_key_value is not None:
+                page_number = canary_candidate_pages.get(candidate_key_value)
+            if (
+                finalized
+                and canary_ingestion_evidence is None
+                and exact_canary_target is not None
+            ):
+                evidence = _build_exact_canary_ingestion_evidence(
+                    target=exact_canary_target,
+                    tenant_id=tenant_id,
+                    run_id=run.id,
+                    project=project,
+                    candidate_key=candidate_key_value,
+                    page_number=page_number,
+                    downloaded_documents=downloaded_documents,
+                    ingested_documents=ingested_documents,
+                    capture_attempt=capture_attempt,
+                )
+                if evidence is not None:
+                    canary_ingestion_evidence = evidence
+            if canary_proof_accumulator is not None and finalized:
+                if type(page_number) is int:
+                    canary_proof_accumulator.record_persisted_candidate(
+                        page_number=page_number,
+                    )
             persisted_project_keys.add(project_key)
             persisted_projects.append(project)
             run_repository.update_run_summary(run.id, summary_json=_current_summary())
@@ -890,9 +1146,9 @@ def run_discover_workflow(
                 terminal_reason=CandidateTerminalReason.PERSIST_ERROR,
                 terminal_detail=str(exc)[:500],
             )
-            if project is not None and project.id not in backfill_recorded_project_ids:
+            if project is not None and project.id not in capture_recorded_project_ids:
                 try:
-                    _record_backfill_capture_attempt(
+                    _record_capture_attempt(
                         project_id=project.id,
                         discovered=discovered,
                         downloaded_documents=list(discovered.get("downloaded_documents") or []),
@@ -901,7 +1157,7 @@ def run_discover_workflow(
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to record document backfill capture failure for %s",
+                        "Failed to record document capture failure for %s",
                         project.id,
                         exc_info=True,
                     )
@@ -1004,6 +1260,8 @@ def run_discover_workflow(
                         else None
                     ),
                 )
+                if canary_proof_accumulator is not None and type(page_number) is int:
+                    canary_candidate_pages[candidate_key] = int(page_number)
                 return candidate_key
 
             def _record_live_candidate_terminal(
@@ -1043,6 +1301,10 @@ def run_discover_workflow(
 
         for discovered in resolved_projects:
             _persist_discovered_project(discovered)
+    except (PaginationScanError, BrowserStartError) as exc:
+        run_level_error = str(exc)
+        run_failure_code = exc.failure_code
+        error_count += 1
     except LiveDiscoveryPartialError as exc:
         run_level_error = str(exc)
         run_failure_code = DiscoveryFailureCode.LIVE_DISCOVERY_PARTIAL
@@ -1168,6 +1430,25 @@ def run_discover_workflow(
             summary_json = _current_summary()
             summary_json["error"] = run_level_error
             summary_json["failure_code"] = run_failure_code
+    canary_proof_invalid = False
+    if canary_proof_accumulator is not None:
+        try:
+            summary_json["canary_proof"] = canary_proof_accumulator.build()
+            if canary_ingestion_evidence is None:
+                canary_proof_invalid = True
+                error_count += 1
+                run_level_error = "canary_ingestion_evidence_missing"
+                run_failure_code = DiscoveryFailureCode.CANARY_PROOF_INVALID
+                summary_json["error"] = run_level_error
+                summary_json["failure_code"] = run_failure_code
+        except ValueError as exc:
+            canary_proof_invalid = True
+            error_count += 1
+            run_level_error = str(exc)
+            run_failure_code = DiscoveryFailureCode.CANARY_PROOF_INVALID
+            summary_json = _current_summary()
+            summary_json["error"] = run_level_error
+            summary_json["failure_code"] = run_failure_code
     ledger_error_count = 1 if ledger_error is not None else 0
     effective_error_count = error_count + live_crawl_anomaly_count + ledger_error_count
     if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
@@ -1178,7 +1459,7 @@ def run_discover_workflow(
         )
         if (
             existing_project_id is not None
-            and existing_project_id not in backfill_recorded_project_ids
+            and existing_project_id not in capture_recorded_project_ids
         ):
             create_document_capture_attempt_repository(
                 database_url=database_url,
@@ -1195,7 +1476,7 @@ def run_discover_workflow(
                 ),
                 doc_count=0,
             )
-    if ledger_force_failed:
+    if canary_proof_invalid or ledger_force_failed:
         terminal_status = "failed"
     elif effective_error_count:
         terminal_status = "partial" if persisted_projects else "failed"

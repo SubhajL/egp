@@ -332,6 +332,46 @@ def test_reads_reject_unknown_role_and_allow_viewer(tmp_path: Path) -> None:
         assert allowed.status_code == 200, (case, allowed.text)
 
 
+def test_viewer_run_list_redacts_private_canary_ingestion_evidence(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    _seed_base(client)
+    run = client.app.state.run_repository.create_run(
+        tenant_id=TENANT_ID,
+        trigger_type="manual",
+        summary_json={
+            "projects_seen": 1,
+            "canary_ingestion_evidence": {
+                "contract_version": 1,
+                "candidate_key": "private-candidate-key",
+                "project_id": "private-project-id",
+                "page_number": 2,
+                "capture_attempt_id": "private-capture-attempt-id",
+                "artifacts": [
+                    {
+                        "document_id": "private-document-id",
+                        "storage_key": "private/storage/key.pdf",
+                        "sha256": "f" * 64,
+                        "size_bytes": 123,
+                    }
+                ],
+            },
+        },
+    )
+
+    response = client.get("/v1/runs", headers=_auth_headers(role="viewer"))
+
+    assert response.status_code == 200
+    serialized_run = next(
+        item["run"] for item in response.json()["runs"] if item["run"]["id"] == run.id
+    )
+    assert serialized_run["summary_json"] == {"projects_seen": 1}
+    assert "canary_ingestion_evidence" not in response.text
+    assert "private-candidate-key" not in response.text
+    assert "private/storage/key.pdf" not in response.text
+
+
 def test_mutations_reject_viewer_and_allow_analyst(tmp_path: Path) -> None:
     client = _client(tmp_path)
     project_id, _ = _seed_base(client)

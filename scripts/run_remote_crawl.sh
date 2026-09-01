@@ -24,6 +24,7 @@
 #   scripts/run_remote_crawl.sh crawl-canary <private-target.json>
 #   scripts/run_remote_crawl.sh watch         # continuously claim + crawl prod jobs
 #   scripts/run_remote_crawl.sh supervise <seconds> --evidence <runtime-evidence.json>
+#   scripts/run_remote_crawl.sh observe-canary <private-target.json> --receipt <path>
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -112,6 +113,79 @@ run_module() {  # guard → load validated env → exec a venv python module
   exec "$PY" -m "$@"
 }
 
+run_observation_canary() {
+  if [[ $# -lt 1 ]]; then
+    echo "usage: $0 observe-canary <private-target.json> [diagnostic options]" >&2
+    exit 2
+  fi
+  local target_file="$1"
+  shift
+  if [[ "$target_file" != /* ]]; then
+    target_file="$ROOT/$target_file"
+  fi
+  guard_check
+  load_validated_env
+  local release_sha
+  release_sha="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "unable to derive exact release revision from tracked source" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --quiet --; then
+    echo "tracked source is dirty (unstaged changes)" >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" diff --cached --quiet --; then
+    echo "tracked source is dirty (staged changes)" >&2
+    exit 1
+  fi
+  local untracked_runtime_source
+  untracked_runtime_source="$(
+    git -C "$ROOT" ls-files --others --exclude-standard -- \
+      pyproject.toml uv.lock apps/api apps/worker packages
+  )"
+  local untracked_runtime_executable
+  while IFS= read -r untracked_path; do
+    case "$untracked_path" in
+      pyproject.toml|uv.lock|*.py|*.pyc|*.pth|*.so|*.pyd)
+        untracked_runtime_executable="$untracked_path"
+        break
+        ;;
+    esac
+  done <<< "$untracked_runtime_source"
+  if [[ -n "${untracked_runtime_executable:-}" ]]; then
+    echo "untracked runtime source detected; refusing observation canary" >&2
+    exit 1
+  fi
+  local ignored_runtime_source
+  ignored_runtime_source="$(
+    git -C "$ROOT" ls-files --others --ignored --exclude-standard -- \
+      pyproject.toml uv.lock apps/api apps/worker packages
+  )"
+  local ignored_runtime_executable=""
+  while IFS= read -r ignored_path; do
+    case "$ignored_path" in
+      pyproject.toml|uv.lock|*.py|*.pyc|*.pth|*.so|*.pyd)
+        ignored_runtime_executable="$ignored_path"
+        break
+        ;;
+    esac
+  done <<< "$ignored_runtime_source"
+  if [[ -n "$ignored_runtime_executable" ]]; then
+    echo "ignored runtime source detected; refusing observation canary" >&2
+    exit 1
+  fi
+  cd /
+  export EGP_RELEASE_SHA="$release_sha"
+  unset DATABASE_URL EGP_ARTIFACT_STORE SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY
+  unset SUPABASE_STORAGE_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+  unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE
+  unset S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY S3_SESSION_TOKEN
+  unset R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID CLOUDFLARE_API_TOKEN
+  exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" \
+    --observation-canary --target-file "$target_file" --max-pages 15 "$@"
+}
+
 run_supervise() {
   if [[ $# -ne 3 || "$2" != "--evidence" ]]; then
     echo "usage: $0 supervise <seconds> --evidence <runtime-evidence.json>" >&2
@@ -162,5 +236,6 @@ case "${1:-check}" in
   supervise)    require_env_file; shift || true; run_supervise "$@" ;;
   # Read-only WS0 diagnostic: dump search rows for a keyword (no persistence, no DB).
   diagnose)     require_env_file; shift || true; guard_check; load_validated_env; exec "$PY" "$ROOT/scripts/diagnose_search_rows.py" "$@" ;;
-  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|crawl-canary <private-target.json>|watch|supervise <seconds> --evidence <runtime-evidence.json>|diagnose [--keyword K --max-pages N --attach]}" >&2; exit 2 ;;
+  observe-canary) require_env_file; shift || true; run_observation_canary "$@" ;;
+  *) echo "usage: $0 {check|tunnel|wait-database [options]|warm-profile|doctor|crawl [N]|crawl-canary <private-target.json>|watch|supervise <seconds> --evidence <runtime-evidence.json>|diagnose [--keyword K --max-pages N --attach]|observe-canary <private-target.json> --receipt PATH}" >&2; exit 2 ;;
 esac

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from egp_api.auth import resolve_request_tenant_id
 from egp_api.services.project_service import ProjectService
+from egp_api.services.public_run_summary import sanitize_public_run_summary
 from egp_api.services.run_service import RunService
 from egp_db.repositories.project_repo import (
     ProjectAliasRecord,
@@ -179,7 +180,7 @@ def _serialize_project_crawl_evidence(
         created_at=evidence.created_at,
         payload=evidence.payload,
         result_json=evidence.result_json,
-        run_summary_json=evidence.run_summary_json,
+        run_summary_json=sanitize_public_run_summary(evidence.run_summary_json),
         run_error_count=evidence.run_error_count,
     )
 

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 from types import SimpleNamespace
 
 import pytest
 
+from egp_shared_types import enums as shared_enums
 from egp_shared_types.enums import (
     ArtifactBucket,
     CandidateTerminalReason,
@@ -13,6 +16,7 @@ from egp_shared_types.enums import (
     ProjectDetailReason,
     ProjectState,
 )
+from egp_worker import browser_discovery as browser_discovery_module
 from egp_worker.browser_close_check import (
     _collect_documents_for_observation,
     _find_matching_observation_on_page,
@@ -235,6 +239,9 @@ class FakeNextButton:
     def click(self, timeout=None) -> None:
         self.page.remaining_clicks -= 1
 
+    def evaluate(self, script):
+        return {"ariaDisabled": "false", "disabled": False, "className": ""}
+
 
 class FakeHeaderCell:
     def __init__(self, text: str) -> None:
@@ -385,6 +392,111 @@ class FakeResultsPage:
         if selector != "body":
             raise AssertionError(f"unexpected selector: {selector}")
         return "\n".join(table.inner_text() for table in self._tables)
+
+
+class FixturePaginationButton:
+    def __init__(self, page: "FixturePaginationPage") -> None:
+        self.page = page
+
+    def is_visible(self) -> bool:
+        return True
+
+    def evaluate(self, script):
+        return {"ariaDisabled": "false", "disabled": False, "className": ""}
+
+    def click(self, timeout=None) -> None:
+        self.page.page_index += 1
+
+
+class FixturePaginationPage:
+    def __init__(self, fixture: dict[str, object]) -> None:
+        headers = list(fixture["headers"])
+        self.tables = [
+            FakeTable(
+                headers,
+                [FakeRow([FakeCell(str(value)) for value in row]) for row in page["rows"]],
+            )
+            for page in fixture["pages"]
+        ]
+        self.page_index = 0
+
+    def query_selector_all(self, selector: str):
+        if selector == "table":
+            return [self.tables[self.page_index]]
+        if selector == NEXT_PAGE_SELECTOR:
+            return (
+                [FixturePaginationButton(self)]
+                if self.page_index < len(self.tables) - 1
+                else []
+            )
+        return []
+
+    def query_selector(self, selector: str):
+        if selector == NEXT_PAGE_SELECTOR:
+            buttons = self.query_selector_all(selector)
+            return buttons[0] if buttons else None
+        if selector == "li.page-item.active, li.active, .pagination .active":
+            return FakeActivePageMarker(str(self.page_index + 1))
+        return None
+
+    def evaluate(self, script, arg=None):
+        if arg is not None:
+            arg.click()
+        return None
+
+    def inner_text(self, selector: str) -> str:
+        assert selector == "body"
+        return self.tables[self.page_index].inner_text()
+
+
+class TypedPaginationButton:
+    def __init__(
+        self,
+        *,
+        visible: bool = True,
+        disabled: bool = False,
+        click_error: bool = False,
+    ) -> None:
+        self.visible = visible
+        self.disabled = disabled
+        self.click_error = click_error
+
+    def is_visible(self) -> bool:
+        return self.visible
+
+    def evaluate(self, script):
+        return {
+            "ariaDisabled": "true" if self.disabled else "false",
+            "disabled": self.disabled,
+            "className": "disabled" if self.disabled else "",
+        }
+
+    def click(self, timeout=None) -> None:
+        if self.click_error:
+            raise RuntimeError("click failed")
+
+
+class TypedPaginationPage(FakeResultsPage):
+    def __init__(self, buttons: list[TypedPaginationButton]) -> None:
+        super().__init__([FakeTable(_results_headers(), [])])
+        self.buttons = buttons
+
+    def query_selector_all(self, selector: str):
+        if selector == NEXT_PAGE_SELECTOR:
+            return self.buttons
+        return super().query_selector_all(selector)
+
+    def query_selector(self, selector: str):
+        if selector == NEXT_PAGE_SELECTOR:
+            return self.buttons[0] if self.buttons else None
+        return super().query_selector(selector)
+
+    def evaluate(self, script, arg=None):
+        if arg is not None:
+            if arg.click_error:
+                raise RuntimeError("evaluate click failed")
+            arg.click()
+        return None
 
 
 class FakeReturnToResultsPage:
@@ -1324,6 +1436,56 @@ def test_restore_results_page_replays_search_and_advances_pages(monkeypatch) -> 
 
     assert search_calls == ["ระบบวิเคราะห์"]
     assert page.remaining_clicks == 0
+
+
+def test_restore_results_page_fails_if_physical_page_cannot_reach_resume_target(
+    monkeypatch,
+) -> None:
+    page = FakeNextPage(pages_to_advance=1)
+    settings = BrowserDiscoverySettings()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_page_marker",
+        lambda page: {"active_page": "1", "row_count": 10, "row_sample": "a"},
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda page, previous_marker, timeout_ms=None: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    with pytest.raises(SearchPageStateError, match="restore page 4"):
+        restore_results_page(page, "ระบบวิเคราะห์", 4, settings)
+
+
+def test_restore_results_page_rejects_unchanged_active_page_marker(monkeypatch) -> None:
+    page = FakeNextPage(pages_to_advance=3)
+    settings = BrowserDiscoverySettings()
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword",
+        lambda page, keyword, settings: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.get_results_page_marker",
+        lambda page: {"active_page": "1", "row_count": 10, "row_sample": "a"},
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda page, previous_marker, timeout_ms=None: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    with pytest.raises(SearchPageStateError, match="restore page 4"):
+        restore_results_page(page, "ระบบวิเคราะห์", 4, settings)
 
 
 def test_get_results_page_marker_uses_procurement_results_table_only() -> None:
@@ -3528,6 +3690,10 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
         lambda *args, **kwargs: True,
     )
     monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare_or_operator",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
         "egp_worker.browser_discovery.search_keyword",
         lambda page, keyword, settings: None,
     )
@@ -3549,9 +3715,16 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
     )
 
     def fake_collect_keyword_projects(
-        *, page, keyword, settings, seen_keys, include_documents, project_callback=None
+        *,
+        page,
+        keyword,
+        settings,
+        seen_keys,
+        include_documents,
+        project_callback=None,
+        start_page_num=1,
     ) -> list[dict[str, object]]:
-        collect_calls.append(keyword)
+        collect_calls.append(f"{keyword}:{start_page_num}")
         if len(collect_calls) == 1:
             raise BrowserClosedDuringKeyword(page_num=4)
         return [{"project_name": "Recovered", "project_number": "6901"}]
@@ -3561,14 +3734,19 @@ def test_crawl_live_discovery_resumes_same_keyword_after_browser_close(
         fake_collect_keyword_projects,
     )
 
+    events: list[dict[str, object]] = []
     discovered = crawl_live_discovery(
         keyword="ที่ปรึกษา",
         settings=settings,
         include_documents=False,
+        progress_callback=events.append,
     )
 
-    assert collect_calls == ["ที่ปรึกษา", "ที่ปรึกษา"]
+    assert collect_calls == ["ที่ปรึกษา:1", "ที่ปรึกษา:4"]
     assert discovered == [{"project_name": "Recovered", "project_number": "6901"}]
+    stages = [event["stage"] for event in events]
+    assert stages[0] == "browser_session_started"
+    assert stages.index("browser_session_started") < stages.index("keyword_start")
 
 
 def test_resolve_results_columns_maps_real_seven_column_layout() -> None:
@@ -3636,6 +3814,221 @@ def test_collect_keyword_projects_finds_invitation_row_in_shifted_layout(
 
     assert [result["project_name"] for result in results] == ["โครงการวิเคราะห์ข้อมูล"]
     assert results[0]["source_status_text"] == "หนังสือเชิญชวน/ประกาศเชิญชวน"
+
+
+def test_parse_results_page_uses_header_mapping_for_shared_diagnostics() -> None:
+    page = FakeResultsPage(
+        [
+            FakeTable(
+                _results_headers(),
+                [
+                    _results_row(
+                        index="2",
+                        organization="หน่วยงาน B",
+                        project_name="โครงการเชิญชวนตัวอย่าง",
+                        budget="200.00",
+                        status="หนังสือเชิญชวน/ประกาศเชิญชวน",
+                    )
+                ],
+            )
+        ]
+    )
+
+    parsed = browser_discovery_module.parse_results_page(page)
+
+    assert parsed.headers == tuple(_results_headers())
+    assert len(parsed.rows) == 1
+    row = parsed.rows[0]
+    assert row.project_name == "โครงการเชิญชวนตัวอย่าง"
+    assert row.organization_name == "หน่วยงาน B"
+    assert row.source_status_text == "หนังสือเชิญชวน/ประกาศเชิญชวน"
+    assert row.status_eligible is True
+    assert row.skip_keyword_hit is None
+    assert row.cell_texts[4] == "200.00"
+
+
+def test_discovery_pagination_outcome_covers_every_terminal_and_failure() -> None:
+    assert {value.value for value in shared_enums.DiscoveryPaginationOutcome} == {
+        "advanced",
+        "keyword_no_results",
+        "next_control_absent",
+        "next_control_disabled",
+        "max_pages_reached",
+        "next_control_hidden",
+        "next_click_failed",
+        "page_change_timeout",
+        "unexpected_no_results",
+        "site_error",
+    }
+
+
+def test_advance_results_page_distinguishes_absent_hidden_and_disabled(monkeypatch) -> None:
+    settings = BrowserDiscoverySettings()
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    absent = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([]), settings, page_num=1
+    )
+    hidden = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton(visible=False)]),
+        settings,
+        page_num=1,
+    )
+    disabled = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton(disabled=True)]),
+        settings,
+        page_num=1,
+    )
+
+    pagination_outcome = shared_enums.DiscoveryPaginationOutcome
+    assert absent.outcome is pagination_outcome.NEXT_CONTROL_ABSENT
+    assert hidden.outcome is pagination_outcome.NEXT_CONTROL_HIDDEN
+    assert disabled.outcome is pagination_outcome.NEXT_CONTROL_DISABLED
+
+
+def test_advance_results_page_types_click_timeout_no_results_and_site_error(
+    monkeypatch,
+) -> None:
+    settings = BrowserDiscoverySettings()
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+
+    click_failed = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton(click_error=True)]),
+        settings,
+        page_num=1,
+    )
+    pagination_outcome = shared_enums.DiscoveryPaginationOutcome
+    assert click_failed.outcome is pagination_outcome.NEXT_CLICK_FAILED
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda *args, **kwargs: False,
+    )
+    timed_out = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton()]), settings, page_num=1
+    )
+    assert timed_out.outcome is pagination_outcome.PAGE_CHANGE_TIMEOUT
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page", lambda page: True
+    )
+    unexpected_empty = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton()]), settings, page_num=1
+    )
+    assert (
+        unexpected_empty.outcome
+        is pagination_outcome.UNEXPECTED_NO_RESULTS
+    )
+
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page", lambda page: False
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._site_error_toast_detected", lambda page: True
+    )
+    site_error = browser_discovery_module.advance_results_page(
+        TypedPaginationPage([TypedPaginationButton()]), settings, page_num=1
+    )
+    assert site_error.outcome is pagination_outcome.SITE_ERROR
+
+
+def test_collect_keyword_projects_scans_fixture_pages_one_through_five_under_cap_fifteen(
+    monkeypatch,
+) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures/discovery/sanitized_five_page_results.json"
+    )
+    page = FixturePaginationPage(json.loads(fixture_path.read_text(encoding="utf-8")))
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.open_and_extract_project",
+        lambda *, page, row_index, keyword, search_name=None, include_documents, source_status_text: {
+            "project_name": search_name,
+            "project_number": "SAN-0002",
+            "source_status_text": source_status_text,
+        },
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._return_to_results",
+        lambda page, settings, keyword, target_page_num, row_marker=None: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_results_page_change",
+        lambda *args, **kwargs: True,
+    )
+    events: list[dict[str, object]] = []
+    token = _capture_live_progress(events)
+    try:
+        results = _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=15),
+            seen_keys=set(),
+            include_documents=False,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    assert [event["page_num"] for event in events if event["stage"] == "page_scan_finished"] == [1, 2, 3, 4, 5]
+    assert [result["project_number"] for result in results] == ["SAN-0002"]
+    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert summary["page_sequence"] == [1, 2, 3, 4, 5]
+    assert summary["terminal_page"] == 5
+    assert summary["max_pages_per_keyword"] == 15
+    assert summary["pagination_outcome"] == "next_control_absent"
+
+
+def test_collect_keyword_projects_raises_typed_failure_for_hidden_next_control() -> None:
+    page = TypedPaginationPage([TypedPaginationButton(visible=False)])
+
+    with pytest.raises(browser_discovery_module.PaginationScanError) as exc_info:
+        _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=15),
+            seen_keys=set(),
+            include_documents=False,
+        )
+
+    assert (
+        exc_info.value.outcome
+        is shared_enums.DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN
+    )
+    assert exc_info.value.failure_code.value == "pagination_control_hidden"
+
+
+def test_collect_keyword_projects_resume_keeps_logical_page_number() -> None:
+    page = FakeResultsPage([FakeTable(_results_headers(), [])], active_page="4")
+    events: list[dict[str, object]] = []
+    token = _capture_live_progress(events)
+    try:
+        _collect_keyword_projects(
+            page=page,
+            keyword="วิเคราะห์ข้อมูล",
+            settings=BrowserDiscoverySettings(max_pages_per_keyword=15),
+            seen_keys=set(),
+            include_documents=False,
+            start_page_num=4,
+        )
+    finally:
+        _LIVE_PROGRESS_CALLBACK.reset(token)
+
+    page_event = next(event for event in events if event["stage"] == "page_scan_finished")
+    terminal = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert page_event["page_num"] == 4
+    assert terminal["page_sequence"] == [4]
+    assert terminal["terminal_page"] == 4
 
 
 def test_collect_keyword_projects_does_not_paginate_past_max_pages(monkeypatch) -> None:
@@ -4593,6 +4986,69 @@ def test_crawl_live_discovery_keyword_no_results_recovers_within_budget(monkeypa
     assert "keyword_no_results_recovery" in stages
     assert "keyword_no_results" not in stages
     assert search_calls.count("ที่ปรึกษา") == 2  # initial + one budgeted recovery
+
+
+def test_crawl_live_discovery_emits_typed_success_for_legitimate_initial_no_results(
+    monkeypatch,
+) -> None:
+    settings = BrowserDiscoverySettings(search_page_recovery_retries=0)
+    page = FakeSearchPage()
+    browser = SimpleNamespace(close=lambda: None)
+    playwright = SimpleNamespace(stop=lambda: None)
+    chrome = SimpleNamespace()
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.launch_real_chrome", lambda settings, **kwargs: chrome
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.sync_playwright",
+        lambda: SimpleNamespace(start=lambda: playwright),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.connect_playwright_to_chrome",
+        lambda pw, settings: (browser, page),
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.wait_for_cloudflare_or_operator",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.search_keyword", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.is_no_results_page", lambda page: True
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.capture_keyword_diagnostic",
+        lambda *args, **kwargs: {"status": "captured"},
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.log_results_debug_snapshot",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery.safe_shutdown", lambda **kwargs: None
+    )
+    monkeypatch.setattr(
+        "egp_worker.browser_discovery._logged_sleep", lambda *args, **kwargs: None
+    )
+    events: list[dict[str, object]] = []
+
+    discovered = crawl_live_discovery(
+        keyword="คำค้นที่ไม่มีผลลัพธ์",
+        settings=settings,
+        include_documents=False,
+        progress_callback=events.append,
+    )
+
+    assert discovered == []
+    assert events[0]["stage"] == "browser_session_started"
+    summary = next(event for event in events if event["stage"] == "keyword_scan_summary")
+    assert summary["outcome"] == "ok"
+    assert summary["reason_code"] == "keyword_no_results"
+    assert summary["pages_scanned"] == 0
+    assert summary["page_sequence"] == []
+    assert summary["pagination_outcome"] == "keyword_no_results"
+    assert summary["max_pages_per_keyword"] == settings.max_pages_per_keyword
 
 
 def test_collect_no_diagnostic_for_out_of_scope_terminal(monkeypatch, tmp_path) -> None:

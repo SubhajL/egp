@@ -36,6 +36,7 @@ from egp_shared_types.enums import (
     DiscoveryFailureCode,
     ExecutionBackend,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 METADATA = DB_METADATA
@@ -117,6 +118,60 @@ def _no_active_correlated_run_predicate():
     )
 
 
+def _exact_canary_claim_conditions(
+    target: ExactIngestionCanaryTarget,
+) -> tuple[list[object], object]:
+    """Build the complete exact-target predicate used by select and CAS paths."""
+
+    from egp_db.repositories.profile_repo import (
+        CRAWL_PROFILE_KEYWORDS_TABLE,
+        CRAWL_PROFILES_TABLE,
+    )
+
+    profile_matches = (
+        select(CRAWL_PROFILES_TABLE.c.id)
+        .where(
+            and_(
+                CRAWL_PROFILES_TABLE.c.tenant_id == target.tenant_id,
+                CRAWL_PROFILES_TABLE.c.id == target.profile_id,
+                CRAWL_PROFILES_TABLE.c.profile_type
+                == DISCOVERY_JOBS_TABLE.c.profile_type,
+                CRAWL_PROFILES_TABLE.c.execution_backend
+                == ExecutionBackend.LEGACY.value,
+                CRAWL_PROFILES_TABLE.c.max_pages_per_keyword
+                == target.max_pages_per_keyword,
+            )
+        )
+        .correlate(DISCOVERY_JOBS_TABLE)
+        .exists()
+    )
+    keyword_matches = (
+        select(CRAWL_PROFILE_KEYWORDS_TABLE.c.id)
+        .where(
+            and_(
+                CRAWL_PROFILE_KEYWORDS_TABLE.c.profile_id == target.profile_id,
+                CRAWL_PROFILE_KEYWORDS_TABLE.c.keyword == target.keyword,
+            )
+        )
+        .correlate(DISCOVERY_JOBS_TABLE)
+        .exists()
+    )
+    return (
+        [
+            DISCOVERY_JOBS_TABLE.c.tenant_id == target.tenant_id,
+            DISCOVERY_JOBS_TABLE.c.id == target.job_id,
+            DISCOVERY_JOBS_TABLE.c.profile_id == target.profile_id,
+            DISCOVERY_JOBS_TABLE.c.keyword == target.keyword,
+            DISCOVERY_JOBS_TABLE.c.live.is_(True),
+            DISCOVERY_JOBS_TABLE.c.execution_backend
+            == ExecutionBackend.LEGACY.value,
+            profile_matches,
+            keyword_matches,
+        ],
+        CRAWL_PROFILES_TABLE,
+    )
+
+
 Index(
     "idx_discovery_jobs_pending_due",
     DISCOVERY_JOBS_TABLE.c.job_status,
@@ -147,6 +202,7 @@ class DiscoveryJobRecord:
     created_at: str
     updated_at: str
     recrawl_request_id: str | None = None
+    execution_backend: str = ExecutionBackend.LEGACY.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +280,7 @@ def _job_from_mapping(row: RowMapping) -> DiscoveryJobRecord:
         dispatched_at=_to_iso(row["dispatched_at"]),
         created_at=_to_iso(row["created_at"]) or "",
         updated_at=_to_iso(row["updated_at"]) or "",
+        execution_backend=str(row["execution_backend"]),
     )
 
 
@@ -586,6 +643,7 @@ class SqlDiscoveryJobRepository:
         only_live: bool | None = None,
         only_trigger_type: str | None = None,
         exclude_trigger_types: Collection[str] | None = None,
+        exact_canary_target: ExactIngestionCanaryTarget | None = None,
     ) -> bool:
         now = _now()
         excluded_job_ids = {
@@ -605,6 +663,11 @@ class SqlDiscoveryJobRepository:
                 DISCOVERY_JOBS_TABLE.c.lease_expires_at <= now,
             ),
         ]
+        if exact_canary_target is not None:
+            exact_conditions, _profile_table = _exact_canary_claim_conditions(
+                exact_canary_target
+            )
+            claimable_conditions.extend(exact_conditions)
         if excluded_job_ids:
             claimable_conditions.append(
                 DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
@@ -651,6 +714,7 @@ class SqlDiscoveryJobRepository:
         only_live: bool | None = None,
         only_trigger_type: str | None = None,
         exclude_trigger_types: Collection[str] | None = None,
+        exact_canary_target: ExactIngestionCanaryTarget | None = None,
     ) -> list[DiscoveryJobRecord]:
         now = _now()
         normalized_lease_seconds = max(0.01, float(lease_seconds))
@@ -666,6 +730,12 @@ class SqlDiscoveryJobRepository:
             DISCOVERY_JOBS_TABLE.c.next_attempt_at <= now,
             _no_active_correlated_run_predicate(),
         ]
+        profile_table = None
+        if exact_canary_target is not None:
+            exact_conditions, profile_table = _exact_canary_claim_conditions(
+                exact_canary_target
+            )
+            pending_conditions.extend(exact_conditions)
         if excluded_job_ids:
             pending_conditions.append(
                 DISCOVERY_JOBS_TABLE.c.id.not_in(excluded_job_ids)
@@ -732,12 +802,37 @@ class SqlDiscoveryJobRepository:
             )
             for row in rows:
                 job_id = str(row["id"])
+                if exact_canary_target is not None and profile_table is not None:
+                    locked_profile_id = connection.execute(
+                        select(profile_table.c.id)
+                        .where(
+                            and_(
+                                profile_table.c.tenant_id
+                                == exact_canary_target.tenant_id,
+                                profile_table.c.id == exact_canary_target.profile_id,
+                                profile_table.c.execution_backend
+                                == ExecutionBackend.LEGACY.value,
+                                profile_table.c.max_pages_per_keyword
+                                == exact_canary_target.max_pages_per_keyword,
+                                profile_table.c.profile_type == row["profile_type"],
+                            )
+                        )
+                        .with_for_update()
+                    ).scalar_one_or_none()
+                    if locked_profile_id is None:
+                        continue
                 # Serialize with run reservation, which locks this same job
                 # row.  The UPDATE below is then a separate statement with a
                 # fresh READ COMMITTED snapshot of the active-run barrier.
+                job_lock_conditions = [DISCOVERY_JOBS_TABLE.c.id == job_id]
+                if exact_canary_target is not None:
+                    job_lock_conditions.append(
+                        DISCOVERY_JOBS_TABLE.c.tenant_id
+                        == exact_canary_target.tenant_id
+                    )
                 locked_job_id = connection.execute(
                     select(DISCOVERY_JOBS_TABLE.c.id)
-                    .where(DISCOVERY_JOBS_TABLE.c.id == job_id)
+                    .where(and_(*job_lock_conditions))
                     .with_for_update()
                 ).scalar_one_or_none()
                 if locked_job_id is None:
@@ -747,27 +842,30 @@ class SqlDiscoveryJobRepository:
                     seconds=normalized_lease_seconds
                 )
                 claim_token = str(uuid4())
-                updated = connection.execute(
-                    update(DISCOVERY_JOBS_TABLE)
-                    .where(
-                        and_(
-                            DISCOVERY_JOBS_TABLE.c.id == job_id,
-                            DISCOVERY_JOBS_TABLE.c.job_status == "pending",
-                            # Repeated from the candidate query on purpose: this is
-                            # the compare-and-swap. Without it, a row rerouted to
-                            # the agent backend between selection and update would
-                            # still be leased by the legacy executor.
-                            DISCOVERY_JOBS_TABLE.c.execution_backend
-                            == ExecutionBackend.LEGACY.value,
-                            DISCOVERY_JOBS_TABLE.c.next_attempt_at <= claim_now,
-                            _no_active_correlated_run_predicate(),
-                            or_(
-                                DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
-                                DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
-                                DISCOVERY_JOBS_TABLE.c.lease_expires_at <= claim_now,
-                            ),
-                        )
+                cas_conditions = [
+                    DISCOVERY_JOBS_TABLE.c.id == job_id,
+                    DISCOVERY_JOBS_TABLE.c.job_status == "pending",
+                    # Repeated from the candidate query on purpose: this is
+                    # the compare-and-swap. Without it, a row rerouted to
+                    # the agent backend between selection and update would
+                    # still be leased by the legacy executor.
+                    DISCOVERY_JOBS_TABLE.c.execution_backend
+                    == ExecutionBackend.LEGACY.value,
+                    DISCOVERY_JOBS_TABLE.c.next_attempt_at <= claim_now,
+                    _no_active_correlated_run_predicate(),
+                    or_(
+                        DISCOVERY_JOBS_TABLE.c.claim_token.is_(None),
+                        DISCOVERY_JOBS_TABLE.c.lease_expires_at.is_(None),
+                        DISCOVERY_JOBS_TABLE.c.lease_expires_at <= claim_now,
+                    ),
+                ]
+                if exact_canary_target is not None:
+                    exact_conditions, _profile_table = _exact_canary_claim_conditions(
+                        exact_canary_target
                     )
+                    cas_conditions.extend(exact_conditions)
+                updated = connection.execute(
+                    update(DISCOVERY_JOBS_TABLE).where(and_(*cas_conditions))
                     .values(
                         processing_started_at=claim_now,
                         claim_token=claim_token,
@@ -780,11 +878,14 @@ class SqlDiscoveryJobRepository:
                     claimed_ids.append(job_id)
             if not claimed_ids:
                 return []
+            claimed_rows_conditions = [DISCOVERY_JOBS_TABLE.c.id.in_(claimed_ids)]
+            if exact_canary_target is not None:
+                claimed_rows_conditions.append(
+                    DISCOVERY_JOBS_TABLE.c.tenant_id == exact_canary_target.tenant_id
+                )
             claimed_rows = (
                 connection.execute(
-                    select(DISCOVERY_JOBS_TABLE).where(
-                        DISCOVERY_JOBS_TABLE.c.id.in_(claimed_ids)
-                    )
+                    select(DISCOVERY_JOBS_TABLE).where(and_(*claimed_rows_conditions))
                 )
                 .mappings()
                 .all()

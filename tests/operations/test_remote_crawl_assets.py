@@ -254,6 +254,30 @@ def test_run_remote_crawl_exposes_exact_private_canary_target() -> None:
     assert "crawl-canary <private-target.json>" in text
 
 
+def test_run_remote_crawl_exposes_read_only_observation_canary() -> None:
+    text = (REPO_ROOT / "scripts" / "run_remote_crawl.sh").read_text(encoding="utf-8")
+
+    assert "observe-canary)" in text
+    assert "--observation-canary" in text
+    assert "--target-file" in text
+    assert "--max-pages 15" in text
+    assert "--receipt" in text
+    observation = text.split("run_observation_canary()", maxsplit=1)[1].split(
+        "\n}", maxsplit=1
+    )[0]
+    assert observation.index("guard_check") < observation.index("load_validated_env")
+    assert observation.index("load_validated_env") < observation.index("EGP_RELEASE_SHA")
+    assert "--attach" not in observation
+    assert "DATABASE_URL" in observation
+    assert "EGP_ARTIFACT_STORE" in observation
+    assert "SUPABASE_URL" in observation
+    assert "SUPABASE_SERVICE_ROLE_KEY" in observation
+    assert "SUPABASE_STORAGE_BUCKET" in observation
+    assert observation.index("DATABASE_URL") < observation.index(
+        '"$ROOT/scripts/diagnose_search_rows.py"'
+    )
+
+
 def test_install_launchd_sh_parses_and_targets_both_agents() -> None:
     path = REPO_ROOT / "scripts" / "install_launchd.sh"
     _bash_syntax_ok(path)

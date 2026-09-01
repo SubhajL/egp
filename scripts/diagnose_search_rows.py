@@ -7,7 +7,7 @@ reuses the production browser path (launch_real_chrome -> connect -> search) so 
 dump faithfully reproduces what discovery scans, then reports, per row:
 
   - the raw cell texts and the detected results-table header row (to expose any
-    column-index drift behind the hard-coded ``cells[4]`` assumption);
+    column-index drift behind a stale status-column assumption);
   - whether the row passes the strict ``status_matches_target()`` row filter;
   - whether the more permissive ``is_invitation_stage_status()`` persistence rule
     would have accepted it (divergence = a project the row filter wrongly drops);
@@ -32,15 +32,23 @@ import datetime
 import json
 import os
 import re
+import stat
 import time
 from collections import Counter
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from egp_crawler_core.profile_lock import acquire_profile_lock, release_profile_lock
 from egp_worker import browser_discovery as bd
-from egp_worker.browser_discovery import BrowserDiscoverySettings
+from egp_worker.browser_discovery import (
+    BrowserDiscoverySettings,
+    PaginationAdvanceResult,
+    ParsedResultsPage,
+)
 from egp_crawler_core.invitation_rules import is_invitation_stage_status
+from egp_shared_types.enums import DiscoveryPaginationOutcome
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 KNOWN_MISSED_DEFAULT = [
@@ -50,6 +58,45 @@ KNOWN_MISSED_DEFAULT = [
     "69039582244",
     "68119364483",
 ]
+
+
+def _read_exact_canary_target(target_file: Path) -> ExactIngestionCanaryTarget:
+    """Read one private regular-canary target through a verified descriptor."""
+
+    fd = -1
+    try:
+        if target_file.is_symlink():
+            raise ValueError("target_file_symlink")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(os.fspath(target_file), flags)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("target_file_not_regular")
+        if metadata.st_uid != os.geteuid():
+            raise ValueError("target_file_owner_invalid")
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise ValueError("target_file_permissions_invalid")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            try:
+                payload = json.load(handle)
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ValueError("target_file_json_invalid") from None
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("target_file_not_private") from None
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    try:
+        return ExactIngestionCanaryTarget.from_mapping(payload)
+    except (TypeError, ValueError):
+        raise ValueError("target_file_schema_invalid") from None
 
 
 def _safe_text(element) -> str:
@@ -94,45 +141,37 @@ def _build_settings(args: argparse.Namespace) -> BrowserDiscoverySettings:
     )
 
 
-def _dump_headers(page) -> list[str]:
-    table = bd.find_results_table(page)
-    if not table:
-        return []
-    try:
-        return [_safe_text(th) for th in table.query_selector_all("th")]
-    except Exception:
-        return []
+def _parsed_page(page_or_snapshot) -> ParsedResultsPage:
+    if isinstance(page_or_snapshot, ParsedResultsPage):
+        return page_or_snapshot
+    return bd.parse_results_page(page_or_snapshot)
 
 
-def _dump_rows(page) -> list[dict]:
-    extract_num = getattr(bd, "_extract_project_number_from_text", None)
+def _dump_headers(page_or_snapshot) -> list[str]:
+    return list(_parsed_page(page_or_snapshot).headers)
+
+
+def _dump_rows(page_or_snapshot) -> list[dict]:
+    parsed = _parsed_page(page_or_snapshot)
     out: list[dict] = []
-    for row in bd.get_results_rows(page):
-        try:
-            cells = row.query_selector_all("td")
-        except Exception:
-            cells = []
-        cell_texts = [_safe_text(c) for c in cells]
-        status_text = cell_texts[4] if len(cell_texts) > 4 else ""
-        project_name = cell_texts[2] if len(cell_texts) > 2 else ""
-        organization = cell_texts[1] if len(cell_texts) > 1 else ""
-        full_text = _safe_text(row)
-        project_number = ""
-        if extract_num is not None:
-            try:
-                project_number = extract_num(full_text) or ""
-            except Exception:
-                project_number = ""
+    for row in parsed.rows:
+        cell_texts = list(row.cell_texts)
+        status_text = row.source_status_text
+        project_name = row.project_name
+        organization = row.organization_name
+        project_number = row.project_number or ""
+        full_text = " ".join(cell_texts)
         passes_status = bd.status_matches_target(status_text) if status_text else False
         persist_ok = is_invitation_stage_status(status_text)
-        skip_hit = next(
-            (kw for kw in bd.SKIP_KEYWORDS_IN_PROJECT if kw in project_name), None
-        )
+        skip_hit = row.skip_keyword_hit
         out.append(
             {
                 "cell_count": len(cell_texts),
                 "cells": cell_texts,
+                # Retain the historical report key for ordinary diagnostics;
+                # its value now comes from the shared named-column parser.
                 "status_cell_idx4": status_text,
+                "status_text": status_text,
                 "organization": organization,
                 "project_name": project_name,
                 "project_number": project_number,
@@ -200,27 +239,219 @@ def _dump_all_tables(page) -> list[dict]:
     return out
 
 
-def _advance_page(page, settings: BrowserDiscoverySettings) -> bool:
-    """Click the next-page control. Returns False when there is no further page."""
-    previous_marker = bd.get_results_page_marker(page)
-    next_btn = page.query_selector(bd.NEXT_PAGE_SELECTOR)
-    if not (next_btn and next_btn.is_visible()):
-        return False
-    try:
-        page.evaluate("(el) => el.click()", next_btn)
-    except Exception:
+def _advance_page(
+    page,
+    settings: BrowserDiscoverySettings,
+    *,
+    page_num: int,
+) -> PaginationAdvanceResult:
+    """Advance using the production typed pagination state machine."""
+    return bd.advance_results_page(page, settings, page_num=page_num)
+
+
+OBSERVATION_MAX_PAGES = 15
+
+_OBSERVATION_OUTCOME_ERRORS = {
+    DiscoveryPaginationOutcome.KEYWORD_NO_RESULTS: "keyword_no_results",
+    DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN: "pagination_control_hidden",
+    DiscoveryPaginationOutcome.NEXT_CLICK_FAILED: "pagination_next_click_failed",
+    DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT: "pagination_page_change_timeout",
+    DiscoveryPaginationOutcome.UNEXPECTED_NO_RESULTS: "pagination_unexpected_no_results",
+    DiscoveryPaginationOutcome.SITE_ERROR: "pagination_site_error",
+}
+
+
+def _write_observation_receipt(
+    path: str,
+    *,
+    release_sha: str,
+    target_fingerprint: str,
+    status: str,
+    checks: dict[str, object],
+    errors: list[str],
+) -> None:
+    """Write only the bounded, identifier-free observation contract."""
+    receipt = {
+        "schema_version": 1,
+        "stage": "observation",
+        "status": status,
+        "release_sha": release_sha,
+        "observed_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "checks": checks,
+        "errors": list(dict.fromkeys(errors)),
+        "target_fingerprint": target_fingerprint,
+    }
+    receipt_path = Path(path)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _observation_checks(
+    *,
+    browser_started: bool,
+    eligible_invitation_page: int | None,
+    keyword_exact: bool,
+    page_sequence: list[int],
+    terminal_outcome: DiscoveryPaginationOutcome | None,
+) -> dict[str, object]:
+    return {
+        "browser_started": browser_started,
+        "eligible_invitation_page": eligible_invitation_page,
+        "keyword_exact": keyword_exact,
+        "max_pages_per_keyword": OBSERVATION_MAX_PAGES,
+        "page_sequence": list(page_sequence),
+        "persistence_disabled": True,
+        "shared_parser": bool(page_sequence),
+        "terminal_outcome": terminal_outcome.value if terminal_outcome else None,
+    }
+
+
+def _run_observation_canary(
+    args: argparse.Namespace,
+    *,
+    release_sha: str,
+    target: ExactIngestionCanaryTarget,
+) -> int:
+    """Run the identifier-free browser observation and emit its receipt."""
+    settings: BrowserDiscoverySettings | None = None
+    page_sequence: list[int] = []
+    eligible_invitation_page: int | None = None
+    terminal_outcome: DiscoveryPaginationOutcome | None = None
+    browser_started = False
+    keyword = target.keyword
+    keyword_exact = keyword == keyword.strip()
+    errors: list[str] = []
+    pw = browser = chrome_proc = None
+    profile_lock = None
+
+    def _observe() -> bool:
+        nonlocal browser_started, browser, chrome_proc, eligible_invitation_page, page_sequence
+        nonlocal profile_lock, pw, settings, terminal_outcome
+
         try:
-            next_btn.click(timeout=10_000)
-        except Exception:
+            settings = _build_settings(args)
+        except SystemExit:
+            errors.append("browser_start_failed")
             return False
-    time.sleep(3)
-    if not bd.wait_for_results_page_change(
-        page, previous_marker, timeout_ms=settings.nav_timeout_ms
-    ):
-        return False
-    if bd.is_no_results_page(page):
-        return False
-    return True
+        try:
+            profile_lock = acquire_profile_lock(settings.browser_profile_dir)
+        except Exception:
+            errors.append("profile_locked")
+            return False
+        # Observation must always launch a fresh, real Chrome session. Argument
+        # validation rejects --attach before this function is reached.
+        try:
+            chrome_proc = bd.launch_real_chrome(settings, clear_singleton_locks=True)
+            pw = sync_playwright().start()
+            browser, page = bd.connect_playwright_to_chrome(pw, settings)
+            browser_started = True
+        except Exception:
+            errors.append("browser_start_failed")
+            return False
+
+        bd._goto_with_recovery(page, bd.MAIN_PAGE_URL, settings)
+        if not bd.wait_for_cloudflare_or_operator(page, settings):
+            errors.append("browser_navigation_failed")
+            return False
+        bd._goto_with_recovery(page, bd.SEARCH_URL, settings)
+        if not bd.wait_for_cloudflare_or_operator(
+            page, settings, require_search_controls=True
+        ):
+            errors.append("browser_navigation_failed")
+            return False
+
+        bd.search_keyword(page, keyword, settings)
+        if bd.is_no_results_page(page):
+            errors.append("keyword_no_results")
+            return False
+
+        page_num = 1
+        while page_num <= settings.max_pages_per_keyword:
+            parsed = bd.parse_results_page(page)
+            page_sequence.append(page_num)
+            for row in parsed.rows:
+                if (
+                    page_num >= 2
+                    and row.status_eligible
+                    and is_invitation_stage_status(row.source_status_text)
+                    and eligible_invitation_page is None
+                ):
+                    eligible_invitation_page = page_num
+
+            advance = bd.advance_results_page(page, settings, page_num=page_num)
+            terminal_outcome = advance.outcome
+            if advance.outcome is DiscoveryPaginationOutcome.ADVANCED:
+                if advance.next_page_num != page_num + 1:
+                    errors.append("page_sequence_not_contiguous")
+                    return False
+                page_num = advance.next_page_num
+                terminal_outcome = None
+                continue
+            break
+
+        if terminal_outcome is None:
+            errors.append("pagination_terminal_missing")
+            return False
+        if terminal_outcome in _OBSERVATION_OUTCOME_ERRORS:
+            errors.append(_OBSERVATION_OUTCOME_ERRORS[terminal_outcome])
+            return False
+        if terminal_outcome is DiscoveryPaginationOutcome.MAX_PAGES_REACHED:
+            if page_sequence[-1] != OBSERVATION_MAX_PAGES:
+                errors.append("max_pages_before_pinned_cap")
+                return False
+        elif terminal_outcome not in {
+            DiscoveryPaginationOutcome.NEXT_CONTROL_ABSENT,
+            DiscoveryPaginationOutcome.NEXT_CONTROL_DISABLED,
+        }:
+            errors.append("pagination_outcome_invalid")
+            return False
+
+        if page_sequence != list(range(1, page_sequence[-1] + 1)):
+            errors.append("page_sequence_not_contiguous")
+            return False
+        if page_sequence[-1] < 5:
+            errors.append("page_sequence_incomplete")
+            return False
+        if eligible_invitation_page is None:
+            errors.append("eligible_invitation_page_missing")
+            return False
+        return True
+
+    success = False
+    try:
+        success = _observe()
+    except Exception:
+        errors.append("observation_failed")
+    finally:
+        try:
+            bd.safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
+        except Exception:
+            errors.append("browser_shutdown_failed")
+            success = False
+        if profile_lock is not None:
+            try:
+                release_profile_lock(profile_lock)
+            except Exception:
+                errors.append("profile_unlock_failed")
+                success = False
+        checks = _observation_checks(
+            browser_started=browser_started,
+            eligible_invitation_page=eligible_invitation_page,
+            keyword_exact=keyword_exact,
+            page_sequence=page_sequence,
+            terminal_outcome=terminal_outcome,
+        )
+        _write_observation_receipt(
+            args.receipt,
+            release_sha=release_sha,
+            target_fingerprint=target.canonical_digest(),
+            status="accepted" if not errors else "rejected",
+            checks=checks,
+            errors=errors,
+        )
+    return 0 if success and not errors else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -228,7 +459,13 @@ def main(argv: list[str] | None = None) -> int:
         description="Read-only e-GP search-row diagnostic."
     )
     parser.add_argument("--keyword", default="วิเคราะห์ข้อมูล")
-    parser.add_argument("--max-pages", type=int, default=7)
+    parser.add_argument("--max-pages", type=int, default=15)
+    parser.add_argument(
+        "--target-file",
+        type=Path,
+        default=None,
+        help="Private exact-canary target file used by observation-canary.",
+    )
     parser.add_argument("--profile-dir", default=None)
     parser.add_argument("--chrome-path", default=None)
     parser.add_argument("--cdp-port", default=None)
@@ -245,7 +482,37 @@ def main(argv: list[str] | None = None) -> int:
         help="Connect to an already-running warmed Chrome (CDP) instead of launching one. "
         "Use this when the keep-warm Chrome is up to avoid a profile-lock conflict.",
     )
+    parser.add_argument(
+        "--observation-canary",
+        action="store_true",
+        help="Run the identifier-free, non-persisting browser observation canary.",
+    )
+    parser.add_argument(
+        "--receipt",
+        default=None,
+        help="Path for the bounded observation-canary receipt.",
+    )
     args = parser.parse_args(argv)
+
+    if args.observation_canary:
+        if args.profile_dir is not None:
+            parser.error("--observation-canary cannot override --profile-dir")
+        if args.attach:
+            parser.error("--observation-canary cannot be used with --attach")
+        if args.target_file is None:
+            parser.error("--observation-canary requires --target-file")
+        if not args.receipt:
+            parser.error("--observation-canary requires --receipt")
+        if args.max_pages != OBSERVATION_MAX_PAGES:
+            parser.error("--observation-canary requires --max-pages 15")
+        release_sha = os.environ.get("EGP_RELEASE_SHA", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
+            parser.error("--observation-canary requires a 40-character lower-hex EGP_RELEASE_SHA")
+        try:
+            target = _read_exact_canary_target(args.target_file)
+        except ValueError as exc:
+            parser.error(str(exc))
+        return _run_observation_canary(args, release_sha=release_sha, target=target)
 
     settings = _build_settings(args)
     out_dir = Path(args.out_dir)
@@ -287,9 +554,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"[diagnose] e-GP reported NO RESULTS for {args.keyword!r}", flush=True
             )
         else:
-            for page_num in range(1, args.max_pages + 1):
-                headers = _dump_headers(page) if page_num == 1 else None
-                rows = _dump_rows(page)
+            page_num = 1
+            while page_num <= args.max_pages:
+                parsed = bd.parse_results_page(page)
+                headers = _dump_headers(parsed) if page_num == 1 else None
+                rows = _dump_rows(parsed)
                 all_tables = _dump_all_tables(page)
                 found_count = _results_found_count(page)
                 all_rows.extend(rows)
@@ -321,8 +590,11 @@ def main(argv: list[str] | None = None) -> int:
                     f"divergent={divergent} | tables[{tables_brief}] (*=matched)",
                     flush=True,
                 )
-                if not _advance_page(page, settings):
+                advance = _advance_page(page, settings, page_num=page_num)
+                page_entry["pagination_outcome"] = advance.outcome.value
+                if advance.outcome is not DiscoveryPaginationOutcome.ADVANCED:
                     break
+                page_num = advance.next_page_num
     except Exception as exc:  # diagnostic: capture and still write partial report
         report["error"] = f"{type(exc).__name__}: {exc}"
         print(f"[diagnose] ERROR: {report['error']}", flush=True)
@@ -374,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
         f"skip_hits={report['totals']['skip_keyword_hits']}",
         flush=True,
     )
-    print("status buckets (cells[4] text -> count):", flush=True)
+    print("status buckets (status-cell text -> count):", flush=True)
     for status, count in status_counter.most_common():
         print(f"  {count:4d}  {status}", flush=True)
     print("known-missed lookup:", flush=True)

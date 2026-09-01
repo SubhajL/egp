@@ -14,6 +14,7 @@ from pathlib import Path
 from egp_observability.logging import RESULT_FRAME_BEGIN, RESULT_FRAME_END
 from egp_observability.metrics import record_worker_job
 from egp_shared_types.enums import DiscoveryFailureCode
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 from egp_db.repositories.candidate_attempt_repo import create_candidate_attempt_repository
 
@@ -157,10 +158,83 @@ def _artifact_storage_kwargs(payload: dict[str, object]) -> dict[str, str | None
     }
 
 
+def _validate_exact_canary_worker_payload(
+    payload: dict[str, object],
+    target: ExactIngestionCanaryTarget,
+    *,
+    browser_settings: BrowserDiscoverySettings | None,
+) -> None:
+    mismatches: list[str] = []
+    if payload.get("tenant_id") != target.tenant_id:
+        mismatches.append("tenant_id")
+    if payload.get("profile_id") != target.profile_id:
+        mismatches.append("profile_id")
+    if payload.get("agent_job_id") != target.job_id:
+        mismatches.append("agent_job_id")
+    if payload.get("keyword") != target.keyword:
+        mismatches.append("keyword")
+    live = payload.get("live")
+    if type(live) is not bool or live is not True:
+        mismatches.append("live")
+    if payload.get("execution_backend") != "legacy":
+        mismatches.append("execution_backend")
+    if type(target.live) is not bool or target.live is not True:
+        mismatches.append("target_live")
+    if target.execution_backend != "legacy":
+        mismatches.append("target_execution_backend")
+    if type(target.browser_required) is not bool or target.browser_required is not True:
+        mismatches.append("browser_required")
+    if (
+        type(target.max_pages_per_keyword) is not int
+        or target.max_pages_per_keyword != 15
+    ):
+        mismatches.append("target_max_pages_per_keyword")
+
+    raw_browser_required = payload.get("browser_required")
+    if raw_browser_required is not None and (
+        type(raw_browser_required) is not bool or raw_browser_required is not True
+    ):
+        mismatches.append("browser_required")
+    raw_browser_settings = payload.get("browser_settings")
+    if isinstance(raw_browser_settings, dict):
+        nested_browser_required = raw_browser_settings.get("browser_required")
+        if nested_browser_required is not None and (
+            type(nested_browser_required) is not bool or nested_browser_required is not True
+        ):
+            mismatches.append("browser_required")
+
+    effective_settings = browser_settings or BrowserDiscoverySettings()
+    if (
+        type(effective_settings.max_pages_per_keyword) is not int
+        or effective_settings.max_pages_per_keyword != target.max_pages_per_keyword
+    ):
+        mismatches.append("browser_max_pages_per_keyword")
+    if (
+        not isinstance(effective_settings.chrome_path, str)
+        or not effective_settings.chrome_path.strip()
+    ):
+        mismatches.append("browser_path")
+    if mismatches:
+        raise ValueError("exact canary target mismatch: " + ", ".join(mismatches))
+
+
 def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
     command = str(payload.get("command") or "").strip()
     if command == "discover":
         db_url = str(payload["database_url"])
+        raw_exact_target = payload.get("exact_canary_target")
+        exact_canary_target = (
+            ExactIngestionCanaryTarget.from_mapping(raw_exact_target)
+            if "exact_canary_target" in payload
+            else None
+        )
+        browser_settings = _build_browser_settings(payload)
+        if exact_canary_target is not None:
+            _validate_exact_canary_worker_payload(
+                payload,
+                exact_canary_target,
+                browser_settings=browser_settings,
+            )
         result = run_discover_workflow(
             database_url=db_url,
             tenant_id=str(payload["tenant_id"]),
@@ -173,8 +247,9 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
             discovered_projects=list(payload.get("discovered_projects") or []),
             trigger_type=str(payload.get("trigger_type") or "manual"),
             live=bool(payload.get("live", False)),
+            exact_canary_target=exact_canary_target,
             profile=(str(payload["profile"]) if payload.get("profile") is not None else None),
-            browser_settings=_build_browser_settings(payload),
+            browser_settings=browser_settings,
             live_include_documents=bool(payload.get("live_include_documents", True)),
             artifact_root=Path(str(payload.get("artifact_root") or "artifacts")),
             **_artifact_storage_kwargs(payload),
@@ -194,6 +269,8 @@ def run_worker_job(payload: dict[str, object]) -> dict[str, object]:
         }
         summary = getattr(result.run.run, "summary_json", None)
         if isinstance(summary, dict):
+            if exact_canary_target is not None and "canary_proof" in summary:
+                response["canary_proof"] = summary["canary_proof"]
             error = str(summary.get("error") or "").strip()
             if error:
                 response["error"] = error

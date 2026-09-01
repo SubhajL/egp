@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
+import hashlib
 import json
 from pathlib import Path
 from uuid import UUID
@@ -499,17 +500,39 @@ def test_canary_verification_output_never_contains_sensitive_correlation() -> No
     assert "contract.pdf" not in output
 
 
+def _seed_exact_target():
+    from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
+
+    return ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": "33333333-3333-3333-3333-333333333333",
+            "profile_id": "22222222-2222-2222-2222-222222222222",
+            "keyword": "canary",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+
+
 def _seed_canary_chain(
     *,
     database_url: str,
     evidence_path: Path,
     storage_key: str,
+    artifact_sha256: str,
 ) -> tuple[str, str, str]:
     tenant_id = "11111111-1111-1111-1111-111111111111"
     profile_id = "22222222-2222-2222-2222-222222222222"
     job_id = "33333333-3333-3333-3333-333333333333"
     run_id = "44444444-4444-4444-4444-444444444444"
     project_id = "55555555-5555-5555-5555-555555555555"
+    document_id = "66666666-6666-6666-6666-666666666666"
+    capture_attempt_id = "77777777-7777-7777-7777-777777777777"
     with connect(database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -522,6 +545,13 @@ def _seed_canary_chain(
                 VALUES (%s, %s, 'Canary profile', 'tor')
                 """,
                 (profile_id, tenant_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO crawl_profile_keywords (profile_id, keyword, position)
+                VALUES (%s, 'canary', 0)
+                """,
+                (profile_id,),
             )
             cursor.execute(
                 """
@@ -550,7 +580,35 @@ def _seed_canary_chain(
                     tenant_id,
                     profile_id,
                     job_id,
-                    json.dumps({"worker_log_path": str(evidence_path)}),
+                    json.dumps(
+                        {
+                            "worker_log_path": str(evidence_path),
+                            "canary_proof": {
+                                "contract_version": 1,
+                                "target_digest": _seed_exact_target().canonical_digest(),
+                                "browser_started": True,
+                                "page_sequence": [1, 2, 3, 4, 5],
+                                "max_pages_per_keyword": 15,
+                                "terminal_outcome": "next_control_absent",
+                                "later_page_persisted": True,
+                            },
+                            "canary_ingestion_evidence": {
+                                "contract_version": 1,
+                                "candidate_key": "canary-key",
+                                "project_id": project_id,
+                                "page_number": 2,
+                                "capture_attempt_id": capture_attempt_id,
+                                "artifacts": [
+                                    {
+                                        "document_id": document_id,
+                                        "storage_key": storage_key,
+                                        "sha256": artifact_sha256,
+                                        "size_bytes": 7,
+                                    }
+                                ],
+                            },
+                        }
+                    ),
                 ),
             )
             cursor.execute(
@@ -564,28 +622,28 @@ def _seed_canary_chain(
                 """
                 INSERT INTO discovery_candidate_attempts (
                     tenant_id, run_id, candidate_key, keyword,
-                    candidate_status, project_id
-                ) VALUES (%s, %s, 'canary-key', 'canary', 'persisted', %s)
+                    page_number, candidate_status, project_id
+                ) VALUES (%s, %s, 'canary-key', 'canary', 2, 'persisted', %s)
                 """,
                 (tenant_id, run_id, project_id),
             )
             cursor.execute(
                 """
                 INSERT INTO documents (
-                    tenant_id, project_id, document_type, document_phase,
+                    id, tenant_id, project_id, document_type, document_phase,
                     source_label, source_status_text, file_name, size_bytes,
                     sha256, storage_key
-                ) VALUES (%s, %s, 'tor', 'final', '', '', 'contract.pdf', 7, %s, %s)
+                ) VALUES (%s, %s, %s, 'tor', 'final', '', '', 'contract.pdf', 7, %s, %s)
                 """,
-                (tenant_id, project_id, "f" * 64, storage_key),
+                (document_id, tenant_id, project_id, artifact_sha256, storage_key),
             )
             cursor.execute(
                 """
                 INSERT INTO document_capture_attempts (
-                    tenant_id, project_id, run_id, status, doc_count
-                ) VALUES (%s, %s, %s, 'succeeded', 1)
+                    id, tenant_id, project_id, run_id, status, doc_count
+                ) VALUES (%s, %s, %s, %s, 'succeeded', 1)
                 """,
-                (tenant_id, project_id, run_id),
+                (capture_attempt_id, tenant_id, project_id, run_id),
             )
         connection.commit()
     return tenant_id, job_id, run_id
@@ -600,7 +658,12 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
     if not postgres_binaries_available():
         pytest.skip("PostgreSQL binaries are required for canary-chain verification")
 
-    from scripts.track_bc_verify import collect_canary_evidence, verify_canary_evidence
+    from scripts.track_bc_verify import (
+        collect_canary_evidence,
+        collect_canary_evidence_v2,
+        verify_canary_evidence,
+        verify_canary_evidence_v2,
+    )
 
     artifacts = LocalArtifactStore(tmp_path / "artifacts")
     storage_key = artifacts.put_bytes(key="canary/contract.pdf", data=b"canary!")
@@ -629,6 +692,11 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
         )
         writer.write_lifecycle("dispatch_started")
         writer.write_child("stderr", "Authorization: Bearer secret-token\n")
+        writer.write_lifecycle(
+            "canary_proof_validated",
+            target_contract_version=1,
+            target_digest=_seed_exact_target().canonical_digest(),
+        )
         writer.write_lifecycle("dispatch_finished")
         writer.close()
 
@@ -636,6 +704,7 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
             database_url=database_url,
             evidence_path=evidence_path,
             storage_key=storage_key,
+            artifact_sha256=hashlib.sha256(b"canary!").hexdigest(),
         )
         profile_dir = tmp_path / "chrome-profile"
         profile_dir.mkdir()
@@ -649,14 +718,85 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
             expected_release_sha=RELEASE_SHA,
             profile_dir=profile_dir,
         )
+        evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
+        )
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT summary_json FROM crawl_runs WHERE id = %s",
+                    (run_id,),
+                )
+                valid_summary = cursor.fetchone()[0]
+                invalid_summary = json.loads(json.dumps(valid_summary))
+                invalid_summary["canary_ingestion_evidence"]["artifacts"][0][
+                    "document_id"
+                ] = "88888888-8888-8888-8888-888888888888"
+                cursor.execute(
+                    "UPDATE crawl_runs SET summary_json = %s WHERE id = %s",
+                    (json.dumps(invalid_summary), run_id),
+                )
+            connection.commit()
+        unrelated_artifact_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_runs SET summary_json = %s WHERE id = %s",
+                    (json.dumps(valid_summary), run_id),
+                )
+            connection.commit()
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_profiles SET profile_type = 'custom' WHERE id = %s",
+                    (_seed_exact_target().profile_id,),
+                )
+                cursor.execute(
+                    "UPDATE discovery_jobs SET profile_type = 'custom' WHERE id = %s",
+                    (job_id,),
+                )
+            connection.commit()
+        matching_non_tor_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_profiles SET profile_type = 'tor' WHERE id = %s",
+                    (_seed_exact_target().profile_id,),
+                )
+                cursor.execute(
+                    "UPDATE discovery_jobs SET profile_type = 'tor' WHERE id = %s",
+                    (job_id,),
+                )
+            connection.commit()
 
         request_path = tmp_path / "private-canary-request.json"
         output_path = tmp_path / "canary-receipt.json"
         request_path.write_text(
             json.dumps(
                 {
-                    "tenant_id": tenant_id,
-                    "job_id": job_id,
+                    "schema_version": 2,
+                    "target": _seed_exact_target().to_mapping(),
                     "run_id": run_id,
                 }
             ),
@@ -680,6 +820,16 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
                 "--output",
                 str(output_path),
             ]
+        )
+
+        artifacts.put_bytes(key=storage_key, data=b"tampered")
+        tampered_artifact_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
         )
 
         with connect(database_url) as connection:
@@ -732,9 +882,19 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
     assert evidence["child_pid_alive"] is False
     report = verify_canary_evidence(evidence, expected_release_sha=RELEASE_SHA)
     assert report.status == "accepted"
+    report_v2 = verify_canary_evidence_v2(
+        evidence_v2, expected_release_sha=RELEASE_SHA
+    )
+    assert report_v2.status == "accepted"
+    assert matching_non_tor_evidence_v2["exact_target_match"] is True
+    assert matching_non_tor_evidence_v2["artifact_retrievable"] is True
+    assert unrelated_artifact_evidence_v2["artifact_record_count"] == 0
+    assert unrelated_artifact_evidence_v2["artifact_retrievable"] is False
+    assert tampered_artifact_evidence_v2["artifact_retrievable"] is False
     stdout = capsys.readouterr().out
     assert exit_code == 0
     assert json.loads(stdout)["status"] == "accepted"
+    assert json.loads(stdout)["schema_version"] == 2
     assert json.loads(output_path.read_text(encoding="utf-8"))["stage"] == "canary"
     assert tenant_id not in stdout
     assert job_id not in stdout
@@ -831,7 +991,7 @@ def test_canary_cli_rejects_non_private_request_before_runtime_dependencies(
 
     assert exit_code == 2
     assert json.loads(capsys.readouterr().out) == {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "canary",
         "status": "rejected",
         "errors": ["invalid_canary_request"],
@@ -1026,7 +1186,7 @@ def test_bundle_cli_emits_only_sanitized_final_receipt(
 
     evidence_path = tmp_path / "bundle-input.json"
     output_path = tmp_path / "bundle-receipt.json"
-    evidence_path.write_text(json.dumps(_accepted_bundle_evidence()), encoding="utf-8")
+    evidence_path.write_text(json.dumps(_accepted_bundle_evidence_v2()), encoding="utf-8")
 
     exit_code = main(
         [
@@ -1045,6 +1205,7 @@ def test_bundle_cli_emits_only_sanitized_final_receipt(
     stdout = capsys.readouterr().out
     assert exit_code == 0
     assert json.loads(stdout)["stage"] == "bundle"
+    assert json.loads(stdout)["schema_version"] == 2
     written = output_path.read_text(encoding="utf-8")
     assert json.loads(written)["status"] == "accepted"
     assert "bundle-secret" not in stdout
@@ -1082,3 +1243,376 @@ def test_public_mvp_runbook_uses_reproducible_changed_python_format_gate() -> No
         ".venv/bin/python -m ruff format --check apps packages tests scripts"
         not in runbook
     )
+
+
+def test_public_mvp_runbook_separates_observation_and_exact_ingestion_canaries() -> None:
+    runbook = (
+        Path(__file__).parents[2] / "docs/operations/PUBLIC_MVP_TRACK_BC_RUNBOOK.md"
+    ).read_text(encoding="utf-8")
+
+    assert "scripts/run_remote_crawl.sh observe-canary" in runbook
+    assert "persistence_disabled=true" in runbook
+    assert '"kind": "exact_ingestion_canary"' in runbook
+    assert '"live": true' in runbook
+    assert '"browser_required": true' in runbook
+    assert '"max_pages_per_keyword": 15' in runbook
+    assert '"schema_version": 2' in runbook
+    assert "runtime <= observation <= canary <= supervised <= rollback" in runbook
+    assert "low-volume, non-live profile/job" not in runbook
+    assert "migrations 038-040" in runbook
+    assert "migration ledger ends at 040" in runbook
+    assert "observation/canary target-fingerprint mismatch" in runbook
+    assert "observe-canary \\\n  <private-evidence-dir>/canary-target.json" in runbook
+
+
+def _exact_target_v1():
+    from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
+
+    return ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": "22222222-2222-2222-2222-222222222222",
+            "profile_id": "33333333-3333-3333-3333-333333333333",
+            "keyword": "วิเคราะห์ข้อมูล",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+
+
+def _accepted_canary_evidence_v2() -> dict[str, object]:
+    return {
+        **_accepted_canary_evidence(),
+        "exact_target_match": True,
+        "canary_proof_valid": True,
+        "ordered_pages": True,
+        "terminal_scan": True,
+        "later_page_persisted": True,
+        "evidence_canary_proof_ordered": True,
+        "target_digest": _exact_target_v1().canonical_digest(),
+    }
+
+
+def test_canary_request_v2_embeds_exact_target_and_run_id_without_downgrade() -> None:
+    from scripts.track_bc_verify import _parse_canary_request_v2
+
+    target = _exact_target_v1()
+    parsed = _parse_canary_request_v2(
+        {
+            "schema_version": 2,
+            "target": target.to_mapping(),
+            "run_id": "44444444-4444-4444-4444-444444444444",
+        }
+    )
+
+    assert parsed == (target, "44444444-4444-4444-4444-444444444444")
+    assert _parse_canary_request_v2(
+        {
+            "tenant_id": target.tenant_id,
+            "job_id": target.job_id,
+            "run_id": "44444444-4444-4444-4444-444444444444",
+        }
+    ) is None
+    assert _parse_canary_request_v2(
+        {
+            "schema_version": 2,
+            "target": {**target.to_mapping(), "max_pages_per_keyword": 5},
+            "run_id": "44444444-4444-4444-4444-444444444444",
+        }
+    ) is None
+
+
+def test_private_canary_request_v2_is_owner_only_and_rejects_v1(
+    tmp_path: Path,
+) -> None:
+    from scripts.track_bc_verify import _read_private_canary_request_v2
+
+    target = _exact_target_v1()
+    request = tmp_path / "request-v2.json"
+    request.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "target": target.to_mapping(),
+                "run_id": "44444444-4444-4444-4444-444444444444",
+            }
+        ),
+        encoding="utf-8",
+    )
+    request.chmod(0o600)
+    assert _read_private_canary_request_v2(request) == (
+        target,
+        "44444444-4444-4444-4444-444444444444",
+    )
+
+    request.chmod(0o400)
+    with pytest.raises(ValueError, match="invalid_canary_request"):
+        _read_private_canary_request_v2(request)
+    request.chmod(0o600)
+
+    request.write_text(
+        json.dumps(
+            {
+                "tenant_id": target.tenant_id,
+                "job_id": target.job_id,
+                "run_id": "44444444-4444-4444-4444-444444444444",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid_canary_request"):
+        _read_private_canary_request_v2(request)
+
+
+def test_canary_verification_v2_accepts_exact_correlated_proof_and_redacts_target() -> None:
+    from scripts.track_bc_verify import verify_canary_evidence_v2
+
+    target = _exact_target_v1()
+    report = verify_canary_evidence_v2(
+        _accepted_canary_evidence_v2(),
+        expected_release_sha=RELEASE_SHA,
+        observed_at=datetime(2026, 8, 24, 9, 0, tzinfo=UTC),
+    )
+
+    assert report.schema_version == 2
+    assert report.stage == "canary"
+    assert report.status == "accepted"
+    assert all(report.checks.values())
+    serialized = json.dumps(asdict(report), sort_keys=True)
+    assert target.tenant_id not in serialized
+    assert target.job_id not in serialized
+    assert target.profile_id not in serialized
+    assert report.target_fingerprint == target.canonical_digest()
+
+
+@pytest.mark.parametrize("contract_version", [True, 2])
+def test_canary_proof_v2_rejects_non_strict_contract_version(
+    contract_version: object,
+) -> None:
+    from scripts.track_bc_verify import _canary_proof_checks
+
+    target = _exact_target_v1()
+    proof = {
+        "contract_version": contract_version,
+        "target_digest": target.canonical_digest(),
+        "browser_started": True,
+        "page_sequence": [1, 2, 3, 4, 5],
+        "max_pages_per_keyword": 15,
+        "terminal_outcome": "next_control_absent",
+        "later_page_persisted": True,
+    }
+
+    assert _canary_proof_checks(
+        proof,
+        target_digest=target.canonical_digest(),
+        max_pages_per_keyword=15,
+    )[0] is False
+
+
+def test_canary_ingestion_evidence_requires_strict_exact_database_graph() -> None:
+    from scripts.track_bc_verify import _parse_canary_ingestion_evidence
+
+    evidence = {
+        "contract_version": 1,
+        "candidate_key": "canary-key",
+        "project_id": "55555555-5555-5555-5555-555555555555",
+        "page_number": 2,
+        "capture_attempt_id": "77777777-7777-7777-7777-777777777777",
+        "artifacts": [
+            {
+                "document_id": "66666666-6666-6666-6666-666666666666",
+                "storage_key": "canary/contract.pdf",
+                "sha256": hashlib.sha256(b"canary!").hexdigest(),
+                "size_bytes": 7,
+            }
+        ],
+    }
+
+    assert _parse_canary_ingestion_evidence(evidence) == evidence
+    assert _parse_canary_ingestion_evidence({**evidence, "extra": True}) is None
+    assert _parse_canary_ingestion_evidence(
+        {**evidence, "contract_version": True}
+    ) is None
+    assert _parse_canary_ingestion_evidence({**evidence, "page_number": 1}) is None
+    assert _parse_canary_ingestion_evidence({**evidence, "artifacts": []}) is None
+    assert _parse_canary_ingestion_evidence(
+        {**evidence, "artifacts": [evidence["artifacts"][0]] * 2}
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "error_code"),
+    [
+        ("exact_target_match", "exact_target_mismatch"),
+        ("canary_proof_valid", "canary_proof_invalid"),
+        ("ordered_pages", "ordered_pages_missing"),
+        ("terminal_scan", "terminal_scan_missing"),
+        ("later_page_persisted", "later_page_not_persisted"),
+        ("evidence_canary_proof_ordered", "evidence_canary_proof_not_ordered"),
+    ],
+)
+def test_canary_verification_v2_fails_each_new_exact_invariant(
+    field: str,
+    error_code: str,
+) -> None:
+    from scripts.track_bc_verify import verify_canary_evidence_v2
+
+    evidence = _accepted_canary_evidence_v2()
+    evidence[field] = False
+
+    report = verify_canary_evidence_v2(evidence, expected_release_sha=RELEASE_SHA)
+
+    assert report.status == "rejected"
+    assert error_code in report.errors
+
+
+def _accepted_observation_receipt(observed_at: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "stage": "observation",
+        "status": "accepted",
+        "release_sha": RELEASE_SHA,
+        "observed_at": observed_at,
+        "checks": {
+            "browser_started": True,
+            "eligible_invitation_page": 2,
+            "keyword_exact": True,
+            "max_pages_per_keyword": 15,
+            "page_sequence": [1, 2, 3, 4, 5],
+            "persistence_disabled": True,
+            "shared_parser": True,
+            "terminal_outcome": "next_control_absent",
+        },
+        "errors": [],
+        "target_fingerprint": _exact_target_v1().canonical_digest(),
+    }
+
+
+def _accepted_canary_receipt_v2(observed_at: str) -> dict[str, object]:
+    from scripts.track_bc_verify import verify_canary_evidence_v2
+
+    return asdict(
+        verify_canary_evidence_v2(
+            _accepted_canary_evidence_v2(),
+            expected_release_sha=RELEASE_SHA,
+            observed_at=datetime.fromisoformat(observed_at),
+        )
+    )
+
+
+def _accepted_bundle_evidence_v2() -> dict[str, object]:
+    runtime_time = "2026-08-24T08:00:00+00:00"
+    observation_time = "2026-08-24T08:05:00+00:00"
+    canary_time = "2026-08-24T08:10:00+00:00"
+    supervised_time = "2026-08-24T08:20:00+00:00"
+    rollback_time = "2026-08-24T08:25:00+00:00"
+    evidence = _accepted_bundle_evidence()
+    evidence["receipts"] = [
+        _accepted_stage_receipt("runtime", runtime_time),
+        _accepted_observation_receipt(observation_time),
+        _accepted_canary_receipt_v2(canary_time),
+        _accepted_stage_receipt("supervised", supervised_time),
+    ]
+    evidence["rollback"]["observed_at"] = rollback_time
+    return evidence
+
+
+def test_bundle_v2_requires_runtime_observation_canary_v2_supervision_and_rollback() -> None:
+    from scripts.track_bc_verify import verify_acceptance_bundle_v2
+
+    report = verify_acceptance_bundle_v2(
+        _accepted_bundle_evidence_v2(),
+        expected_release_sha=RELEASE_SHA,
+        observed_at=datetime(2026, 8, 24, 8, 30, tzinfo=UTC),
+    )
+
+    assert report.schema_version == 2
+    assert report.status == "accepted"
+    assert all(report.checks.values())
+
+
+def test_bundle_v2_rejects_observation_for_different_exact_target() -> None:
+    from scripts.track_bc_verify import verify_acceptance_bundle_v2
+
+    evidence = _accepted_bundle_evidence_v2()
+    receipts = evidence["receipts"]
+    assert isinstance(receipts, list)
+    observation = receipts[1]
+    assert isinstance(observation, dict)
+    observation["target_fingerprint"] = "b" * 64
+
+    report = verify_acceptance_bundle_v2(
+        evidence,
+        expected_release_sha=RELEASE_SHA,
+        observed_at=datetime(2026, 8, 24, 8, 30, tzinfo=UTC),
+    )
+
+    assert report.status == "rejected"
+    assert "target_fingerprint_mismatch" in report.errors
+
+
+def test_bundle_cli_rejects_receipts_far_in_the_future(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts.track_bc_verify import main
+
+    evidence = _accepted_bundle_evidence_v2()
+    receipts = evidence["receipts"]
+    assert isinstance(receipts, list)
+    for index, receipt in enumerate(receipts, start=1):
+        assert isinstance(receipt, dict)
+        receipt["observed_at"] = f"2099-01-01T00:0{index}:00+00:00"
+    rollback = evidence["rollback"]
+    assert isinstance(rollback, dict)
+    rollback["observed_at"] = "2099-01-01T00:05:00+00:00"
+    evidence_path = tmp_path / "future-bundle.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "bundle",
+            "--evidence",
+            str(evidence_path),
+            "--expected-release-sha",
+            RELEASE_SHA,
+            "--max-age-seconds",
+            "3153600000",
+        ]
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert "stage_receipt_future" in payload["errors"]
+
+
+@pytest.mark.parametrize("mutation", ["missing_observation", "canary_v1", "reordered"])
+def test_bundle_v2_rejects_missing_observation_downgraded_canary_or_wrong_order(
+    mutation: str,
+) -> None:
+    from scripts.track_bc_verify import verify_acceptance_bundle_v2
+
+    evidence = _accepted_bundle_evidence_v2()
+    receipts = evidence["receipts"]
+    assert isinstance(receipts, list)
+    if mutation == "missing_observation":
+        receipts.pop(1)
+    elif mutation == "canary_v1":
+        receipts[2] = _accepted_stage_receipt(
+            "canary", "2026-08-24T08:10:00+00:00"
+        )
+    else:
+        receipts[1], receipts[2] = receipts[2], receipts[1]
+
+    report = verify_acceptance_bundle_v2(
+        evidence,
+        expected_release_sha=RELEASE_SHA,
+        observed_at=datetime(2026, 8, 24, 8, 30, tzinfo=UTC),
+    )
+
+    assert report.status == "rejected"

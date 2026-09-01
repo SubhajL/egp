@@ -46,6 +46,8 @@ from egp_shared_types.enums import (
     ArtifactBucket,
     CandidateTerminalReason,
     CrawlOutcomeReason,
+    DiscoveryFailureCode,
+    DiscoveryPaginationOutcome,
     ProcurementType,
     ProjectDetailReason,
     ProjectState,
@@ -149,6 +151,91 @@ class BrowserClosedDuringKeyword(RuntimeError):
         self.page_num = page_num
 
 
+class LiveDiscoveryPartialError(RuntimeError):
+    """Raised when a live crawl must stop but already-streamed projects are valid."""
+
+
+class BrowserStartError(RuntimeError):
+    """Raised when the required Chrome/CDP browser session cannot start."""
+
+    failure_code = DiscoveryFailureCode.BROWSER_START_FAILED
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedResultsRow:
+    """DOM-free, sanitized representation of one procurement result row."""
+
+    row_ordinal: int
+    project_name: str
+    organization_name: str
+    project_number: str | None
+    source_status_text: str
+    row_marker: dict[str, str]
+    status_eligible: bool
+    skip_keyword_hit: str | None
+    cell_texts: tuple[str, ...]
+
+    @property
+    def search_name(self) -> str:
+        return self.project_name
+
+    @property
+    def status(self) -> str:
+        return self.source_status_text
+
+    @property
+    def marker(self) -> dict[str, str]:
+        return self.row_marker
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedResultsPage:
+    """Immutable page snapshot used by discovery and diagnostics."""
+
+    headers: tuple[str, ...]
+    rows: tuple[ParsedResultsRow, ...]
+    header_signature: str = ""
+    columns: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def row_count(self) -> int:
+        return len(self.rows)
+
+
+@dataclass(frozen=True, slots=True)
+class PaginationAdvanceResult:
+    outcome: DiscoveryPaginationOutcome
+    next_page_num: int
+
+
+class PaginationScanError(LiveDiscoveryPartialError):
+    """Typed terminal pagination failure for a keyword scan."""
+
+    def __init__(self, *, outcome: DiscoveryPaginationOutcome) -> None:
+        self.outcome = outcome
+        self.failure_code = {
+            DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN: (
+                DiscoveryFailureCode.PAGINATION_CONTROL_HIDDEN
+            ),
+            DiscoveryPaginationOutcome.NEXT_CLICK_FAILED: (
+                DiscoveryFailureCode.PAGINATION_NEXT_CLICK_FAILED
+            ),
+            DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT: (
+                DiscoveryFailureCode.PAGINATION_PAGE_CHANGE_TIMEOUT
+            ),
+            DiscoveryPaginationOutcome.UNEXPECTED_NO_RESULTS: (
+                DiscoveryFailureCode.PAGINATION_UNEXPECTED_NO_RESULTS
+            ),
+            DiscoveryPaginationOutcome.SITE_ERROR: DiscoveryFailureCode.PAGINATION_SITE_ERROR,
+        }.get(outcome, DiscoveryFailureCode.WORKER_REPORTED_FAILURE)
+        message = (
+            "pagination site error"
+            if outcome is DiscoveryPaginationOutcome.SITE_ERROR
+            else f"pagination scan failed: {outcome.value}"
+        )
+        super().__init__(message)
+
+
 class ResultsPageRecoveryError(RuntimeError):
     def __init__(
         self,
@@ -175,10 +262,6 @@ class SearchPageStateError(RuntimeError):
 
 class ProjectExtractionTimeout(TimeoutError):
     """Raised when a project detail/documents phase exceeds the per-project budget."""
-
-
-class LiveDiscoveryPartialError(RuntimeError):
-    """Raised when a live crawl must stop but already-streamed projects are valid."""
 
 
 DOCUMENT_COLLECTION_SUCCEEDED = "succeeded"
@@ -265,9 +348,18 @@ def crawl_live_discovery(
 
     progress_token = _LIVE_PROGRESS_CALLBACK.set(progress_callback)
     try:
-        chrome_proc = launch_real_chrome(resolved_settings, clear_singleton_locks=True)
-        pw = sync_playwright().start()
-        browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+        try:
+            chrome_proc = launch_real_chrome(resolved_settings, clear_singleton_locks=True)
+            pw = sync_playwright().start()
+            browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+        except Exception as exc:
+            safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
+            raise BrowserStartError("browser session failed to start") from exc
+        _log_live_progress(
+            "browser_session_started",
+            keyword="",
+            extra={"browser_engine": "chrome_cdp", "browser_required": True},
+        )
         _goto_with_recovery(page, MAIN_PAGE_URL, resolved_settings)
         _logged_sleep(3)
         wait_for_cloudflare_or_operator(page, resolved_settings)
@@ -340,6 +432,29 @@ def crawl_live_discovery(
                                 "diagnostic": str(keyword_diag.get("status") or "failed"),
                             },
                         )
+                        _log_live_progress(
+                            "keyword_scan_summary",
+                            keyword=active_keyword,
+                            extra={
+                                "rows_scanned": 0,
+                                "eligible": 0,
+                                "accepted": 0,
+                                "rejected_by_status": 0,
+                                "unreadable_rows": 0,
+                                "skip_hits": 0,
+                                "dedup_hits": 0,
+                                "pages_scanned": 0,
+                                "page_sequence": [],
+                                "terminal_page": 0,
+                                "max_pages_per_keyword": resolved_settings.max_pages_per_keyword,
+                                "pagination_outcome": DiscoveryPaginationOutcome.KEYWORD_NO_RESULTS.value,
+                                "header_signature": "",
+                                "header_signature_drift": False,
+                                "status_buckets": {},
+                                "outcome": "ok",
+                                "reason_code": CrawlOutcomeReason.KEYWORD_NO_RESULTS.value,
+                            },
+                        )
                         keyword_index += 1
                         resume_state = None
                         continue
@@ -350,6 +465,8 @@ def crawl_live_discovery(
                     collect_kwargs["candidate_callback"] = candidate_callback
                 if candidate_terminal_callback is not None:
                     collect_kwargs["candidate_terminal_callback"] = candidate_terminal_callback
+                if resume_state is not None and resume_state.keyword_index == keyword_index:
+                    collect_kwargs["start_page_num"] = resume_state.page_num
                 keyword_projects = _collect_keyword_projects(
                     page=page,
                     keyword=active_keyword,
@@ -379,9 +496,18 @@ def crawl_live_discovery(
                     page_num=exc.page_num,
                 )
                 safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
-                chrome_proc = launch_real_chrome(resolved_settings)
-                pw = sync_playwright().start()
-                browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+                try:
+                    chrome_proc = launch_real_chrome(resolved_settings)
+                    pw = sync_playwright().start()
+                    browser, page = connect_playwright_to_chrome(pw, resolved_settings)
+                except Exception as exc:
+                    safe_shutdown(browser=browser, pw=pw, chrome_proc=chrome_proc)
+                    raise BrowserStartError("browser session failed to restart") from exc
+                _log_live_progress(
+                    "browser_session_started",
+                    keyword="",
+                    extra={"browser_engine": "chrome_cdp", "browser_required": True},
+                )
                 _goto_with_recovery(page, MAIN_PAGE_URL, resolved_settings)
                 _logged_sleep(3)
                 wait_for_cloudflare_or_operator(page, resolved_settings)
@@ -422,6 +548,10 @@ class KeywordScanAccumulator:
     skip_hits: int = 0
     dedup_hits: int = 0
     pages_scanned: int = 0
+    page_sequence: list[int] = dataclass_field(default_factory=list)
+    terminal_page: int | None = None
+    max_pages_per_keyword: int | None = None
+    pagination_outcome: DiscoveryPaginationOutcome | None = None
     header_signature: str = ""
     header_signature_drift: bool = False
     status_buckets: dict[str, int] = dataclass_field(default_factory=dict)
@@ -446,9 +576,17 @@ class KeywordScanAccumulator:
     def record_accepted(self) -> None:
         self.accepted += 1
 
-    def record_page(self, *, rows: int, header_signature: str) -> None:
+    def record_page(
+        self,
+        *,
+        rows: int,
+        header_signature: str,
+        page_num: int | None = None,
+    ) -> None:
         self.pages_scanned += 1
         self.rows_scanned += rows
+        if page_num is not None:
+            self.page_sequence.append(page_num)
         if header_signature and not self.header_signature:
             self.header_signature = header_signature
         if header_signature and header_signature != EXPECTED_RESULTS_HEADER_SIGNATURE:
@@ -483,6 +621,14 @@ class KeywordScanAccumulator:
             "skip_hits": self.skip_hits,
             "dedup_hits": self.dedup_hits,
             "pages_scanned": self.pages_scanned,
+            "page_sequence": list(self.page_sequence),
+            "terminal_page": self.terminal_page,
+            "max_pages_per_keyword": self.max_pages_per_keyword,
+            "pagination_outcome": (
+                self.pagination_outcome.value
+                if self.pagination_outcome is not None
+                else None
+            ),
             "header_signature": self.header_signature,
             "header_signature_drift": self.header_signature_drift,
             "status_buckets": dict(self.status_buckets),
@@ -613,10 +759,12 @@ def _collect_keyword_projects(
     project_callback: Callable[[dict[str, object]], None] | None = None,
     candidate_callback: Callable[[dict[str, object]], str | None] | None = None,
     candidate_terminal_callback: Callable[[str, str, str], None] | None = None,
+    start_page_num: int = 1,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     scan = KeywordScanAccumulator(keyword=keyword)
-    page_num = 1
+    page_num = max(1, int(start_page_num))
+    scan.max_pages_per_keyword = settings.max_pages_per_keyword
 
     def _terminalize_candidate(
         row_info: dict[str, object], *, status: str, reason: CandidateTerminalReason
@@ -641,8 +789,8 @@ def _collect_keyword_projects(
             # The search click navigates the SPA; under slow proxy latency the
             # one-shot table queries can race it ("execution context destroyed").
             # Retry only that race, after letting the page settle.
-            rows = run_with_navigation_retry(
-                lambda: get_results_rows(page),
+            parsed_page = run_with_navigation_retry(
+                lambda: parse_results_page(page),
                 retries=2,
                 on_retry=lambda: page.wait_for_load_state(
                     "domcontentloaded", timeout=settings.nav_timeout_ms
@@ -651,25 +799,21 @@ def _collect_keyword_projects(
         except Exception as exc:
             _raise_browser_closed(exc, page_num)
             raise
-        results_table = find_results_table(page)
-        results_columns = resolve_results_columns(results_table) if results_table else None
-        header_signature = _results_header_signature(results_table) if results_table else ""
+        rows = parsed_page.rows
+        header_signature = parsed_page.header_signature
         if page_num == 1 and scan.egp_found is None:
             scan.egp_found = _read_egp_found_count(page)
         eligible_rows: list[dict[str, object]] = []
-        for row in rows:
-            if results_columns is None:
-                continue
-            scan.record_row_status(_extract_row_status_text(row, results_columns))
-            row_payload = _extract_search_row(row, results_columns)
-            if row_payload is None:
+        for parsed_row in rows:
+            scan.record_row_status(parsed_row.source_status_text or None)
+            if not parsed_row.status_eligible:
                 continue
             scan.record_status_eligible()
-            if any(blocked in row_payload["project_name"] for blocked in SKIP_KEYWORDS_IN_PROJECT):
+            if parsed_row.skip_keyword_hit is not None:
                 scan.record_skip_hit()
                 continue
             dedupe_key = str(
-                row_payload.get("project_number") or row_payload["project_name"]
+                parsed_row.project_number or parsed_row.project_name
             ).casefold()
             if dedupe_key in seen_keys:
                 scan.record_dedup_hit()
@@ -677,18 +821,20 @@ def _collect_keyword_projects(
             scan.record_accepted()
             eligible_rows.append(
                 {
-                    "project_name": row_payload["project_name"],
-                    "search_name": row_payload.get("search_name"),
-                    "organization_name": row_payload["organization_name"],
-                    "project_number": row_payload.get("project_number"),
-                    "source_status_text": row_payload["source_status_text"],
-                    "row_marker": row_payload["row_marker"],
+                    "project_name": parsed_row.project_name,
+                    "search_name": parsed_row.search_name,
+                    "organization_name": parsed_row.organization_name,
+                    "project_number": parsed_row.project_number,
+                    "source_status_text": parsed_row.source_status_text,
+                    "row_marker": parsed_row.row_marker,
                     # F2: coordinates for the pre-detail candidate ledger write.
                     "page_number": page_num,
                     "eligible_ordinal": len(eligible_rows),
                 }
             )
-        scan.record_page(rows=len(rows), header_signature=header_signature)
+        scan.record_page(
+            rows=len(rows), header_signature=header_signature, page_num=page_num
+        )
         _log_live_progress(
             "page_scan_finished",
             keyword=keyword,
@@ -941,69 +1087,50 @@ def _collect_keyword_projects(
                 _raise_browser_closed(exc, page_num)
                 raise
 
-        if page_num >= settings.max_pages_per_keyword:
-            break
-        previous_marker = get_results_page_marker(page)
-        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
-        if not (next_btn and next_btn.is_visible()):
-            break
-        state = None
-        try:
-            state = next_btn.evaluate(
-                """el => {
-                    const li = el.closest('li');
-                    const src = li || el;
-                    return {
-                        ariaDisabled: el.getAttribute('aria-disabled') ||
-                                     (src && src.getAttribute ? src.getAttribute('aria-disabled') : null),
-                        disabled: ('disabled' in el) ? el.disabled : null,
-                        className: (src && src.className) ? String(src.className) : '',
-                    };
-                }"""
-            )
-        except Exception:
-            state = None
-        if state and pagination_button_is_disabled(
-            state.get("ariaDisabled"),
-            state.get("disabled"),
-            state.get("className"),
-        ):
-            break
-        _log_live_progress(
-            "pagination_next_start",
-            keyword=keyword,
-            extra={"page_num": page_num, "next_page_num": page_num + 1},
-        )
-        try:
-            _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_btn))
-        except Exception:
-            try:
-                _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
-            except Exception:
-                break
-        _logged_sleep(3)
-        if _site_error_toast_detected(page):
-            clear_site_error_toast(page)
+        if page_num < settings.max_pages_per_keyword:
             _log_live_progress(
-                "pagination_site_error",
+                "pagination_next_start",
                 keyword=keyword,
-                extra={"page_num": page_num + 1},
+                extra={"page_num": page_num, "next_page_num": page_num + 1},
             )
-            raise LiveDiscoveryPartialError(
-                f"pagination site error after page {page_num} for keyword '{keyword}'"
+        advance = advance_results_page(page, settings, page_num=page_num)
+        if advance.outcome is DiscoveryPaginationOutcome.ADVANCED:
+            page_num = advance.next_page_num
+            _log_live_progress(
+                "pagination_next_finished",
+                keyword=keyword,
+                extra={"page_num": page_num},
             )
-        if not wait_for_results_page_change(
-            page, previous_marker, timeout_ms=settings.nav_timeout_ms
-        ):
-            break
-        if is_no_results_page(page):
-            break
-        page_num += 1
+            continue
+        if advance.outcome in {
+            DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN,
+            DiscoveryPaginationOutcome.NEXT_CLICK_FAILED,
+            DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT,
+            DiscoveryPaginationOutcome.UNEXPECTED_NO_RESULTS,
+            DiscoveryPaginationOutcome.SITE_ERROR,
+        }:
+            pagination_error = PaginationScanError(outcome=advance.outcome)
+            _log_live_progress(
+                "pagination_failed",
+                keyword=keyword,
+                extra={
+                    "page_num": page_num,
+                    "pagination_outcome": advance.outcome.value,
+                    "failure_code": pagination_error.failure_code.value,
+                },
+            )
+            raise pagination_error
+        scan.terminal_page = page_num
+        scan.pagination_outcome = advance.outcome
         _log_live_progress(
-            "pagination_next_finished",
+            "pagination_terminal",
             keyword=keyword,
-            extra={"page_num": page_num},
+            extra={
+                "page_num": page_num,
+                "pagination_outcome": advance.outcome.value,
+            },
         )
+        break
     _log_live_progress(
         "keyword_scan_summary",
         keyword=keyword,
@@ -1089,25 +1216,61 @@ def restore_results_page(
     settings: BrowserDiscoverySettings,
 ) -> None:
     search_keyword(page, keyword, settings)
+    requested_page = max(target_page_num, 1)
+    if requested_page == 1:
+        return
     current_page = 1
-    while current_page < max(target_page_num, 1):
-        previous_marker = get_results_page_marker(page)
-        next_btn = page.query_selector(NEXT_PAGE_SELECTOR)
-        if not (next_btn and next_btn.is_visible()):
+    current_marker = get_results_page_marker(page)
+
+    def _require_physical_page(
+        marker: dict[str, str | int],
+        *,
+        expected_page: int,
+    ) -> None:
+        active_page = marker.get("active_page")
+        if active_page in (None, ""):
+            return
+        if str(active_page).strip() != str(expected_page):
+            raise SearchPageStateError(
+                f"results page marker {active_page!r} did not reach physical page "
+                f"{expected_page} during restore page {target_page_num}"
+            )
+
+    _require_physical_page(current_marker, expected_page=current_page)
+    while current_page < requested_page:
+        previous_marker = current_marker
+        controls = _matching_next_controls(page)
+        visible_controls = [control for control in controls if _pagination_control_visible(control)]
+        enabled_controls = [
+            control for control in visible_controls if not _pagination_control_disabled(control)
+        ]
+        if not enabled_controls:
             break
+        next_btn = enabled_controls[0]
         try:
             _run_egp_limited_action(lambda: page.evaluate("(el) => el.click()", next_btn))
         except Exception:
-            _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
+            try:
+                _run_egp_limited_action(lambda: next_btn.click(timeout=10_000))
+            except Exception as exc:
+                raise SearchPageStateError(
+                    f"results page could not advance while restoring page {target_page_num}: "
+                    f"{exc}"
+                ) from exc
         _logged_sleep(3)
-        _raise_on_site_error_toast(page, action=f"restore page {current_page + 1}")
+        _raise_on_site_error_toast(page, action=f"restore page {target_page_num}")
         if not wait_for_results_page_change(
             page, previous_marker, timeout_ms=settings.nav_timeout_ms
         ):
             raise SearchPageStateError(
                 f"results page did not advance while restoring page {target_page_num}"
             )
-        current_page += 1
+        next_page = current_page + 1
+        current_marker = _safe_results_page_marker(page)
+        _require_physical_page(current_marker, expected_page=next_page)
+        current_page = next_page
+    if current_page < requested_page:
+        raise SearchPageStateError(f"results page did not reach restore page {target_page_num}")
 
 
 def _extract_search_row(row, columns: dict[str, int]) -> dict[str, object] | None:
@@ -2355,6 +2518,110 @@ def _results_row_is_no_results_placeholder(row) -> bool:
     )
 
 
+def _cell_texts_are_no_results_placeholder(cell_texts: tuple[str, ...]) -> bool:
+    text = " ".join(cell_texts).strip()
+    if not text:
+        return False
+    compact = _compact_visible_text(text)
+    return len(cell_texts) <= 1 and any(
+        _compact_visible_text(marker) in compact for marker in NO_RESULTS_MARKERS
+    )
+
+
+def _build_results_row_marker_from_texts(
+    cell_texts: tuple[str, ...], columns: dict[str, int]
+) -> dict[str, str]:
+    def _value(field: str) -> str:
+        index = columns.get(field)
+        if index is None or index >= len(cell_texts):
+            return ""
+        return cell_texts[index]
+
+    project_name = _value("project_name")
+    organization_name = _value("organization")
+    budget_text = _value("budget")
+    source_status_text = _value("status")
+    signature_indices = sorted(
+        {
+            columns[field]
+            for field in (
+                "organization",
+                "purchasing_unit",
+                "project_name",
+                "budget",
+                "status",
+            )
+            if field in columns and columns[field] < len(cell_texts)
+        }
+    )
+    return {
+        "organization_name": organization_name,
+        "project_name": project_name,
+        "project_number": _extract_project_number_from_text(" ".join(cell_texts)) or "",
+        "budget_text": budget_text,
+        "source_status_text": source_status_text,
+        "visible_signature": " || ".join(
+            _compact_visible_text(cell_texts[index]) for index in signature_indices
+        ),
+    }
+
+
+def parse_results_page(page) -> ParsedResultsPage:
+    """Parse the authoritative results table into a DOM-free page snapshot."""
+    table = find_results_table(page)
+    if table is None:
+        return ParsedResultsPage(headers=(), rows=())
+    headers = tuple(_extract_table_headers(table))
+    columns = resolve_results_columns(table)
+    rows: list[ParsedResultsRow] = []
+    for row_ordinal, row in enumerate(get_results_rows(page), start=1):
+        try:
+            raw_cells = row.query_selector_all("td")
+            cell_texts = tuple(str(cell.inner_text() or "").strip() for cell in raw_cells)
+        except Exception:
+            cell_texts = ()
+        if _cell_texts_are_no_results_placeholder(cell_texts):
+            continue
+        def _value(field: str) -> str:
+            index = columns.get(field)
+            if index is None or index >= len(cell_texts):
+                return ""
+            return cell_texts[index]
+
+        source_status_text = _value("status")
+        project_name = _value("project_name")
+        project_number = _extract_project_number_from_text(" ".join(cell_texts))
+        row_marker = _build_results_row_marker_from_texts(cell_texts, columns)
+        if project_number and not row_marker.get("project_number"):
+            row_marker["project_number"] = project_number
+        status_eligible = bool(
+            source_status_text and is_discoverable_stage_status(source_status_text)
+        )
+        skip_keyword_hit = next(
+            (blocked for blocked in SKIP_KEYWORDS_IN_PROJECT if blocked in project_name),
+            None,
+        )
+        rows.append(
+            ParsedResultsRow(
+                row_ordinal=row_ordinal,
+                project_name=project_name,
+                organization_name=_value("organization"),
+                project_number=project_number,
+                source_status_text=source_status_text,
+                row_marker=row_marker,
+                status_eligible=status_eligible,
+                skip_keyword_hit=skip_keyword_hit,
+                cell_texts=cell_texts,
+            )
+        )
+    return ParsedResultsPage(
+        headers=headers,
+        rows=tuple(rows),
+        header_signature=_header_signature_from_texts(list(headers)),
+        columns=tuple(columns.items()),
+    )
+
+
 def find_search_input(page, search_btn):
     try:
         handle = search_btn.evaluate_handle(
@@ -2948,6 +3215,137 @@ def pagination_button_is_disabled(
     if class_name and re.search(r"(?:^|\s)disabled(?:\s|$)", class_name):
         return True
     return False
+
+
+def _matching_next_controls(page) -> list[object]:
+    try:
+        controls = list(page.query_selector_all(NEXT_PAGE_SELECTOR) or [])
+    except Exception:
+        controls = []
+    if controls:
+        return controls
+    try:
+        control = page.query_selector(NEXT_PAGE_SELECTOR)
+    except Exception:
+        control = None
+    return [control] if control is not None else []
+
+
+def _pagination_control_visible(control: object) -> bool:
+    try:
+        return bool(control.is_visible())
+    except Exception:
+        return False
+
+
+def _pagination_control_disabled(control: object) -> bool:
+    try:
+        state = control.evaluate(
+            """el => {
+                const li = el.closest('li');
+                const src = li || el;
+                return {
+                    ariaDisabled: el.getAttribute('aria-disabled') ||
+                                 (src && src.getAttribute ? src.getAttribute('aria-disabled') : null),
+                    disabled: ('disabled' in el) ? el.disabled : null,
+                    className: (src && src.className) ? String(src.className) : '',
+                };
+            }"""
+        )
+    except Exception:
+        return False
+    if not isinstance(state, dict):
+        return False
+    return pagination_button_is_disabled(
+        state.get("ariaDisabled"), state.get("disabled"), state.get("className")
+    )
+
+
+def advance_results_page(
+    page,
+    settings: BrowserDiscoverySettings,
+    *,
+    page_num: int,
+) -> PaginationAdvanceResult:
+    """Advance one results page and preserve the typed terminal outcome."""
+    if page_num >= settings.max_pages_per_keyword:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.MAX_PAGES_REACHED,
+            next_page_num=page_num,
+        )
+    controls = _matching_next_controls(page)
+    if not controls:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.NEXT_CONTROL_ABSENT,
+            next_page_num=page_num,
+        )
+    visible_controls = [control for control in controls if _pagination_control_visible(control)]
+    if not visible_controls:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.NEXT_CONTROL_HIDDEN,
+            next_page_num=page_num,
+        )
+    enabled_controls = [
+        control for control in visible_controls if not _pagination_control_disabled(control)
+    ]
+    if not enabled_controls:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.NEXT_CONTROL_DISABLED,
+            next_page_num=page_num,
+        )
+
+    next_control = enabled_controls[0]
+    previous_marker = _safe_results_page_marker(page)
+    try:
+        try:
+            _run_egp_limited_action(
+                lambda: page.evaluate("(el) => el.click()", next_control)
+            )
+        except Exception:
+            _run_egp_limited_action(lambda: next_control.click(timeout=10_000))
+    except Exception:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.NEXT_CLICK_FAILED,
+            next_page_num=page_num,
+        )
+    _logged_sleep(3)
+    if _site_error_toast_detected(page):
+        clear_site_error_toast(page)
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.SITE_ERROR,
+            next_page_num=page_num,
+        )
+    if not wait_for_results_page_change(
+        page, previous_marker, timeout_ms=settings.nav_timeout_ms
+    ):
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT,
+            next_page_num=page_num,
+        )
+    if is_no_results_page(page):
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.UNEXPECTED_NO_RESULTS,
+            next_page_num=page_num,
+        )
+    current_marker = _safe_results_page_marker(page)
+    if not results_page_marker_changed(previous_marker, current_marker):
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.PAGE_CHANGE_TIMEOUT,
+            next_page_num=page_num,
+        )
+    try:
+        has_rows = bool(get_results_rows(page))
+    except Exception:
+        has_rows = False
+    if not has_rows:
+        return PaginationAdvanceResult(
+            outcome=DiscoveryPaginationOutcome.UNEXPECTED_NO_RESULTS,
+            next_page_num=page_num,
+        )
+    return PaginationAdvanceResult(
+        outcome=DiscoveryPaginationOutcome.ADVANCED,
+        next_page_num=page_num + 1,
+    )
 
 
 def build_results_debug_snapshot(

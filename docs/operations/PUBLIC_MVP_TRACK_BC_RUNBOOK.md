@@ -25,7 +25,7 @@ into the operations record after inspection.
 Record the following before any production write:
 
 - operator and timestamp;
-- the exact authorized scope: database backup, artifact backup, migrations 038/039, Track B
+- the exact authorized scope: database backup, artifact backup, migrations 038-040, Track B
   deployment, Mac Track C cutover, one bounded canary, bounded supervision, rollback rehearsal,
   and launchd installation;
 - the frozen merge SHA;
@@ -48,7 +48,7 @@ Stop without retrying or mutating further when any of these occurs:
 - rollback rehearsal is incomplete;
 - an expected credential, host, environment, or authority record is unavailable.
 
-Do not rewrite an applied migration. After migration 039, backout is pause-and-fix-forward unless a
+Do not rewrite an applied migration. After migration 040, backout is pause-and-fix-forward unless a
 separately approved database restore is required.
 
 ## 1. Freeze one exact release SHA
@@ -149,7 +149,7 @@ byte-mismatched manifest entries. `ready_with_repairs` is reviewable, not automa
 Migration 039 deletes only the reported orphan/cross-tenant-run category; explicitly acknowledge
 that exact count before continuing. Stop on any unexplained category or count.
 
-## 7. Apply migrations 038/039 with one migrator
+## 7. Apply migrations 038-040 with one migrator
 
 Immediately before migration, while writers remain quiesced, rerun the phase-`pre` command and
 require the active-run count and all candidate/repair counts to match the approved receipt. This
@@ -176,9 +176,11 @@ preflight candidate count and approved orphan-run deletion count:
   > <private-evidence-dir>/candidate-postflight.json
 ```
 
-Require status `ready`, migration 039 applied, every repair count zero, and
-`survivor_delta_matches=true`. Also confirm the migration ledger ends at 039 and `/ready` reports no
-pending migration.
+Require status `ready`, migrations 039 and 040 applied, every repair count zero, and
+`survivor_delta_matches=true`. Migration 040 must recreate
+`discovery_jobs_last_error_code_check` with the browser, pagination, target, and proof failure
+codes used by the exact canary. Also confirm the migration ledger ends at 040 and `/ready` reports
+no pending migration.
 
 ## 8. Deploy Track B Python roles
 
@@ -285,11 +287,50 @@ not sufficient. Collect the inputs as one bounded evidence operation and verify 
 
 Require `status=accepted`.
 
-## 16. Run one bounded canary
+## 16. Run the observation and ingestion canaries
 
-Select one explicitly approved, low-volume, non-live profile/job and record its identifiers only in
-the mode-0600 private target file. The file must contain exactly `tenant_id` and `job_id`; both are
-UUIDs. Then run exactly that job:
+First run a read-only observation canary with the exact approved keyword. This launches real Mac
+Chrome, uses the same page parser and pagination state machine as production discovery, fixes the
+configured ceiling at 15 pages, and disables all database persistence. It must prove that pages
+1 through 5 were visited in order, that an eligible invitation was recognized on page 2 or later,
+and that the scan ended with a typed successful terminal outcome. `next_control_absent` or
+`next_control_disabled` may end the scan after page 5; `max_pages_reached` is valid only after page
+15.
+
+```bash
+scripts/run_remote_crawl.sh observe-canary \
+  <private-evidence-dir>/canary-target.json \
+  --receipt <private-evidence-dir>/observation-receipt.json
+```
+
+The observation command reads the same mode-0600 exact target used by ingestion, acquires the
+shared persistent-profile lock before Chrome, and derives the keyword and target fingerprint from
+that file. Require the sanitized observation receipt to have schema 1, stage `observation`, status
+`accepted`, the exact release SHA, the same target fingerprint as the later schema-2 canary
+receipt, `browser_started=true`, `page_sequence` beginning
+`[1,2,3,4,5]`, `eligible_invitation_page>=2`, `max_pages_per_keyword=15`,
+`persistence_disabled=true`, and `shared_parser=true`.
+
+Then select one separately authorized, low-volume live legacy job for ingestion. Record the exact
+contract in a mode-0600 private target file. The file must contain exactly the following fields;
+all IDs are canonical UUIDs and `keyword` is the single normalized keyword assigned to the job:
+
+```json
+{
+  "contract_version": 1,
+  "kind": "exact_ingestion_canary",
+  "tenant_id": "<tenant-uuid>",
+  "job_id": "<job-uuid>",
+  "profile_id": "<profile-uuid>",
+  "keyword": "<exact-approved-keyword>",
+  "live": true,
+  "execution_backend": "legacy",
+  "browser_required": true,
+  "max_pages_per_keyword": 15
+}
+```
+
+Run exactly that job:
 
 ```bash
 chmod 600 <private-evidence-dir>/canary-target.json
@@ -299,17 +340,42 @@ scripts/run_remote_crawl.sh crawl-canary \
 ```
 
 Require `processed_count=1` and a successful disposition. A browser blocker, semantic failure,
-unexpected target, lease loss, or missing terminal result stops the campaign. The dispatcher
-requires agent protocol `off`, one-shot limit one, a private non-symlink target file owned by the
-operator, and a non-live target; it cannot claim an older unrelated legacy job.
+unexpected target, target/profile/keyword/backend/page-cap mismatch, lease loss, missing ordered
+browser proof, or missing terminal result stops the campaign. The dispatcher requires agent
+protocol `off`, one-shot limit one, and a private non-symlink target file owned by the operator. It
+atomically claims only the exact live legacy job whose profile, keyword membership, browser mode,
+and 15-page cap match the contract; it cannot claim an older unrelated job.
 
 ## 17. Verify the full canary chain
 
-Create a mode-0600 private request with exactly `tenant_id`, `job_id`, and `run_id`. A caller cannot
-select `profile_dir`; the verifier resolves the persistent profile from the same production
-configuration used by the browser. The verifier reads PostgreSQL in a read-only transaction,
-checks the correlated artifact through the configured store, validates the bounded/redacted JSONL
-evidence, probes the recorded child PID, and checks the configured profile lock:
+Create a mode-0600 schema-2 private request containing exactly `schema_version`, the unchanged
+`target` object from the ingestion target file, and the correlated canonical `run_id`:
+
+```json
+{
+  "schema_version": 2,
+  "target": {
+    "contract_version": 1,
+    "kind": "exact_ingestion_canary",
+    "tenant_id": "<tenant-uuid>",
+    "job_id": "<job-uuid>",
+    "profile_id": "<profile-uuid>",
+    "keyword": "<exact-approved-keyword>",
+    "live": true,
+    "execution_backend": "legacy",
+    "browser_required": true,
+    "max_pages_per_keyword": 15
+  },
+  "run_id": "<run-uuid>"
+}
+```
+
+A caller cannot select `profile_dir`; the verifier resolves the persistent profile from the same
+production configuration used by the browser. The verifier reads the job, profile, keyword, run,
+later-page candidate, project, document, and capture chain in one PostgreSQL read-only
+transaction, checks the correlated artifact through the configured store, validates the
+bounded/redacted JSONL evidence, probes the recorded child PID, and checks the configured profile
+lock:
 
 ```bash
 .venv/bin/python scripts/track_bc_verify.py canary \
@@ -318,12 +384,16 @@ evidence, probes the recorded child PID, and checks the configured profile lock:
   --output <private-evidence-dir>/canary-receipt.json
 ```
 
-Require dispatched job, succeeded correlated run finished no more than one hour before collection,
-zero accepted candidates, and at least one persisted candidate. Artifact acceptance additionally
-requires a successful positive `document_capture_attempts` row for the same tenant, project, and
-run; an older document on the same project is insufficient. Require successful artifact lookup,
-ordered/redacted/correlated exact-SHA evidence ending in `dispatch_finished`, dead child PID, and
-free profile lock.
+Require an exact target match, dispatched job, succeeded correlated run finished no more than one
+hour before collection, zero accepted candidates, and at least one persisted candidate from page 2
+or later for the exact keyword. Artifact acceptance additionally requires a successful positive
+`document_capture_attempts` row plus a document for the same tenant, project, and run; an older
+document on the same project is insufficient. Require successful artifact lookup, browser start,
+contiguous page proof beginning with pages 1 through 5 under the configured maximum of 15, a typed
+successful terminal scan, later-page persistence, and exactly one matching
+`canary_proof_validated` event before the final `dispatch_finished`. Also require ordered,
+redacted, correlated exact-SHA evidence, dead child PID, and a free profile lock. The accepted
+canary receipt has schema 2 and contains no target IDs or digest.
 
 ## 18. Run a bounded supervised interval
 
@@ -361,10 +431,13 @@ Create a fresh rollback JSON with schema 1, stage `rollback`, status `rehearsed`
 UTC `observed_at`, and exactly these true checks: `launchd_uninstalled`, `watcher_stopped`,
 `tunnel_closed`, `discovery_executor_zero`.
 
-Create the private bundle input containing exactly one runtime-stage receipt, one canary receipt,
-one supervised receipt, and the rollback object. Their UTC timestamps must satisfy
-`runtime <= canary <= supervised <= rollback`; a newly re-stamped old input is rejected. Verify and
-save the sanitized final receipt:
+Create the private bundle input containing exactly one runtime-stage receipt, one observation
+receipt, one schema-2 canary receipt, one supervised receipt, and the rollback object. Their UTC
+timestamps and array order must satisfy
+`runtime <= observation <= canary <= supervised <= rollback`; a missing observation, downgraded
+schema-1 canary, observation/canary target-fingerprint mismatch, reordered stage, future-dated
+receipt, or newly re-stamped old input is rejected. Verify and save the sanitized schema-2 final
+receipt:
 
 ```bash
 .venv/bin/python scripts/track_bc_verify.py bundle \
@@ -404,10 +477,13 @@ The public MVP is accepted only when the operations record contains:
 - five-role OCI/baked SHA evidence;
 - executor-zero, protocol-off, and legacy-routing proof;
 - Mac exact-SHA, doctor, heartbeat, backlog, and profile evidence;
-- one-crawl summary and accepted canary receipt;
+- accepted read-only observation receipt proving ordered pages 1 through 5;
+- one-crawl summary and accepted schema-2 ingestion canary receipt;
 - accepted supervised receipt;
 - rollback rehearsal and accepted final bundle;
 - post-install launchd status and a rollback owner.
 
 Keep activation reversible. Do not claim the HTTP crawler-agent architecture, multi-browser
 concurrency, fault injection, RLS, or broader production readiness from this Track B + C campaign.
+Merging this source change does not execute either live canary, deploy a release, or activate the
+Mac watcher; those remain separately authorized runtime operations requiring the evidence above.
