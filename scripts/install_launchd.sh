@@ -15,6 +15,7 @@
 #   scripts/install_launchd.sh status
 # ──────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 TEMPLATE_DIR="$ROOT/deploy/launchd"
