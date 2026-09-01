@@ -131,6 +131,25 @@ def _pid_exists(pid: int) -> bool:
     return True
 
 
+def test_supervisor_script_entrypoint_imports_from_non_repo_cwd() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "supervise_remote_crawl.py"),
+            "--help",
+        ],
+        cwd="/",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--runtime-evidence" in result.stdout
+
+
 def test_supervised_interval_stops_and_reaps_the_complete_process_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

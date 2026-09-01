@@ -1113,3 +1113,94 @@ LOW
 - Disposition: eligible for acceptance, commit, and delivery only while the staged seven-file set
   remains unchanged. Source gates are not runtime campaign acceptance; production execution still
   requires the separate evidence-gated stages in this log and runbook.
+
+## Source delivery and exact-SHA runtime campaign (2026-09-02 00:39 +0700)
+
+- The accepted seven-file candidate was committed as `0f4a5cc16e652f6fbc3b09d91c04c42e53bc2acc`,
+  submitted as PR #231, admin-merged as
+  `c2ea355cf9d7d2cba87dba83636ebbe42fc9e208`, and landed on local `main` by exact
+  fast-forward. The pre-existing dirty-primary inventory hash remained unchanged. Hosted jobs were
+  unavailable under the standing no-step billing-lock policy and were neither retried nor called
+  passing.
+- Fresh release, gate, and native-Mac worktrees were created at the merge SHA. The gate worktree
+  passed frozen lock validation, all 42 migration manifests, compileall, Ruff, the full Python
+  suite (`2267 passed, 4 skipped`), web install/build/typecheck, and an audit with zero known
+  vulnerabilities. The release worktree remained pristine.
+- Production authority, quiescence, PostgreSQL backup, object-store backup, candidate preflight,
+  migration through 040, postflight, five-role image identity, Track B executor-zero/protocol-off,
+  and native-Mac database/profile readiness all passed. The governed one-off migrator applied zero
+  pending migrations, and API readiness remained healthy after targeted API/webhook/inbox
+  deployment with discovery stopped.
+- Runtime evidence was verified immediately and accepted at schema 1 with all 15 checks true. The
+  crawler heartbeat was online, the persistent profile was ready and unlocked, the queue was
+  empty, the target backend was legacy, agent-backed pending work was zero, and every role/Mac
+  revision matched the exact merge SHA.
+
+## Exact live canary campaigns (2026-09-02 01:29 +0700)
+
+- Campaign 1's read-only observation accepted all 15 ordered pages and eligible content from page
+  2, but the one exact ingestion run correctly failed closed. Its correlated database run retained
+  valid later-page custody evidence yet became `partial` after one upstream project detail resolved
+  to a typed rejection page (`project_detail_invalid`). The job was not retried and the queue
+  drained with no lease or pending remainder.
+- Campaign 2 used a fresh zero-project legacy profile and passed the same 15-page observation, but
+  its worker failed before browser ingestion because the tenant had no active run subscription.
+  The exact job was terminalized and was not retried. This exposed a target-qualification gap in
+  the operator sequence, not a source false success.
+- Campaign 3 added the worker's actual subscription, keyword-limit, and runnable-profile
+  authorization snapshot to target qualification. The selected unused legacy option had seven
+  historical successes and nine anomaly-free runs. Its observation accepted pages 1 through 15
+  with eligible content on page 4, exact fingerprint, shared parser, real browser, and persistence
+  disabled.
+- Campaign 3 then processed exactly one target and drained the queue. The correlated job was
+  terminal, the single run succeeded with zero errors, strict ingestion custody was present, a
+  later-page candidate persisted, and the protected worker log closed under the private evidence
+  root. The independent schema-2 canary verifier accepted every check: target/run correlation,
+  candidate ledger, document capture, artifact count and retrieval, ordered browser proof,
+  bounded/redacted exact-SHA JSONL evidence, terminal event, dead child, and free profile.
+- Independent Terra diagnosis confirmed that Campaign 1's initial `/.data` log-create warning was
+  non-fatal to worker execution but would independently block evidence verification. Campaigns 2
+  and 3 therefore used a mode-0600 private runtime overlay pointing `EGP_ARTIFACT_ROOT` at a
+  mode-0700 evidence directory; tracked source and production configuration were unchanged.
+
+## Supervision entrypoint RED and Luna-Max GREEN (2026-09-02 01:35 +0700)
+
+- Fresh five-role image/container identity, discovery-zero, protocol-off, zero pending jobs, and a
+  seeded online heartbeat produced an accepted supervision preflight with all 15 runtime checks
+  true. The governed supervisor then failed before spawning any watcher: direct execution of
+  `scripts/supervise_remote_crawl.py` could not import the repository `scripts` package.
+- Primary-owned regression contract executes the absolute script path with `cwd=/` and requires a
+  successful help response containing `--runtime-evidence`. Expected RED was exact:
+  `ModuleNotFoundError: No module named 'scripts'`.
+- GREEN snapshot `supervise-script-entrypoint-import` allowed only
+  `scripts/supervise_remote_crawl.py`. Logical role `luna_implementer`, model
+  `gpt-5.6-luna`, effort `max`, added only a direct-script, empty-`__package__` repository-root
+  import bootstrap. Its model-bound receipt passed ownership validation; the primary complete-diff
+  audit confirmed tests and all protected files were unchanged by the delegate.
+- Independent scoped GREEN passed `153` supervisor, wrapper-asset, and Track B/C verifier tests.
+  The direct entrypoint also passed from `/`. Final primary gates passed: compileall, full Ruff
+  lint, changed-file Ruff format, Bash syntax, diff check, and the full Python suite at
+  `2268 passed, 4 skipped` in 231.46 seconds. `uv.lock` is unchanged from the already accepted
+  frozen-lock gate; this implementation worktree does not contain a callable `uv` binary, so that
+  previously accepted dependency gate was not misreported as rerun.
+
+## Supervision remediation QCHECK (2026-09-02 01:39 +0700)
+
+- Independent Terra QCHECK found no P0-P2 correctness, security, import, wrapper-wiring, test, or
+  evidence-reporting issue. It independently ran the absolute script from `/` with `PYTHONPATH`
+  unset and confirmed exit zero plus the real `--runtime-evidence` CLI contract; bounded Ruff,
+  Bash, and diff checks also passed.
+- The sole P3 was the full-suite-generated untracked `test.sqlite3`. Primary verification proved
+  it was exactly zero bytes and untracked before removing that exact session artifact. The final
+  candidate is now exactly the Coding Log, one production script, and one regression-test file.
+
+## Supervision remediation formal g-check (2026-09-02 01:45 +0700)
+
+- Formal RepoPrompt-backed `g-check` found no P0, P1, P2, or P3 findings. It validated that the
+  direct-script path bootstrap is restricted to an empty `__package__`, derives the trusted root
+  from `__file__` rather than caller cwd, leaves module execution unchanged, and preserves the
+  wrapper's exact-SHA/clean-tree/absolute-path wiring.
+- The review confirmed the regression exercises the original absolute-file invocation from `/`
+  through the real imports and CLI parser, and that the runtime/canary/RED-GREEN evidence recorded
+  above agrees with the staged three-file candidate.
+- Disposition: approved for commit and delivery while the exact staged candidate remains unchanged.
