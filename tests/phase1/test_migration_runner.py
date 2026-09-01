@@ -792,15 +792,24 @@ def test_crawl_run_activity_migration_backfills_existing_rows(
         assert is_nullable == "NO"
 
 
-def test_discovery_job_lease_migration_uses_next_unique_prefix(repo_root: Path) -> None:
+def test_discovery_failure_codes_are_present_in_constraint_migrations(
+    repo_root: Path,
+) -> None:
     migrations_dir = repo_root / "packages/db/src/migrations"
     lease_migration = migrations_dir / "032_discovery_job_leases.sql"
+    exact_canary_migration = migrations_dir / "040_exact_canary_failure_codes.sql"
 
     assert lease_migration.exists()
+    assert exact_canary_migration.exists()
     assert [path.name for path in migrations_dir.glob("032_*.sql")] == [
         lease_migration.name
     ]
-    migration_sql = lease_migration.read_text(encoding="utf-8")
+    migration_sql = "\n".join(
+        (
+            lease_migration.read_text(encoding="utf-8"),
+            exact_canary_migration.read_text(encoding="utf-8"),
+        )
+    )
     for failure_code in DiscoveryFailureCode:
         assert f"'{failure_code.value}'" in migration_sql
 

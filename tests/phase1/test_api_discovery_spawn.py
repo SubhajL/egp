@@ -16,11 +16,13 @@ from egp_api.services.discovery_dispatch import (
     NonRetriableDiscoveryDispatchError,
 )
 from egp_api.services.discovery_worker_dispatcher import DiscoverySpawnError
+from egp_api.services.discovery_worker_dispatcher import _validate_discovery_worker_result
 from egp_db.repositories.candidate_attempt_repo import (
     SqlCandidateAttemptRepository,
 )
 from egp_db.repositories.run_repo import SqlRunRepository
 from egp_shared_types.enums import DiscoveryFailureCode
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 class _FakeProcess:
@@ -35,6 +37,7 @@ class _FakeProcess:
         emit_result: bool = True,
         raw_stdout: bytes = b"",
         run_id_override: str | None = None,
+        canary_proof: dict[str, object] | None = None,
     ) -> None:
         self.returncode = returncode
         self.pid = pid
@@ -45,6 +48,7 @@ class _FakeProcess:
         self.emit_result = emit_result
         self.raw_stdout = raw_stdout
         self.run_id_override = run_id_override
+        self.canary_proof = canary_proof
 
     def communicate(self, input=None, timeout=None):
         del timeout
@@ -63,6 +67,8 @@ class _FakeProcess:
             result["error"] = self.error
         if self.failure_code is not None:
             result["failure_code"] = self.failure_code
+        if self.canary_proof is not None:
+            result["canary_proof"] = self.canary_proof
         return (json.dumps(result).encode("utf-8"), b"")
 
 
@@ -821,3 +827,138 @@ def test_discover_spawner_metric_emit_tolerates_non_dict_summary(
 
     # A malformed/missing summary_json must not raise out of dispatch.
     spawner._emit_discovery_run_metrics(tenant_id="tenant-1", run_id="run-1")
+
+
+def _exact_canary_target() -> ExactIngestionCanaryTarget:
+    return ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": "22222222-2222-2222-2222-222222222222",
+            "profile_id": "33333333-3333-3333-3333-333333333333",
+            "keyword": "วิเคราะห์ข้อมูล",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+
+
+def _valid_canary_proof(target: ExactIngestionCanaryTarget) -> dict[str, object]:
+    return {
+        "contract_version": 1,
+        "target_digest": target.canonical_digest(),
+        "browser_started": True,
+        "page_sequence": [1, 2, 3, 4, 5],
+        "max_pages_per_keyword": 15,
+        "terminal_outcome": "next_control_absent",
+        "later_page_persisted": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "digest",
+        "sequence",
+        "cap",
+        "terminal",
+        "persistence",
+    ],
+)
+def test_exact_canary_worker_result_rejects_missing_or_invalid_proof(
+    mutation: str,
+) -> None:
+    target = _exact_canary_target()
+    proof = _valid_canary_proof(target)
+    if mutation == "digest":
+        proof["target_digest"] = "0" * 64
+    elif mutation == "sequence":
+        proof["page_sequence"] = [1, 3, 4, 5]
+    elif mutation == "cap":
+        proof["max_pages_per_keyword"] = 5
+    elif mutation == "terminal":
+        proof["terminal_outcome"] = "max_pages_reached"
+    elif mutation == "persistence":
+        proof["later_page_persisted"] = False
+    result: dict[str, object] = {
+        "run_id": "44444444-4444-4444-4444-444444444444",
+        "run_status": "succeeded",
+    }
+    if mutation != "missing":
+        result["canary_proof"] = proof
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        _validate_discovery_worker_result(
+            result,
+            expected_run_id="44444444-4444-4444-4444-444444444444",
+            keyword=target.keyword,
+            exact_canary_target=target,
+        )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.CANARY_PROOF_INVALID
+
+
+def test_exact_canary_dispatch_forwards_target_and_logs_proof_before_finish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _exact_canary_target()
+    proof = _valid_canary_proof(target)
+    process = _FakeProcess(canary_proof=proof)
+    captured: dict[str, object] = {}
+
+    class FakeRunRepository:
+        def create_run(self, **values: object) -> None:
+            captured.update(values)
+
+        def update_run_summary(self, run_id: str, *, summary_json) -> None:
+            captured["summary"] = summary_json
+
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: process,
+    )
+    dispatcher = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=FakeRunRepository(),
+    )
+
+    dispatcher.dispatch(
+        DiscoveryDispatchRequest(
+            tenant_id=target.tenant_id,
+            profile_id=target.profile_id,
+            profile_type="manual",
+            keyword=target.keyword,
+            live=True,
+            discovery_job_id=target.job_id,
+            exact_canary_target=target,
+        )
+    )
+
+    payload = json.loads((process.payload or b"{}").decode("utf-8"))
+    assert payload["exact_canary_target"] == target.to_mapping()
+    run_id = str(captured["run_id"])
+    log_path = (
+        tmp_path
+        / "artifacts"
+        / "tenants"
+        / target.tenant_id
+        / "runs"
+        / run_id
+        / "worker.log"
+    )
+    events = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("{")
+    ]
+    names = [event.get("event") for event in events]
+    assert names.index("canary_proof_validated") < names.index("dispatch_finished")
+    proof_event = events[names.index("canary_proof_validated")]
+    assert proof_event["target_contract_version"] == 1
+    assert proof_event["target_digest"] == target.canonical_digest()

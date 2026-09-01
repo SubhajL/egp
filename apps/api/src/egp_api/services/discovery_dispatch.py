@@ -16,6 +16,7 @@ from egp_db.repositories.discovery_job_repo import (
     StaleDiscoveryJobClaimError,
 )
 from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 class NonRetriableDiscoveryDispatchError(RuntimeError):
@@ -73,6 +74,7 @@ class DiscoveryJobStore(Protocol):
         only_live: bool | None = None,
         only_trigger_type: str | None = None,
         exclude_trigger_types: Collection[str] | None = None,
+        exact_canary_target: ExactIngestionCanaryTarget | None = None,
     ) -> bool: ...
 
     def claim_pending_discovery_jobs(
@@ -86,6 +88,7 @@ class DiscoveryJobStore(Protocol):
         only_live: bool | None = None,
         only_trigger_type: str | None = None,
         exclude_trigger_types: Collection[str] | None = None,
+        exact_canary_target: ExactIngestionCanaryTarget | None = None,
     ) -> list[DiscoveryJobRecord]: ...
 
     def renew_discovery_job_lease(
@@ -133,6 +136,7 @@ class DiscoveryDispatchRequest:
     # Test-only seam for truthful fault injection. Production operator use is
     # authorized and wired exclusively by the standalone discovery executor.
     fault_mode: str | None = None
+    exact_canary_target: ExactIngestionCanaryTarget | None = None
 
 
 class DiscoveryDispatcher(Protocol):
@@ -311,6 +315,7 @@ class DiscoveryDispatchProcessor:
     excluded_trigger_types: tuple[str, ...] = ()
     require_non_live_target: bool = False
     force_terminal_failures: bool = False
+    exact_canary_target: ExactIngestionCanaryTarget | None = None
 
     def process_pending(
         self,
@@ -349,20 +354,21 @@ class DiscoveryDispatchProcessor:
         circuit_reset_at: str | None = None
         while len(dispositions) < requested_limit:
             batch_limit = min(worker_count, requested_limit - len(dispositions))
-            claim_scope = (
-                {
+            if self.exact_canary_target is not None:
+                claim_scope = {"exact_canary_target": self.exact_canary_target}
+            elif self.target_job_id is not None:
+                claim_scope = {
                     "only_job_id": self.target_job_id,
                     "only_tenant_id": self.target_tenant_id,
                     "only_live": False if self.require_non_live_target else None,
                     "only_trigger_type": self.target_trigger_type,
                 }
-                if self.target_job_id is not None
-                else (
+            else:
+                claim_scope = (
                     {"exclude_trigger_types": self.excluded_trigger_types}
                     if self.excluded_trigger_types
                     else {}
                 )
-            )
             if not self.repository.has_claimable_discovery_jobs(
                 exclude_job_ids=processed_job_ids,
                 **claim_scope,
@@ -447,6 +453,7 @@ class DiscoveryDispatchProcessor:
                         discovery_job_id=job.id,
                         recrawl_request_id=job.recrawl_request_id,
                         claim_token=job.claim_token,
+                        exact_canary_target=self.exact_canary_target,
                     )
                     cancellable_dispatch = getattr(
                         self.dispatcher,
@@ -513,7 +520,18 @@ class DiscoveryDispatchProcessor:
                 dispatched=True,
             )
 
+        force_terminal_failures = (
+            self.force_terminal_failures or self.exact_canary_target is not None
+        )
         if isinstance(dispatch_error, DiscoveryRunTerminalizationIncompleteError):
+            if self.exact_canary_target is not None:
+                return self._record_disposition(
+                    job=job,
+                    job_status="failed",
+                    outcome="failed",
+                    last_error=str(dispatch_error),
+                    last_error_code=dispatch_error.failure_code,
+                )
             return self._record_disposition(
                 job=job,
                 job_status="pending",
@@ -530,7 +548,7 @@ class DiscoveryDispatchProcessor:
                 job_status="failed",
                 outcome=(
                     "fault_verified"
-                    if self.force_terminal_failures
+                    if force_terminal_failures
                     and getattr(dispatch_error, "fault_evidence_verified", False)
                     else "failed"
                 ),
@@ -544,13 +562,13 @@ class DiscoveryDispatchProcessor:
             DiscoveryFailureCode.DISPATCH_EXCEPTION,
         )
         next_attempt = job.attempt_count + 1
-        if self.force_terminal_failures or next_attempt >= self.max_attempts:
+        if force_terminal_failures or next_attempt >= self.max_attempts:
             return self._record_disposition(
                 job=job,
                 job_status="failed",
                 outcome=(
                     "fault_verified"
-                    if self.force_terminal_failures
+                    if force_terminal_failures
                     and getattr(dispatch_error, "fault_evidence_verified", False)
                     else "failed"
                 ),

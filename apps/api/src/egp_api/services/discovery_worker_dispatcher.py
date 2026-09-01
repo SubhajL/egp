@@ -80,6 +80,7 @@ from egp_shared_types.enums import (
     CrawlerBlockerCode,
     DiscoveryFailureCode,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 DISCOVER_WORKER_TIMEOUT_SECONDS = 3 * 60 * 60
@@ -658,11 +659,66 @@ def _decode_framed_or_fallback_result(
     return _decode_discovery_worker_result(stdout)
 
 
+_CANARY_PROOF_KEYS = frozenset(
+    {
+        "contract_version",
+        "target_digest",
+        "browser_started",
+        "page_sequence",
+        "max_pages_per_keyword",
+        "terminal_outcome",
+        "later_page_persisted",
+    }
+)
+
+
+def _validate_exact_canary_proof(
+    proof: object,
+    *,
+    target: ExactIngestionCanaryTarget,
+) -> None:
+    def invalid(reason: str) -> None:
+        raise DiscoverySpawnError(
+            f"invalid exact canary proof: {reason}",
+            failure_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+        )
+
+    if not isinstance(proof, dict) or set(proof) != _CANARY_PROOF_KEYS:
+        invalid("keys")
+    if proof.get("contract_version") != 1:
+        invalid("contract_version")
+    if proof.get("target_digest") != target.canonical_digest():
+        invalid("target_digest")
+    if proof.get("browser_started") is not True:
+        invalid("browser_started")
+    sequence = proof.get("page_sequence")
+    if (
+        not isinstance(sequence, list)
+        or any(type(page) is not int or page < 1 for page in sequence)
+        or sequence != list(range(1, len(sequence) + 1))
+        or len(sequence) < 5
+    ):
+        invalid("page_sequence")
+    if proof.get("max_pages_per_keyword") != target.max_pages_per_keyword:
+        invalid("max_pages_per_keyword")
+    terminal_outcome = proof.get("terminal_outcome")
+    if terminal_outcome in {"next_control_absent", "next_control_disabled"}:
+        pass
+    elif terminal_outcome == "max_pages_reached":
+        if sequence[-1] != target.max_pages_per_keyword:
+            invalid("max_pages_before_pinned_cap")
+    else:
+        invalid("terminal_outcome")
+    if proof.get("later_page_persisted") is not True:
+        invalid("later_page_persisted")
+
+
 def _validate_discovery_worker_result(
     result: dict[str, object],
     *,
     expected_run_id: str,
     keyword: str,
+    exact_canary_target: ExactIngestionCanaryTarget | None = None,
 ) -> tuple[str, DiscoveryFailureCode | None]:
     result_run_id = str(result.get("run_id") or "").strip()
     if result_run_id != expected_run_id:
@@ -672,6 +728,17 @@ def _validate_discovery_worker_result(
             failure_code=DiscoveryFailureCode.WORKER_RESULT_INVALID,
         )
     run_status = str(result.get("run_status") or "").strip().casefold()
+    if exact_canary_target is not None:
+        if run_status != "succeeded":
+            raise DiscoverySpawnError(
+                "exact canary worker did not succeed",
+                failure_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+            )
+        _validate_exact_canary_proof(
+            result.get("canary_proof"),
+            target=exact_canary_target,
+        )
+        return run_status, None
     if run_status not in {"succeeded", "partial", "failed"}:
         raise DiscoverySpawnError(
             f"discover worker returned invalid run_status {run_status!r} for keyword {keyword!r}",
@@ -1202,6 +1269,11 @@ class SubprocessDiscoveryDispatcher:
                         "live": request.live,
                         "live_include_documents": True,
                         "browser_settings": browser_settings,
+                        **(
+                            {"exact_canary_target": request.exact_canary_target.to_mapping()}
+                            if request.exact_canary_target is not None
+                            else {}
+                        ),
                     },
                     ensure_ascii=False,
                 ).encode()
@@ -1371,6 +1443,7 @@ class SubprocessDiscoveryDispatcher:
                         worker_result,
                         expected_run_id=run_id,
                         keyword=request.keyword,
+                        exact_canary_target=request.exact_canary_target,
                     )
                     if run_status == "failed":
                         error = str(worker_result.get("error") or "").strip()
@@ -1414,6 +1487,20 @@ class SubprocessDiscoveryDispatcher:
                     tenant_id=request.tenant_id,
                     run_id=run_id,
                 )
+                if request.exact_canary_target is not None:
+                    try:
+                        pending_log_events.append(
+                            json.dumps(
+                                {
+                                    "event": "canary_proof_validated",
+                                    "target_contract_version": request.exact_canary_target.contract_version,
+                                    "target_digest": request.exact_canary_target.canonical_digest(),
+                                },
+                                sort_keys=True,
+                            )
+                        )
+                    except Exception:
+                        pass
                 try:
                     pending_log_events.append(
                         make_event(

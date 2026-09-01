@@ -31,6 +31,7 @@ from egp_shared_types.enums import (
     CrawlerBlockerCode,
     DiscoveryFailureCode,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 PROFILE_ID = "22222222-2222-2222-2222-222222222222"
@@ -931,6 +932,53 @@ def test_incomplete_terminalization_overrides_terminal_attempt_rules(
     assert stored.attempt_count == 1
     assert stored.last_error == "reserved crawl run could not be durably terminalized"
     assert stored.last_error_code == DiscoveryFailureCode.DISPATCH_EXCEPTION
+
+
+def test_exact_canary_terminalization_gap_fails_closed(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-exact-incomplete.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    created = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    job = repo.claim_pending_discovery_jobs(limit=1)[0]
+    target = ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": TENANT_ID,
+            "job_id": created.id,
+            "profile_id": PROFILE_ID,
+            "keyword": "analytics",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+    error = DiscoveryRunTerminalizationIncompleteError(
+        "exact canary terminalization incomplete",
+        run_id="run-incomplete",
+        failure_code=DiscoveryFailureCode.CANARY_PROOF_INVALID,
+        original_error_type="RuntimeError",
+    )
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=RaisingDiscoveryDispatcher(error),
+        exact_canary_target=target,
+    )
+
+    result = processor.process_job(job=job)
+
+    assert result.outcome == "failed"
+    stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+    assert stored.job_status == "failed"
+    assert stored.last_error_code == DiscoveryFailureCode.CANARY_PROOF_INVALID
 
 
 @pytest.mark.parametrize("status", ["succeeded", "partial"])

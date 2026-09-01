@@ -56,6 +56,7 @@ from egp_db.repositories.discovery_job_repo import create_discovery_job_reposito
 from egp_db.repositories.profile_repo import create_profile_repository
 from egp_db.repositories.run_repo import CrawlRunRecord, create_run_repository
 from egp_shared_types.enums import CrawlerBlockerCode, DiscoveryFailureCode
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 
 
 logger = logging.getLogger(__name__)
@@ -324,6 +325,7 @@ def build_discovery_dispatch_runtime(
     fault_mode: str | None = None,
     fault_job_id: str | None = None,
     fault_tenant_id: str | None = None,
+    exact_canary_target: ExactIngestionCanaryTarget | None = None,
 ) -> DiscoveryDispatchRuntime:
     """Build repository-backed discovery dispatch runtime dependencies."""
 
@@ -344,6 +346,11 @@ def build_discovery_dispatch_runtime(
         value is not None for value in fault_values
     ):
         raise RuntimeError("regular target and fault target are mutually exclusive")
+    if exact_canary_target is not None and (
+        any(value is not None for value in target_values)
+        or any(value is not None for value in fault_values)
+    ):
+        raise RuntimeError("exact canary target is mutually exclusive with other targets")
 
     resolved_artifact_root = get_artifact_root(artifact_root)
     resolved_database_url = get_database_url(
@@ -386,8 +393,12 @@ def build_discovery_dispatch_runtime(
         target_tenant_id=(target_tenant_id if target_tenant_id is not None else fault_tenant_id),
         target_trigger_type="fault_injection" if fault_mode is not None else None,
         excluded_trigger_types=() if fault_mode is not None else ("fault_injection",),
-        require_non_live_target=(target_job_id is not None or fault_mode is not None),
-        force_terminal_failures=fault_mode is not None,
+        require_non_live_target=(
+            target_job_id is not None
+            or (fault_mode is not None and exact_canary_target is None)
+        ),
+        force_terminal_failures=(fault_mode is not None or exact_canary_target is not None),
+        exact_canary_target=exact_canary_target,
     )
     return DiscoveryDispatchRuntime(
         processor=processor,
@@ -762,7 +773,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_exact_canary_target(target_file: Path) -> tuple[str, str]:
+def _read_exact_canary_target(target_file: Path) -> ExactIngestionCanaryTarget:
     """Read one private regular-canary target without exposing its identifiers."""
 
     try:
@@ -770,16 +781,18 @@ def _read_exact_canary_target(target_file: Path) -> tuple[str, str]:
             raise ValueError("target_file_symlink")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(os.fspath(target_file), flags)
-    except (OSError, ValueError):
+    except ValueError:
+        raise
+    except OSError:
         raise ValueError("target_file_not_private") from None
 
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("target_file_not_regular")
-        if metadata.st_uid != os.getuid():
+        if metadata.st_uid != os.geteuid():
             raise ValueError("target_file_owner_invalid")
-        if metadata.st_mode & 0o077:
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
             raise ValueError("target_file_permissions_invalid")
         with os.fdopen(fd, "r", encoding="utf-8") as handle:
             fd = -1
@@ -793,23 +806,17 @@ def _read_exact_canary_target(target_file: Path) -> tuple[str, str]:
         if fd >= 0:
             os.close(fd)
 
-    if not isinstance(payload, dict) or set(payload) != {"tenant_id", "job_id"}:
-        raise ValueError("target_file_schema_invalid")
-    tenant_id = payload.get("tenant_id")
-    job_id = payload.get("job_id")
-    if not isinstance(tenant_id, str) or not isinstance(job_id, str):
-        raise ValueError("target_file_schema_invalid")
     try:
-        return str(UUID(job_id)), str(UUID(tenant_id))
+        return ExactIngestionCanaryTarget.from_mapping(payload)
     except ValueError:
-        raise ValueError("target_file_uuid_invalid") from None
+        raise ValueError("target_file_schema_invalid") from None
 
 
 def _authorize_exact_canary_target(
     args: argparse.Namespace,
     *,
     release_sha: str | None,
-) -> tuple[str, str] | None:
+) -> ExactIngestionCanaryTarget | None:
     target_file = args.target_file
     if target_file is None:
         return None
@@ -823,6 +830,8 @@ def _authorize_exact_canary_target(
         reason = "once_required"
     elif args.limit != 1:
         reason = "limit_one_required"
+    elif args.worker_count not in (None, 1):
+        reason = "worker_count_one_required"
     else:
         try:
             protocol = get_crawler_agent_protocol(None)
@@ -832,7 +841,7 @@ def _authorize_exact_canary_target(
             if protocol != "off":
                 reason = "agent_protocol_must_be_off"
 
-    target: tuple[str, str] | None = None
+    target: ExactIngestionCanaryTarget | None = None
     if reason is None:
         try:
             target = _read_exact_canary_target(target_file)
@@ -963,10 +972,25 @@ def _report_fault_injection_outcome(
     return matched
 
 
+def _exact_canary_outcome_matches(
+    *,
+    target: ExactIngestionCanaryTarget,
+    processed: DiscoveryDispatchBatchResult,
+) -> bool:
+    """Return whether the one-shot result proves exactly the pinned dispatch."""
+
+    return (
+        len(processed.dispositions) == 1
+        and processed.dispositions[0].job_id == target.job_id
+        and processed.dispositions[0].outcome == "dispatched"
+        and processed.dispositions[0].failure_code is None
+    )
+
+
 def _run_authorized_dispatch(
     args: argparse.Namespace,
     *,
-    exact_target: tuple[str, str] | None,
+    exact_target: ExactIngestionCanaryTarget | None,
     fault_mode: str | None,
     release_sha: str | None,
     runtime_factory,
@@ -995,7 +1019,7 @@ def _run_authorized_dispatch(
             runtime_kwargs["fault_job_id"] = args.fault_job_id
             runtime_kwargs["fault_tenant_id"] = args.fault_tenant_id
         if exact_target is not None:
-            runtime_kwargs["target_job_id"], runtime_kwargs["target_tenant_id"] = exact_target
+            runtime_kwargs["exact_canary_target"] = exact_target
         runtime = runtime_factory(args.database_url, **runtime_kwargs)
     except Exception as exc:
         _report_runtime_error(runtime_reporter, exc)
@@ -1065,6 +1089,11 @@ def _run_authorized_dispatch(
                 )
                 else 4
             )
+        if exact_target is not None:
+            return 0 if _exact_canary_outcome_matches(
+                target=exact_target,
+                processed=processed,
+            ) else 4
         return 3 if summary.exit_reason == "blocked" else 0
 
     try:

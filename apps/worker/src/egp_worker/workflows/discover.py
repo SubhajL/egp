@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
 import logging
@@ -43,10 +43,13 @@ from egp_shared_types.enums import (
     DocumentCaptureAttemptStatus,
     DocumentCaptureReason,
 )
+from egp_shared_types.exact_canary import ExactIngestionCanaryTarget
 from egp_worker.browser_downloads import ingest_downloaded_documents
 from egp_worker.browser_discovery import (
+    BrowserStartError,
     BrowserDiscoverySettings,
     LiveDiscoveryPartialError,
+    PaginationScanError,
     SearchPageStateError,
     crawl_live_discovery,
 )
@@ -79,9 +82,114 @@ _LIVE_CRAWL_ALWAYS_ANOMALY_STAGES = frozenset(
         "project_detail_missing_required_fields",
     }
 )
-_LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset({"keyword_no_results"})
+_LIVE_CRAWL_TERMINAL_ANOMALY_STAGES = frozenset()
 _KEYWORD_SCAN_SUMMARY_STAGE = "keyword_scan_summary"
 _BACKFILL_TRIGGER_TYPE = "backfill"
+
+
+@dataclass
+class LiveCanaryProofAccumulator:
+    """Build the bounded proof for one exact live-ingestion canary."""
+
+    target: ExactIngestionCanaryTarget
+    browser_started: bool = False
+    page_sequence: list[int] = field(default_factory=list)
+    max_pages_per_keyword: int | None = None
+    terminal_outcome: str | None = None
+    later_page_persisted: bool = False
+    _event_after_terminal: bool = False
+    _keyword_mismatch: bool = False
+    _page_sequence_invalid: bool = False
+    _max_pages_mismatch: bool = False
+    _terminal_page: int | None = None
+    _persistence_invalid: bool = False
+
+    def __post_init__(self) -> None:
+        if self.max_pages_per_keyword is None:
+            self.max_pages_per_keyword = self.target.max_pages_per_keyword
+
+    def record_progress(self, event: dict[str, object]) -> None:
+        """Record only browser, target-keyword page, and target terminal events."""
+        stage = str(event.get("stage") or "")
+        if stage == "browser_session_started":
+            if self.terminal_outcome is not None:
+                self._event_after_terminal = True
+            self.browser_started = True
+            return
+        if stage not in {"page_scan_finished", "pagination_terminal"}:
+            return
+        if self.terminal_outcome is not None:
+            self._event_after_terminal = True
+            return
+        if event.get("keyword") != self.target.keyword:
+            self._keyword_mismatch = True
+        page_number = event.get("page_num")
+        if type(page_number) is not int or page_number < 1:
+            self._page_sequence_invalid = True
+        else:
+            if stage == "page_scan_finished":
+                self.page_sequence.append(page_number)
+            else:
+                self._terminal_page = page_number
+        raw_cap = event.get("max_pages_per_keyword")
+        if raw_cap is not None:
+            if type(raw_cap) is not int or raw_cap != self.target.max_pages_per_keyword:
+                self._max_pages_mismatch = True
+            else:
+                self.max_pages_per_keyword = raw_cap
+        if stage == "pagination_terminal":
+            outcome = event.get("pagination_outcome")
+            if not isinstance(outcome, str) or not outcome.strip():
+                self._page_sequence_invalid = True
+            self.terminal_outcome = str(outcome or "").strip()
+
+    def record_persisted_candidate(self, *, page_number: int) -> None:
+        if type(page_number) is not int:
+            self._persistence_invalid = True
+            return
+        if page_number == 1:
+            return
+        if page_number < 1:
+            self._persistence_invalid = True
+            return
+        self.later_page_persisted = True
+
+    def build(self) -> dict[str, object]:
+        if self._event_after_terminal:
+            raise ValueError("event_after_terminal")
+        if self._keyword_mismatch:
+            raise ValueError("keyword_mismatch")
+        if self.browser_started is not True:
+            raise ValueError("browser_start_missing")
+        if self._page_sequence_invalid or self._max_pages_mismatch:
+            raise ValueError("page_sequence_invalid")
+        if (
+            any(type(page) is not int or page < 1 for page in self.page_sequence)
+            or self.page_sequence != list(range(1, len(self.page_sequence) + 1))
+        ):
+            raise ValueError("page_sequence_invalid")
+        if len(self.page_sequence) < 5:
+            raise ValueError("page_sequence_invalid")
+        if self.max_pages_per_keyword != self.target.max_pages_per_keyword:
+            raise ValueError("page_sequence_invalid")
+        if self.terminal_outcome is None:
+            raise ValueError("terminal_missing")
+        if self.terminal_outcome == "max_pages_reached":
+            if self._terminal_page != self.target.max_pages_per_keyword:
+                raise ValueError("max_pages_before_pinned_cap")
+        elif self.terminal_outcome not in {"next_control_absent", "next_control_disabled"}:
+            raise ValueError("terminal_outcome_invalid")
+        if self._persistence_invalid or self.later_page_persisted is not True:
+            raise ValueError("later_page_not_persisted")
+        return {
+            "contract_version": 1,
+            "target_digest": self.target.canonical_digest(),
+            "browser_started": True,
+            "page_sequence": list(self.page_sequence),
+            "max_pages_per_keyword": self.target.max_pages_per_keyword,
+            "terminal_outcome": self.terminal_outcome,
+            "later_page_persisted": True,
+        }
 
 
 def _log_candidate_terminal_conflict(
@@ -379,6 +487,7 @@ def run_discover_workflow(
     notification_dispatcher: NotificationDispatcher | None = None,
     candidate_attempt_repo: SqlCandidateAttemptRepository | None = None,
     live: bool = False,
+    exact_canary_target: ExactIngestionCanaryTarget | None = None,
     profile: str | None = None,
     live_discovery: Callable[[str], list[dict[str, object]]] | None = None,
     browser_settings: BrowserDiscoverySettings | None = None,
@@ -463,6 +572,12 @@ def run_discover_workflow(
     finalization_error_count = 0
     conflict_count = 0
     candidate_ledger: dict[str, object] | None = None
+    canary_proof_accumulator = (
+        LiveCanaryProofAccumulator(target=exact_canary_target)
+        if exact_canary_target is not None
+        else None
+    )
+    canary_candidate_pages: dict[str, int] = {}
 
     def _finalize_candidate(
         *,
@@ -655,6 +770,8 @@ def run_discover_workflow(
     def _record_live_progress(event: dict[str, object]) -> None:
         nonlocal live_crawl_anomaly_count, live_crawl_latest_anomaly, live_progress
         event_snapshot = _snapshot_live_progress_event(event)
+        if canary_proof_accumulator is not None:
+            canary_proof_accumulator.record_progress(event_snapshot)
         live_progress = {
             **event_snapshot,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -871,11 +988,19 @@ def run_discover_workflow(
             run_repository.mark_task_finished(
                 task.id, status="succeeded", result_json={"project_id": project.id}
             )
-            _finalize_candidate(
+            finalized = _finalize_candidate(
                 candidate_key=candidate_key_value,
                 status="persisted",
                 project_id=project.id,
             )
+            if canary_proof_accumulator is not None and finalized:
+                page_number = discovered.get("page_number")
+                if type(page_number) is not int and candidate_key_value is not None:
+                    page_number = canary_candidate_pages.get(candidate_key_value)
+                if type(page_number) is int:
+                    canary_proof_accumulator.record_persisted_candidate(
+                        page_number=page_number,
+                    )
             persisted_project_keys.add(project_key)
             persisted_projects.append(project)
             run_repository.update_run_summary(run.id, summary_json=_current_summary())
@@ -1004,6 +1129,8 @@ def run_discover_workflow(
                         else None
                     ),
                 )
+                if canary_proof_accumulator is not None and type(page_number) is int:
+                    canary_candidate_pages[candidate_key] = int(page_number)
                 return candidate_key
 
             def _record_live_candidate_terminal(
@@ -1043,6 +1170,10 @@ def run_discover_workflow(
 
         for discovered in resolved_projects:
             _persist_discovered_project(discovered)
+    except (PaginationScanError, BrowserStartError) as exc:
+        run_level_error = str(exc)
+        run_failure_code = exc.failure_code
+        error_count += 1
     except LiveDiscoveryPartialError as exc:
         run_level_error = str(exc)
         run_failure_code = DiscoveryFailureCode.LIVE_DISCOVERY_PARTIAL
@@ -1168,6 +1299,18 @@ def run_discover_workflow(
             summary_json = _current_summary()
             summary_json["error"] = run_level_error
             summary_json["failure_code"] = run_failure_code
+    canary_proof_invalid = False
+    if canary_proof_accumulator is not None:
+        try:
+            summary_json["canary_proof"] = canary_proof_accumulator.build()
+        except ValueError as exc:
+            canary_proof_invalid = True
+            error_count += 1
+            run_level_error = str(exc)
+            run_failure_code = DiscoveryFailureCode.CANARY_PROOF_INVALID
+            summary_json = _current_summary()
+            summary_json["error"] = run_level_error
+            summary_json["failure_code"] = run_failure_code
     ledger_error_count = 1 if ledger_error is not None else 0
     effective_error_count = error_count + live_crawl_anomaly_count + ledger_error_count
     if _is_backfill_trigger(trigger_type) and not persisted_projects and database_url is not None:
@@ -1195,7 +1338,7 @@ def run_discover_workflow(
                 ),
                 doc_count=0,
             )
-    if ledger_force_failed:
+    if canary_proof_invalid or ledger_force_failed:
         terminal_status = "failed"
     elif effective_error_count:
         terminal_status = "partial" if persisted_projects else "failed"

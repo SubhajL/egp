@@ -822,7 +822,7 @@ def test_run_discover_workflow_persists_live_progress(monkeypatch) -> None:
     }
 
 
-def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
+def test_run_discover_workflow_accepts_legitimate_live_keyword_no_results(
     monkeypatch,
 ) -> None:
     run_repository = FakeRunRepository()
@@ -853,9 +853,9 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
         live=True,
     )
 
-    assert result.run.run.status == "failed"
-    assert run_repository.finished_status == "failed"
-    assert run_repository.finished_error_count == 1
+    assert result.run.run.status == "succeeded"
+    assert run_repository.finished_status == "succeeded"
+    assert run_repository.finished_error_count == 0
     assert run_repository.finished_summary == {
         "projects_seen": 0,
         "live_progress": {
@@ -867,15 +867,6 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
                 "updated_at"
             ],
         },
-        "live_crawl_anomaly_count": 1,
-        "live_crawl_latest_anomaly": {
-            "stage": "keyword_no_results",
-            "keyword": "แพลตฟอร์ม",
-            "keyword_index": 1,
-            "keyword_count": 1,
-        },
-        "error": "live crawl anomaly: keyword_no_results",
-        "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
     }
     assert run_repository.tasks == [
         {
@@ -887,12 +878,8 @@ def test_run_discover_workflow_marks_live_keyword_no_results_as_failed(
                 "keyword": "แพลตฟอร์ม",
                 "source": "keyword_run",
             },
-            "status": "failed",
-            "result_json": {
-                "projects_seen": 0,
-                "error": "live crawl anomaly: keyword_no_results",
-                "failure_code": DiscoveryFailureCode.KEYWORD_NO_RESULTS,
-            },
+            "status": "succeeded",
+            "result_json": {"projects_seen": 0},
         }
     ]
     assert sink.discovery_events == []
