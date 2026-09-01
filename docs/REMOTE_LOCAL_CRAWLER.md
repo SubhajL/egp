@@ -107,13 +107,23 @@ After a full deploy to #139+, delete the override (the base compose then carries
    EGP_INTERNAL_WORKER_TOKEN=…            # the Mac sends this as X-EGP-Worker-Token
    EGP_CRAWLER_HEARTBEAT_STALE_AFTER_SECONDS=90
    ```
-2. Bring the stack up **without** the in-box crawler, **with** the tunnel overlay:
+2. Build the governed Python roles, run the one approved migrator with the tracked loopback
+   tunnel overlay, then deploy only the control-plane roles after discovery has stopped:
    ```bash
    cd /srv/egp
-   ./scripts/release_compose.sh --env-file /etc/egp/egp.env \
-     -f docker-compose.pg-tunnel.yml \
-     up -d --build --scale discovery-executor=0
-   docker compose --env-file /etc/egp/egp.env ps discovery-executor   # → 0 replicas
+   ./scripts/release_compose.sh --env-file /etc/egp/egp.env build \
+     migrate api webhook-executor crawler-agent-inbox-executor discovery-executor
+   ./scripts/release_compose.sh --with-pg-tunnel \
+     --env-file /etc/egp/egp.env run --rm migrate
+   (
+     ./scripts/release_compose.sh --with-pg-tunnel \
+       --env-file /etc/egp/egp.env stop discovery-executor &&
+     ./scripts/release_compose.sh --with-pg-tunnel \
+       --env-file /etc/egp/egp.env up -d --no-deps \
+       api webhook-executor crawler-agent-inbox-executor
+   )
+   ./scripts/release_compose.sh --with-pg-tunnel \
+     --env-file /etc/egp/egp.env ps discovery-executor   # → 0 replicas
    curl -fsS https://api.<domain>/ready
    ```
    > **U7c note.** `crawler-agent-inbox-executor` is a *different* service and must NOT be
@@ -122,7 +132,7 @@ After a full deploy to #139+, delete the override (the base compose then carries
    > `EGP_CRAWLER_AGENT_PROTOCOL=off` nothing new is produced for it, but it still drains
    > any already-accepted backlog — turning ingress off must not strand accepted results.
 
-   Scaling `discovery-executor=0` is **critical**: if the Lightsail executor runs it will
+   Keeping `discovery-executor` stopped is **critical**: if the Lightsail executor runs it will
    claim jobs and crawl headless → Cloudflare `401`. The Mac must be the only crawler.
 3. (Optional) Install the scheduled-enqueue timer so interval crawls keep getting queued
    even though the in-box executor is off:
@@ -204,11 +214,16 @@ executor. Code rollback may leave the additive heartbeat table in place.
 ### Always-on (launchd)
 
 ```bash
-scripts/install_launchd.sh install     # tunnel + watcher auto-start at login, restart on crash
-scripts/install_launchd.sh install --with-warm  # optional: also run keep-warm every 15 min
+scripts/install_launchd.sh install \
+  --acceptance-evidence <private-evidence-dir>/bundle-input.json
+scripts/install_launchd.sh install \
+  --acceptance-evidence <private-evidence-dir>/bundle-input.json --with-warm
 scripts/install_launchd.sh status
 scripts/install_launchd.sh uninstall
 ```
+Install always requires the current release's accepted private bundle input. The status and
+uninstall commands remain evidence-free. The `--with-warm` form is optional and also requires the same
+accepted bundle.
 By default two agents are installed: `com.egp.pg-tunnel` (the SSH tunnel) and
 `com.egp.remote-crawl` (the watcher — run under `caffeinate -i` so the Mac never
 idle-sleeps while actively watching). `com.egp.pg-warm` is optional; install it
@@ -244,7 +259,8 @@ run `scripts/run_remote_crawl.sh warm-profile` in foreground, clear Cloudflare i
 the visible browser, then run one bounded `scripts/run_remote_crawl.sh crawl 1`
 before re-enabling the watcher.
 
-When explicitly installed with `scripts/install_launchd.sh install --with-warm`,
+When explicitly installed with `scripts/install_launchd.sh install --acceptance-evidence
+<private-evidence-dir>/bundle-input.json --with-warm`,
 `com.egp.pg-warm` runs `run_remote_crawl.sh warm-profile` every 15 minutes to
 refresh that clearance, so scheduled/triggered crawls are less likely to hit a cold profile.
 It is **lock-safe**: `warm-profile` takes the *same* exclusive profile lock

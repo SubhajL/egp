@@ -68,6 +68,19 @@ def test_compose_builds_every_python_image_with_release_sha() -> None:
         assert "EGP_RELEASE_SHA" not in localdev[service_name].get("environment", {})
 
 
+def test_pg_tunnel_overlay_header_uses_governed_release_wrapper() -> None:
+    header = (
+        (REPO_ROOT / "docker-compose.pg-tunnel.yml")
+        .read_text(encoding="utf-8")
+        .split("services:", maxsplit=1)[0]
+    )
+
+    assert "./scripts/release_compose.sh --with-pg-tunnel" in header
+    assert "docker compose" not in header
+    assert "--scale discovery-executor=0" not in header
+    assert "-f docker-compose" not in header
+
+
 def test_ci_and_publish_workflows_stamp_exact_commit_sha() -> None:
     ci = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
     steps = {step.get("name"): step for step in ci["jobs"]["build"]["steps"]}
@@ -119,6 +132,10 @@ def _release_compose_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         _minimal_release_services(), encoding="utf-8"
     )
     shutil.copy2(RELEASE_COMPOSE_PATH, root / "docker-compose.release.yml")
+    (root / "docker-compose.pg-tunnel.yml").write_text(
+        "services:\n  postgres:\n    ports:\n      - '127.0.0.1:15432:5432'\n",
+        encoding="utf-8",
+    )
     (root / "docker-compose.override.yml").write_text(
         "services: {}\n", encoding="utf-8"
     )
@@ -129,6 +146,12 @@ def _release_compose_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         f"""#!/bin/sh
 case "$*" in
   *"rev-parse --verify HEAD"*) printf '%s\n' "${{FAKE_GIT_SHA:-{TARGET_SHA}}}" ;;
+  *"diff --cached --quiet -- docker-compose.pg-tunnel.yml"*) [ "${{FAKE_DRIVER_OVERLAY_DIRTY:-}}" != staged ] ;;
+  *"diff --quiet -- docker-compose.pg-tunnel.yml"*) [ "${{FAKE_DRIVER_OVERLAY_DIRTY:-}}" != unstaged ] ;;
+  *"ls-files --error-unmatch -- docker-compose.pg-tunnel.yml"*) [ "${{FAKE_DRIVER_OVERLAY_TRACKED:-1}}" = 1 ] ;;
+  *"diff --cached --quiet -- docker-compose.release.yml"*) [ "${{FAKE_DRIVER_RELEASE_DIRTY:-}}" != staged ] ;;
+  *"diff --quiet -- docker-compose.release.yml"*) [ "${{FAKE_DRIVER_RELEASE_DIRTY:-}}" != unstaged ] ;;
+  *"ls-files --error-unmatch -- docker-compose.release.yml"*) [ "${{FAKE_DRIVER_RELEASE_TRACKED:-1}}" = 1 ] ;;
   *"diff --cached --quiet --"*) [ "${{FAKE_GIT_DIRTY:-}}" != staged ] ;;
   *"diff --quiet --"*) [ "${{FAKE_GIT_DIRTY:-}}" != unstaged ] ;;
   *"ls-files --others --ignored"*)
@@ -175,11 +198,160 @@ def test_release_compose_derives_checkout_sha_and_overrides_caller(
     assert "compose" in result.stdout
     assert "docker-compose.yml" in result.stdout
     assert "docker-compose.release.yml" in result.stdout
+    assert "docker-compose.pg-tunnel.yml" not in result.stdout
     assert "docker-compose.override.yml" not in result.stdout
     assert "--env-file /etc/egp/egp.env up -d --build" in result.stdout
     assert f"cwd={script.parents[1]}" in result.stdout
     args = result.stdout.split("args=", maxsplit=1)[1].splitlines()[0]
     assert args.index("docker-compose.yml") < args.index("docker-compose.release.yml")
+
+
+def test_release_compose_adds_only_tracked_pg_tunnel_overlay_when_requested(
+    tmp_path: Path,
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+    rollback_root = tmp_path / "rollback-source"
+    rollback_root.mkdir()
+    (rollback_root / "docker-compose.yml").write_text(
+        _minimal_release_services(), encoding="utf-8"
+    )
+
+    result = subprocess.run(
+        [
+            str(script),
+            "--source-root",
+            str(rollback_root),
+            "--with-pg-tunnel",
+            "--env-file",
+            "/etc/egp/egp.env",
+            "run",
+            "--rm",
+            "migrate",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "docker-compose.override.yml" not in result.stdout
+    args = result.stdout.split("args=", maxsplit=1)[1].splitlines()[0]
+    base_index = args.index("docker-compose.yml")
+    release_index = args.index("docker-compose.release.yml")
+    tunnel_index = args.index("docker-compose.pg-tunnel.yml")
+    assert base_index < release_index < tunnel_index
+    assert "--env-file /etc/egp/egp.env run --rm migrate" in args
+
+
+@pytest.mark.parametrize("dirty_state", ["staged", "unstaged"])
+def test_release_compose_rejects_dirty_driver_pg_tunnel_overlay_with_source_root(
+    tmp_path: Path,
+    dirty_state: str,
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+    rollback_root = tmp_path / "rollback-source"
+    rollback_root.mkdir()
+    (rollback_root / "docker-compose.yml").write_text(
+        _minimal_release_services(), encoding="utf-8"
+    )
+    env["FAKE_DRIVER_OVERLAY_DIRTY"] = dirty_state
+
+    result = subprocess.run(
+        [
+            str(script),
+            "--source-root",
+            str(rollback_root),
+            "--with-pg-tunnel",
+            "config",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "trusted PostgreSQL tunnel overlay is dirty" in result.stderr
+    assert "release=" not in result.stdout
+
+
+@pytest.mark.parametrize("overlay_state", ["missing", "untracked"])
+def test_release_compose_rejects_unavailable_driver_pg_tunnel_overlay(
+    tmp_path: Path,
+    overlay_state: str,
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+    rollback_root = tmp_path / "rollback-source"
+    rollback_root.mkdir()
+    (rollback_root / "docker-compose.yml").write_text(
+        _minimal_release_services(), encoding="utf-8"
+    )
+    if overlay_state == "missing":
+        (script.parents[1] / "docker-compose.pg-tunnel.yml").unlink()
+    else:
+        env["FAKE_DRIVER_OVERLAY_TRACKED"] = "0"
+
+    result = subprocess.run(
+        [
+            str(script),
+            "--source-root",
+            str(rollback_root),
+            "--with-pg-tunnel",
+            "config",
+        ],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "trusted PostgreSQL tunnel overlay is unavailable" in result.stderr
+    assert "release=" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "overlay_state", ["missing", "untracked", "staged", "unstaged"]
+)
+def test_release_compose_rejects_untrusted_driver_release_overlay_with_source_root(
+    tmp_path: Path,
+    overlay_state: str,
+) -> None:
+    script, env = _release_compose_fixture(tmp_path)
+    rollback_root = tmp_path / "rollback-source"
+    rollback_root.mkdir()
+    (rollback_root / "docker-compose.yml").write_text(
+        _minimal_release_services(), encoding="utf-8"
+    )
+    release_overlay = script.parents[1] / "docker-compose.release.yml"
+    if overlay_state == "missing":
+        release_overlay.unlink()
+    elif overlay_state == "untracked":
+        env["FAKE_DRIVER_RELEASE_TRACKED"] = "0"
+    else:
+        env["FAKE_DRIVER_RELEASE_DIRTY"] = overlay_state
+
+    result = subprocess.run(
+        [str(script), "--source-root", str(rollback_root), "config"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    expected = (
+        "trusted release Compose overlay is unavailable"
+        if overlay_state in {"missing", "untracked"}
+        else "trusted release Compose overlay is dirty"
+    )
+    assert expected in result.stderr
+    assert "release=" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -361,6 +533,8 @@ def test_release_compose_ignores_implicit_override(tmp_path: Path) -> None:
     "file_args",
     [
         ["-f", "untrusted.yml"],
+        ["-funtrusted.yml"],
+        ["-f=untrusted.yml"],
         ["--file", "untrusted.yml"],
         ["--file=untrusted.yml"],
     ],

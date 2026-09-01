@@ -234,10 +234,14 @@ closes the procedural interval between count approval and the advisory-locked mi
 exactly one release-wrapper migration container:
 
 ```bash
-(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh run --rm migrate)
+(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh \
+  --with-pg-tunnel run --rm migrate)
 ```
 
-The runner loads the tracked migration bytes and verifies them against `manifest.sha256` before
+The dedicated `--with-pg-tunnel` flag adds the tracked loopback-only
+`docker-compose.pg-tunnel.yml` after the base and release files. It preserves the Mac database
+forward while retaining the wrapper's rejection of caller-selected Compose files. The runner
+loads the tracked migration bytes and verifies them against `manifest.sha256` before
 opening the database connection. It then obtains the nonblocking PostgreSQL advisory lock before
 reading or creating its ledger. Under the acquired lock, ledger creation and reads, stored-digest
 validation or backfill, and pending migration application use the already verified bytes. A legacy
@@ -356,13 +360,22 @@ and Compose-file overrides and does not load an implicit override; do not bypass
 Compose:
 
 ```bash
-(cd "$TRACK_BC_RELEASE_ROOT" && ./scripts/release_compose.sh up -d \
-  --scale discovery-executor=0 api webhook-executor crawler-agent-inbox-executor)
+(
+  cd "$TRACK_BC_RELEASE_ROOT" &&
+  ./scripts/release_compose.sh --with-pg-tunnel stop discovery-executor &&
+  ./scripts/release_compose.sh --with-pg-tunnel up -d --no-deps \
+    api webhook-executor crawler-agent-inbox-executor
+)
 ```
 
-Deploy the public web/Caddy/Vercel surface through its existing governed path. Do not start the
-Linux discovery executor; e-GP/Cloudflare blocks that browser topology and Track C is the selected
-MVP execution plane.
+Deploy the public web/Caddy/Vercel surface through its existing governed path. The explicit stop
+must complete before the targeted `up`; do not substitute a zero-scale option, because supported
+Compose versions may reject a zero-scaled service as disabled before applying the rest
+of the deployment. Do not start the Linux discovery executor; e-GP/Cloudflare blocks that browser
+topology and Track C is the selected MVP execution plane.
+The `--no-deps` gate is mandatory because the separately completed one-off migration is the only
+approved migrator for this interval; dependency reconciliation must not start the regular
+`migrate` service again.
 
 ## 9. Prove immutable Track B identity
 
@@ -378,9 +391,49 @@ For `migrate`, `api`, `webhook-executor`, `crawler-agent-inbox-executor`, and
 
 Use `scripts/smoke_runtime_images.sh` and bounded `docker inspect` allowlists. Do not save full
 container environments. Every role must match even though discovery executor is scaled to zero.
-For that zero-runtime role, create a stopped container from the release service solely for bounded
-identity inspection, verify its image ID matches the inspected image, then remove it before the
-executor-zero proof. Do not run its command.
+The one-off migration in section 7 used `--rm`, so it intentionally left no migrator container.
+Create separate no-dependency identity containers for both non-running roles by replacing their
+entrypoints with `/bin/true`. These containers do not execute either service command:
+
+```bash
+(
+  set -euo pipefail
+  MIGRATE_IMAGE_ID="$(
+    docker image inspect --format '{{.Id}}' "$(resolve_release_image migrate)"
+  )"
+  DISCOVERY_IMAGE_ID="$(
+    docker image inspect --format '{{.Id}}' "$(resolve_release_image discovery-executor)"
+  )"
+  [[ "$MIGRATE_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ "$DISCOVERY_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+  cd "$TRACK_BC_RELEASE_ROOT"
+  ./scripts/release_compose.sh --with-pg-tunnel run --no-deps --no-TTY \
+    --name egp-track-bc-migrate-identity --entrypoint /bin/true migrate
+  ./scripts/release_compose.sh --with-pg-tunnel run --no-deps --no-TTY \
+    --name egp-track-bc-discovery-identity --entrypoint /bin/true discovery-executor
+
+  MIGRATE_CONTAINER_IMAGE_ID="$(
+    docker inspect --type container --format '{{.Image}}' egp-track-bc-migrate-identity
+  )"
+  DISCOVERY_CONTAINER_IMAGE_ID="$(
+    docker inspect --type container --format '{{.Image}}' egp-track-bc-discovery-identity
+  )"
+  test "$MIGRATE_CONTAINER_IMAGE_ID" = "$MIGRATE_IMAGE_ID"
+  test "$DISCOVERY_CONTAINER_IMAGE_ID" = "$DISCOVERY_IMAGE_ID"
+  printf 'migrate %s %s\ndiscovery-executor %s %s\n' \
+    "$MIGRATE_IMAGE_ID" "$MIGRATE_CONTAINER_IMAGE_ID" \
+    "$DISCOVERY_IMAGE_ID" "$DISCOVERY_CONTAINER_IMAGE_ID" \
+    > <private-evidence-dir>/nonrunning-container-identity.txt
+  docker rm -f egp-track-bc-migrate-identity egp-track-bc-discovery-identity
+)
+```
+
+The subshell stops on the first creation, inspection, comparison, receipt-write, or cleanup error.
+On failure, do not continue to the executor-zero proof or inspect/remove a pre-existing container;
+resolve the partial identity-only container explicitly before rerunning. The receipt is written and
+both containers are removed only after their image IDs match the independently inspected immutable
+images.
 
 ## 10. Prove Track B discovery executor is zero
 
