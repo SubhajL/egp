@@ -259,7 +259,7 @@ def test_run_remote_crawl_exposes_read_only_observation_canary() -> None:
 
     assert "observe-canary)" in text
     assert "--observation-canary" in text
-    assert "--keyword" in text
+    assert "--target-file" in text
     assert "--max-pages 15" in text
     assert "--receipt" in text
     observation = text.split("run_observation_canary()", maxsplit=1)[1].split(

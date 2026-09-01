@@ -862,6 +862,8 @@ def _valid_canary_proof(target: ExactIngestionCanaryTarget) -> dict[str, object]
     "mutation",
     [
         "missing",
+        "version_bool",
+        "version_other",
         "digest",
         "sequence",
         "cap",
@@ -874,7 +876,11 @@ def test_exact_canary_worker_result_rejects_missing_or_invalid_proof(
 ) -> None:
     target = _exact_canary_target()
     proof = _valid_canary_proof(target)
-    if mutation == "digest":
+    if mutation == "version_bool":
+        proof["contract_version"] = True
+    elif mutation == "version_other":
+        proof["contract_version"] = 2
+    elif mutation == "digest":
         proof["target_digest"] = "0" * 64
     elif mutation == "sequence":
         proof["page_sequence"] = [1, 3, 4, 5]
@@ -962,3 +968,48 @@ def test_exact_canary_dispatch_forwards_target_and_logs_proof_before_finish(
     proof_event = events[names.index("canary_proof_validated")]
     assert proof_event["target_contract_version"] == 1
     assert proof_event["target_digest"] == target.canonical_digest()
+
+
+def test_exact_canary_dispatch_rejects_resolved_page_cap_before_run_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target = _exact_canary_target()
+
+    class WrongCapProfileRepository:
+        def get_profile_detail(self, *, tenant_id: str, profile_id: str):
+            assert tenant_id == target.tenant_id
+            assert profile_id == target.profile_id
+            return SimpleNamespace(
+                profile=SimpleNamespace(max_pages_per_keyword=5),
+            )
+
+    class NoReservationRunRepository:
+        def create_run(self, **values: object) -> None:
+            pytest.fail(f"run reserved before exact settings validation: {values}")
+
+    monkeypatch.setattr(
+        "egp_api.services.discovery_worker_dispatcher.subprocess.Popen",
+        lambda *args, **kwargs: pytest.fail("worker spawned with mismatched cap"),
+    )
+    dispatcher = _make_discover_spawner(
+        "postgresql://example.test/egp",
+        artifact_root=tmp_path / "artifacts",
+        run_repository=NoReservationRunRepository(),
+        profile_repository=WrongCapProfileRepository(),
+    )
+
+    with pytest.raises(DiscoverySpawnError) as exc_info:
+        dispatcher.dispatch(
+            DiscoveryDispatchRequest(
+                tenant_id=target.tenant_id,
+                profile_id=target.profile_id,
+                profile_type="tor",
+                keyword=target.keyword,
+                live=True,
+                discovery_job_id=target.job_id,
+                exact_canary_target=target,
+            )
+        )
+
+    assert exc_info.value.failure_code == DiscoveryFailureCode.CANARY_TARGET_MISMATCH

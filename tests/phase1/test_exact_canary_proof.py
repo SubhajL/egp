@@ -131,3 +131,42 @@ def test_live_canary_proof_rejects_page_before_browser_and_wrong_keyword() -> No
     )
     with pytest.raises(ValueError, match="keyword_mismatch"):
         wrong_keyword.build()
+
+
+def test_live_canary_proof_rejects_browser_start_after_page_events() -> None:
+    target = _target()
+    accumulator = LiveCanaryProofAccumulator(target=target)
+    accumulator.record_progress(
+        {"stage": "page_scan_finished", "keyword": target.keyword, "page_num": 1}
+    )
+    accumulator.record_progress(
+        {"stage": "browser_session_started", "browser_required": True}
+    )
+    for page_num in range(2, 6):
+        accumulator.record_progress(
+            {
+                "stage": "page_scan_finished",
+                "keyword": target.keyword,
+                "page_num": page_num,
+            }
+        )
+    accumulator.record_progress(
+        {
+            "stage": "pagination_terminal",
+            "keyword": target.keyword,
+            "page_num": 5,
+            "pagination_outcome": "next_control_absent",
+        }
+    )
+    accumulator.record_persisted_candidate(page_number=2)
+
+    with pytest.raises(ValueError, match="event_before_browser"):
+        accumulator.build()
+
+
+def test_live_canary_proof_rejects_terminal_page_mismatch() -> None:
+    accumulator = _accepted_accumulator()
+    accumulator._terminal_page = 4
+
+    with pytest.raises(ValueError, match="terminal_page_mismatch"):
+        accumulator.build()

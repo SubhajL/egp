@@ -134,11 +134,68 @@ def test_exact_canary_worker_forwards_target_and_returns_bounded_proof(
             "database_url": "postgresql://example.test/egp",
             "tenant_id": target.tenant_id,
             "profile_id": target.profile_id,
+            "agent_job_id": target.job_id,
             "keyword": target.keyword,
             "live": True,
+            "execution_backend": "legacy",
+            "browser_max_pages_per_keyword": 15,
             "exact_canary_target": target.to_mapping(),
         }
     )
 
     assert captured["exact_canary_target"] == target
     assert result["canary_proof"] == proof
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenant_id", "99999999-9999-9999-9999-999999999999"),
+        ("profile_id", "99999999-9999-9999-9999-999999999999"),
+        ("agent_job_id", "99999999-9999-9999-9999-999999999999"),
+        ("keyword", "wrong keyword"),
+        ("live", False),
+        ("execution_backend", "agent"),
+        ("browser_max_pages_per_keyword", 5),
+    ],
+)
+def test_exact_canary_worker_rejects_effective_input_mismatch_before_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    target = ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "job_id": "22222222-2222-2222-2222-222222222222",
+            "profile_id": "33333333-3333-3333-3333-333333333333",
+            "keyword": "วิเคราะห์ข้อมูล",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+    payload: dict[str, object] = {
+        "command": "discover",
+        "database_url": "postgresql://example.test/egp",
+        "tenant_id": target.tenant_id,
+        "profile_id": target.profile_id,
+        "agent_job_id": target.job_id,
+        "keyword": target.keyword,
+        "live": True,
+        "execution_backend": "legacy",
+        "browser_max_pages_per_keyword": 15,
+        "exact_canary_target": target.to_mapping(),
+    }
+    payload[field] = value
+    monkeypatch.setattr(
+        worker_main,
+        "run_discover_workflow",
+        lambda **kwargs: pytest.fail(f"workflow started with mismatched target: {kwargs}"),
+    )
+
+    with pytest.raises(ValueError, match="exact canary target mismatch"):
+        worker_main.run_worker_job(payload)

@@ -56,6 +56,7 @@ def test_exact_canary_target_round_trips_and_hashes_canonical_contract() -> None
         ("execution_backend", "agent"),
         ("browser_required", False),
         ("max_pages_per_keyword", 0),
+        ("max_pages_per_keyword", 14),
         ("max_pages_per_keyword", 16),
     ],
 )

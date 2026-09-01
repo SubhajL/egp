@@ -1022,6 +1022,53 @@ def test_durable_completed_run_terminally_dispatches_queue_job(
     assert stored.attempt_count == 1
 
 
+def test_exact_canary_completed_run_without_validated_proof_fails_closed(tmp_path) -> None:
+    repo = SqlDiscoveryJobRepository(
+        database_url=f"sqlite+pysqlite:///{tmp_path / 'exact-completed.sqlite3'}",
+        bootstrap_schema=True,
+    )
+    _seed_profile_row(repo)
+    created = repo.create_discovery_job(
+        tenant_id=TENANT_ID,
+        profile_id=PROFILE_ID,
+        profile_type="custom",
+        keyword="analytics",
+    )
+    job = repo.claim_pending_discovery_jobs(limit=1)[0]
+    target = ExactIngestionCanaryTarget.from_mapping(
+        {
+            "contract_version": 1,
+            "kind": "exact_ingestion_canary",
+            "tenant_id": TENANT_ID,
+            "job_id": created.id,
+            "profile_id": PROFILE_ID,
+            "keyword": "analytics",
+            "live": True,
+            "execution_backend": "legacy",
+            "browser_required": True,
+            "max_pages_per_keyword": 15,
+        }
+    )
+    processor = DiscoveryDispatchProcessor(
+        repository=repo,
+        dispatcher=RaisingDiscoveryDispatcher(
+            DiscoveryRunAlreadyCompletedError(
+                run_id="44444444-4444-4444-4444-444444444444",
+                status="succeeded",
+            )
+        ),
+        exact_canary_target=target,
+    )
+
+    result = processor.process_job(job=job)
+
+    assert result.outcome == "failed"
+    assert result.failure_code == DiscoveryFailureCode.CANARY_PROOF_INVALID
+    stored = repo.get_discovery_job(tenant_id=TENANT_ID, job_id=job.id)
+    assert stored.job_status == "failed"
+    assert stored.last_error_code == DiscoveryFailureCode.CANARY_PROOF_INVALID
+
+
 def test_dispatch_renews_lease_during_blocking_worker(tmp_path) -> None:
     repo = SqlDiscoveryJobRepository(
         database_url=f"sqlite+pysqlite:///{tmp_path / 'dispatch-renewal.sqlite3'}",

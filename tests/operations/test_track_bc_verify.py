@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import UTC, datetime
+import hashlib
 import json
 from pathlib import Path
 from uuid import UUID
@@ -523,6 +524,7 @@ def _seed_canary_chain(
     database_url: str,
     evidence_path: Path,
     storage_key: str,
+    artifact_sha256: str,
 ) -> tuple[str, str, str]:
     tenant_id = "11111111-1111-1111-1111-111111111111"
     profile_id = "22222222-2222-2222-2222-222222222222"
@@ -616,7 +618,7 @@ def _seed_canary_chain(
                     sha256, storage_key
                 ) VALUES (%s, %s, 'tor', 'final', '', '', 'contract.pdf', 7, %s, %s)
                 """,
-                (tenant_id, project_id, "f" * 64, storage_key),
+                (tenant_id, project_id, artifact_sha256, storage_key),
             )
             cursor.execute(
                 """
@@ -685,6 +687,7 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
             database_url=database_url,
             evidence_path=evidence_path,
             storage_key=storage_key,
+            artifact_sha256=hashlib.sha256(b"canary!").hexdigest(),
         )
         profile_dir = tmp_path / "chrome-profile"
         profile_dir.mkdir()
@@ -706,6 +709,37 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
             expected_release_sha=RELEASE_SHA,
             profile_dir=profile_dir,
         )
+
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_profiles SET profile_type = 'custom' WHERE id = %s",
+                    (_seed_exact_target().profile_id,),
+                )
+                cursor.execute(
+                    "UPDATE discovery_jobs SET profile_type = 'custom' WHERE id = %s",
+                    (job_id,),
+                )
+            connection.commit()
+        matching_non_tor_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
+        )
+        with connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE crawl_profiles SET profile_type = 'tor' WHERE id = %s",
+                    (_seed_exact_target().profile_id,),
+                )
+                cursor.execute(
+                    "UPDATE discovery_jobs SET profile_type = 'tor' WHERE id = %s",
+                    (job_id,),
+                )
+            connection.commit()
 
         request_path = tmp_path / "private-canary-request.json"
         output_path = tmp_path / "canary-receipt.json"
@@ -737,6 +771,16 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
                 "--output",
                 str(output_path),
             ]
+        )
+
+        artifacts.put_bytes(key=storage_key, data=b"tampered")
+        tampered_artifact_evidence_v2 = collect_canary_evidence_v2(
+            database_url=database_url,
+            artifact_store=artifacts,
+            target=_seed_exact_target(),
+            run_id=run_id,
+            expected_release_sha=RELEASE_SHA,
+            profile_dir=profile_dir,
         )
 
         with connect(database_url) as connection:
@@ -793,6 +837,9 @@ def test_canary_collector_probes_postgres_artifact_evidence_process_and_profile(
         evidence_v2, expected_release_sha=RELEASE_SHA
     )
     assert report_v2.status == "accepted"
+    assert matching_non_tor_evidence_v2["exact_target_match"] is True
+    assert matching_non_tor_evidence_v2["artifact_retrievable"] is True
+    assert tampered_artifact_evidence_v2["artifact_retrievable"] is False
     stdout = capsys.readouterr().out
     assert exit_code == 0
     assert json.loads(stdout)["status"] == "accepted"
@@ -1161,6 +1208,10 @@ def test_public_mvp_runbook_separates_observation_and_exact_ingestion_canaries()
     assert '"schema_version": 2' in runbook
     assert "runtime <= observation <= canary <= supervised <= rollback" in runbook
     assert "low-volume, non-live profile/job" not in runbook
+    assert "migrations 038-040" in runbook
+    assert "migration ledger ends at 040" in runbook
+    assert "observation/canary target-fingerprint mismatch" in runbook
+    assert "observe-canary \\\n+  <private-evidence-dir>/canary-target.json" in runbook
 
 
 def _exact_target_v1():
@@ -1247,6 +1298,11 @@ def test_private_canary_request_v2_is_owner_only_and_rejects_v1(
         "44444444-4444-4444-4444-444444444444",
     )
 
+    request.chmod(0o400)
+    with pytest.raises(ValueError, match="invalid_canary_request"):
+        _read_private_canary_request_v2(request)
+    request.chmod(0o600)
+
     request.write_text(
         json.dumps(
             {
@@ -1279,7 +1335,31 @@ def test_canary_verification_v2_accepts_exact_correlated_proof_and_redacts_targe
     assert target.tenant_id not in serialized
     assert target.job_id not in serialized
     assert target.profile_id not in serialized
-    assert target.canonical_digest() not in serialized
+    assert report.target_fingerprint == target.canonical_digest()
+
+
+@pytest.mark.parametrize("contract_version", [True, 2])
+def test_canary_proof_v2_rejects_non_strict_contract_version(
+    contract_version: object,
+) -> None:
+    from scripts.track_bc_verify import _canary_proof_checks
+
+    target = _exact_target_v1()
+    proof = {
+        "contract_version": contract_version,
+        "target_digest": target.canonical_digest(),
+        "browser_started": True,
+        "page_sequence": [1, 2, 3, 4, 5],
+        "max_pages_per_keyword": 15,
+        "terminal_outcome": "next_control_absent",
+        "later_page_persisted": True,
+    }
+
+    assert _canary_proof_checks(
+        proof,
+        target_digest=target.canonical_digest(),
+        max_pages_per_keyword=15,
+    )[0] is False
 
 
 @pytest.mark.parametrize(
@@ -1326,6 +1406,7 @@ def _accepted_observation_receipt(observed_at: str) -> dict[str, object]:
             "terminal_outcome": "next_control_absent",
         },
         "errors": [],
+        "target_fingerprint": _exact_target_v1().canonical_digest(),
     }
 
 
@@ -1370,6 +1451,62 @@ def test_bundle_v2_requires_runtime_observation_canary_v2_supervision_and_rollba
     assert report.schema_version == 2
     assert report.status == "accepted"
     assert all(report.checks.values())
+
+
+def test_bundle_v2_rejects_observation_for_different_exact_target() -> None:
+    from scripts.track_bc_verify import verify_acceptance_bundle_v2
+
+    evidence = _accepted_bundle_evidence_v2()
+    receipts = evidence["receipts"]
+    assert isinstance(receipts, list)
+    observation = receipts[1]
+    assert isinstance(observation, dict)
+    observation["target_fingerprint"] = "b" * 64
+
+    report = verify_acceptance_bundle_v2(
+        evidence,
+        expected_release_sha=RELEASE_SHA,
+        observed_at=datetime(2026, 8, 24, 8, 30, tzinfo=UTC),
+    )
+
+    assert report.status == "rejected"
+    assert "target_fingerprint_mismatch" in report.errors
+
+
+def test_bundle_cli_rejects_receipts_far_in_the_future(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from scripts.track_bc_verify import main
+
+    evidence = _accepted_bundle_evidence_v2()
+    receipts = evidence["receipts"]
+    assert isinstance(receipts, list)
+    for index, receipt in enumerate(receipts, start=1):
+        assert isinstance(receipt, dict)
+        receipt["observed_at"] = f"2099-01-01T00:0{index}:00+00:00"
+    rollback = evidence["rollback"]
+    assert isinstance(rollback, dict)
+    rollback["observed_at"] = "2099-01-01T00:05:00+00:00"
+    evidence_path = tmp_path / "future-bundle.json"
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "bundle",
+            "--evidence",
+            str(evidence_path),
+            "--expected-release-sha",
+            RELEASE_SHA,
+            "--max-age-seconds",
+            "3153600000",
+        ]
+    )
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "rejected"
+    assert "stage_receipt_future" in payload["errors"]
 
 
 @pytest.mark.parametrize("mutation", ["missing_observation", "canary_v1", "reordered"])

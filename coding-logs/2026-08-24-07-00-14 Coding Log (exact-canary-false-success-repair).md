@@ -495,3 +495,31 @@ Run the affected pytest command three consecutive times after the full gate.
 - `git diff --check`: passed.
 - Repository-wide `ruff format --check` diagnostic is not a clean baseline: it reports 53 files across untouched areas and existing modified areas. No formatter mutation was performed; root required gates use Ruff lint plus compileall.
 - `uv lock --check` could not run because `uv` is unavailable in the host PATH; dependency files were not changed.
+
+## Formal g-check and independent QCHECK - initial disposition
+
+Formal RepoPrompt review used staged deep snapshot `2026-08-24/1105`. Independent Terra QCHECK also reviewed the complete candidate and ran 119 focused tests. Commit and delivery are blocked until the findings below are remediated and re-reviewed.
+
+### P0
+
+1. **Exact completed-run recovery bypasses proof rejection** (`discovery_dispatch.py`): `DiscoveryRunAlreadyCompletedError` becomes a dispatched disposition even in exact mode. Disposition: valid; add RED and fail exact recovery closed unless durable exact proof is independently validated.
+2. **Browser recovery can mislabel physical pages** (`browser_discovery.py`): after Chrome restart/search the DOM is page 1, but the collector initializes its logical counter from the pre-crash page without navigating there. Disposition: valid; add DOM-marker/resume RED and restore the physical page before emitting proof.
+3. **Bundle CLI neutralizes future-time checks** (`track_bc_verify.py`): it adopts the latest future receipt timestamp as the reference clock. Disposition: valid; add CLI future-evidence RED and always use actual UTC time with the existing bounded skew.
+
+### P1
+
+1. **Target authorization and verification disagree**: target parsing accepts caps 1-15 while current exact acceptance requires 15; verifier additionally hard-codes TOR without that field in the contract. Disposition: valid; require cap exactly 15 at authorization and bind effective profile type through equality rather than an uncontracted verifier-only constant.
+2. **Proof event ordering is incomplete**: pages can precede browser start and terminal page is not tied to the final scanned page. Disposition: valid; add ordering/terminal-page REDs.
+3. **Exact target is not bound to effective worker inputs/settings**: parsed target fields can diverge from payload inputs or resolved browser cap. Disposition: valid; validate all target identities/live/backend/cap before browser or persistence work.
+4. **Observation is not correlated with ingestion target and weakly validates keyword**: a bundle can combine keyword A observation with keyword B ingestion; trimmedness only becomes a receipt boolean. Disposition: valid and independently confirmed; observation will consume the same private target and both receipts will carry a sanitized correlation fingerprint enforced by bundle v2. Invalid keyword input will fail before Chrome.
+5. **Verifier proof version is unchecked**: proof mappings can use another version; boolean `True` can compare equal to integer 1 in weak validators. Disposition: valid; require strict integer version 1 everywhere.
+6. **Artifact verification checks existence only**: storage-key existence does not prove persisted content integrity. Disposition: valid; verify persisted digest/size against retrieved bytes while keeping receipt output sanitized.
+7. **Observation can race/clear the production profile**: it does not hold the native dispatch/profile lock before Chrome launch. Disposition: valid; acquire the same lock and fail closed before clearing singleton locks.
+8. **Runbook still ends migration lifecycle at 039**: independently confirmed; migration 040 must be included in scope, ledger, and pre/post requirements.
+
+### P2
+
+1. **Observation browser handle cleanup is skipped**: nested assignment does not update the outer browser variable. Disposition: valid; retain and close the browser handle with a regression.
+2. **Verifier request permission check differs from executor**: accepts any owner-only mode and real UID. Disposition: valid; require exact 0600 and effective UID.
+
+Residual review risk: receipts remain custody-based rather than cryptographically signed; this is acceptable only under the documented private evidence handling and is not expanded in this repair.

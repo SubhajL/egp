@@ -25,7 +25,7 @@ into the operations record after inspection.
 Record the following before any production write:
 
 - operator and timestamp;
-- the exact authorized scope: database backup, artifact backup, migrations 038/039, Track B
+- the exact authorized scope: database backup, artifact backup, migrations 038-040, Track B
   deployment, Mac Track C cutover, one bounded canary, bounded supervision, rollback rehearsal,
   and launchd installation;
 - the frozen merge SHA;
@@ -48,7 +48,7 @@ Stop without retrying or mutating further when any of these occurs:
 - rollback rehearsal is incomplete;
 - an expected credential, host, environment, or authority record is unavailable.
 
-Do not rewrite an applied migration. After migration 039, backout is pause-and-fix-forward unless a
+Do not rewrite an applied migration. After migration 040, backout is pause-and-fix-forward unless a
 separately approved database restore is required.
 
 ## 1. Freeze one exact release SHA
@@ -149,7 +149,7 @@ byte-mismatched manifest entries. `ready_with_repairs` is reviewable, not automa
 Migration 039 deletes only the reported orphan/cross-tenant-run category; explicitly acknowledge
 that exact count before continuing. Stop on any unexplained category or count.
 
-## 7. Apply migrations 038/039 with one migrator
+## 7. Apply migrations 038-040 with one migrator
 
 Immediately before migration, while writers remain quiesced, rerun the phase-`pre` command and
 require the active-run count and all candidate/repair counts to match the approved receipt. This
@@ -176,9 +176,11 @@ preflight candidate count and approved orphan-run deletion count:
   > <private-evidence-dir>/candidate-postflight.json
 ```
 
-Require status `ready`, migration 039 applied, every repair count zero, and
-`survivor_delta_matches=true`. Also confirm the migration ledger ends at 039 and `/ready` reports no
-pending migration.
+Require status `ready`, migrations 039 and 040 applied, every repair count zero, and
+`survivor_delta_matches=true`. Migration 040 must recreate
+`discovery_jobs_last_error_code_check` with the browser, pagination, target, and proof failure
+codes used by the exact canary. Also confirm the migration ledger ends at 040 and `/ready` reports
+no pending migration.
 
 ## 8. Deploy Track B Python roles
 
@@ -297,12 +299,15 @@ and that the scan ended with a typed successful terminal outcome. `next_control_
 
 ```bash
 scripts/run_remote_crawl.sh observe-canary \
-  --keyword '<exact-approved-keyword>' \
+  <private-evidence-dir>/canary-target.json \
   --receipt <private-evidence-dir>/observation-receipt.json
 ```
 
-Require the sanitized observation receipt to have schema 1, stage `observation`, status
-`accepted`, the exact release SHA, `browser_started=true`, `page_sequence` beginning
+The observation command reads the same mode-0600 exact target used by ingestion, acquires the
+shared persistent-profile lock before Chrome, and derives the keyword and target fingerprint from
+that file. Require the sanitized observation receipt to have schema 1, stage `observation`, status
+`accepted`, the exact release SHA, the same target fingerprint as the later schema-2 canary
+receipt, `browser_started=true`, `page_sequence` beginning
 `[1,2,3,4,5]`, `eligible_invitation_page>=2`, `max_pages_per_keyword=15`,
 `persistence_disabled=true`, and `shared_parser=true`.
 
@@ -430,8 +435,9 @@ Create the private bundle input containing exactly one runtime-stage receipt, on
 receipt, one schema-2 canary receipt, one supervised receipt, and the rollback object. Their UTC
 timestamps and array order must satisfy
 `runtime <= observation <= canary <= supervised <= rollback`; a missing observation, downgraded
-schema-1 canary, reordered stage, or newly re-stamped old input is rejected. Verify and save the
-sanitized schema-2 final receipt:
+schema-1 canary, observation/canary target-fingerprint mismatch, reordered stage, future-dated
+receipt, or newly re-stamped old input is rejected. Verify and save the sanitized schema-2 final
+receipt:
 
 ```bash
 .venv/bin/python scripts/track_bc_verify.py bundle \
