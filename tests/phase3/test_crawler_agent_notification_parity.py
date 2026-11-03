@@ -467,11 +467,11 @@ def test_inbox_executor_compose_services_pass_the_smtp_configuration() -> None:
     }
     for compose_name in ("docker-compose.yml", "docker-compose-localdev.yml"):
         compose = yaml.safe_load((REPO_ROOT / compose_name).read_text())
-        environment = compose["services"]["crawler-agent-inbox-executor"][
-            "environment"
-        ]
+        environment = compose["services"]["crawler-agent-inbox-executor"]["environment"]
         missing = required - set(environment)
-        assert not missing, f"{compose_name}: {sorted(missing)} missing from the executor"
+        assert not missing, (
+            f"{compose_name}: {sorted(missing)} missing from the executor"
+        )
 
 
 def test_agent_sourced_notification_emails_only_the_owning_tenants_recipients(

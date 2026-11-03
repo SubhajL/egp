@@ -101,8 +101,8 @@ def rotate_log_copytruncate(
             return False
         prefix = path.name + "."
         for f in path.parent.iterdir():
-            if f.name.startswith(prefix) and f.name[len(prefix):].isdigit():
-                n = int(f.name[len(prefix):])
+            if f.name.startswith(prefix) and f.name[len(prefix) :].isdigit():
+                n = int(f.name[len(prefix) :])
                 if n > max_files:
                     f.unlink()
         for n in range(max_files, 0, -1):

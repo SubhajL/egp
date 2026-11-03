@@ -368,12 +368,12 @@ def test_the_service_derives_the_delivery_mode_from_the_protocol() -> None:
 
     from egp_api.services.crawler_agent_service import CrawlerAgentService
 
-    assert CrawlerAgentService(repository=object(), protocol="shadow").delivery_mode == (
-        "shadow"
-    )
-    assert CrawlerAgentService(repository=object(), protocol="primary").delivery_mode == (
-        "primary"
-    )
+    assert CrawlerAgentService(
+        repository=object(), protocol="shadow"
+    ).delivery_mode == ("shadow")
+    assert CrawlerAgentService(
+        repository=object(), protocol="primary"
+    ).delivery_mode == ("primary")
 
 
 # ----------------------------------------------------------------------

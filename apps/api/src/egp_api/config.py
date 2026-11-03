@@ -46,9 +46,7 @@ def get_crawler_agent_protocol(
         return "off"
     if raw in {"off", "shadow", "primary"}:
         return raw
-    raise RuntimeError(
-        "EGP_CRAWLER_AGENT_PROTOCOL must be one of: off, shadow, primary"
-    )
+    raise RuntimeError("EGP_CRAWLER_AGENT_PROTOCOL must be one of: off, shadow, primary")
 
 
 def validate_background_runtime_topology(

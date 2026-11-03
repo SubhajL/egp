@@ -221,7 +221,10 @@ def test_record_inbox_heartbeat_upserts_on_processor_id(
     repository, migrated_database_url: str
 ) -> None:
     repository.record_inbox_heartbeat(
-        processor_id="inbox-1", status="running", backlog_depth=1, last_outcome="applied"
+        processor_id="inbox-1",
+        status="running",
+        backlog_depth=1,
+        last_outcome="applied",
     )
     repository.record_inbox_heartbeat(
         processor_id="inbox-1", status="running", backlog_depth=7, last_outcome="idle"
@@ -229,9 +232,7 @@ def test_record_inbox_heartbeat_upserts_on_processor_id(
 
     with connect(migrated_database_url) as connection:
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT count(*) FROM crawler_agent_inbox_heartbeats"
-            )
+            cursor.execute("SELECT count(*) FROM crawler_agent_inbox_heartbeats")
             assert cursor.fetchone()[0] == 1
             cursor.execute(
                 "SELECT backlog_depth, last_outcome, status, reported_at, updated_at "
@@ -393,7 +394,9 @@ def test_processor_heartbeats_even_when_it_claims_nothing(
     assert health.heartbeat_processor_id == "idle-processor"
 
 
-def test_a_heartbeat_failure_never_interrupts_draining(migrated_database_url: str) -> None:
+def test_a_heartbeat_failure_never_interrupts_draining(
+    migrated_database_url: str,
+) -> None:
     """Telemetry must not break the thing it observes.
 
     The raising repository is a double injected to make an otherwise unreachable
@@ -471,7 +474,7 @@ def test_agent_queue_snapshot_counts_only_agent_backed_jobs(
                          next_attempt_at, execution_backend, claim_token,
                          lease_expires_at)
                     VALUES (%s, %s, %s, 'custom', %s, {next_attempt}, %s, %s,
-                            {lease or 'NULL'})
+                            {lease or "NULL"})
                     """,
                     (str(uuid4()), tenant_id, profile_id, keyword, backend, claim),
                 )
@@ -723,12 +726,18 @@ def test_inbox_health_route_rejects_a_viewer_and_allows_an_operator(
         )
         return {"Authorization": f"Bearer {token}"}
 
-    assert client.get(
-        "/v1/rules/crawler-agent-inbox", headers=_headers("viewer")
-    ).status_code == 403
-    assert client.get(
-        "/v1/rules/crawler-agent-inbox", headers=_headers("analyst")
-    ).status_code == 200
+    assert (
+        client.get(
+            "/v1/rules/crawler-agent-inbox", headers=_headers("viewer")
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(
+            "/v1/rules/crawler-agent-inbox", headers=_headers("analyst")
+        ).status_code
+        == 200
+    )
 
 
 def test_compose_services_receive_the_new_liveness_variables() -> None:

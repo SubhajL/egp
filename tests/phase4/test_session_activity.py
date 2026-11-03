@@ -111,7 +111,9 @@ def test_conditional_activity_touch_coalesces_and_cannot_touch_revoked_session(
     assert (first, second, revoked) == (1, 0, 0)
 
 
-def test_session_database_unavailability_returns_generic_503_with_cors(tmp_path) -> None:
+def test_session_database_unavailability_returns_generic_503_with_cors(
+    tmp_path,
+) -> None:
     client = _create_client(tmp_path)
 
     async def unavailable(token: str):

@@ -817,9 +817,7 @@ def _seed_webhook_delivery_failure(
 
 
 def _auth_headers(*, tenant_id: str = TENANT_ID, role: str) -> dict[str, str]:
-    token = mint_machine_jwt(
-        secret=JWT_SECRET, tenant_id=tenant_id, role=role
-    )
+    token = mint_machine_jwt(secret=JWT_SECRET, tenant_id=tenant_id, role=role)
     return {"Authorization": f"Bearer {token}"}
 
 
