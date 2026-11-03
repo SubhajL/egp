@@ -231,3 +231,34 @@ exception, NOT an accepted pre-commit gate verdict. A draft PR may expose the
 candidate and request fresh CI, but is not ready for review/merge and must retain
 all blockers prominently. No admin merge, main update, publishing, deployment or
 next implementation item is permitted while these mandatory gates fail.
+
+## Actual draft delivery / terminal blocker
+
+Source checkpoint e91eee374034fa43902164ec90c2e0b0edff47d8 retained on local
+wip/c1-attempt-1 and the session-owned feature branch, pushed only to that feature.
+Git's normal staged Ruff hook passed; no hooks or required checks were bypassed.
+Draft PR: https://github.com/SubhajL/egp/pull/235 (explicitly BLOCKED/do not merge).
+Fresh CI: https://github.com/SubhajL/egp/actions/runs/41741610533, same checkpoint;
+all seven jobs FAILED with zero steps. Fresh annotation again says the account
+is locked due to a billing issue. This now proves a current billing refusal, not
+merely the historical September run. Publisher remains disabled_manually.
+
+No billing payment/plan/budget change was made. GitHub's official unlock procedure
+requires the account owner to update payment information/resume paid status; it
+can trigger a charge, and no such payment interface/credentials are available here.
+Required owner decisions to continue: approve an amended patched pypdf exact pin
+(starting candidate6.21.4, subject to fresh audit), resolve account billing, and
+qualify the frontend security baseline. No48-hour silent financial/security waiver.
+
+No accepted merge or local-main landing occurred. C1 structural/collection/process
+implementation remains NOT STARTED; Option1 D-REAP engineering decision is recorded
+above. Do not proceed to the next feature while this baseline is blocked.
+
+Closeout classification: this session's worktree may be preserved-then-removed,
+after the final log is checkpointed/pushed, its ignored pointer and task-generated
+evidence are archived, remote source identity verified and all owned child activity
+stopped. Installed .venv/node_modules/cache/build/browser outputs are reproducible
+session-generated residue, not preexisting user artifacts. Test-generated SQLite
+was moved privately with SHA256 equality, never committed. Exact removal and primary
+preservation results belong in private closeout.json and the archived log tail.
+All six preexisting worktrees and the primary's old dirty pointer/logs remain protected.
