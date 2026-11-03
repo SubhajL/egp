@@ -263,9 +263,7 @@ def test_dns_resolver_releases_admission_when_worker_setup_fails(monkeypatch) ->
     )
 
     with pytest.raises(WebhookEndpointResolutionError) as caught:
-        SocketWebhookDnsResolver().resolve(
-            "public.example", 443, timeout_seconds=0.01
-        )
+        SocketWebhookDnsResolver().resolve("public.example", 443, timeout_seconds=0.01)
 
     assert caught.value.reason_code == "dns_resolution_failed"
     assert events == ["acquire", "release"]
@@ -314,9 +312,7 @@ def test_dns_resolver_preserves_timeout_reason_and_reaps_worker(monkeypatch) -> 
     )
 
     with pytest.raises(WebhookEndpointResolutionError) as caught:
-        SocketWebhookDnsResolver().resolve(
-            "public.example", 443, timeout_seconds=0.01
-        )
+        SocketWebhookDnsResolver().resolve("public.example", 443, timeout_seconds=0.01)
 
     assert caught.value.reason_code == "dns_resolution_timeout"
     assert events == [

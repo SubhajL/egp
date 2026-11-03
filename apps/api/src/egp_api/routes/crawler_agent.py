@@ -208,17 +208,13 @@ def submit_agent_result(
     except UnsupportedContractVersionError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IdempotencyConflictError as exc:
-        raise HTTPException(
-            status_code=409, detail="conflicting result for this claim"
-        ) from exc
+        raise HTTPException(status_code=409, detail="conflicting result for this claim") from exc
     except StaleAgentClaimError as exc:
         raise HTTPException(status_code=409, detail="stale agent claim") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # A replay is not a fresh creation.
-    response.status_code = (
-        status.HTTP_200_OK if submission.replayed else status.HTTP_201_CREATED
-    )
+    response.status_code = status.HTTP_200_OK if submission.replayed else status.HTTP_201_CREATED
     return AgentResultResponse(**submission.__dict__)
 
 

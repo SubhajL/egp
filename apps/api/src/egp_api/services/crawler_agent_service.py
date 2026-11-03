@@ -61,9 +61,7 @@ class CrawlerAgentService:
 
     def claim(self, *, agent_id: str, lease_seconds: float = 300.0) -> AgentClaim | None:
         self._require_enabled()
-        return self._repository.claim_agent_job(
-            agent_id=agent_id, lease_seconds=lease_seconds
-        )
+        return self._repository.claim_agent_job(agent_id=agent_id, lease_seconds=lease_seconds)
 
     def renew(
         self,

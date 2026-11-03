@@ -113,9 +113,7 @@ def test_legacy_claimer_still_claims_rows_written_before_u7(tmp_path) -> None:
 
     repository = _repository(tmp_path)
     due_at = datetime.now(UTC) - timedelta(minutes=5)
-    _seed_job(
-        repository, keyword="pre-u7-work", execution_backend=None, due_at=due_at
-    )
+    _seed_job(repository, keyword="pre-u7-work", execution_backend=None, due_at=due_at)
 
     claimed = repository.claim_pending_discovery_jobs(limit=10)
 
@@ -236,9 +234,7 @@ def test_claim_update_rechecks_backend_after_selection(tmp_path) -> None:
                 "WHERE keyword = 'reroute-me'"
             )
 
-    event.listen(
-        repository._engine, "before_cursor_execute", _flip_before_claim_update
-    )
+    event.listen(repository._engine, "before_cursor_execute", _flip_before_claim_update)
     try:
         claimed = repository.claim_pending_discovery_jobs(limit=10)
     finally:

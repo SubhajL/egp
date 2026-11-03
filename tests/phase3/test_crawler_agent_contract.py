@@ -271,9 +271,7 @@ def test_identical_replay_returns_the_original_row(
     assert _inbox_count(migrated_database_url, claim.job_id) == 1
 
 
-def test_same_claim_different_body_conflicts(
-    repository, migrated_database_url
-) -> None:
+def test_same_claim_different_body_conflicts(repository, migrated_database_url) -> None:
     from egp_db.repositories.crawler_agent_repo import IdempotencyConflictError
 
     _seed_agent_job(migrated_database_url)

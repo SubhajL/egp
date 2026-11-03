@@ -75,9 +75,7 @@ def test_record_accepted_uses_on_conflict_not_or_ignore(tmp_path) -> None:
     insert_statements = [c for c in captured if type(c).__name__ == "Insert"]
     assert insert_statements, "record_accepted must issue an INSERT statement"
 
-    compiled_sql = str(
-        insert_statements[0].compile(dialect=sqlite_dialect.dialect())
-    )
+    compiled_sql = str(insert_statements[0].compile(dialect=sqlite_dialect.dialect()))
     assert "OR IGNORE" not in compiled_sql, (
         f"record_accepted still uses the SQLite-only OR IGNORE prefix "
         f"(invalid on PostgreSQL): {compiled_sql}"
@@ -166,9 +164,7 @@ def test_record_accepted_round_trips_on_real_postgres() -> None:
         )
         assert first.id == second.id, "idempotent replay must return the same row"
 
-        summary = repo.get_run_candidate_summary(
-            tenant_id=tenant_id, run_id=run_id
-        )
+        summary = repo.get_run_candidate_summary(tenant_id=tenant_id, run_id=run_id)
         assert summary.total == 1, "duplicate insert must not create a second row"
         assert summary.accepted == 1
 

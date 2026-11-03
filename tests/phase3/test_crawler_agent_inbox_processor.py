@@ -87,7 +87,9 @@ def repository(migrated_database_url: str):
     return create_crawler_agent_repository(database_url=migrated_database_url)
 
 
-def _seed_submitted_result(repository, database_url: str, envelope: dict) -> tuple[str, str]:
+def _seed_submitted_result(
+    repository, database_url: str, envelope: dict
+) -> tuple[str, str]:
     """Seed an agent job, claim it, and submit `envelope`. Returns (job_id, result_id)."""
 
     tenant_id, profile_id, job_id = str(uuid4()), str(uuid4()), str(uuid4())
@@ -311,7 +313,9 @@ def test_retries_are_bounded_then_rejected(repository, migrated_database_url) ->
         migrated_database_url,
         {
             "kind": "discovery",
-            "payload": {"projects": [{"project_name": "ล้มเหลว", "organization_name": "อ"}]},
+            "payload": {
+                "projects": [{"project_name": "ล้มเหลว", "organization_name": "อ"}]
+            },
         },
     )
     processor = CrawlerAgentInboxProcessor(

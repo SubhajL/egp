@@ -49,12 +49,9 @@ def build_shadow_envelope(
                     "project_number": getattr(project, "project_number", None),
                     "project_name": getattr(project, "project_name", "") or "",
                     "organization_name": getattr(project, "organization_name", "") or "",
-                    "proposal_submission_date": getattr(
-                        project, "proposal_submission_date", None
-                    ),
+                    "proposal_submission_date": getattr(project, "proposal_submission_date", None),
                     "budget_amount": getattr(project, "budget_amount", None),
-                    "source_status_text": getattr(project, "source_status_text", "")
-                    or "",
+                    "source_status_text": getattr(project, "source_status_text", "") or "",
                 }
                 for project in projects
             ]
@@ -90,14 +87,10 @@ def report_shadow_result(
 
             client = build_agent_client_from_env()
         if client is None:
-            logger.info(
-                "shadow report skipped: no internal API base URL / worker token"
-            )
+            logger.info("shadow report skipped: no internal API base URL / worker token")
             return False
 
-        envelope = build_shadow_envelope(
-            run_id=run_id, keyword=keyword, projects=projects
-        )
+        envelope = build_shadow_envelope(run_id=run_id, keyword=keyword, projects=projects)
         # The claim this reports under is the LEGACY job's own claim. The API
         # verifies it under a row lock and deliberately does NOT consume it — the
         # legacy path is still executing and still owns it.

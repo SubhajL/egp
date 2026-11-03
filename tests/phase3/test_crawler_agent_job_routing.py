@@ -332,10 +332,14 @@ def test_the_cli_refuses_to_change_routing_without_confirmation(
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", profile_id,
-                "--backend", "agent",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                profile_id,
+                "--backend",
+                "agent",
             ]
         )
         == 2
@@ -351,10 +355,14 @@ def test_the_cli_dry_run_never_writes(migrated_database_url: str) -> None:
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", profile_id,
-                "--backend", "agent",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                profile_id,
+                "--backend",
+                "agent",
                 "--dry-run",
             ]
         )
@@ -375,10 +383,14 @@ def test_the_cli_fails_loudly_on_an_unknown_profile(
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", str(uuid4()),
-                "--backend", "legacy",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                str(uuid4()),
+                "--backend",
+                "legacy",
                 "--confirm",
             ]
         )
@@ -401,10 +413,14 @@ def test_rolling_back_without_reroute_strands_already_queued_agent_jobs(
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", profile_id,
-                "--backend", "legacy",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                profile_id,
+                "--backend",
+                "legacy",
                 "--confirm",
             ]
         )
@@ -434,10 +450,14 @@ def test_rolling_back_with_reroute_recovers_the_queued_jobs(
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", profile_id,
-                "--backend", "legacy",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                profile_id,
+                "--backend",
+                "legacy",
                 "--reroute-pending",
                 "--confirm",
             ]
@@ -447,9 +467,9 @@ def test_rolling_back_with_reroute_recovers_the_queued_jobs(
 
     assert _backends(migrated_database_url, tenant_id) == ["legacy"]
     # And the legacy claimer can now see it again.
-    assert [job.keyword for job in repository.claim_pending_discovery_jobs(limit=10)] == [
-        "ก"
-    ]
+    assert [
+        job.keyword for job in repository.claim_pending_discovery_jobs(limit=10)
+    ] == ["ก"]
 
 
 def test_the_reroute_leaves_a_claimed_job_alone(
@@ -474,10 +494,14 @@ def test_the_reroute_leaves_a_claimed_job_alone(
     assert (
         _run_cli(
             [
-                "--database-url", migrated_database_url,
-                "--tenant-id", tenant_id,
-                "--profile-id", profile_id,
-                "--backend", "legacy",
+                "--database-url",
+                migrated_database_url,
+                "--tenant-id",
+                tenant_id,
+                "--profile-id",
+                profile_id,
+                "--backend",
+                "legacy",
                 "--reroute-pending",
                 "--confirm",
             ]

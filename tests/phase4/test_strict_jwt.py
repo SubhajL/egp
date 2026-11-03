@@ -67,7 +67,9 @@ def _compact_with_raw_json(header: str, payload: str) -> str:
     signature = hmac.new(
         JWT_SECRET.encode(), signing_input.encode(), hashlib.sha256
     ).digest()
-    return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+    return (
+        f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+    )
 
 
 def test_strict_bearer_accepts_required_direct_and_registered_claims() -> None:
@@ -142,9 +144,7 @@ def test_duplicate_registered_or_direct_json_members_are_rejected() -> None:
 
 def test_duplicate_algorithm_header_is_rejected() -> None:
     payload = json.dumps(_claims(), separators=(",", ":"))
-    token = _compact_with_raw_json(
-        '{"alg":"HS256","alg":"HS256","typ":"JWT"}', payload
-    )
+    token = _compact_with_raw_json('{"alg":"HS256","alg":"HS256","typ":"JWT"}', payload)
 
     with pytest.raises(Exception) as caught:
         _authenticate(token)
@@ -187,7 +187,9 @@ def test_noncanonical_compact_segment_alphabet_is_rejected(
 def test_tampered_well_formed_signature_is_rejected() -> None:
     token = mint_machine_jwt(secret=JWT_SECRET, tenant_id=TENANT_ID)
     header, payload, signature = token.split(".")
-    tampered = f"{header}.{payload}.{'A' if signature[0] != 'A' else 'B'}{signature[1:]}"
+    tampered = (
+        f"{header}.{payload}.{'A' if signature[0] != 'A' else 'B'}{signature[1:]}"
+    )
 
     with pytest.raises(Exception) as caught:
         _authenticate(tampered)
@@ -215,7 +217,9 @@ def test_optional_temporal_claims_are_strict_integers(claim: str) -> None:
 @pytest.mark.parametrize("claim", ("iat", "nbf"))
 def test_future_temporal_claims_obey_clock_skew(claim: str) -> None:
     now = int(time.time())
-    assert _authenticate(_encode(_claims(**{claim: now + 20}))).subject == "machine-user"
+    assert (
+        _authenticate(_encode(_claims(**{claim: now + 20}))).subject == "machine-user"
+    )
 
     with pytest.raises(Exception) as caught:
         _authenticate(_encode(_claims(**{claim: now + 40})))
@@ -228,8 +232,16 @@ def test_future_temporal_claims_obey_clock_skew(claim: str) -> None:
     (
         {"issuer": "", "audience": TEST_JWT_AUDIENCE, "clock_skew_seconds": 30},
         {"issuer": TEST_JWT_ISSUER, "audience": " audience ", "clock_skew_seconds": 30},
-        {"issuer": TEST_JWT_ISSUER, "audience": TEST_JWT_AUDIENCE, "clock_skew_seconds": True},
-        {"issuer": TEST_JWT_ISSUER, "audience": TEST_JWT_AUDIENCE, "clock_skew_seconds": 121},
+        {
+            "issuer": TEST_JWT_ISSUER,
+            "audience": TEST_JWT_AUDIENCE,
+            "clock_skew_seconds": True,
+        },
+        {
+            "issuer": TEST_JWT_ISSUER,
+            "audience": TEST_JWT_AUDIENCE,
+            "clock_skew_seconds": 121,
+        },
     ),
 )
 def test_policy_object_enforces_security_invariants(kwargs: dict) -> None:
@@ -271,7 +283,10 @@ def test_duplicate_authorization_headers_fail_closed(tmp_path) -> None:
 
     response = TestClient(app).get(
         "/v1/me",
-        headers=[("Authorization", f"Bearer {token}"), ("Authorization", f"Bearer {token}")],
+        headers=[
+            ("Authorization", f"Bearer {token}"),
+            ("Authorization", f"Bearer {token}"),
+        ],
     )
 
     assert response.status_code == 401

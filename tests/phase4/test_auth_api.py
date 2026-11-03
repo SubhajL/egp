@@ -24,6 +24,8 @@ PASSWORD = "correct horse battery staple"
 PASSWORD_HASH = (
     "pbkdf2_sha256$390000$testsalt12345678$nGS115avKMF_Pqj0rdAgkGSpzD5XoukfnqsHaEBcVM0"
 )
+
+
 def _create_client(
     tmp_path, *, auth_required: bool = True, email_sender=None
 ) -> TestClient:
@@ -159,9 +161,7 @@ def _totp_code(secret: str, *, now: int | None = None) -> str:
 def _bearer_headers(
     *, tenant_id: str = TENANT_ID, role: str = "owner"
 ) -> dict[str, str]:
-    token = mint_machine_jwt(
-        secret=JWT_SECRET, tenant_id=tenant_id, role=role
-    )
+    token = mint_machine_jwt(secret=JWT_SECRET, tenant_id=tenant_id, role=role)
     return {"Authorization": f"Bearer {token}"}
 
 

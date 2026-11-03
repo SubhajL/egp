@@ -240,9 +240,7 @@ def test_agent_evidence_close_failure_does_not_mask_completed_work() -> None:
         run_id="run-1",
     )
 
-    assert repository.updates == [
-        ("run-1", {"evidence_close_error_type": "OSError"})
-    ]
+    assert repository.updates == [("run-1", {"evidence_close_error_type": "OSError"})]
 
 
 def test_the_loop_stops_on_a_disabled_protocol_and_on_auth_failure() -> None:

@@ -202,7 +202,9 @@ async def test_activity_is_coalesced_without_caching_authentication() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_activity_queue_drops_activity_without_failing_authentication() -> None:
+async def test_full_activity_queue_drops_activity_without_failing_authentication() -> (
+    None
+):
     auth = FakeAuthService()
     repository = BlockingActivityRepository()
     runtime = SessionAuthenticationRuntime(
