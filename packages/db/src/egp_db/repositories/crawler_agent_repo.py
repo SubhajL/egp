@@ -108,7 +108,9 @@ CRAWLER_AGENT_RESULTS_TABLE = Table(
     Column("idempotency_key", String, nullable=False),
     Column("envelope", ENVELOPE_JSON_TYPE, nullable=False),
     Column("envelope_sha256", String, nullable=False),
-    Column("inbox_status", String, nullable=False, default=AgentInboxStatus.PENDING.value),
+    Column(
+        "inbox_status", String, nullable=False, default=AgentInboxStatus.PENDING.value
+    ),
     Column("attempt_count", Integer, nullable=False, default=0),
     Column("next_attempt_at", DateTime(timezone=True), nullable=False),
     Column("last_error_code", String, nullable=True),
@@ -167,7 +169,9 @@ CRAWLER_AGENT_INBOX_HEARTBEATS_TABLE = Table(
     METADATA,
     Column("processor_id", String, primary_key=True),
     Column("status", String, nullable=False),
-    Column("backlog_depth", Integer, nullable=False, default=0, server_default=text("0")),
+    Column(
+        "backlog_depth", Integer, nullable=False, default=0, server_default=text("0")
+    ),
     Column("last_outcome", String, nullable=False),
     Column("reported_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
@@ -428,9 +432,7 @@ class SqlCrawlerAgentRepository:
                 )
             )
             if not renewed.rowcount:
-                raise StaleAgentClaimError(
-                    f"agent claim is stale for job {job_id}"
-                )
+                raise StaleAgentClaimError(f"agent claim is stale for job {job_id}")
             row = (
                 connection.execute(
                     select(DISCOVERY_JOBS_TABLE).where(
@@ -708,7 +710,6 @@ class SqlCrawlerAgentRepository:
         )
         return _submission_from_row(row, replayed=False)
 
-
     # ------------------------------------------------------------------
     # inbox processing (U7c)
     # ------------------------------------------------------------------
@@ -728,7 +729,9 @@ class SqlCrawlerAgentRepository:
                     and_(
                         CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
                         == AgentInboxStatus.PROCESSING.value,
-                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(
+                            None
+                        ),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at <= moment,
                     )
                 )
@@ -850,7 +853,8 @@ class SqlCrawlerAgentRepository:
                 update(CRAWLER_AGENT_RESULTS_TABLE)
                 .where(
                     and_(
-                        CRAWLER_AGENT_RESULTS_TABLE.c.id == normalize_uuid_string(result_id),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.id
+                        == normalize_uuid_string(result_id),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processor_token
                         == normalize_uuid_string(processor_token),
                         CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
@@ -859,7 +863,9 @@ class SqlCrawlerAgentRepository:
                         # enough: between expiry and reclaim the old owner still
                         # holds a matching token and could terminalize a row it no
                         # longer owns.
-                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(
+                            None
+                        ),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at > now,
                     )
                 )
@@ -925,7 +931,8 @@ class SqlCrawlerAgentRepository:
                 update(CRAWLER_AGENT_RESULTS_TABLE)
                 .where(
                     and_(
-                        CRAWLER_AGENT_RESULTS_TABLE.c.id == normalize_uuid_string(result_id),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.id
+                        == normalize_uuid_string(result_id),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processor_token
                         == normalize_uuid_string(processor_token),
                         CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
@@ -934,7 +941,9 @@ class SqlCrawlerAgentRepository:
                         # enough: between expiry and reclaim the old owner still
                         # holds a matching token and could terminalize a row it no
                         # longer owns.
-                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(
+                            None
+                        ),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at > now,
                     )
                 )
@@ -966,7 +975,8 @@ class SqlCrawlerAgentRepository:
                 update(CRAWLER_AGENT_RESULTS_TABLE)
                 .where(
                     and_(
-                        CRAWLER_AGENT_RESULTS_TABLE.c.id == normalize_uuid_string(result_id),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.id
+                        == normalize_uuid_string(result_id),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processor_token
                         == normalize_uuid_string(processor_token),
                         CRAWLER_AGENT_RESULTS_TABLE.c.inbox_status
@@ -975,7 +985,9 @@ class SqlCrawlerAgentRepository:
                         # enough: between expiry and reclaim the old owner still
                         # holds a matching token and could terminalize a row it no
                         # longer owns.
-                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(
+                            None
+                        ),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at > now,
                     )
                 )
@@ -1055,7 +1067,9 @@ class SqlCrawlerAgentRepository:
                         == AgentDeliveryMode.SHADOW.value,
                         # Lease liveness, same rule as the primary terminals: a
                         # matching token is not enough between expiry and reclaim.
-                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(None),
+                        CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at.is_not(
+                            None
+                        ),
                         CRAWLER_AGENT_RESULTS_TABLE.c.processing_expires_at > now,
                     )
                 )
@@ -1326,9 +1340,7 @@ class SqlCrawlerAgentRepository:
         if heartbeat is not None:
             heartbeat_age_seconds = max(
                 0,
-                int(
-                    (resolved_now - _as_utc(heartbeat["reported_at"])).total_seconds()
-                ),
+                int((resolved_now - _as_utc(heartbeat["reported_at"])).total_seconds()),
             )
 
         heartbeat_usable = heartbeat is not None and _heartbeat_is_usable(
@@ -1362,7 +1374,9 @@ class SqlCrawlerAgentRepository:
                 str(heartbeat["last_outcome"]) if heartbeat is not None else None
             ),
             heartbeat_reported_at=(
-                _iso_or_none(heartbeat["reported_at"]) if heartbeat is not None else None
+                _iso_or_none(heartbeat["reported_at"])
+                if heartbeat is not None
+                else None
             ),
             heartbeat_age_seconds=heartbeat_age_seconds,
             drain_status=drain_status,
@@ -1405,7 +1419,9 @@ class SqlCrawlerAgentRepository:
                 connection.execute(
                     select(
                         func.sum(case((pending, 1), else_=0)).label("pending_count"),
-                        func.sum(case((claimable, 1), else_=0)).label("claimable_count"),
+                        func.sum(case((claimable, 1), else_=0)).label(
+                            "claimable_count"
+                        ),
                         func.sum(case((leased, 1), else_=0)).label("leased_count"),
                         func.sum(case((retry_scheduled, 1), else_=0)).label(
                             "retry_scheduled_count"
@@ -1460,9 +1476,7 @@ def _select_fleet_heartbeat(rows, *, now: datetime, stale_after_seconds: float):
     if not ordered:
         return None
     for row in ordered:
-        if _heartbeat_is_usable(
-            row, now=now, stale_after_seconds=stale_after_seconds
-        ):
+        if _heartbeat_is_usable(row, now=now, stale_after_seconds=stale_after_seconds):
             return row
     return ordered[0]
 
@@ -1500,7 +1514,6 @@ def _derive_drain_status(
 
 def _iso_or_none(value: datetime | None) -> str | None:
     return _iso(value) if value is not None else None
-
 
 
 def _dialect_insert(table, connection):

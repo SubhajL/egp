@@ -103,7 +103,9 @@ class BoundedEvidenceWriter:
             return
         if stream not in self._buffers:
             raise ValueError(f"unsupported child stream {stream!r}")
-        raw = data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+        raw = (
+            data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+        )
         buffer = self._buffers[stream]
         while raw:
             if self._line_overflow[stream]:
@@ -211,7 +213,9 @@ class BoundedEvidenceWriter:
         next_seq = self._seq + 1
         payload = _redact_value({"seq": next_seq, **record})
         encoded = (
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
             + "\n"
         ).encode("utf-8")
         limit = self._max_total_bytes
@@ -257,7 +261,9 @@ class BoundedResultDecoder:
         return len(self._buffer)
 
     def feed(self, data: bytes | str) -> None:
-        raw = data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+        raw = (
+            data if isinstance(data, bytes) else data.encode("utf-8", errors="replace")
+        )
         marker = RESULT_FRAME_BEGIN.encode()
         probe = bytes(self._frame_probe) + raw
         if marker in probe:
@@ -365,9 +371,9 @@ def observe_child_process(
                 if stream == "stdout":
                     result_decoder.feed(chunk)
                 else:
-                    stderr_tail = (stderr_tail + chunk.decode("utf-8", errors="replace"))[
-                        -DEFAULT_MAX_TAIL_BYTES:
-                    ]
+                    stderr_tail = (
+                        stderr_tail + chunk.decode("utf-8", errors="replace")
+                    )[-DEFAULT_MAX_TAIL_BYTES:]
                 writer.write_child(stream, chunk)
         returncode = proc.wait(timeout=max(0.0, deadline - time.monotonic()))
     finally:
@@ -424,7 +430,9 @@ def _open_evidence_runs_dir(*, artifact_root: Path, tenant_id: str) -> tuple[int
             os.close(fd)
 
 
-def _run_log_entries(*, runs_fd: int, runs_root: Path) -> list[tuple[float, int, str, Path]]:
+def _run_log_entries(
+    *, runs_fd: int, runs_root: Path
+) -> list[tuple[float, int, str, Path]]:
     flags = os.O_RDONLY | os.O_NOFOLLOW
     directory_flags = flags | os.O_DIRECTORY
     logs: list[tuple[float, int, str, Path]] = []

@@ -428,9 +428,7 @@ def test_migration_034_upgrades_a_database_that_already_has_jobs(
 
         # 2. Apply 034 on top of the populated database.
         copy2(target, staged_dir / target.name)
-        result = apply_migrations(
-            database_url=database_url, migrations_dir=staged_dir
-        )
+        result = apply_migrations(database_url=database_url, migrations_dir=staged_dir)
         assert target.name in result.applied_versions
 
         # 3. The pre-existing row must now be legacy-owned.

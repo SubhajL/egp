@@ -59,7 +59,9 @@ def test_build_browser_settings_parses_diagnostics_dir_from_payload(tmp_path) ->
     assert settings.diagnostics_dir == Path(str(tmp_path / "d"))
 
 
-def test_build_browser_settings_parses_diagnostics_dir_from_env(monkeypatch, tmp_path) -> None:
+def test_build_browser_settings_parses_diagnostics_dir_from_env(
+    monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("EGP_BROWSER_DIAGNOSTICS_DIR", str(tmp_path / "e"))
     settings = _build_browser_settings({})
     assert settings is not None
@@ -73,7 +75,9 @@ def test_build_browser_settings_diagnostics_dir_defaults_none(monkeypatch) -> No
     assert settings.diagnostics_dir is None
 
 
-def test_build_browser_settings_diagnostics_dir_empty_string_is_none(monkeypatch) -> None:
+def test_build_browser_settings_diagnostics_dir_empty_string_is_none(
+    monkeypatch,
+) -> None:
     # QCHECK T1-LOW2 fix: an empty-string payload value must resolve to None, never
     # Path("") (== cwd/repo path), which §0 MUST-NOT forbids.
     monkeypatch.delenv("EGP_BROWSER_DIAGNOSTICS_DIR", raising=False)

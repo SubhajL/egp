@@ -70,9 +70,11 @@ def test_inbox_table_columns_match_migration_034() -> None:
     from egp_db.repositories.crawler_agent_repo import CRAWLER_AGENT_RESULTS_TABLE
 
     migrations_dir = Path(__file__).resolve().parents[2] / "packages/db/src/migrations"
-    body = (migrations_dir / "034_crawler_agent_results.sql").read_text(
-        encoding="utf-8"
-    ).split("CREATE TABLE crawler_agent_results (", 1)[1]
+    body = (
+        (migrations_dir / "034_crawler_agent_results.sql")
+        .read_text(encoding="utf-8")
+        .split("CREATE TABLE crawler_agent_results (", 1)[1]
+    )
 
     declared: set[str] = set()
     for raw in body.splitlines():
