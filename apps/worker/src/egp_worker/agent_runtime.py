@@ -531,9 +531,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--once", action="store_true", help="Process one job and exit.")
     parser.add_argument("--lease-seconds", type=float, default=DEFAULT_LEASE_SECONDS)
-    parser.add_argument(
-        "--idle-sleep-seconds", type=float, default=DEFAULT_IDLE_SLEEP_SECONDS
-    )
+    parser.add_argument("--idle-sleep-seconds", type=float, default=DEFAULT_IDLE_SLEEP_SECONDS)
     parser.add_argument(
         "--allow-insecure-transport",
         action="store_true",
@@ -554,21 +552,14 @@ def main(argv: list[str] | None = None, *, client=None, executor=None) -> int:
     if client is None:
         from egp_worker.agent_client import build_agent_client_from_env
 
-        client = build_agent_client_from_env(
-            require_https=not args.allow_insecure_transport
-        )
+        client = build_agent_client_from_env(require_https=not args.allow_insecure_transport)
     if client is None:
         logger.error(
-            "crawler-agent runtime needs EGP_INTERNAL_API_BASE_URL and "
-            "EGP_INTERNAL_WORKER_TOKEN"
+            "crawler-agent runtime needs EGP_INTERNAL_API_BASE_URL and EGP_INTERNAL_WORKER_TOKEN"
         )
         return 2
 
-    agent_id = (
-        args.agent_id
-        or os.getenv("EGP_CRAWLER_AGENT_ID", "").strip()
-        or "crawler-agent"
-    )
+    agent_id = args.agent_id or os.getenv("EGP_CRAWLER_AGENT_ID", "").strip() or "crawler-agent"
     counts = run_loop(
         client=client,
         executor=executor or _build_browser_executor(),

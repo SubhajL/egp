@@ -214,11 +214,7 @@ class AuthService:
 
     def authenticate_session(self, session_token: str) -> SessionAuthenticationResult | None:
         session = self._repository.get_authenticated_session(session_token=session_token)
-        if (
-            session is None
-            or not session.user.tenant_is_active
-            or session.user.status != "active"
-        ):
+        if session is None or not session.user.tenant_is_active or session.user.status != "active":
             return None
         return SessionAuthenticationResult(
             context=_auth_context_from_user(session.user),

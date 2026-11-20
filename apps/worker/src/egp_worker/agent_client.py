@@ -79,9 +79,7 @@ class CrawlerAgentApiClient:
             # queue. Sending it in clear text would hand that authority to anyone
             # on the path, so plain HTTP is refused rather than warned about.
             # `require_https=False` exists for loopback tests only.
-            raise ValueError(
-                f"crawler-agent base URL must be https, got {scheme or 'no'} scheme"
-            )
+            raise ValueError(f"crawler-agent base URL must be https, got {scheme or 'no'} scheme")
         self._base_url = base_url.rstrip("/")
         self._worker_token = worker_token
         self._timeout_seconds = float(timeout_seconds)
@@ -99,9 +97,7 @@ class CrawlerAgentApiClient:
         try:
             if self._client is not None:
                 return self._client.post(path, json=payload, headers=self._headers())
-            with httpx.Client(
-                base_url=self._base_url, timeout=self._timeout_seconds
-            ) as client:
+            with httpx.Client(base_url=self._base_url, timeout=self._timeout_seconds) as client:
                 return client.post(path, json=payload, headers=self._headers())
         except Exception as exc:  # noqa: BLE001 - every transport fault is retryable
             raise AgentTransportError(f"POST {path} failed: {exc}") from exc
@@ -132,9 +128,7 @@ class CrawlerAgentApiClient:
         a client-asserted tenant would be an authorization hole.
         """
 
-        response = self._post(
-            CLAIM_PATH, {"agent_id": agent_id, "lease_seconds": lease_seconds}
-        )
+        response = self._post(CLAIM_PATH, {"agent_id": agent_id, "lease_seconds": lease_seconds})
         self._raise_for_status(response, path=CLAIM_PATH)
         if int(getattr(response, "status_code", 0)) == 204:
             return None

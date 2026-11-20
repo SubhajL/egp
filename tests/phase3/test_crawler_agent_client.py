@@ -28,9 +28,7 @@ from tests.support.jwt_factory import TEST_JWT_AUDIENCE, TEST_JWT_ISSUER
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "packages/db/src/migrations"
-AGENT_CLIENT_PATH = (
-    REPO_ROOT / "apps/worker/src/egp_worker/agent_client.py"
-)
+AGENT_CLIENT_PATH = REPO_ROOT / "apps/worker/src/egp_worker/agent_client.py"
 WORKER_TOKEN = "u8e-internal-worker-token"
 
 
@@ -154,9 +152,7 @@ def test_the_agent_client_refuses_a_plaintext_base_url() -> None:
     from egp_worker.agent_client import CrawlerAgentApiClient
 
     with pytest.raises(ValueError, match="https"):
-        CrawlerAgentApiClient(
-            base_url="http://api.example.invalid", worker_token="t"
-        )
+        CrawlerAgentApiClient(base_url="http://api.example.invalid", worker_token="t")
     # And the https form is accepted, so the check is not simply always-raise.
     CrawlerAgentApiClient(base_url="https://api.example.invalid", worker_token="t")
 

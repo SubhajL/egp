@@ -194,7 +194,7 @@ def test_result_decoder_is_framed_first_bounded_and_fail_closed() -> None:
     decoder = BoundedResultDecoder(max_bytes=256)
     decoder.feed(b'{"legacy": true}\n')
     decoder.feed(
-        f"{RESULT_FRAME_BEGIN}\n{{\"run_id\":\"r\"}}\n{RESULT_FRAME_END}\n".encode()
+        f'{RESULT_FRAME_BEGIN}\n{{"run_id":"r"}}\n{RESULT_FRAME_END}\n'.encode()
     )
     assert decoder.decode() == {"run_id": "r"}
 

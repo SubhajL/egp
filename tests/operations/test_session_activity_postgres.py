@@ -126,7 +126,10 @@ def test_activity_touch_is_atomic_monotonic_and_expiry_safe(database_url: str) -
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(repository,)) for repository in repositories]
+    threads = [
+        threading.Thread(target=worker, args=(repository,))
+        for repository in repositories
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:

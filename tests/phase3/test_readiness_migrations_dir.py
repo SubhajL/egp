@@ -60,7 +60,8 @@ def test_resolution_finds_the_migrations_when_the_package_is_installed(
     (migrations / "001_initial_schema.sql").write_text("SELECT 1;", encoding="utf-8")
 
     installed_module = (
-        root / ".venv/lib/python3.12/site-packages/egp_api/services/readiness_service.py"
+        root
+        / ".venv/lib/python3.12/site-packages/egp_api/services/readiness_service.py"
     )
     installed_module.parent.mkdir(parents=True)
     installed_module.write_text("", encoding="utf-8")
@@ -78,9 +79,7 @@ def test_resolution_still_works_from_a_source_layout(tmp_path: Path) -> None:
     migrations.mkdir(parents=True)
     (migrations / "001_initial_schema.sql").write_text("SELECT 1;", encoding="utf-8")
 
-    source_module = (
-        root / "apps/api/src/egp_api/services/readiness_service.py"
-    )
+    source_module = root / "apps/api/src/egp_api/services/readiness_service.py"
     source_module.parent.mkdir(parents=True)
     source_module.write_text("", encoding="utf-8")
 
@@ -116,7 +115,9 @@ def test_readiness_reports_manifest_unavailable_only_when_it_truly_is(
 
 
 @pytest.mark.parametrize("depth", [1, 3, 7])
-def test_resolution_is_not_sensitive_to_module_depth(tmp_path: Path, depth: int) -> None:
+def test_resolution_is_not_sensitive_to_module_depth(
+    tmp_path: Path, depth: int
+) -> None:
     """The original defect was depth sensitivity. Pin that it is gone rather than
     trusting that the two layouts above are the only ones that will ever exist."""
 

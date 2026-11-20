@@ -12,7 +12,9 @@ from egp_worker.browser_diagnostics import (
 class _ShotPage:
     """Minimal fake Playwright page: screenshot() returns bytes or raises."""
 
-    def __init__(self, data: bytes = b"PNGDATA", raise_exc: Exception | None = None) -> None:
+    def __init__(
+        self, data: bytes = b"PNGDATA", raise_exc: Exception | None = None
+    ) -> None:
         self._data = data
         self._raise = raise_exc
         self.shots = 0
@@ -29,7 +31,11 @@ def test_capture_detail_diagnostic_writes_stem_png_and_manifest(tmp_path) -> Non
     manifest = capture_detail_diagnostic(
         page,
         reason="rejection_page",
-        marker={"project_name": "P", "project_number": "123", "source_status_text": "S"},
+        marker={
+            "project_name": "P",
+            "project_number": "123",
+            "source_status_text": "S",
+        },
         keyword="k",
         diagnostics_dir=tmp_path,
     )
@@ -124,7 +130,6 @@ def test_capture_keyword_diagnostic_writes_one(tmp_path) -> None:
     manifest = capture_keyword_diagnostic(page, keyword="kw", diagnostics_dir=tmp_path)
     assert manifest["status"] == "captured"
     assert len(list(tmp_path.glob("*.png"))) == 1
-    assert (
-        capture_keyword_diagnostic(page, keyword="kw", diagnostics_dir=None)
-        == {"status": "disabled"}
-    )
+    assert capture_keyword_diagnostic(page, keyword="kw", diagnostics_dir=None) == {
+        "status": "disabled"
+    }

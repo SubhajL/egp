@@ -73,9 +73,7 @@ class SessionAuthenticationRuntime:
         self._auth_service = auth_service
         self._repository = repository
         self._config = config or SessionAuthenticationRuntimeConfig()
-        self._admission = threading.BoundedSemaphore(
-            self._config.maximum_admitted_lookups
-        )
+        self._admission = threading.BoundedSemaphore(self._config.maximum_admitted_lookups)
         self._lookup_queue: queue.Queue[_LookupRequest | None] = queue.Queue(
             maxsize=self._config.maximum_admitted_lookups
         )
@@ -268,9 +266,7 @@ class SessionAuthenticationRuntime:
             except queue.Full:
                 return
             self._pending_activity.add(key)
-            self._next_activity_at[key] = (
-                monotonic_now + self._config.activity_interval_seconds
-            )
+            self._next_activity_at[key] = monotonic_now + self._config.activity_interval_seconds
             self._next_activity_at.move_to_end(key)
             self._trim_recent_activity()
 

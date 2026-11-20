@@ -137,9 +137,7 @@ def _optional_bool_claim(claims: dict[str, Any], name: str) -> bool:
     return value
 
 
-def _integer_timestamp_claim(
-    claims: dict[str, Any], name: str, *, required: bool
-) -> int | None:
+def _integer_timestamp_claim(claims: dict[str, Any], name: str, *, required: bool) -> int | None:
     if name not in claims:
         if required:
             raise ValueError(f"missing {name} claim")
